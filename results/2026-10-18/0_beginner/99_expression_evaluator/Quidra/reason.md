@@ -1,7 +1,13 @@
-# Task B selection — 99_expression_evaluator / Quidra
+# Task B selection: 99_expression_evaluator / Quidra
 
-The accumulator and right operand are signed integers obtained by evaluating the left operand and the next unary operand in their existing order. Change the division update so a negative nonintegral mathematical quotient is rounded down. After the existing zero-divisor guard, compute the truncated quotient and decrement it only when the operand signs differ and the division has a nonzero remainder. Retain the accumulator update at the same point, leaving error propagation, precedence and the assignment path intact. The separate typed unary-negation temporary is retained for the pinned backend's union-return lowering.
+## Common answer requirements
 
-Selected complete source lines in order are 25, 31, 37.
+Change only quotient rounding to floor while preserving multiplication precedence, left-to-right operand evaluation, and first-error behavior.
 
-Tokenizer: Task A 993 tokens; Task B 48 tokens.
+## Source evidence
+
+The multiplicative parser seeds its running value from the left operand and consumes one right operand per operator. The zero-divisor check precedes the division. Replace only the quotient computation with exact integer floor division, using an exact signed-remainder correction if needed. Keep token advancement, both operand reads, the zero check, and error propagation as written.
+
+## Minimization
+
+The multiplicative loop establishes where rounding changes and why the operand order and zero-error ordering do not. The enclosing additive parser and assignment updates need no change. Selected complete lines of `main.qui`: 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38.

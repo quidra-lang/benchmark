@@ -1,7 +1,7 @@
 # Task B selection: 30_set_operations / Quidra
 
-The extension calls identify which input forms each distinct set. The difference line alone identifies the operation to reverse and the unchanged label and ordering. The other outputs and the display helper need no edit.
+The selected lines establish the distinct/set operands, identify the difference expression to reverse, and show that its result is sorted for display. Swap only the operands of that expression. Keep the existing label and output position. The input values and other result expressions do not need to change.
 
-The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
+Selected complete source lines in order are 1, 9, 10, 13. The excerpt uses documented library semantics and the Task B assumptions.
 
-Task A: 246 tokens. Task B: 51 tokens.
+Task A uses 228 tokens. Task B uses 47 tokens.

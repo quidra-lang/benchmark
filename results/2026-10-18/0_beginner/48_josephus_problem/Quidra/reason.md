@@ -1,7 +1,13 @@
-# Task B selection for 48_josephus_problem
+# Task B selection: 48_josephus_problem / Quidra
 
-For n=7 and k=3, the addition of k minus one advances two positions. The initial range is 1 through 7, so indices 2, 4, and 1 remove 3, 6, and 2. remove_at returns the removed value and shifts subsequent entries left, so the retained index denotes the next person before adding the stride. The modulo uses the current length and wraps from the highest remaining number to the lowest. Display code is outside this trace.
+## Common answer requirements
 
-Selected complete lines in order are 1, 5, 6, 9, 10, 11.
+Trace the first three removals of the source case n=7, k=3, including wraparound and where counting resumes.
 
-Task A uses 186 tokens. Task B uses 75 tokens.
+## Source evidence
+
+The source case supplies n=7 and k=3 to the destructuring loop. The circle starts as 1 through 7 and index starts at zero. Repeatedly advance by k minus one modulo the current length, then remove at that index. The next surviving person slides into the removed index, so the next count starts there. The first three removed people are 3, 6, and 2.
+
+## Minimization
+
+The array declaration and destructuring bind the focused case to the algorithm, as the inline case list does in Python. Output formatting and final-survivor output are unnecessary. Selected complete lines of `main.qui`: 1, 3, 4, 5, 6, 9, 10, 11.

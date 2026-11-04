@@ -16,4 +16,4 @@ The documented Collections operations establish traversal order, height,
 and the successor splice without requiring their implementations.
 
 Selected complete lines in order are 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 47, 48, 53, 54, 55, 56, 61, 62, 63, 64.
-Task A uses 859 tokens. Task B uses 721 tokens.
+Task A uses 853 tokens. Task B uses 719 tokens.

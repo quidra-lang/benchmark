@@ -4,4 +4,4 @@ The flags start true. Marking multiples from twice each still-marked p preserves
 
 Selected complete lines in order are 1, 2, 4, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18.
 
-Task A uses 209 tokens. Task B uses 173 tokens.
+Task A uses 205 tokens. Task B uses 171 tokens.

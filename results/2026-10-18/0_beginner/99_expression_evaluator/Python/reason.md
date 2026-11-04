@@ -2,28 +2,12 @@
 
 ## Common answer requirements
 
-Locate truncating quotient calculation and replace with floor division; distinguish exact/negative-noninteger/positive cases while preserving evaluation order, precedence, first errors and assignment atomicity.
+Change only quotient rounding to floor while preserving multiplication precedence, left-to-right operand evaluation, and first-error behavior.
 
-## Answer and source dependencies
+## Source evidence
 
-Change only the division result operation after the existing zero-divisor/error checks. Use an integer floor-division primitive where provided (Python //, Julia fld, Lua // on signed operands, Zig @divFloor, or an appropriate floorDiv operation); otherwise compute the truncating integer quotient and remainder and subtract one exactly when the remainder is nonzero and operands have opposite signs. Do not adjust exact divisions or positive quotients. In floating numeric implementations Math.floor/floor replaces explicit truncation; in sign/magnitude code remove the magnitude-only truncation/restored-sign scheme and floor the signed quotient. Keep the right operand evaluated once in its current position and retain every error guard. Because this is a local result-operation change, parser precedence, left-to-right folding, first-error propagation and commit-after-success variable updates need no structural changes.
+The multiplicative parser seeds its running value from the left operand and consumes one right operand per operator. The zero-divisor check precedes the division. Replace only the quotient computation with exact integer floor division, using an exact signed-remainder correction if needed. Keep token advancement, both operand reads, the zero check, and error propagation as written.
 
+## Minimization
 
-
-## Scope and dependency evidence checked after independent review
-
-Independent review found unchanged unary parsing, error guards, multiplication and assignment context unnecessary for this division-only modification. The retained quotient expression is the actual change site; Lua also retains its sign-restoration companion because changing only the magnitude would leave truncation behavior. Use floor division where the language provides exact signed integer floor semantics, or compute the truncating quotient and remainder and decrement once exactly when the remainder is nonzero and the operand signs differ. Exact and positive quotients remain unchanged. Leave the existing zero-divisor guard, parsing order, first-error path, and delayed assignment unchanged; no modified source is produced.
-
-Source: `main.py`. Selected original locations: L39.
-
-- L39: `                value = int(value / right)` — Supplies the concrete value, binding, branch, mutation, comparison, or call used in the answer and dependency analysis above.
-
-## Minimization and language semantics
-
-The final selected excerpt measures **17 tokens** with `metric/tokenizer.py` `tokenize`. The previous reviewed candidate measured 92 tokens. The contiguous original span L39–L39 costs 17 tokens; the complete original source costs 925 tokens. The broader span and full source are sufficient context alternatives but include statements not required by the answer.
-
-Complete lines remain verbatim and in original order, without repeating source locations. Ordinary arithmetic, collection operations and standard-library contracts retain their documented semantics. User-defined behavior is established by selected operations and argument/field associations. Scope delimiters are retained where they separate relevant processing; indentation is not used as a scope guarantee in brace/end languages. No Task A program was compiled or executed. This is a minimized sufficient reviewed candidate, not a proof of global mathematical minimality.
-
-Measured deletion alternatives identify the removed source dependency or boundary:
-
-- Without L39: 0 tokens; removes `value = int(value / right)` from the dependency chain described above.
+The multiplicative loop establishes where rounding changes and why the operand order and zero-error ordering do not. The enclosing additive parser and assignment updates need no change. Selected complete lines of `main.py`: 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40.

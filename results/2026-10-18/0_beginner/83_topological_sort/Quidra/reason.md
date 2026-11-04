@@ -1,7 +1,13 @@
-# Task B selection for 83_topological_sort
+# Task B selection: 83_topological_sort / Quidra
 
-The sorted course array assigns ascending alphabetical indices. The eligibility scan chooses the first untaken index with zero indegree and immediately breaks. Removing that inner break selects the last eligible index while keeping the no-candidate sentinel and recomputing eligibility each round. The graph construction, edge updates, cycle-line order, and output formatting need no changes for this request.
+## Common answer requirements
 
-Selected complete lines in order are 4, 5, 11, 12, 13, 14, 15.
+Reverse only ready-course selection. Preserve recomputation, termination, and the ascending cycle output.
 
-Task A uses 658 tokens. Task B uses 80 tokens.
+## Source evidence
+
+The course list is sorted ascending. The scan takes the first untaken course of zero indegree. Scan those indices in descending order instead, retaining the stop when no eligible course is found, marking the selected course and decrementing outgoing targets before rescanning. Leave the ascending ordered array and the cycle filter in that order.
+
+## Minimization
+
+The cycle filter shares the ordered array, so the excerpt must show why reversing the common array would change the cycle output. Graph construction and datasets are unchanged. Selected complete lines of `main.qui`: 4, 5, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 23, 24, 25.

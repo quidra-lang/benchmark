@@ -4,4 +4,4 @@ For 98000, the decimal text has length 5. The selected comprehension maps every 
 
 Selected complete lines in order are 1, 5, 6, 7, 8.
 
-Task A uses 161 tokens. Task B uses 100 tokens.
+Task A uses 159 tokens. Task B uses 98 tokens.

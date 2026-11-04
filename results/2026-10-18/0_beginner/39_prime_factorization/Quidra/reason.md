@@ -4,4 +4,4 @@ For the supplied 9973, the square bound tries divisors 2 through 99, none of whi
 
 Selected complete lines in order are 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18.
 
-Task A uses 262 tokens. Task B uses 224 tokens.
+Task A uses 260 tokens. Task B uses 222 tokens.

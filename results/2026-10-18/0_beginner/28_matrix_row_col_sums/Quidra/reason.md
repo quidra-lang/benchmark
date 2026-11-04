@@ -1,5 +1,13 @@
-The answer must identify the row, column, and whole-matrix summary operations that change from sums to maxima. The five-column accumulator initialization and row loop establish the column state and its row-by-row data flow. Elementwise columns + row is the column accumulation to replace with a per-column maximum update. The row.sum() print is the row-summary field to replace with row.max_all(); the final columns.sum() print is the whole-matrix summary to replace with columns.max_all() after columns holds the column maxima. The column_sum loop binding identifies the values used for the individual column summaries; that binding can be renamed to reflect its new meaning without changing how its values flow to output.
+# Task B selection: 28_matrix_row_col_sums / Quidra
 
-The math import supplies the sum and max_all array reductions and scalar max. Quidra array + is elementwise and produces an independent value, so columns = columns + row updates the local accumulator. A maximum accumulator can start with the first row instead of an additive zero identity, then process the remaining rows. This works without inspecting individual matrix values. Known library semantics supply the reductions without including their implementation source.
+## Common answer requirements
 
-The selected row-summary and whole-matrix-summary print lines retain their six-character integer formats when changing only the reduction expressions. The original row-element loop and its print are unaffected, so selecting them would only reconfirm preserved fields. The existing print of column_sum is likewise unaffected: changing the values held in columns already changes the column summaries that it prints. The matrix literal is excluded because its values do not determine these edits. Compared with the previous longer candidate, this selection removes those unrelated formatting lines while retaining accumulator initialization, aggregate flow, affected expressions, and the column-output binding. Omitting that flow in favor of only the two sum expressions would lose the column-maxima update requirement. This is a sufficient locally reviewed selection, without claiming a globally proven minimum.
+Locate the three reductions that become maxima and identify the field formatting that stays fixed.
+
+## Source evidence
+
+The row sum is emitted at the end of each original row. The columns array starts at zero and adds each row elementwise. Change that accumulation to column-wise maxima with an initial row or equivalent initialization. The final loop prints each column value in a width-six field, and the last field currently sums the column totals. It should report the maximum of the column maxima, with the same width and newline.
+
+## Minimization
+
+The existing row-element print statements are unchanged. The column field statement is needed because its value now represents a maximum, and the final width-six field is emitted separately. Selected complete lines of `main.qui`: 1, 4, 5, 6, 9, 10, 11, 12.

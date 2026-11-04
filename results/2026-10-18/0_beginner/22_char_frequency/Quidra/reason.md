@@ -4,4 +4,4 @@ Change ignore_case to false so ascii_words still excludes nonletters while prese
 
 Selected complete lines in order are 1, 2, 5, 6, 7, 8.
 
-Task A uses 111 tokens. Task B uses 87 tokens.
+Task A uses 109 tokens. Task B uses 85 tokens.

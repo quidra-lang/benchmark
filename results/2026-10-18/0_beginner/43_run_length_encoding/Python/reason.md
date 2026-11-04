@@ -2,18 +2,12 @@
 
 ## Common answer requirements
 
-Identify the second input, trace contiguous-run encoding of its separate twelve-W runs, explain decimal two-digit count parsing, and establish decoded reconstruction from encoded data.
+Trace the two twelve-W runs and show decoding of a multi-digit count from the encoded data.
 
-These requirements were fixed for the topic before choosing the language-specific excerpts. Task B assumptions and the language specification/standard-library semantics are used; no Task A program was compiled or executed.
+## Source evidence
 
-## Source evidence and minimization
+The second source string contains twelve Ws, a B, another twelve Ws, and three Bs. groupby groups only adjacent equal characters, yielding 12W1B12W3B. The regex collects the entire digit sequence before each letter, int parses that count, and repeated letters are joined. The final display uses decoded, produced from encoded, alongside the original text.
 
-Retain the existing question-specific semantic selection, and add the actual import binding for each selected standard-library call. For the CSV trace, include the header to explain the data slice offset. These are required source facts, not additional implementation inspection.
+## Minimization
 
-Locations in main source: L1, L2, L4, L6, L11, L12, L13, L14.
-
-All selected lines are complete, verbatim and in source order. The source evidence, the question, and documented language/library semantics support the answer. Inputs and branches unrelated to the answer are excluded. A modification-only question does not require unchanged implementation details solely to reconfirm the program remains correct. Imported library bindings are included when their contracts are used. Static types may replace inspection of user-defined implementations only for facts those types actually guarantee.
-
-Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
-
-Measurement: Task A 187; Task B 134. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+Other input strings do not determine the focused runs. The output line confirms the decoded value is the one displayed, matching the same evidence requirement in Quidra. Selected complete lines of `main.py`: 1, 2, 4, 6, 11, 12, 13, 14, 16.

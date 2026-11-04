@@ -2,18 +2,12 @@
 
 ## Common answer requirements
 
-Identify case-folding/filtering/count indexing and output ordering; separate A-Z/a-z, ignore other characters, uppercase first then lowercase, emit only present letters with preserved case and format.
+Show how to separate ASCII uppercase and lowercase letters, retain only letters present, and print their original case in uppercase-then-lowercase order.
 
-These answer requirements are identical for all twenty languages. The Task B assumptions apply; this is source analysis, not execution or verification of Task A.
+## Source evidence
 
-## Source evidence and minimization
+The Counter generator currently lowercases the input and accepts only a through z. Filter the original characters with two ASCII ranges instead. Sorting the resulting character keys still orders uppercase before lowercase, and the output interpolates the key directly without changing its case.
 
-Retain the existing question-specific semantic selection, and add the actual import binding for each selected standard-library call. For the CSV trace, include the header to explain the data slice offset. These are required source facts, not additional implementation inspection.
+## Minimization
 
-Locations in main source: L1, L4, L5.
-
-All selected lines are complete, verbatim and in source order. The source evidence, the question, and documented language/library semantics support the answer. Inputs and branches unrelated to the answer are excluded. A modification-only question does not require unchanged implementation details solely to reconfirm the program remains correct. Imported library bindings are included when their contracts are used. Static types may replace inspection of user-defined implementations only for facts those types actually guarantee.
-
-Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
-
-Measurement: Task A 99; Task B 57. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+The input literal is unchanged. The existing formatter is needed to verify that the preserved case reaches the displayed label. Selected complete lines of `main.py`: 1, 4, 5, 6.

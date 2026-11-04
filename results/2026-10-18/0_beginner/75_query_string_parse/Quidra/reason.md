@@ -4,4 +4,4 @@ The parse binding identifies the first point at which both keys and values are d
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 261 tokens. Task B: 29 tokens.
+Task A: 257 tokens. Task B: 29 tokens.

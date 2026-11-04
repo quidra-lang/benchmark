@@ -7,11 +7,11 @@
 
 ## Implementation decision
 
-Use print.line for each complete branch output and remove the separate newline call after the conditional. The divisibility algorithm and exclusive branch order remain unchanged. Task A grows by one lexical token while the direct line-output operation makes newline behavior explicit at the selected branch and shortens its understanding evidence.
+Use println for each complete branch output and remove the separate newline call after the conditional. The divisibility algorithm and exclusive branch order remain unchanged. Task A grows by one lexical token while the direct line-output operation makes newline behavior explicit at the selected branch and shortens its understanding evidence.
 
 ## Evidence and answer
 
-The first predicate accepts both question-supplied values, and print.line writes FizzBuzz followed by one newline. The elif headers show that the 3 and 5 decisions are mutually exclusive alternatives to that first branch. Their shorter-word bodies and numeric fallback are unreachable for these values.
+The first predicate accepts both question-supplied values, and println writes FizzBuzz followed by one newline. The elif headers show that the 3 and 5 decisions are mutually exclusive alternatives to that first branch. Their shorter-word bodies and numeric fallback are unreachable for these values.
 
 ## Selection and minimization
 

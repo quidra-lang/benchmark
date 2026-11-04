@@ -4,4 +4,4 @@ The constructor and push identify the task value and numeric priority. Supply on
 
 Selected complete lines in order are 1, 8, 12, 14, 17, 18, 19, 20.
 
-Task A uses 325 tokens. Task B uses 120 tokens.
+Task A uses 321 tokens. Task B uses 118 tokens.

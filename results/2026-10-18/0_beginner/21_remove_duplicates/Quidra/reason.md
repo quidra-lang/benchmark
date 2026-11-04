@@ -4,4 +4,4 @@ The input array shows all three occurrences of 12. Collections unique keeps the 
 
 Selected complete lines in order are 2, 4, 5, 6.
 
-Task A uses 124 tokens. Task B uses 89 tokens.
+Task A uses 122 tokens. Task B uses 89 tokens.

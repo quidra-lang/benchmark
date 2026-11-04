@@ -1,17 +1,13 @@
 # Task B selection: 10_fibonacci / Quidra
 
-## Answer requirements
+## Common answer requirements
 
-Locate the inclusive term limit and the integer state; keep every generated term and the total exact for forty terms.
+Extend the recurrence to exactly 40 terms and retain exact accumulation and the two-line output.
 
-## Source evidence and supported analysis
+## Source evidence
 
-Change the loop bound from 30 to 40. The total update belongs to the same inclusive term loop, so extending that loop extends its sum as well. The only three integer state bindings are explicit; the unchanged simultaneous recurrence introduces no separately typed intermediate that could overflow. `int` is arbitrary precision; F(40)=102334155 and the forty-term sum is 267914295 remain exact. Spacing and the final sum label need no change.
+The two initial values and the simultaneous update generate the recurrence in order. The inclusive loop bound determines which terms are both printed and added to total. Its upper bound becomes 40, with the same integer types, recurrence, and output calls. The final line-output call begins with NL, separating the sum label from the values.
 
-Selected complete `main.qui` lines: 1, 2, 3, 4, 8. Every excerpt line is copied verbatim in source order. Ordinary language and documented package semantics apply; the excerpt need not compile independently. User-defined behavior is supported by its selected operations, not by a helper name.
+## Minimization
 
-## Selection and measurement
-
-The retained declarations, input values, control flow, calculations and change sites support the requested Task B answer. Unchanged unrelated processing and output are omitted. The complete source and the enclosing contiguous span are sufficient alternatives that add unrelated tokens. This is a reviewed sufficient selection, not a proof of global mathematical minimality.
-
-Using unchanged `metric/tokenizer.py`: Task A **108** tokens; Task B **46** tokens. These measurements describe lexical source evidence; execution verification is recorded separately.
+The space-printing condition is untouched. The term emission and the final sum emission establish which loop output and accumulated value the changed bound affects. Selected complete lines of `main.qui`: 1, 2, 3, 4, 7, 8, 9, 10.

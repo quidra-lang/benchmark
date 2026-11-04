@@ -2,28 +2,12 @@
 
 ## Common answer requirements
 
-Locate candidate-digit order and change it to 9 through 1; preserve row-major empty-cell choice, count every successful write including backtracks, and stop at first solved board.
+Reverse the digit candidate order while preserving first solution, placement counting, and backtracking.
 
-## Answer and source dependencies
+## Source evidence
 
-Change the candidate-digit enumeration from1through9 to9through1, retaining both endpoints. Existing row-major empty-cell selection, validity processing, placement increment after each successful write, recursion and undo already respond to that enumeration and need no edits. Do not hardcode the new count or alter output. For the unsigned Zig countdown, initialize9, decrement and stop at0 before underflow. The excerpt identifies precisely the affected enumeration, while the unchanged recursive body is a larger sufficient alternative that contributes no additional edit requirement.
+The digit loop currently tries 1 through 9. Reverse that loop to try 9 through 1, keeping the next-empty-cell search and validation logic. The retained placement operations count a successful write before recursion, propagate the first success without undoing it, and clear the cell after a failed recursive call. They should remain where they are.
 
+## Minimization
 
-
-## Scope and dependency evidence checked after independent review
-
-Only candidate enumeration changes; the current increasing bound/start/step is the affected site. Reverse it to9through1, preserving the unchanged cell choice, validity test, successful-write counter, recursive first-solution stop and undo.
-
-Source: `main.py`. Selected original locations: L22.
-
-- L22: `            for digit in range(1, 10):` — Supplies the concrete value, binding, branch, mutation, comparison, or call used in the answer and dependency analysis above.
-
-## Minimization and language semantics
-
-The final selected excerpt measures **19 tokens** with `metric/tokenizer.py` `tokenize`. The previous reviewed candidate measured 81 tokens. The contiguous original span L22–L22 costs 19 tokens; the complete original source costs 541 tokens. The broader span and full source are sufficient context alternatives but include statements not required by the answer.
-
-Complete lines remain verbatim and in original order, without repeating source locations. Ordinary arithmetic, collection operations and standard-library contracts retain their documented semantics. User-defined behavior is established by selected operations and argument/field associations. Scope delimiters are retained where they separate relevant processing; indentation is not used as a scope guarantee in brace/end languages. No Task A program was compiled or executed. This is a minimized sufficient reviewed candidate, not a proof of global mathematical minimality.
-
-Measured deletion alternatives identify the removed source dependency or boundary:
-
-- Without L22: 0 tokens; removes `for digit in range(1, 10):` from the dependency chain described above.
+The retained completion and placement lines establish how changing order affects the first solution and placement count. Conflict expressions and output formatting stay unchanged. Selected complete lines of `main.py`: 9, 16, 17, 18, 19, 20, 21, 22, 34, 35, 36, 37, 38, 39, 40.

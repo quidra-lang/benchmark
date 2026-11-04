@@ -4,4 +4,4 @@ The rank starts at zero and is assigned only when the sorted total differs from 
 
 Selected complete lines in order are 7, 8, 9, 10, 11, 12.
 
-Task A uses 311 tokens. Task B uses 64 tokens.
+Task A uses 309 tokens. Task B uses 64 tokens.
