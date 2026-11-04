@@ -17,6 +17,6 @@ The range start and inclusive slice endpoints identify the two width-dependent s
 
 Selected complete main.qui lines: 1, 4, 5. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 129 → 120; Task B 45 → 41. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 129 → 118; Task B 45 → 39. Compiler and native-output validation is recorded separately; token or verbatim checks alone do not establish compilation or correctness.
 
-Measurement: Task A 120; Task B 41. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 118; Task B 39. Tokenizer: metric/tokenizer.py, unchanged.
