@@ -7,7 +7,7 @@
 
 ## Implementation decision
 
-Use explicitly typed exact real arithmetic. The original real64 cast has a fallible success/error type and fails to provide the unique real context required by the following literal in this compiler. Exact real is permitted by Task A, which does not mandate IEEE-754. The formula and its order are unchanged; every integer Celsius input produces an exact tenth, so one-decimal formatting satisfies the half-up output requirement without a tie. Unlike topic 03, this topic has no double-precision contract.
+The recorded implementation uses exact real arithmetic. Its explicit real(celsius) conversion selects that arithmetic before multiplication. With current develop numeric rules, 9.0 can also default to real and a numeric operator converts integer operands to the common real type; a unique explicit literal context is no longer required. Exact real is permitted by Task A, which does not mandate IEEE-754. The formula and its order are unchanged; every integer Celsius input produces an exact tenth, so one-decimal formatting satisfies the half-up output requirement without a tie. Unlike topic 03, this topic has no double-precision contract.
 
 ## Evidence and answer
 
