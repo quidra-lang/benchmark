@@ -8,4 +8,4 @@ Native range, integer indexing and control flow, plus documented collections.pus
 
 Selected complete main.qui lines: 1, 4, 5, 6, 7, 9, 10, 11, 12, 13, 15, 16, 17, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 42, 43, 44. Each is copied verbatim once and in source order.
 
-Using unchanged metric/tokenizer.py: Task A **499** tokens; Task B **359** tokens. These are source-token measures. This is a minimized sufficient selection among the reviewed alternatives, not a proof of a global minimum. Native compiler/output checks are recorded separately in validation.json.
+Using unchanged metric/tokenizer.py: Task A **491** tokens; Task B **351** tokens. These are source-token measures. This is a minimized sufficient selection among the reviewed alternatives, not a proof of a global minimum. Native compiler/output checks are recorded separately in validation.json.

@@ -4,4 +4,4 @@ The passage and ASCII word tokenization show that Dog is normalized to dog befor
 
 Selected complete lines in order are 1, 2, 4, 5, 6, 7.
 
-Task A uses 216 tokens. Task B uses 179 tokens.
+Task A uses 212 tokens. Task B uses 175 tokens.

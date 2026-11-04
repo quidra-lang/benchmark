@@ -15,5 +15,5 @@ input records or independent operations add no required fact. This is a reviewed
 sufficient minimized candidate, not a proof of a global mathematical minimum.
 Language and documented library semantics are available as prior knowledge.
 
-Task B: 199 tokens under the unchanged metric/tokenizer.py. Task A is unchanged
+Task B: 193 tokens under the unchanged metric/tokenizer.py. Task A uses 463 tokens.
 by this evidence correction.
