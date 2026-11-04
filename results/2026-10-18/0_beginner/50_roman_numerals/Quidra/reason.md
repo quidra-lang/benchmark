@@ -4,8 +4,10 @@ Encoding uses the ordered values and symbols to take M, CM, XC, IV, leaving 994,
 
 Selected complete lines in order are 1, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21.
 
-Task A uses 432 tokens. Task B uses 354 tokens.
+Task A uses 423 tokens. Task B uses 348 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 432; Task B 354.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 423; Task B 348.
+
+Measurement: Task A 423; Task B 348. Tokenizer: metric/tokenizer.py, unchanged.

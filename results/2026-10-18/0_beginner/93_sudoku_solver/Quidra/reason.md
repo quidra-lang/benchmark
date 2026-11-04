@@ -17,3 +17,5 @@ The selected excerpt measures **15 tokens** with `metric/tokenizer.py`.
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 603; Task B 15.
+
+Measurement: Task A 603; Task B 15. Tokenizer: metric/tokenizer.py, unchanged.

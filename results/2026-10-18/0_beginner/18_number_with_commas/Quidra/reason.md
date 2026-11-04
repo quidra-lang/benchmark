@@ -5,3 +5,5 @@ For the input −456789 supplied in the question, the three-digit groups from th
 The group=3 format option applies to integer digits from the right and preserves the negative sign as a prefix outside the grouping. println emits the formatted line.
 
 Complete main.qui lines: 3. The literal collection and its traversal only deliver the input scalar that the question already provides. The selected formatter or grouping loop and output supply the algorithm and output evidence. The benchmark tokenizer counts 14 tokens in this excerpt.
+
+Measurement: Task A 75; Task B 14. Tokenizer: metric/tokenizer.py, unchanged.

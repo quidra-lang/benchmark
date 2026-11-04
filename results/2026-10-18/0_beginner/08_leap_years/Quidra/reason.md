@@ -19,7 +19,7 @@ The literal collection gives the insertion point after 2100 and preserves the pr
 
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Selecting only the array could miss a hardcoded traversal bound; selecting only the loop would not identify where to append the year. Where the literal collection and traversal share one line, that line alone is sufficient. Copying the unchanged Gregorian predicate or format adds no modification site.
 
-The selected excerpt contains **67 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 67 tokens; the complete source contains 157 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The selected excerpt contains **62 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 62 tokens; the complete source contains 146 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
 
 ## Quidra develop re-evaluation (2026-11-01)
 
@@ -31,7 +31,7 @@ Complete main.qui source lines: 1, 2.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 149 tokens; Task B 65 tokens.
+Tokenizer: Task A 146 tokens; Task B 62 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
 
@@ -45,6 +45,8 @@ Complete main.qui source lines: 1, 2.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 149 tokens; Task B 65 tokens.
+Tokenizer: Task A 146 tokens; Task B 62 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
+
+Measurement: Task A 146; Task B 62. Tokenizer: metric/tokenizer.py, unchanged.

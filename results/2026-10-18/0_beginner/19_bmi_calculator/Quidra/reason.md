@@ -5,3 +5,5 @@ Mika contributes height 165 and weight 70. The integer products are 700000 and 2
 Selected complete source lines in order are 1, 4, 8, 9, 10, 11, 12, 13, 16.
 
 Tokenizer: Task A 252 tokens; Task B 170 tokens.
+
+Measurement: Task A 252; Task B 170. Tokenizer: metric/tokenizer.py, unchanged.

@@ -11,3 +11,5 @@ The values iteration visits each grouped array in its existing order, and group.
 ## Minimization
 
 The loop header is needed to show the filter applies once per group and preserves the order in which groups are visited. The unchanged signature and grouping computations are outside the change. Selected complete lines of `main.qui`: 7, 8.
+
+Measurement: Task A 121; Task B 26. Tokenizer: metric/tokenizer.py, unchanged.

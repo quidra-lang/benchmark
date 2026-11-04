@@ -9,3 +9,5 @@ With the benchmark tokenizer, this selection measures 13 tokens; the previous se
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 192; Task B 13.
+
+Measurement: Task A 192; Task B 13. Tokenizer: metric/tokenizer.py, unchanged.

@@ -9,3 +9,5 @@ Tokenizer: Task A 340 tokens; Task B 227 tokens.
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 340; Task B 227.
+
+Measurement: Task A 340; Task B 227. Tokenizer: metric/tokenizer.py, unchanged.

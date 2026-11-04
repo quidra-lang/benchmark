@@ -8,3 +8,5 @@ are outside the necessary evidence.
 
 Selected complete lines in order are 15, 16.
 Task A uses 603 tokens. Task B uses 52 tokens.
+
+Measurement: Task A 603; Task B 52. Tokenizer: metric/tokenizer.py, unchanged.

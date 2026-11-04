@@ -18,8 +18,10 @@ The selected `n := start` binds the question-supplied starting value to the evol
 
 Selected complete main.qui lines: 3, 4, 5, 6, 7, 8, 9, 10. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py on the current source: Task A 153; Task B 95. These are source-code token counts.
+Using unchanged metric/tokenizer.py on the current source: Task A 150; Task B 95. These are source-code token counts.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 153; Task B 95.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 150; Task B 95.
+
+Measurement: Task A 150; Task B 95. Tokenizer: metric/tokenizer.py, unchanged.

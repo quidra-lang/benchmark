@@ -9,3 +9,5 @@ The sorting operations show where ascending values come from. Replacing only the
 The shared side prefix is written unconditionally for each set, so replacing its side operands once covers valid and invalid sets.
 
 Source: `main.qui`, original lines 3, 7. The previous excerpt measures 69 tokens; this evidence set measures 39 tokens.
+
+Measurement: Task A 366; Task B 39. Tokenizer: metric/tokenizer.py, unchanged.

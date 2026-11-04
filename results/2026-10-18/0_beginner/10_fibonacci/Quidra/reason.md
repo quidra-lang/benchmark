@@ -17,3 +17,5 @@ The loop header alone cannot establish that the same iteration updates the total
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 100; Task B 61.
+
+Measurement: Task A 100; Task B 61. Tokenizer: metric/tokenizer.py, unchanged.

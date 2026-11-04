@@ -5,3 +5,5 @@ Use a shift of thirteen on the original message and the inverse on the ciphertex
 The text import binds the translate extension. Normalize the signed shift modulo 26, then rotate each literal alphabet by the offset and translate by matched position. The documented API leaves unmatched code points unchanged; change the calls to 13 and negative 13.
 
 Complete main.qui lines: 1, 3, 4, 5, 6, 7, 8, 11, 12. The shift arguments by themselves do not establish the custom operation’s wraparound or passthrough; the selected implementation and documented primitives do. The unchanged message literal and any print-only statements are unnecessary unless bundled with an edited call. The benchmark tokenizer counts 146 tokens in this excerpt.
+
+Measurement: Task A 174; Task B 146. Tokenizer: metric/tokenizer.py, unchanged.

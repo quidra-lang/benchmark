@@ -13,3 +13,5 @@ The excerpt is copied verbatim from `main.qui`, in source order. Retained source
 ## Minimization and alternatives
 
 The small lookup needs entries through nineteen and the tens lookup needs entries through seventy. Trailing tens entries are unnecessary unless a complete source line also contains a required entry. Retain table delimiters and the join/append operations. The prior selection used 481 tokens; this selection uses 484 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+Measurement: Task A 544; Task B 484. Tokenizer: metric/tokenizer.py, unchanged.

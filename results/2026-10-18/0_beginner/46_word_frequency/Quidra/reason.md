@@ -5,3 +5,5 @@ The passage and ASCII word tokenization show that Dog is normalized to dog befor
 Selected complete lines in order are 1, 2, 4, 5, 6, 7.
 
 Task A uses 208 tokens. Task B uses 175 tokens.
+
+Measurement: Task A 208; Task B 175. Tokenizer: metric/tokenizer.py, unchanged.

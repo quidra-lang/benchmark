@@ -12,4 +12,6 @@ The row sweep keeps one DP slot per column. Its old value is the count from abov
 
 The final-slot return confirms that the rolling-state extension keeps the output path; replacing the one-dimensional table would require a different return. Grid literals do not govern the recurrence.
 
-Selected complete lines of `main.qui`: 1, 3–11, 13. The prior excerpt measured 156 tokens; this excerpt measures 164 with `metric/tokenizer.py`.
+Selected complete lines of `main.qui`: 1, 3–11, 13. The prior excerpt measured 156 tokens; this excerpt measures 161 with `metric/tokenizer.py`.
+
+Measurement: Task A 212; Task B 161. Tokenizer: metric/tokenizer.py, unchanged.

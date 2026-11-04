@@ -19,7 +19,7 @@ The sentence literal is required for the exact characters and final word. The fi
 
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Neither reversal operation alone answers the comparison. Omitting the literal loses the exact resulting prefixes. The selected data and both transformations are smaller than complete wrapper/import/flush code and avoid reproducing standard split/reverse/join implementations.
 
-The selected excerpt contains **62 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 62 tokens; the complete source contains 62 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The selected excerpt contains **58 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 58 tokens; the complete source contains 58 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
 
 ## Quidra develop re-evaluation (2026-11-01)
 
@@ -48,3 +48,5 @@ valid in-order occurrence was used. Unrelated lines were excluded.
 Tokenizer: Task A 58 tokens; Task B 58 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
+
+Measurement: Task A 58; Task B 58. Tokenizer: metric/tokenizer.py, unchanged.

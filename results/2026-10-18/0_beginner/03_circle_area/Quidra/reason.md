@@ -19,7 +19,7 @@ The retained pi definition or standard pi constant supplies the arithmetic coeff
 
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A formatter-only excerpt cannot recover either formula or multiplication order. An arithmetic-only excerpt cannot establish three fractional digits. The selected union of these two sites is smaller than the entire radius loop; no separate precomputed output is used.
 
-The selected excerpt contains **106 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 143 tokens; the complete source contains 143 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The selected excerpt contains **98 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 130 tokens; the complete source contains 130 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
 
 ## Quidra develop re-evaluation (2026-11-01)
 
@@ -31,7 +31,7 @@ Complete main.qui source lines: 1, 4, 5, 6, 7.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 133 tokens; Task B 98 tokens.
+Tokenizer: Task A 130 tokens; Task B 98 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
 
@@ -45,6 +45,8 @@ Complete main.qui source lines: 1, 4, 5, 6, 7.
 Every retained line is an exact verbatim source line in source order.
 Equal-text alternative occurrences have equal token cost; the earliest
 valid in-order occurrence was used. Unrelated lines were excluded.
-Tokenizer: Task A 133 tokens; Task B 98 tokens.
+Tokenizer: Task A 130 tokens; Task B 98 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
+
+Measurement: Task A 130; Task B 98. Tokenizer: metric/tokenizer.py, unchanged.

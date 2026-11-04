@@ -21,3 +21,5 @@ Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 416; Task B 160.
+
+Measurement: Task A 416; Task B 160. Tokenizer: metric/tokenizer.py, unchanged.

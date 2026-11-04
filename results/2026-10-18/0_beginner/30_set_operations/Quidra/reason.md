@@ -5,3 +5,5 @@ The selected lines establish the distinct/set operands, identify the difference 
 Selected complete source lines in order are 1, 9, 10, 13. The excerpt uses documented library semantics and the Task B assumptions.
 
 Task A uses 228 tokens. Task B uses 47 tokens.
+
+Measurement: Task A 228; Task B 47. Tokenizer: metric/tokenizer.py, unchanged.

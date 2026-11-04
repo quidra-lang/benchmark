@@ -6,8 +6,10 @@ At face values 500, 5 and 1, quotient and remainder give (1, 6), (1, 1), and (1,
 
 The question fixes the amount. Denomination order, remainder and quotient, initial totals, and the formatting and join or write operations are retained. Other amounts and the iteration that merely selects them can be omitted; standard quotient/remainder and string operations supply their usual meanings.
 
-Source: `main.qui`, original lines 2, 4–13. The previous excerpt measured 209 tokens; this evidence set measures 158 tokens.
+Source: `main.qui`, original lines 2, 4–13. The previous excerpt measured 209 tokens; this evidence set measures 155 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 207; Task B 158.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 201; Task B 155.
+
+Measurement: Task A 201; Task B 155. Tokenizer: metric/tokenizer.py, unchanged.

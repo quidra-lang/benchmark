@@ -17,6 +17,8 @@ The only hexadecimal formatting site is the hex={value:base=16,upper} interpolat
 
 ## Minimality and language guarantees
 
-Selected main.qui lines: 3. The selection copies complete source lines verbatim in source order. It retains the data, calls, control flow and ordering keys needed by this question; the unselected source (such as output detail or unrelated computation) does not add a required fact. Core and first-party package functions, native collections, and stable keyed sorting are treated as specified contracts, not as user-defined functions needing implementation inspection. The source-only excerpt contains 45 tokens, against 96 for the full program, using metric/tokenizer.py. Individual lines and possible alternative evidence sets were compared to retain only dependencies for this question; this is not a formal proof of global minimality or a claim of compilation/testing.
+Selected main.qui lines: 3. The selection copies complete source lines verbatim in source order. It retains the data, calls, control flow and ordering keys needed by this question; the unselected source (such as output detail or unrelated computation) does not add a required fact. Core and first-party package functions, native collections, and stable keyed sorting are treated as specified contracts, not as user-defined functions needing implementation inspection. The source-only excerpt contains 43 tokens, against 89 for the full program, using metric/tokenizer.py. Individual lines and possible alternative evidence sets were compared to retain only dependencies for this question; this is not a formal proof of global minimality or a claim of compilation/testing.
 
 Core develop: 33b7b6a23a79; Quidra 0.6.0.
+
+Measurement: Task A 89; Task B 43. Tokenizer: metric/tokenizer.py, unchanged.

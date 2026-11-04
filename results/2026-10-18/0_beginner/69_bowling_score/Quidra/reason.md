@@ -17,3 +17,5 @@ Adjacent differences preserve the current scoring calculation and avoid changing
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 543; Task B 40.
+
+Measurement: Task A 543; Task B 40. Tokenizer: metric/tokenizer.py, unchanged.

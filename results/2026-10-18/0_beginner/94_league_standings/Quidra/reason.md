@@ -9,3 +9,5 @@ Task A uses 818 tokens. Task B uses 582 tokens.
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 818; Task B 582.
+
+Measurement: Task A 818; Task B 582. Tokenizer: metric/tokenizer.py, unchanged.

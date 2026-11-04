@@ -16,4 +16,6 @@ The recursive calls, count increment and trace are a smaller alternative to reta
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 450; Task B 176.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 447; Task B 176.
+
+Measurement: Task A 447; Task B 176. Tokenizer: metric/tokenizer.py, unchanged.

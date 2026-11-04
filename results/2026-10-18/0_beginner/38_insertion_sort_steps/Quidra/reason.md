@@ -10,4 +10,6 @@ Source: `main.qui`, original lines 5–7, 9–11, 13. The previous excerpt measu
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 213; Task B 95.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 210; Task B 95.
+
+Measurement: Task A 210; Task B 95. Tokenizer: metric/tokenizer.py, unchanged.

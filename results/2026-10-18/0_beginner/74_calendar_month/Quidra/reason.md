@@ -16,6 +16,8 @@ Selected complete main.qui source lines: 1, 7, 10, 11, 12, 13, 14, 15, 16, 22, 2
 
 ## Measurement and validation
 
-Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 573 tokens; Task B 323 tokens. Original values: Task A 588; Task B 330. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
+Using unchanged metric/tokenizer.py (SHA-256 4edefba77b30a2a7d55e2849f30e2d022fb1f6b2d12d7319f45293830459555a): Task A 570 tokens; Task B 320 tokens. Original values: Task A 588; Task B 330. Task B proposed modifications have not been implemented. Native validation of Task A is recorded separately in validation-results.json; lexical counts or excerpt review do not by themselves establish compilation or correctness.
 
-The declaration-syntax migration keeps the same source locations and answer dependencies. The current tokenizer counts are 579 for Task A and 325 for Task B.
+The declaration-syntax migration keeps the same source locations and answer dependencies. The current tokenizer counts are 570 for Task A and 320 for Task B.
+
+Measurement: Task A 570; Task B 320. Tokenizer: metric/tokenizer.py, unchanged.

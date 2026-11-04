@@ -11,3 +11,5 @@ Tokenizer: Task A185; Task B62. Runtime verification is separate.
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 185; Task B 62.
+
+Measurement: Task A 185; Task B 62. Tokenizer: metric/tokenizer.py, unchanged.

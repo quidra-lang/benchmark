@@ -5,3 +5,5 @@ The selected second array and Kadane update show that a negative current total r
 Selected complete lines in order are 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21.
 
 Task A uses 361 tokens. Task B uses 274 tokens.
+
+Measurement: Task A 361; Task B 274. Tokenizer: metric/tokenizer.py, unchanged.
