@@ -7,19 +7,13 @@
 
 ## Answer supported by the excerpt
 
-Substitute radius 7 into the selected expressions. Area is (pi × 7) × 7, about 153.93804002589985; circumference is (2 × pi) × 7, about 43.982297150257104. The fixed three-decimal formatting yields area=153.938 and circumference=43.982. The multiplication order comes from left associativity or explicit parentheses in the source, not from an algebraic reassociation.
+Substituting 7 for `r` gives `(pi * 7) * 7` for the area and `(2 * pi) * 7` for the circumference. Multiplication is left-associative. The `real64` type of `pi` determines the arithmetic type, so the integer operands convert to `real64` as they enter the calculation. The `:.3` format prints exactly three fractional digits, giving `area=153.938` and `circumference=43.982`.
 
-## Source evidence and dependencies
+## Source evidence and minimization
 
-Selected `main.qui` lines: 1, 4, 5, 6, 7. The excerpt preserves these complete lines in their original order and indentation.
+The excerpt copies complete `main.qui` lines 1, 3, 4, and 5 in source order. The declaration supplies the value and type of `pi`. The two assignments give the requested formulas, and the output line connects each result to its field and format. The question supplies the radius, so the loop header and other radii can be omitted.
 
-The retained pi definition or standard pi constant supplies the arithmetic coefficient. Conversions establish floating-point operands where needed. Both expressions and the format/argument association support the requested fields. The question supplies radius 7, so the other radii and the traversal are not needed for this focused calculation.
-
-## Language semantics and minimization
-
-Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A formatter-only excerpt cannot recover either formula or multiplication order. An arithmetic-only excerpt cannot establish three fractional digits. The selected union of these two sites is smaller than the entire radius loop; no separate precomputed output is used.
-
-The selected excerpt contains **94 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 126 tokens; the complete source contains 126 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The excerpt contains **82 tokens** under `metric/tokenizer.py`. Including the loop header would raise the count to 108, the full Task A total.
 
 ## Quidra develop re-evaluation (2026-11-01)
 
