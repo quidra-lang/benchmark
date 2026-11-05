@@ -14,8 +14,8 @@ All selected lines are complete, verbatim and in source order. The source eviden
 
 Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
 
-Measurement: Task A 440; Task B 337. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+Measurement: Task A 437; Task B 334. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 440; Task B 337.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 437; Task B 334.

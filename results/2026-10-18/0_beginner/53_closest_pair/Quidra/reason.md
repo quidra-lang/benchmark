@@ -6,18 +6,18 @@ Print the two stored squared distances as decimal integers, preserving pair sele
 
 ## Source evidence
 
-The squared-distance expression and the selected-pair updates show that the score stored for each extreme is already the value to print. The strict improvement tests preserve the earlier encounter when scores tie. Remove the square root/conversion at the output path and use ordinary interpolation of the stored integers and remove both :frac=4 modifiers. Preserve labels, point-name formatting and line order.
+The squared-distance expression and the selected-pair updates show that the score stored for each extreme is already the value to print. The strict improvement tests preserve the earlier encounter when scores tie. Remove the square root/conversion at the output path and use ordinary interpolation of the stored integers and remove both `:.4` modifiers. Preserve labels, point-name formatting and line order.
 
 ## Minimization
 
 Print-only evidence would not establish that the value supplied to the square root is the squared value used by the comparisons. The strict comparisons and score stores suffice without the point literals or a trace of all pairs.
 
-Selected complete lines of `main.qui`: 1, 7–8, 17–19, 22–23, 26–28. The prior excerpt measured 153 tokens; this excerpt measures 178 with `metric/tokenizer.py`.
+Selected complete lines of `main.qui`: 1, 7–8, 17–19, 22–23, 26–28. The prior excerpt measured 153 tokens; this excerpt measures 174 with `metric/tokenizer.py`.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 450; Task B 178.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 444; Task B 174.
 
-Measurement: Task A 450; Task B 178. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 444; Task B 174. Tokenizer: metric/tokenizer.py, unchanged.
 
 The inner range inherits int from its integer start and upper bound; its enumeration and tie order are unchanged.

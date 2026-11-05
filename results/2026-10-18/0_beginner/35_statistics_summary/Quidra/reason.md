@@ -10,4 +10,4 @@ The source binds the converted length once and uses it in both divisions. Adjust
 
 Source: `main.qui`, original lines 2, 5–6, 16. The previous excerpt measures 31 tokens; this evidence set measures 48 tokens.
 
-Measurement: Task A 272; Task B 48. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 268; Task B 48. Tokenizer: metric/tokenizer.py, unchanged.

@@ -8,12 +8,12 @@ The Math import and documented integer math.max contract identify the same large
 
 Selected complete main.qui lines: 1, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 20. Each is copied verbatim once and in source order.
 
-Using unchanged metric/tokenizer.py on the current source: Task A 383; Task B 205. These are source-code token counts.
+Using unchanged metric/tokenizer.py on the current source: Task A 380; Task B 204. These are source-code token counts.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 383; Task B 205.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 380; Task B 204.
 
-Measurement: Task A 383; Task B 205. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 380; Task B 204. Tokenizer: metric/tokenizer.py, unchanged.
 
 The teller conditional has only integer-literal branches, so it infers int and preserves the exact generator arithmetic and array index.

@@ -4,10 +4,10 @@ The selected nine matches are all games involving Tigers or Wolves. The lookup, 
 
 Selected complete lines in order are 1, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 29, 32, 33, 34, 36, 37, 39, 41, 42, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57.
 
-Task A uses 817 tokens. Task B uses 582 tokens.
+Task A uses 816 tokens. Task B uses 582 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 817; Task B 582.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 816; Task B 582.
 
-Measurement: Task A 817; Task B 582. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 816; Task B 582. Tokenizer: metric/tokenizer.py, unchanged.

@@ -12,10 +12,10 @@ The excerpt is copied verbatim from `main.qui`, in source order. Retained source
 
 ## Minimization and alternatives
 
-Adjacent differences preserve the current scoring calculation and avoid changing the strike/spare and tenth-frame branches. The frame loop, collection or write identify the emission sites. Keeping every branch is a larger alternative needed only if rewriting the scoring calculation. The prior selection used 188 tokens; this selection uses 39 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+Adjacent differences preserve the current scoring calculation and avoid changing the strike/spare and tenth-frame branches. The frame loop, collection or write identify the emission sites. Keeping every branch is a larger alternative needed only if rewriting the scoring calculation. The prior selection used 188 tokens; this selection uses 38 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 541; Task B 39.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 539; Task B 38.
 
-Measurement: Task A 541; Task B 39. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 539; Task B 38. Tokenizer: metric/tokenizer.py, unchanged.

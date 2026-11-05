@@ -4,6 +4,6 @@ The byte array, loop width and remaining-byte calculation identify the partial f
 
 The selected lines are verbatim and in source order. The excerpt uses the task assumptions and the documented semantics of the imported APIs.
 
-Task A: 333 tokens. Task B: 135 tokens.
+Task A: 331 tokens. Task B: 133 tokens.
 
-Measurement: Task A 333; Task B 135. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 331; Task B 133. Tokenizer: metric/tokenizer.py, unchanged.

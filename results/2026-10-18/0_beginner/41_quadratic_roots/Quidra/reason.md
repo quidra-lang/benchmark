@@ -8,6 +8,6 @@ The tuple is supplied by the question, so the other coefficient sets and unrelat
 
 The swap moves the greater value into the first output argument after both roots have been evaluated.
 
-Source: `main.qui`, original lines 1, 5–7, 9–15. The previous excerpt measures 191 tokens; this evidence set measures 174 tokens.
+Source: `main.qui`, original lines 1, 5–7, 9–15. The previous excerpt measures 191 tokens; this evidence set measures 170 tokens.
 
-Measurement: Task A 457; Task B 174. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 447; Task B 170. Tokenizer: metric/tokenizer.py, unchanged.

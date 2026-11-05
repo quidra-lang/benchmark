@@ -14,4 +14,4 @@ The excerpt is copied verbatim from `main.qui`, in source order. Retained source
 
 Changing the decoded producer/group is sufficient. Retain the parser binding or concrete key/value decode and insertion operands where the filter belongs; neither percent-decoding internals nor the unchanged display are needed to implement the filter. The prior selection used 29 tokens; this selection uses 25 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
 
-Measurement: Task A 256; Task B 25. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 255; Task B 25. Tokenizer: metric/tokenizer.py, unchanged.

@@ -21,10 +21,10 @@ Locations in main source: L4, L5, L8, L9, L10, L11, L12, L13, L14, L15, L16.
 
 All selected lines are complete, verbatim and in source order. The selected source, the question, and documented language/library semantics support the answer. The full source is a sufficient alternative but includes the unrelated material identified above; the retained selection is a reviewed lower-token sufficient candidate, without a claim of exhaustive global minimality.
 
-Measurement: Task A 382; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
+Measurement: Task A 381; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. These counts and source selections do not establish compilation or execution of Task A.
 
 Current validation: this source passes the current Core type checker. Native execution of this revision has not been rechecked.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 382; Task B 175.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 381; Task B 175.

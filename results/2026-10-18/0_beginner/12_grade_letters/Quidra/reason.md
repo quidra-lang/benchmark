@@ -16,6 +16,6 @@ All selected lines are complete, verbatim and in source order. The source eviden
 
 Alternative considered: the contiguous span between the first and last selected line and the full source. Those contain additional context, but do not reduce token cost. The selection is a reviewed sufficient candidate; exhaustive mathematical global minimality is not claimed.
 
-Measurement: Task A 222; Task B 118. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
+Measurement: Task A 221; Task B 118. Tokenizer: metric/tokenizer.py, unchanged. Neither these lexical checks nor this selection establish execution/compilation of Task A.
 
 The untyped grade-index conditional has only integer-literal branches, so it retains the default int type.

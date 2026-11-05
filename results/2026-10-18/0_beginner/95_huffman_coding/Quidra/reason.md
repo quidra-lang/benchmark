@@ -7,6 +7,6 @@ per-symbol code lengths, or output order, so the corresponding statements
 are outside the necessary evidence.
 
 Selected complete lines in order are 15, 16.
-Task A uses 601 tokens. Task B uses 52 tokens.
+Task A uses 599 tokens. Task B uses 52 tokens.
 
-Measurement: Task A 601; Task B 52. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 599; Task B 52. Tokenizer: metric/tokenizer.py, unchanged.
