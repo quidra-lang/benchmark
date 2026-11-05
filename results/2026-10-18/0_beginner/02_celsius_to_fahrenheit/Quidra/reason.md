@@ -7,7 +7,7 @@
 
 ## Implementation decision
 
-The recorded implementation uses exact real arithmetic. Its explicit real(celsius) conversion selects that arithmetic before multiplication. With current develop numeric rules, 9.0 can also default to real and a numeric operator converts integer operands to the common real type; a unique explicit literal context is no longer required. Exact real is permitted by Task A, which does not mandate IEEE-754. The formula and its order are unchanged; every integer Celsius input produces an exact tenth, so one-decimal formatting satisfies the half-up output requirement without a tie. Unlike topic 03, this topic has no double-precision contract.
+The expression `celsius * 1.8 + 32` uses exact `real` arithmetic. The literal `1.8` equals nine fifths, and the mixed numeric operations convert the integers to `real`. Every Celsius input in the task gives an exact tenth, so one-decimal formatting satisfies the half-up output requirement without a tie.
 
 ## Evidence and answer
 
@@ -17,6 +17,4 @@ The collection header identifies the current Celsius value and the insertion poi
 
 Selected complete main.qui lines: 2. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 106 → 95; Task B 11 → 9. Token or verbatim checks alone do not establish compilation or correctness.
-
-Measurement: Task A 95; Task B 9. Tokenizer: metric/tokenizer.py, unchanged.
+The source-code tokenizer `metric/tokenizer.py` counts 84 tokens for Task A and 9 for Task B.
