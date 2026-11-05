@@ -4,7 +4,8 @@
 Usage: python3 tokenizer.py [--html PATH] FILE [FILE ...]
 Writes a single integer per input to stdout and creates token.html in the
 current directory by default. Use --html to choose a different output path.
-The lexical rules are independent of file extension.
+The lexical rules are independent of file extension. The attached loop
+declaration keyword for: counts as one token, like the operator :=.
 """
 from __future__ import annotations
 
@@ -335,6 +336,12 @@ def tokenize(source: str) -> list[Token]:
                 emit("operator", r_op.end())
                 continue
 
+        # Quidra's attached loop-declaration keyword is a lexical atom.
+        # Apply this rule in every language, including inside literals.
+        if i + 4 <= token_limit and source.startswith("for:", i):
+            emit("operator_word", i + 4)
+            continue
+
         # J primitive words with dot/colon remain lexical atoms, while
         # for_i. is decomposed through the generic identifier path below.
         matched = False
@@ -514,3 +521,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
