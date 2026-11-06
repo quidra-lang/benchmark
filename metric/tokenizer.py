@@ -47,8 +47,8 @@ _BROADCAST_OPS = {
     )
 }
 _ZIG_OPS = {"+%", "-%", "*%", "+|", "-|", "*|", "+%=", "-%=", "*%=", "+|=", "-|=", "*|="}
-# Treat a contiguous empty bracket pair as one source-code token.
-OPERATORS = frozenset(_COMMON_OPERATORS) | _J_SYMBOL_OPERATORS | _BROADCAST_OPS | _ZIG_OPS | {"[]"}
+# Count contiguous empty square brackets and parentheses as single tokens.
+OPERATORS = frozenset(_COMMON_OPERATORS) | _J_SYMBOL_OPERATORS | _BROADCAST_OPS | _ZIG_OPS | {"[]", "()"}
 # Only punctuation operators need longest-match; ordinary single characters
 # are accepted as one token even if unknown (including Unicode symbols).
 SORTED_OPERATORS = tuple(sorted({s for s in OPERATORS if len(s) > 1}, key=lambda x: (-len(x), x)))
