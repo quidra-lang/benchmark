@@ -13,12 +13,14 @@ Preserve the rules for zero, prefixes and leading zeros. All other Task A requir
 
 ## Evidence and answer
 
-The only hexadecimal formatting site is the hex={value:base=16,upper} interpolation in the output statement. Remove only the upper option from that field to select lowercase a-f while preserving decimal value, binary and octal fields, base=16, labels, line order, zero and leading-zero rules. These format semantics are guaranteed by Core; the library/formatter implementation is not needed.
+The only hexadecimal rendering site is `hex={n.B16}` in the output statement. Change only that member from `B16` to `b16` to select lowercase a-f. Both members return a base-16 string with the same negative-sign, zero, prefix and leading-zero rules; only letter case differs. The selected output line also shows that the decimal value, binary and octal representations, labels and output structure need no change. The loop and its order need no change. These semantics are guaranteed by Core, so no conversion implementation is needed.
 
 ## Minimality and language guarantees
 
-Selected main.qui lines: 3. The selection copies complete source lines verbatim in source order. It retains the data, calls, control flow and ordering keys needed by this question; the unselected source (such as output detail or unrelated computation) does not add a required fact. Core and first-party package functions, native collections, and stable keyed sorting are treated as specified contracts, not as user-defined functions needing implementation inspection. The source-only excerpt contains 43 tokens, against 89 for the full program, using metric/tokenizer.py. Individual lines and possible alternative evidence sets were compared to retain only dependencies for this question; this is not a formal proof of global minimality or a claim of compilation/testing.
+Select only main.qui line 2, copied verbatim with its original indentation. The statement establishes the hexadecimal member and every other output field needed to delimit the requested change. The array and loop header do not affect how to change hexadecimal letter case and are unnecessary evidence. No other source line identifies the conversion, so omitting this line would lose the required evidence; adding the header would only increase the token count.
 
-Core develop: 33b7b6a23a79; Quidra 0.6.0.
+The excerpt contains 34 tokens, against 74 for the full program, using metric/tokenizer.py unchanged. This is a source review and token measurement, not a claim of compilation or execution.
 
-Measurement: Task A 89; Task B 43. Tokenizer: metric/tokenizer.py, unchanged.
+Core develop: 013dd3012769; Quidra 0.6.0.
+
+Measurement: Task A 74; Task B 34. Tokenizer: metric/tokenizer.py, unchanged.
