@@ -8,7 +8,7 @@ Change the existing frame-order cumulative output into individual frame scores, 
 
 Each cumulative value represents the completed frames through that position. Emit the difference from the preceding total, using zero for frame one. This retains bonuses in the frame to which the current calculation already credits them. Subtracting the ninth total from the tenth leaves only the tenth frame contribution. Use the existing write or collection sites, including any separate tenth-frame append. Where a complete frame-local score already exists, emit that score directly. Initialize the previous total to zero at the selected per-game label; after each frame print the difference and save the current total.
 
-The excerpt is copied verbatim from `main.qui`, in source order. Retained source lines: 13, 14, 26. Additional evidence is on line 13: `print("game {game + 1}:")`.
+The excerpt is copied verbatim from `main.qui`, in source order. Retained source lines: 11, 12, 24. Additional evidence is on line 11: `print("game {game + 1}:")`.
 
 ## Minimization and alternatives
 
@@ -16,6 +16,6 @@ Adjacent differences preserve the current scoring calculation and avoid changing
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 539; Task B 38.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 534; Task B 38.
 
-Measurement: Task A 539; Task B 38. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 534; Task B 38. Tokenizer: metric/tokenizer.py, unchanged.

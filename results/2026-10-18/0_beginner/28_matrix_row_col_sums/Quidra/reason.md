@@ -10,6 +10,6 @@ The row sum is emitted at the end of each original row. The columns array starts
 
 ## Minimization
 
-The existing row-element print statements are unchanged. The column field statement is needed because its value now represents a maximum, and the final width-six field is emitted separately. Selected complete lines of `main.qui`: 1, 4, 5, 6, 9, 10, 11, 12.
+The existing row-element print statements are unchanged. The column field statement is needed because its value now represents a maximum, and the final width-six field is emitted separately. Selected complete lines of `main.qui`: 2, 3, 4, 7, 8, 9, 10.
 
-Measurement: Task A 233; Task B 99. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 228; Task B 95. Tokenizer: metric/tokenizer.py, unchanged.

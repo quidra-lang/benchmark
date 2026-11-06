@@ -11,12 +11,12 @@ Use a natural index directly against the natural length returned by len. The ind
 
 ## Evidence and answer
 
-The range start and inclusive slice endpoints identify the two width-dependent sites: start at index four and extend the lower slice offset to four for a five-day window. math.mean supplies real division for the integer slice. import math binds this extension. The unchanged sales literal and output formatter supply no additional modification site.
+The range start and inclusive slice endpoints identify the two width-dependent sites: start at index four and extend the lower slice offset to four for a five-day window. The Core `mean()` method supplies exact real division for the integer slice. The unchanged sales literal and output formatter supply no additional modification site.
 
 ## Selection and minimization
 
-Selected complete main.qui lines: 1, 4, 5. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
+Selected complete main.qui lines: 2, 3. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
 
-Using unchanged metric/tokenizer.py: Task A 129 → 115; Task B 45 → 38. Token or verbatim checks alone do not establish compilation or correctness.
+Using unchanged metric/tokenizer.py: Task A 115 → 110; Task B 38 → 34. Token or verbatim checks alone do not establish compilation or correctness.
 
-Measurement: Task A 115; Task B 38. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 110; Task B 34. Tokenizer: metric/tokenizer.py, unchanged.

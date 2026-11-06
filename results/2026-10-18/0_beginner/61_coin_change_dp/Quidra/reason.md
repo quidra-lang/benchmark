@@ -12,16 +12,16 @@ Keep ways[0]=1 and zero positive entries. Make increasing positive amount the ou
 
 The allocation, zero-amount seed, coin-outer header, bounded amount-inner header and update are precisely the affected state and recurrence. Literal denominations, target initialization, maximum derivation, minimum DP, greedy loop and output remain unchanged for this modification and add no necessary source evidence. Recomputing tables separately per target was considered; one maximum-sized table has identical prefix results and eliminates repeated work.
 
-Selected complete main.qui source lines: 10, 11, 12, 13, 14. Every selected line is copied verbatim, exactly once per source location, in source order. The excerpt need not compile independently. A separate excerpt-only review checked every answer requirement using only the excerpt, the question, and documented language/package semantics. The full source and the previous implementation/excerpt were considered; unrelated source was excluded as described above. This is a reviewed necessary-and-sufficient candidate among the alternatives considered, without a claim of exhaustive global mathematical minimality.
+Selected complete main.qui source lines: 8, 9, 10, 11, 12. Every selected line is copied verbatim, exactly once per source location, in source order. The excerpt need not compile independently. A separate excerpt-only review checked every answer requirement using only the excerpt, the question, and documented language/package semantics. The full source and the previous implementation/excerpt were considered; unrelated source was excluded as described above. This is a reviewed necessary-and-sufficient candidate among the alternatives considered, without a claim of exhaustive global mathematical minimality.
 
 ## Measurement and validation
 
-Using unchanged metric/tokenizer.py (SHA-256 3a2649e33a55f135c2fe88568f50c5d81e81a5fe01f9c7af22bba8da55b1d941): Task A 317 tokens; Task B 72 tokens. Original values: Task A 343; Task B 77. Task B proposed modifications have not been implemented. Lexical counts or excerpt review do not by themselves establish compilation or correctness.
+Using unchanged metric/tokenizer.py (SHA-256 3a2649e33a55f135c2fe88568f50c5d81e81a5fe01f9c7af22bba8da55b1d941): Task A 312 tokens; Task B 72 tokens. Original values: Task A 343; Task B 77. Task B proposed modifications have not been implemented. Lexical counts or excerpt review do not by themselves establish compilation or correctness.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 317; Task B 72.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 312; Task B 72.
 
-Measurement: Task A 317; Task B 72. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 312; Task B 72. Tokenizer: metric/tokenizer.py, unchanged.
 
 The amount ranges inherit int from maximum and coin; removing the repeated range type preserves both table recurrences.
