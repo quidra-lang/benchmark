@@ -1,4 +1,4 @@
-# Task B selection: 16_collatz_steps / Quidra
+# Task B selection for 16_collatz_steps in Quidra
 
 ## Common answer requirements
 
@@ -6,22 +6,12 @@
 2. Trace start 6, deriving its operation count and maximum.
 3. Identify how the starting value enters the maximum before operations are counted.
 
-## Implementation decision
-
-Task A remains unchanged. Minimize both language excerpts by omitting the input list and its outer loop; keep every state initialization and transition needed by the trace.
-
 ## Evidence and answer
 
-The selected `n := start` binds the question-supplied starting value to the evolving integer; steps starts at zero and largest starts at n before the while guard. Thus start one executes no body and keeps maximum one. For six the selected transition produces 3,10,5,16,8,4,2,1: eight operations and maximum sixteen. The step increment and largest update show their distinct timing. The question supplies both scalar starting values; the other literal starts and their collection traversal add no needed recurrence or initialization fact. The Python tuple initializer supports the same boundary.
+The declaration `n, steps, largest := start, 0, start` initializes `n` and `largest` from `start` and sets `steps` to zero before the loop. For start 1, the guard immediately fails, leaving zero operations and a maximum of 1. For start 6, the updates produce 3, 10, 5, 16, 8, 4, 2, and 1. The step increment counts eight operations, and the maximum update records 16.
 
 ## Selection and minimization
 
-Selected complete main.qui lines: 3, 4, 5, 6, 7, 8, 9, 10. Every selected line is copied verbatim, once per source location and in source order. The excerpt is not required to compile independently. The stated Task B assumptions, language guarantees and documented first-party library semantics apply. The full source or contiguous context span is a larger alternative; unchanged unrelated input, processing and formatting are omitted when they supply no answer requirement. This is a reviewed minimum among the identified alternatives, not a proof of a global mathematical optimum.
+The excerpt copies lines 2–7 of `main.qui`. It keeps the initialization, stopping condition, recurrence, and updates for both reported values. The question supplies the two starts, so the input traversal and the final display are omitted.
 
-Using unchanged metric/tokenizer.py on the current source: Task A 150; Task B 95. These are source-code token counts.
-
-The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
-
-Current measurement with unchanged `metric/tokenizer.py`: Task A 150; Task B 95.
-
-Measurement: Task A 150; Task B 95. Tokenizer: metric/tokenizer.py, unchanged.
+`metric/tokenizer.py` reports 142 source tokens for Task A and 93 for Task B.
