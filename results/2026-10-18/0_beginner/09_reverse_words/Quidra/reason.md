@@ -11,15 +11,15 @@ Character reversal yields `enil elgnis a htiw strats margorp yreve`: the last wo
 
 ## Source evidence and dependencies
 
-Selected `main.qui` lines: 1, 2. The excerpt preserves these complete lines in their original order and indentation.
+The excerpt contains lines 1–3 of `main.qui` verbatim and in source order.
 
-The sentence literal is required for the exact characters and final word. The first operation reverses characters or bytes; the second tokenizes words and reverses their order, or scans/inserts them backward. Joining/separator state establishes the distinct treatment of spaces. Explicit stream writes also retain the newline sites separating the two results.
+Line 1 supplies the sentence and its final word. Line 2 reverses the string with `[::-1]`, moving its characters and spaces together. Line 3 uses `.split(" ")` to separate words, `[::-1]` to reverse their order, and `.join(" ")` to put one ASCII space between adjacent words. Each `println` ends its result with a newline.
 
 ## Language semantics and minimization
 
-Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Neither reversal operation alone answers the comparison. Omitting the literal loses the exact resulting prefixes. The selected data and both transformations are smaller than complete wrapper/import/flush code and avoid reproducing standard split/reverse/join implementations.
+All three lines are needed. Omitting the literal loses the concrete input and its final word. Omitting either `println` loses the operations that establish that result's prefix and treatment of spaces. The documented slice, split, join, and `println` semantics supply the remaining behavior.
 
-The selected excerpt contains **58 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 58 tokens; the complete source contains 58 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+The complete Task A source and the Task B excerpt each contain **53 tokens** under `metric/tokenizer.py`.
 
 ## Quidra develop re-evaluation (2026-11-01)
 
@@ -48,5 +48,3 @@ valid in-order occurrence was used. Unrelated lines were excluded.
 Tokenizer: Task A 58 tokens; Task B 58 tokens.
 This uses the prior semantic rationale as a constraint; its automated
 line checks do not prove globally minimal evidence or compilation.
-
-Measurement: Task A 58; Task B 58. Tokenizer: metric/tokenizer.py, unchanged.
