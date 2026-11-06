@@ -1,21 +1,9 @@
-# Task B selection: 13_diamond_pattern / Quidra
+# Task B selection for 13_diamond_pattern in Quidra
 
-## Answer requirements
+The loop visits the inclusive range `1:n`, followed by the descending range `n>:1`. The latter excludes `n`, so the widest row appears only once.
 
-Explain the transition from expansion to contraction and derive the spaces and stars on lines five and six of the size-five diamond.
+With the given size of five, line five uses `i = 5`. Repeating a space `n - i` times gives zero spaces, and repeating `*` `2 * i - 1` times gives nine asterisks. Line six uses `i = 4`, giving one space and seven asterisks.
 
-## Evidence and answer
+Lines 2 and 3 of `main.qui` give the iteration order and the two repetition counts. Both are needed. The size declaration repeats a fact supplied in the question.
 
-The loop begins at row 1. The conditional uses i=row through n and i=2*n-row thereafter. string.repeat uses the nonnegative counts n-i and 2*i-1, then println emits one row.
-
-With n=5 from the question, these lines use i=5 and i=4, giving 0 spaces and 9 asterisks, then 1 space and 7 asterisks. The separately declared n=5 repeats the given size. The traversal and row construction still establish the transition and one widest row.
-
-## Minimization
-
-Selected complete lines of `main.qui`: 2, 3, 4. The excerpt preserves their text, indentation and order.
-
-Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 97 tokens; the selected excerpt contains **87 tokens** using `metric/tokenizer.py`.
-
-Measurement: Task A 95; Task B 87. Tokenizer: metric/tokenizer.py, unchanged.
-
-The upper bound uses the explicitly natural n, so the range variable remains nat without repeating its type.
+The source contains 64 tokens for Task A and the excerpt contains 58 tokens for Task B.
