@@ -4,6 +4,6 @@ The second input has two runs of twelve W characters separated by one B. The doc
 
 Selected complete source lines in order are 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 19, 20, 21, 22.
 
-Tokenizer: Task A 211 tokens; Task B 184 tokens.
+Tokenizer: Task A 207 tokens; Task B 180 tokens.
 
-Measurement: Task A 211; Task B 184. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 207; Task B 180. Tokenizer: metric/tokenizer.py, unchanged.

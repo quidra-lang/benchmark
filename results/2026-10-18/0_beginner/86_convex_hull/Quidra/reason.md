@@ -4,10 +4,10 @@ Ascending x then y starts the lower scan at (-6,-2), (-6,1), (-6,3); the third p
 
 Selected complete source lines: 1, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 19, 20, 21, 22, 23.
 
-With the benchmark tokenizer, this selection measures 407 tokens; the previous selection measured 409. The full source is 573 tokens.
+With the benchmark tokenizer, this selection measures 395 tokens; the previous selection measured 409. The full source is 561 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 573; Task B 407.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 561; Task B 395.
 
-Measurement: Task A 573; Task B 407. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 561; Task B 395. Tokenizer: metric/tokenizer.py, unchanged.

@@ -14,6 +14,6 @@ The first polygon establishes the second polygon’s ordinal position. Neither t
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 386; Task B 292.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 384; Task B 290.
 
-Measurement: Task A 386; Task B 292. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 384; Task B 290. Tokenizer: metric/tokenizer.py, unchanged.

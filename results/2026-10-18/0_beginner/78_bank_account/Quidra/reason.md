@@ -4,6 +4,6 @@ The selected transactions establish Emma at 2000 and Nina at 7000 before the two
 
 Selected complete lines in order are 1, 3, 4, 5, 6, 8, 10, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30.
 
-Task A uses 463 tokens. Task B uses 297 tokens.
+Task A uses 457 tokens. Task B uses 291 tokens.
 
-Measurement: Task A 463; Task B 297. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 457; Task B 291. Tokenizer: metric/tokenizer.py, unchanged.

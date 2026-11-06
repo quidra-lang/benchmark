@@ -1,11 +1,9 @@
-# Task B selection for 05_digit_sum_reverse
+# Task B selection — 05_digit_sum_reverse / Quidra
 
-For 98000, the decimal text has length 5. The selected comprehension maps every ASCII digit code point to its numeric value by subtracting 48, so zeros count toward length and add zero to the sum of 17. Reversing the text and parsing 00089 as an integer gives 89. The output line shows the three labels and the question supplies the input number, so the input list and outer loop are unnecessary.
+For 98000, `digits()` yields `[9, 8, 0, 0, 0]`. The three zeros are included in the length of 5 and contribute zero to the sum of 17. Reversing the decimal text yields `00089`, and integer parsing gives 89. The complete line is `98000: digits=5 sum=17 reversed=89`.
 
-Selected complete lines in order are 1, 5, 6, 7, 8.
+The Math import and lines 5–7 of `main.qui` supply the digit decomposition, reversal, and output fields. The question gives the input value, so the fixture and loop header supply no additional evidence.
 
-Task A uses 154 tokens. Task B uses 96 tokens.
+The digit-decomposition API is specified for Math `develop`. Implementation is pending.
 
-Measurement: Task A 154; Task B 96. Tokenizer: metric/tokenizer.py, unchanged.
-
-The numeric string conversion gives string, whose codepoints() result is int[]. The comprehension therefore infers an int element binding, and the unchanged subtraction and sum use exact integers.
+Measurement: Task A 129; Task B 71. Tokenizer: metric/tokenizer.py, unchanged.

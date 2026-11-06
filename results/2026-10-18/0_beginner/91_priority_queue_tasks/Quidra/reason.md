@@ -4,6 +4,6 @@ The queue key is numeric and the task name is its value. Pass a strict ascending
 
 Selected complete source lines: 1, 8, 12, 14, 15, 17, 18, 19.
 
-With the benchmark tokenizer, this selection measures 121 tokens; the previous selection measured 118. The full source is 321 tokens.
+With the benchmark tokenizer, this selection measures 117 tokens; the previous selection measured 118. The full source is 317 tokens.
 
-Measurement: Task A 321; Task B 121. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 317; Task B 117. Tokenizer: metric/tokenizer.py, unchanged.
