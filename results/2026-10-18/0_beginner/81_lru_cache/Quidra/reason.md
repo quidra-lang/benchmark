@@ -4,10 +4,10 @@ The full-miss test is the only fixed capacity; change the length comparison to f
 
 Selected complete source lines: 15.
 
-With the benchmark tokenizer, this selection measures 13 tokens; the previous selection measured 60. The full source is 192 tokens.
+With the benchmark tokenizer, this selection measures 14 tokens; the previous selection measured 60. The full source is 193 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 192; Task B 13.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 193; Task B 14.
 
-Measurement: Task A 192; Task B 13. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 193; Task B 14. Tokenizer: metric/tokenizer.py, unchanged.

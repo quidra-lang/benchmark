@@ -12,10 +12,10 @@ The excerpt is copied verbatim from `main.qui`, in source order. Retained source
 
 ## Minimization and alternatives
 
-The recursive calls, count increment and trace are a smaller alternative to retaining the entire merge routine. Sorted-array copying and final summary formatting do not affect the count shown on trace lines. The prior selection used 182 tokens; this selection uses 176 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+The recursive calls, count increment and trace are a smaller alternative to retaining the entire merge routine. Sorted-array copying and final summary formatting do not affect the count shown on trace lines. The prior selection used 182 tokens; this selection uses 177 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 447; Task B 176.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 450; Task B 177.
 
-Measurement: Task A 447; Task B 176. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 450; Task B 177. Tokenizer: metric/tokenizer.py, unchanged.

@@ -4,6 +4,6 @@ The input array shows all three occurrences of 12. Collections unique keeps the 
 
 Selected complete lines in order are 2, 4, 5, 6.
 
-Task A uses 119 tokens. Task B uses 86 tokens.
+Task A uses 121 tokens. Task B uses 88 tokens.
 
-Measurement: Task A 119; Task B 86. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 121; Task B 88. Tokenizer: metric/tokenizer.py, unchanged.

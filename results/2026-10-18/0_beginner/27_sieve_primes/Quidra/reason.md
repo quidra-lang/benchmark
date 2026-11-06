@@ -4,6 +4,6 @@ The boolean flags start true. Marking by p from 2p never targets 7 from p=7, and
 
 Complete main.qui lines: 1, 4, 7, 8, 9, 10, 12, 13, 14, 16, 17, 18. The explicit text namespace identifies join. The collections import is needed for the chunks extension. The empty declaration supplies no distinct fact about the final list membership for 7 and 49. The benchmark tokenizer counts 152 tokens in this excerpt.
 
-Measurement: Task A 199; Task B 152. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 200; Task B 152. Tokenizer: metric/tokenizer.py, unchanged.
 
 The marking range inherits int from p and its integer bounds; omitting the repeated range type preserves the marked multiples.

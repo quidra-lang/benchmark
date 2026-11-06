@@ -4,10 +4,10 @@ The selected input lines identify expressions 2 and 3. Token recognition accepts
 
 Selected complete source lines: 1, 3, 5, 6, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 33, 34, 35, 36, 37, 38.
 
-With the benchmark tokenizer, this selection measures 326 tokens; the previous selection measured 330. The full source is 572 tokens.
+With the benchmark tokenizer, this selection measures 326 tokens; the previous selection measured 330. The full source is 573 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 572; Task B 326.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 573; Task B 326.
 
-Measurement: Task A 572; Task B 326. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 573; Task B 326. Tokenizer: metric/tokenizer.py, unchanged.

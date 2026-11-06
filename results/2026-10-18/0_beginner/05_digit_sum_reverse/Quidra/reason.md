@@ -6,4 +6,4 @@ The Math import and lines 5–7 of `main.qui` supply the digit decomposition, re
 
 The digit-decomposition API is specified for Math `develop`. Implementation is pending.
 
-Measurement: Task A 129; Task B 71. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 127; Task B 69. Tokenizer: metric/tokenizer.py, unchanged.

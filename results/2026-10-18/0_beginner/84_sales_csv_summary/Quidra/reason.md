@@ -4,10 +4,10 @@ The retained north rows contribute 10×200, 8×150 and 20×80, totaling 4,800. T
 
 Selected complete source lines: 1, 3, 5, 9, 10, 13, 15, 18, 19, 22, 23, 24, 25, 26, 28, 29, 32, 34.
 
-With the benchmark tokenizer, this selection measures 310 tokens; the previous selection measured 326. The full source is 625 tokens.
+With the benchmark tokenizer, this selection measures 306 tokens; the previous selection measured 326. The full source is 621 tokens.
 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
-Current measurement with unchanged `metric/tokenizer.py`: Task A 625; Task B 310.
+Current measurement with unchanged `metric/tokenizer.py`: Task A 621; Task B 306.
 
-Measurement: Task A 625; Task B 310. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 621; Task B 306. Tokenizer: metric/tokenizer.py, unchanged.

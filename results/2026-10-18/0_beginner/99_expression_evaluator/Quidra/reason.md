@@ -14,4 +14,4 @@ Selected complete lines of `main.qui`: L5, L25, L31, L37. The division operation
 
 The selected excerpt measures **83 tokens** with `metric/tokenizer.py`.
 
-Measurement: Task A 987; Task B 83. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 988; Task B 83. Tokenizer: metric/tokenizer.py, unchanged.

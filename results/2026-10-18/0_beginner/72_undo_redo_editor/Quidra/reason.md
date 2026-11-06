@@ -6,8 +6,8 @@ The selected command prefix and stack initialization establish the starting stat
 
 Selected complete source lines in order are 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32. The excerpt uses documented library semantics and the Task B assumptions.
 
-Task A uses 414 tokens. Task B uses 355 tokens.
+Task A uses 415 tokens. Task B uses 356 tokens.
 
-Measurement: Task A 414; Task B 355. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 415; Task B 356. Tokenizer: metric/tokenizer.py, unchanged.
 
-int.parse returns int | error. The inferred count binding retains int and fails fast on error at the same initialization site as the former explicit success-only binding.
+`int(text)` returns `int | error` when `text` is a string. The inferred count binding retains int and fails fast on error at the same initialization site as the former explicit success-only binding.

@@ -4,8 +4,8 @@ The output interpolation is the only site that changes. Change the fractional pr
 
 Selected complete lines in order are 30.
 
-Task A uses 550 tokens. Task B uses 20 tokens.
+Task A uses 551 tokens. Task B uses 20 tokens.
 
-Measurement: Task A 550; Task B 20. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 551; Task B 20. Tokenizer: metric/tokenizer.py, unchanged.
 
 The elimination ranges inherit int from n and the preceding range variables; the omitted types do not change pivoting, arithmetic or output.
