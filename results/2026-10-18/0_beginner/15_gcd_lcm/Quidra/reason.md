@@ -12,8 +12,8 @@ The (a,b) states are (48,180) → (180,48) → (48,36) → (36,12) → (12,0), w
 
 ## Minimization
 
-Selected complete lines of `main.qui`: 1, 2, 3, 4, 8, 9. The excerpt preserves their text, indentation and order.
+Selected complete lines of `main.qui`: 1, 2, 3, 4, 7, 8. The excerpt preserves their text, indentation and order.
 
 Adding the input collection or outer iteration repeats the pair from the question and adds other cases. Removing the helper body would lose the actual remainder sequence and stopping rule; the helper’s name alone does not establish them. The previous excerpt contained 166 tokens; the selected excerpt contains **80 tokens** using `metric/tokenizer.py`.
 
-Measurement: Task A 210; Task B 80. Tokenizer: metric/tokenizer.py, unchanged.
+Measurement: Task A 196; Task B 80. Tokenizer: metric/tokenizer.py, unchanged.
