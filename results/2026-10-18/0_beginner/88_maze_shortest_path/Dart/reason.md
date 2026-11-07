@@ -5,3 +5,7 @@ The discovery guard writes a predecessor only for a cell that has no recorded pa
 The retained candidate index uses the same flattened representation as the predecessor lookup. The omitted direction, bounds and coordinate-construction statements only determine how candidates are generated before their first-discovery guard. Including them as in the previous selection would cost 501 tokens instead of 360.
 
 Selected complete source lines: 14, 15, 16, 17, 18, 20, 21, 22, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41.
+
+## Current token measurement
+
+Task A: **652 tokens**. Task B: **359 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

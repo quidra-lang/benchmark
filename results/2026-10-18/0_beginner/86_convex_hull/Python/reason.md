@@ -81,3 +81,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L30: 351 tokens; removes `return result` from the dependency chain described above.
 - Without L33: 347 tokens; removes `ordered = sorted(points)` from the dependency chain described above.
 - Without L34: 329 tokens; removes `hull = chain(ordered)[:-1] + chain(reversed(ordered))[:-1]` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **504 tokens**. Task B: **355 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

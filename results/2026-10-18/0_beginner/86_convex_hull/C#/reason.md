@@ -5,3 +5,7 @@ Ascending x then y starts the lower scan at (-6,-2), (-6,1), (-6,3); the third p
 Selected complete source lines: 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 29, 30, 31, 32, 33, 34, 35, 36, 37.
 
 With the benchmark tokenizer, this selection measures 538 tokens; the previous selection measured 540. The full source is 766 tokens.
+
+## Current token measurement
+
+Task A: **762 tokens**. Task B: **534 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

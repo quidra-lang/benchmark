@@ -13,3 +13,7 @@ The selected row and column axes connect each element to the current row and col
 Selected complete lines of `main.kt`: L8, L9, L10, L11, L12, L13, L14. The original loop boundaries establish which updates happen per element, which occur once per row and which produce the final summary line. The sample matrix and the unchanged printing of original row elements are not needed to locate the changed fields.
 
 The selected excerpt measures **158 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **297 tokens**. Task B: **152 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

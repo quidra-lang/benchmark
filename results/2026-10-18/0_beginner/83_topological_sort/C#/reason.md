@@ -5,3 +5,7 @@ Keep the ordinal sort of names: the cycle filter walks that same ascending array
 Selected complete source lines: 7, 8, 21, 33.
 
 With the benchmark tokenizer, this selection measures 114 tokens; the previous selection measured 98. The full source is 839 tokens.
+
+## Current token measurement
+
+Task A: **837 tokens**. Task B: **113 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

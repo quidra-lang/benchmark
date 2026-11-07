@@ -81,3 +81,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L40: 505 tokens; removes `}` from the dependency chain described above.
 - Without L41: 498 tokens; removes `parent[a] = b` from the dependency chain described above.
 - Without L42: 504 tokens; removes `accepted++` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **657 tokens**. Task B: **509 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -5,3 +5,7 @@ The full-miss test is the only hard-coded capacity. Change the length comparison
 Selected complete source lines: 11.
 
 With the benchmark tokenizer, this selection measures 14 tokens; the previous selection measured 70. The full source is 252 tokens.
+
+## Current token measurement
+
+Task A: **251 tokens**. Task B: **14 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

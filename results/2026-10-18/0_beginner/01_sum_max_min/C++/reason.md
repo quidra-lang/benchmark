@@ -15,3 +15,7 @@ The prefix before −23 sums to 56; adding −23 gives 33, and the complete sum 
 Selected complete lines of `main.cpp`: 7, 8, 9. The excerpt preserves their text, indentation and order.
 
 The longer alternative containing the output statements or formatter implementation adds presentation details but no new information about either reduction. The previous excerpt contained 165 tokens; the selected excerpt contains **121 tokens** using `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **199 tokens**. Task B: **117 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

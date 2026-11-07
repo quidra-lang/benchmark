@@ -26,3 +26,7 @@ Measurement: Task A 380; Task B 175. Tokenizer: metric/tokenizer.py, unchanged. 
 The `:=` bindings infer their static types from their initializers under the current Core literal defaults.
 
 Current measurement with unchanged `metric/tokenizer.py`: Task A 380; Task B 175.
+
+## Current token measurement
+
+Task A: **361 tokens**. Task B: **175 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

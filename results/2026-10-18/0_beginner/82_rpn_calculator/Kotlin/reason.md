@@ -5,3 +5,7 @@ The selected input lines identify expressions 2 and 3. Token recognition accepts
 Selected complete source lines: 2, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25, 26, 27.
 
 With the benchmark tokenizer, this selection measures 333 tokens; the previous selection measured 370. The full source is 609 tokens.
+
+## Current token measurement
+
+Task A: **602 tokens**. Task B: **329 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -11,3 +11,7 @@ The dictionary-values loop visits groups in insertion order and unpacking prints
 ## Minimization
 
 The loop header is needed to show the filter applies once per group and preserves the order in which groups are visited. The unchanged signature and grouping computations are outside the change. Selected complete lines of `main.py`: 19, 20.
+
+## Current token measurement
+
+Task A: **147 tokens**. Task B: **19 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

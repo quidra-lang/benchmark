@@ -27,3 +27,7 @@ Complete lines remain verbatim and in original order, without repeating source l
 Measured deletion alternatives identify the removed source dependency or boundary:
 
 - Without L36: 0 tokens; removes `std::cout << 'x' << i + 1 << " = " << std::fixed << std::setprecision(4) << x[i] << '\n';` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **827 tokens**. Task B: **59 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

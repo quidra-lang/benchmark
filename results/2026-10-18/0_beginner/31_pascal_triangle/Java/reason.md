@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L11: 180 tokens (versus 208); removes `next[k] = row[k - 1] + row[k];`.
 - Without L12: 203 tokens (versus 208); removes `}`.
 - Without L13: 198 tokens (versus 208); removes `row = next;`.
+
+## Current token measurement
+
+Task A: **251 tokens**. Task B: **207 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

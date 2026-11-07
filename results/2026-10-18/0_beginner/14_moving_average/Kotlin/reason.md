@@ -23,3 +23,7 @@ Independent minimization removed unchanged output line(s) 7: the bound/window/di
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Changing only the denominator would still sum three days, and changing only the slice could access missing preceding days. The selected bounds/window/division sites therefore form the necessary dependency set. A generic mean implementation or unrelated input declaration is a larger alternative with no additional required edit.
 
 The selected excerpt contains **62 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 62 tokens; the complete source contains 177 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **176 tokens**. Task B: **62 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

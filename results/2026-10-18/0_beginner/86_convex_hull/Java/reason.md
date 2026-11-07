@@ -73,3 +73,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L32: 572 tokens; removes `lower.removeLast();` from the dependency chain described above.
 - Without L33: 572 tokens; removes `upper.removeLast();` from the dependency chain described above.
 - Without L34: 571 tokens; removes `lower.addAll(upper);` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **865 tokens**. Task B: **566 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

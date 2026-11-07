@@ -5,3 +5,7 @@ Weights are examined in ascending order, with each vertex initially its own root
 Selected complete source lines: 4, 5, 6, 7, 9, 10, 11, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 39, 41.
 
 With the benchmark tokenizer, this selection measures 432 tokens; the previous selection measured 484. The full source is 551 tokens.
+
+## Current token measurement
+
+Task A: **550 tokens**. Task B: **432 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

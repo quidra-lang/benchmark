@@ -117,3 +117,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L85: 862 tokens; removes `try out.writeAll("preorder after deletions:");` from the dependency chain described above.
 - Without L86: 862 tokens; removes `try traverse(out, &nodes, root, 1);` from the dependency chain described above.
 - Without L87: 843 tokens; removes `try out.print("\nheight after deletions: {d}\n", .{height(&nodes, root)});` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1472 tokens**. Task B: **881 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

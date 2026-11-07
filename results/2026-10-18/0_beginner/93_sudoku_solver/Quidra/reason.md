@@ -19,3 +19,7 @@ The `:=` bindings infer their static types from their initializers under the cur
 Current measurement with unchanged `metric/tokenizer.py`: Task A 601; Task B 13.
 
 Measurement: Task A 601; Task B 13. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **600 tokens**. Task B: **13 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

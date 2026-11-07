@@ -7,3 +7,7 @@ Selected complete source lines: 3, 10, 12, 13, 14, 28, 30, 31, 32, 33, 34.
 With the benchmark tokenizer, this selection measures 139 tokens; the previous selection measured 164. The full source is 518 tokens.
 
 Measurement: Task A 518; Task B 139. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **507 tokens**. Task B: **139 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

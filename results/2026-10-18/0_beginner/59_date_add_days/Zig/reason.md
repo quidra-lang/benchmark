@@ -13,3 +13,7 @@ The loop consumes the original positive count one iteration at a time, advancing
 Writer initialization does not affect the visible literal or its format arguments. The loop, rollover, Gregorian month length and output show the changed behavior.
 
 Selected complete lines of `main.zig`: 14, 16–35. The prior excerpt measured 468 tokens; this excerpt measures 423 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **697 tokens**. Task B: **423 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -139,3 +139,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L64: 754 tokens; removes `.then(b.gf.cmp(&a.gf))` from the dependency chain described above.
 - Without L65: 754 tokens; removes `.then(a.name.cmp(&b.name))` from the dependency chain described above.
 - Without L66: 768 tokens; removes `});` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1067 tokens**. Task B: **761 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

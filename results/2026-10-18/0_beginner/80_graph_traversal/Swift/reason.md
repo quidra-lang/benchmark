@@ -87,3 +87,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L30: 556 tokens; removes `var component = [Int]()` from the dependency chain described above.
 - Without L31: 552 tokens; removes `dfs(v, graph, &seen, &component)` from the dependency chain described above.
 - Without L32: 557 tokens; removes `components.append(component.sorted())` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **702 tokens**. Task B: **564 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

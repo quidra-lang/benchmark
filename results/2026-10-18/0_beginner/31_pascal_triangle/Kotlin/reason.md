@@ -31,3 +31,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L3: 94 tokens (versus 103); removes `repeat(12) {`.
 - Without L4: 87 tokens (versus 103); removes `println(row.joinToString(" "))`.
 - Without L5: 38 tokens (versus 103); removes `row = List(row.size + 1) { k -> if (k == 0 || k == row.size) 1 else row[k - 1] + row[k] }`.
+
+## Current token measurement
+
+Task A: **115 tokens**. Task B: **103 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

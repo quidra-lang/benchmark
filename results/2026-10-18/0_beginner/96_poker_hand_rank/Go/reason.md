@@ -13,3 +13,7 @@ The rank and suit tests classify both hands as ordinary straights. The ace-low r
 Selected complete lines of `main.go`: L10, L11, L12, L13, L14, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25, L26, L27, L28, L29, L30, L31, L32, L33, L34, L35, L36, L37, L38, L39, L40, L41, L42, L43, L44, L45, L46, L47, L48, L49, L50, L51, L58, L59, L60, L61, L62, L63, L64, L65, L66, L67, L68, L69, L70, L71, L72, L78, L79, L80, L81, L82, L83, L84, L85, L86, L87, L90, L91. The question supplies both literal hand strings. The selected processing shows how a supplied string is classified and remains associated with its comparison key. The lookup that formats the category label, unrelated hand literals and categories, and output setup do not supply any fact required about classification or preservation of the original hand.
 
 The selected excerpt measures **866 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **1195 tokens**. Task B: **866 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.ts`, in source order. Retained source 
 ## Minimization and alternatives
 
 The final outer-loop close and display-only lines do not contribute any requested fact. Inner boundaries separating conditional turns from unconditional movement remain. The prior selection used 327 tokens; this selection uses 325 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **380 tokens**. Task B: **324 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

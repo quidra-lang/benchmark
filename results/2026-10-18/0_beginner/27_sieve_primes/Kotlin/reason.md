@@ -35,3 +35,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 104 tokens (versus 138); removes `for (m in 2 * p..200 step p) prime[m] = false`.
 - Without L8: 112 tokens (versus 138); removes `val primes = (2..200).filter { prime[it] }`.
 - Without L10: 107 tokens (versus 138); removes `for (row in primes.chunked(10)) println(row.joinToString(" "))`.
+
+## Current token measurement
+
+Task A: **183 tokens**. Task B: **138 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

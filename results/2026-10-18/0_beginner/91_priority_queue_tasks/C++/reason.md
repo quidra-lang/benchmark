@@ -5,3 +5,7 @@ Later treats the larger numeric priority as lower precedence in std::priority_qu
 Selected complete source lines: 8, 9, 13, 14, 15, 20, 26, 27, 28, 40, 41, 42.
 
 With the benchmark tokenizer, this selection measures 198 tokens; the previous selection measured 177. The full source is 613 tokens.
+
+## Current token measurement
+
+Task A: **606 tokens**. Task B: **192 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -33,3 +33,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L18: 73 tokens; removes `if (!taken[i] and indegree[i] == 0) {` from the dependency chain described above.
 - Without L19: 59 tokens; removes `if (best == null or std.mem.order(u8, name, names[best.?]) == .lt)` from the dependency chain described above.
 - Without L20: 87 tokens; removes `best = i;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1205 tokens**. Task B: **99 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

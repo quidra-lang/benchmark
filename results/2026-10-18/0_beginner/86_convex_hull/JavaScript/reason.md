@@ -59,3 +59,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L17: 421 tokens; removes `}` from the dependency chain described above.
 - Without L19: 374 tokens; removes `const ordered = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);` from the dependency chain described above.
 - Without L20: 378 tokens; removes `const hull = [...chain(ordered).slice(0, -1), ...chain(ordered.toReversed()).slice(0, -1)];` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **601 tokens**. Task B: **421 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

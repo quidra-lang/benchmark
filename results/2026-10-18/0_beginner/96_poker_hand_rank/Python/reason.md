@@ -13,3 +13,7 @@ The rank and suit tests classify both hands as ordinary straights. The ace-low r
 Selected complete lines of `main.py`: L1, L25, L26, L27, L28, L29, L30, L31, L32, L33, L34, L35, L36, L37, L38, L39, L40, L41, L42, L51, L52, L53, L54, L55, L56, L57. The question supplies both literal hand strings. The selected processing shows how a supplied string is classified and remains associated with its comparison key. The lookup that formats the category label, unrelated hand literals and categories, and output setup do not supply any fact required about classification or preservation of the original hand.
 
 The selected excerpt measures **437 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **753 tokens**. Task B: **435 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

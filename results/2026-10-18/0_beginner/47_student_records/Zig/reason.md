@@ -7,3 +7,7 @@ In a rank loop, start at zero and increment the rank once on the first student a
 The current iteration, tie boundary and position-based assignment establish why a tie currently causes a skipped rank. Changing the assignment leaves the sorted order, average and formatting code untouched; those operations do not determine the edit.
 
 Source: `main.zig`, original lines 26–32. The previous excerpt measures 69 tokens; this evidence set measures 103 tokens.
+
+## Current token measurement
+
+Task A: **727 tokens**. Task B: **103 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

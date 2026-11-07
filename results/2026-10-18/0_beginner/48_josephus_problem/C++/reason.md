@@ -13,3 +13,7 @@ Vector erase at begin plus index identifies and removes the chosen person. The i
 The case values come from the question; a separate literal declaration is unnecessary when the selected algorithm identifies their roles. The removal operation itself identifies the removed person without a duplicate read just for printing or storing the removal.
 
 Selected complete lines of `main.cpp`: 8–10, 12–13, 16. The prior excerpt measured 199 tokens; this excerpt measures 127 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **313 tokens**. Task B: **122 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

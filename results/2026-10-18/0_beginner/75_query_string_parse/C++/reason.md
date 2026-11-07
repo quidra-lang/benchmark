@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.cpp`, in source order. Retained source
 ## Minimization and alternatives
 
 Changing the decoded producer/group is sufficient. Retain the parser binding or concrete key/value decode and insertion operands where the filter belongs; neither percent-decoding internals nor the unchanged display are needed to implement the filter. The prior selection used 106 tokens; this selection uses 83 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **786 tokens**. Task B: **83 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

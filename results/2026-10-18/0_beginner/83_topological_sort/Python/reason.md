@@ -5,3 +5,7 @@ The ready list is initially sorted and re-sorted after new candidates are added,
 Selected complete source lines: 7, 10, 16.
 
 With the benchmark tokenizer, this selection measures 50 tokens; the previous selection measured 137. The full source is 615 tokens.
+
+## Current token measurement
+
+Task A: **614 tokens**. Task B: **49 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ Reverse the operand roles in the selected difference operation or predicate. Kee
 Selected complete lines of `main.swift`: L3, L4. Only membership for the third result changes. Its unchanged output, other result expressions, and sorting code do not need a separate edit. Keep type or iteration evidence only when it identifies the operation or the candidate domain needed to reverse it.
 
 The selected excerpt measures **69 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **204 tokens**. Task B: **69 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

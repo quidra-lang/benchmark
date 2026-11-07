@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 168 tokens (versus 181); removes `prime[m] = false;`.
 - Without L13: 145 tokens (versus 181); removes `var primes = Enumerable.Range(2, 199).Where(n => prime[n]).ToList();`.
 - Without L15: 143 tokens (versus 181); removes `foreach (int[] row in primes.Chunk(10)) Console.WriteLine(string.Join(" ", row));`.
+
+## Current token measurement
+
+Task A: **251 tokens**. Task B: **179 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

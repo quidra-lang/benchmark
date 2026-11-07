@@ -33,3 +33,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L18: 38 tokens; removes `std::string op, a, b;` from the dependency chain described above.
 - Without L19: 36 tokens; removes `input >> op >> a >> b;` from the dependency chain described above.
 - Without L20: 47 tokens; removes `++executed;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **763 tokens**. Task B: **53 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

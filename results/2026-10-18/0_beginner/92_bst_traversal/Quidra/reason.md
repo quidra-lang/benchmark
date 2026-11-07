@@ -15,3 +15,7 @@ Selected complete lines of `main.qui`: L1, L4, L5, L6, L8, L9, L10, L11, L12, L1
 The selected excerpt measures **701 tokens** with `metric/tokenizer.py`.
 
 Measurement: Task A 848; Task B 701. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **845 tokens**. Task B: **698 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

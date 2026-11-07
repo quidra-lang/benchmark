@@ -15,3 +15,7 @@ The prefix before −23 sums to 56; adding −23 gives 33, and the complete sum 
 Selected complete lines of `Main.java`: 5, 6. The excerpt preserves their text, indentation and order.
 
 The longer alternative containing the output statements or formatter implementation adds presentation details but no new information about either reduction. The previous excerpt contained 121 tokens; the selected excerpt contains **71 tokens** using `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **182 tokens**. Task B: **70 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

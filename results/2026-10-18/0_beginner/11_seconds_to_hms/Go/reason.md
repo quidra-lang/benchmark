@@ -15,3 +15,7 @@ The Go % operator requires integer operands, so the same variable s used in both
 Selected complete lines of `main.go`: 7. The excerpt preserves their text, indentation and order.
 
 The retained calculations and format fields cover the requested trace. The former explicit input/type line repeated the given value or integer-type evidence supplied by the operators or standard formatter. The previous excerpt contained 105 tokens; the selected excerpt contains **53 tokens** using `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **129 tokens**. Task B: **53 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

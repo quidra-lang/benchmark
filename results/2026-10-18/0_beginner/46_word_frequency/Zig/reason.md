@@ -9,3 +9,7 @@ The passage, token boundaries, count data flow and comparison or documented sort
 The standard hash map starts empty; getOrPut initializes each new count before incrementing it. Key/count entries are then collected, sorted by the supplied comparator, and sliced.
 
 Source: `main.zig`, original lines 5–6, 13–16, 18–23, 25–30, 32–33. The previous excerpt measures 523 tokens; this evidence set measures 535 tokens.
+
+## Current token measurement
+
+Task A: **763 tokens**. Task B: **531 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

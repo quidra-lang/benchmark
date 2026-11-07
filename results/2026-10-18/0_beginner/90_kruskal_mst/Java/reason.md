@@ -71,3 +71,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L29: 484 tokens; removes `char second = (char)('A' + Math.max(edge[0], edge[1]));` from the dependency chain described above.
 - Without L31: 506 tokens; removes `if (accepted == 7) {` from the dependency chain described above.
 - Without L32: 514 tokens; removes `break;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **682 tokens**. Task B: **520 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

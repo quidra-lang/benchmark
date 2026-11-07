@@ -7,3 +7,7 @@ At face values 500, 5 and 1, quotient and remainder give (1, 6), (1, 1), and (1,
 The question fixes the amount. Denomination order, remainder and quotient, initial totals, and the formatting and join or write operations are retained. Other amounts and the iteration that merely selects them can be omitted; standard quotient/remainder and string operations supply their usual meanings.
 
 Source: `main.zig`, original lines 7, 9–19. The previous excerpt measures 288 tokens; this evidence set measures 238 tokens.
+
+## Current token measurement
+
+Task A: **404 tokens**. Task B: **238 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -31,3 +31,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L3: 186 tokens (versus 237); removes `val counts = Regex("[a-z]+").findAll(text.lowercase()).map { it.value }.groupingBy { it }.eachCount()`.
 - Without L4: 197 tokens (versus 237); removes `val words = counts.keys.sortedWith(compareByDescending<String> { counts[it]!! }.thenBy { it })`.
 - Without L5: 204 tokens (versus 237); removes `for (word in words.take(5)) println("$word: ${counts[word]}")`.
+
+## Current token measurement
+
+Task A: **262 tokens**. Task B: **235 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

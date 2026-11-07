@@ -35,3 +35,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 110 tokens (versus 140); removes `x = x * 48271 % 2147483647;`.
 - Without L8: 121 tokens (versus 140); removes `let b = x % 6 + 1;`.
 - Without L9: 118 tokens (versus 140); removes `counts[(a + b) as usize] += 1;`.
+
+## Current token measurement
+
+Task A: **290 tokens**. Task B: **140 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

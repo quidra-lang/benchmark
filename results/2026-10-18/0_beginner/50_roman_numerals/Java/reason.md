@@ -13,3 +13,7 @@ The ordered thresholds and append/subtract loop produce M, CM, XC, IV, taking th
 The selected table entries establish the greedy thresholds and actual decoded digits. After the remainder reaches zero, a separate value-one row cannot contribute; packed entries are kept verbatim when sharing a line with necessary data. The question supplies 1994.
 
 Selected complete lines of `Main.java`: 3–5, 7–19. The prior excerpt measured 463 tokens; this excerpt measures 458 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **588 tokens**. Task B: **455 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -39,3 +39,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 181 tokens (versus 198); removes `print!("{:5}", sum);`.
 - Without L8: 194 tokens (versus 198); removes `}`.
 - Without L9: 190 tokens (versus 198); removes `println!();`.
+
+## Current token measurement
+
+Task A: **208 tokens**. Task B: **196 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

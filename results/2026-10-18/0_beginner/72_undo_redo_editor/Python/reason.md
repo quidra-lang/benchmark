@@ -7,3 +7,7 @@ The selected command prefix and stack initialization establish the starting stat
 Selected complete source lines in order are 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38. The excerpt uses documented library semantics and the Task B assumptions.
 
 Task A uses 381 tokens. Task B uses 289 tokens.
+
+## Current token measurement
+
+Task A: **378 tokens**. Task B: **286 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

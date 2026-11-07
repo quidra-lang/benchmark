@@ -7,3 +7,7 @@ Trace normalized counting from the given passage, demonstrate an equal-frequency
 The passage, token boundaries, count data flow and comparison or documented sort keys are required. The output rendering and distinct-word summary do not affect which pair precedes the other. Standalone closing delimiters can be omitted when the data flow and block boundary remain clear.
 
 Source: `main.rs`, original lines 2–7, 9, 11–13. The previous excerpt measures 330 tokens; this evidence set measures 324 tokens.
+
+## Current token measurement
+
+Task A: **377 tokens**. Task B: **316 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

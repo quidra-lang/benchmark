@@ -49,3 +49,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L16: 222 tokens (versus 236); removes `if (prime[p]) p,`.
 - Without L19: 204 tokens (versus 236); removes `for (var i = 0; i < values.length; i += 10) {`.
 - Without L20: 199 tokens (versus 236); removes `print(values.sublist(i, math.min(i + 10, values.length)).join(' '));`.
+
+## Current token measurement
+
+Task A: **305 tokens**. Task B: **236 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

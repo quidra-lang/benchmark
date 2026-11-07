@@ -9,3 +9,7 @@ The recursive parameter binding makes the peg permutations unambiguous. The fina
 The shared count starts at zero and increases at the move statement; the final print reads this same count.
 
 Source: `main.dart`, original lines 2–8, 11–12. The previous excerpt measures 132 tokens; this evidence set measures 157 tokens.
+
+## Current token measurement
+
+Task A: **170 tokens**. Task B: **157 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

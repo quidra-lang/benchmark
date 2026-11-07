@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L15: 156 tokens (versus 182); removes `for (int n = 2; n <= 200; n++)`.
 - Without L16: 169 tokens (versus 182); removes `if (prime[n]) {`.
 - Without L19: 170 tokens (versus 182); removes `std::cout << n;`.
+
+## Current token measurement
+
+Task A: **363 tokens**. Task B: **180 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

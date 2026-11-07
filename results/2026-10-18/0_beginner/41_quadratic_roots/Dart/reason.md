@@ -9,3 +9,7 @@ The tuple is supplied by the question, so the other coefficient sets and unrelat
 The import establishes that the alias resolves to Dart's math library; the accumulated root fields are printed through the final stdout write.
 
 Source: `main.dart`, original lines 2, 5, 14–15, 17–21, 33. The previous excerpt measures 259 tokens; this evidence set measures 247 tokens.
+
+## Current token measurement
+
+Task A: **579 tokens**. Task B: **245 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

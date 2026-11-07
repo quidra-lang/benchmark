@@ -25,3 +25,7 @@ Each selected statement was reviewed against the answer dependencies above. Scop
 The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
 
 - Without L7: 0 tokens (versus 80); removes `val bill = 900 + minOf(u, 120) * 30 + (u - 120).coerceIn(0, 180) * 36 + maxOf(u - 300, 0) * 40`.
+
+## Current token measurement
+
+Task A: **258 tokens**. Task B: **80 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

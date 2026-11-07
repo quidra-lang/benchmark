@@ -5,3 +5,7 @@ For start 1 the initial state already fails the loop guard, so the count remains
 The multi-assignment copies start to n and m, and zeroes k. The if/else contains only the choice of next n, so the step and max updates happen once after either branch.
 
 Complete main.go lines: 7, 8, 9, 10, 11, 12, 13, 14, 15. The question supplies the two starting numbers, so keeping the separate input collection or its iteration would cost at least 36 more tokens without changing the trace. The output format is not part of the question. The benchmark tokenizer counts 108 tokens in this excerpt.
+
+## Current token measurement
+
+Task A: **205 tokens**. Task B: **108 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -5,3 +5,7 @@ Mika’s height and weight are 165 and 70, giving integer products 700000 and 27
 The record and integer calculations supply the products. The f64 conversion is before division. The first two tests fail, the third chooses overweight and the separate formatting precision is one fractional digit.
 
 Complete main.rs lines: 2, 5, 9, 10, 11, 12, 14, 16, 17, 21. The unused classification result arms and punctuation do not affect the named trace; retain the ordered conditions, the matching label and the separate output operation. Other records are unnecessary except where they share a source line with Mika. The benchmark tokenizer counts 193 tokens in this excerpt.
+
+## Current token measurement
+
+Task A: **317 tokens**. Task B: **193 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

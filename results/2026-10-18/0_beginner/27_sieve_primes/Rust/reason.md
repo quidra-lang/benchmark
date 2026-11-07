@@ -57,3 +57,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L19: 213 tokens (versus 227); removes `.map(usize::to_string)`.
 - Without L20: 212 tokens (versus 227); removes `.collect::<Vec<_>>()`.
 - Without L21: 215 tokens (versus 227); removes `.join(" ")`.
+
+## Current token measurement
+
+Task A: **283 tokens**. Task B: **224 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -47,3 +47,7 @@ Final original source lines: L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17,
 - L18: `}` — Close conditional assembly regions before returning/joining parts, and separate whole-input zero, thousand and remainder handling. A zero partial remainder therefore does not gate or include the completed nonempty phrase.
 
 Final selection: 510 metric tokens; contiguous span L7–L26: 573 tokens; complete source: 613 tokens. Scope-only lines are retained where they distinguish relevant branch/loop timing.
+
+## Current token measurement
+
+Task A: **611 tokens**. Task B: **508 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

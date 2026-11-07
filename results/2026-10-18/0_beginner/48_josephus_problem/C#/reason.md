@@ -13,3 +13,7 @@ List.RemoveAt removes the element at the selected index and compacts the list. T
 The case values come from the question; a separate literal declaration is unnecessary when the selected algorithm identifies their roles. The removal operation itself identifies the removed person without a duplicate read just for printing or storing the removal.
 
 Selected complete lines of `Program.cs`: 10–11, 13, 15, 17. The prior excerpt measured 147 tokens; this excerpt measures 82 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **271 tokens**. Task B: **81 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -63,3 +63,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L30: 543 tokens; removes `return a.second != b.second ? a.second > b.second : a.first < b.first;` from the dependency chain described above.
 - Without L31: 577 tokens; removes `});` from the dependency chain described above.
 - Without L35: 561 tokens; removes `for (const auto &[name, quantity] : products)` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **956 tokens**. Task B: **578 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

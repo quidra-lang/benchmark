@@ -5,3 +5,7 @@ Mika’s height and weight are 165 and 70, giving integer products 700000 and 27
 The struct binds the tuple values to height and weight, the products are integer, and both are converted for the division. The first two comparisons fail and the third assigns overweight; %.1f is separate from those comparisons.
 
 Complete main.go lines: 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 19, 21. The unused classification result arms and punctuation do not affect the named trace; retain the ordered conditions, the matching label and the separate output operation. Other records are unnecessary except where they share a source line with Mika. The benchmark tokenizer counts 267 tokens in this excerpt.
+
+## Current token measurement
+
+Task A: **327 tokens**. Task B: **267 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

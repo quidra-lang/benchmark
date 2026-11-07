@@ -115,3 +115,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L57: 801 tokens; removes `return a.gf > b.gf;` from the dependency chain described above.
 - Without L58: 802 tokens; removes `return a.name < b.name;` from the dependency chain described above.
 - Without L59: 812 tokens; removes `});` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1153 tokens**. Task B: **815 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

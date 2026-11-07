@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 The key is the sorted copy of the word. The first unused index and increasing inner index already provide group and word order; count matches before either the words or newline are written.
 
 Source: `main.cpp`, original lines 10, 13–24. The previous excerpt measures 134 tokens; this evidence set measures 219 tokens.
+
+## Current token measurement
+
+Task A: **399 tokens**. Task B: **219 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

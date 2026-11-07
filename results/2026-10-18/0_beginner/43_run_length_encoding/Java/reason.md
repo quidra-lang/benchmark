@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 217 tokens (versus 233); removes `for (String text : values) {`.
 - Without L11: 182 tokens (versus 233); removes `String encoded = runs.matcher(text).replaceAll(m -> m.group().length() + m.group().substring(0, 1));`.
 - Without L12: 185 tokens (versus 233); removes `String decoded = counts.matcher(encoded).replaceAll(m -> m.group(2).repeat(Integer.parseInt(m.group(1))));`.
+
+## Current token measurement
+
+Task A: **346 tokens**. Task B: **230 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

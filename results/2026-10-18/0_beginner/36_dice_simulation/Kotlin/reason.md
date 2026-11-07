@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 75 tokens (versus 99); removes `sum += (state % 6).toInt() + 1`.
 - Without L9: 95 tokens (versus 99); removes `}`.
 - Without L10: 91 tokens (versus 99); removes `counts[sum]++`.
+
+## Current token measurement
+
+Task A: **220 tokens**. Task B: **98 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

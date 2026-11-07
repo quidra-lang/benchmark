@@ -39,3 +39,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L6: 145 tokens (versus 179); removes `println!("move disk {} from {} to {}", n, source, target);`.
 - Without L7: 152 tokens (versus 179); removes `count + 1 + hanoi(n - 1, auxiliary, target, source)`.
 - Without L11: 142 tokens (versus 179); removes `println!("total moves: {}", hanoi(4, 'A', 'C', 'B'));`.
+
+## Current token measurement
+
+Task A: **191 tokens**. Task B: **179 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

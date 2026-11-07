@@ -35,3 +35,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 93 tokens (versus 124); removes `state = (state * 48271) % 2147483647;`.
 - Without L8: 106 tokens (versus 124); removes `final b = state % 6 + 1;`.
 - Without L9: 112 tokens (versus 124); removes `counts[a + b]++;`.
+
+## Current token measurement
+
+Task A: **282 tokens**. Task B: **124 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

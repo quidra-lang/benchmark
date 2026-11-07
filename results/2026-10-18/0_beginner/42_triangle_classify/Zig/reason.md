@@ -29,3 +29,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 78 tokens (versus 89); removes `var s = original;`.
 - Without L13: 59 tokens (versus 89); removes `std.mem.sort(u32, &s, {}, std.sort.asc(u32));`.
 - Without L14: 41 tokens (versus 89); removes `try out.print("{d} {d} {d}: ", .{ original[0], original[1], original[2] });`.
+
+## Current token measurement
+
+Task A: **645 tokens**. Task B: **89 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

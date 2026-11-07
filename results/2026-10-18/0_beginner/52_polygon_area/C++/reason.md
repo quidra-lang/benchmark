@@ -13,3 +13,7 @@ The first two data rows identify polygon 2 and its endpoints. The successor wrap
 Only enough input rows to identify polygon 2 are needed; a separate third polygon contributes no evidence. The selected area argument or assignment contains the normalization; extra print wrappers or trailing scopes add no calculation.
 
 Selected complete lines of `main.cpp`: 8–9, 11–22. The prior excerpt measured 505 tokens; this excerpt measures 502 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **593 tokens**. Task B: **499 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

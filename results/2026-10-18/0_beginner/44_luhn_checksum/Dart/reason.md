@@ -7,3 +7,7 @@ Only the individual characters are converted into arithmetic values. Counting wi
 The literal and the arithmetic flow distinguish digit conversion from replacing the identifier with a number. The alternate valid-only output is not used for this input; its branch test is enough to establish why validation fails. Indexing from the right, reversing a copy, or comparing length minus the forward index all implement the same parity.
 
 Source: `main.dart`, original lines 2, 4, 10–19, 21–24. The previous excerpt measures 281 tokens; this evidence set measures 267 tokens.
+
+## Current token measurement
+
+Task A: **405 tokens**. Task B: **267 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

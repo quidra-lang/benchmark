@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 An insertion-ordered map provides first appearance, and appending to each group preserves input order.
 
 Source: `main.dart`, original lines 22–23. The previous excerpt measures 14 tokens; this evidence set measures 31 tokens.
+
+## Current token measurement
+
+Task A: **220 tokens**. Task B: **31 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

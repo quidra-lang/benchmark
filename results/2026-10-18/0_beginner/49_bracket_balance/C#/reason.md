@@ -65,3 +65,7 @@ The smaller deletion alternatives below were measured. Each drops the identified
 - Without L32: 256 tokens (versus 260); removes `}`.
 - Without L33: 257 tokens (versus 260); removes `}`.
 - Without L34: 230 tokens (versus 260); removes `if (error < 0 && stack.Count > 0) error = text.Length;`.
+
+## Current token measurement
+
+Task A: **515 tokens**. Task B: **257 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

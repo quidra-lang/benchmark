@@ -9,3 +9,7 @@ The saved key, predecessor index, shift and final insertion identify why the str
 The internal positions are 2 through 8 and the print uses the index minus one, so the visible positions remain 1 through 7.
 
 Source: `main.jl`, original lines 4–7, 9–11, 13. The previous excerpt measures 38 tokens; this evidence set measures 142 tokens.
+
+## Current token measurement
+
+Task A: **232 tokens**. Task B: **142 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

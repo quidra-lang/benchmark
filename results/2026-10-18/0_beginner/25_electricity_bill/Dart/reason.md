@@ -29,3 +29,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 74 tokens (versus 105); removes `var bill = 900 + math.min(usage, 120) * 30;`.
 - Without L15: 64 tokens (versus 105); removes `if (usage > 120) bill += math.min(usage - 120, 180) * 36;`.
 - Without L16: 72 tokens (versus 105); removes `if (usage > 300) bill += (usage - 300) * 40;`.
+
+## Current token measurement
+
+Task A: **297 tokens**. Task B: **105 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

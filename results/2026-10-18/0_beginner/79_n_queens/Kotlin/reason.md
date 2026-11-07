@@ -17,3 +17,7 @@ For C-like loops, begin at the last column and decrement with an appropriate non
 ## Semantics and measured alternatives
 
 Final excerpt: **17 tokens** by metric/tokenizer.py tokenize. The prior broader excerpt was **149 tokens**. That sufficient alternative redundantly included unchanged capture, recursion/caller and output code. The final selection retains the actual affected statement and necessary decoded-result linkage. Standard iteration, string equality, list/array ordering and collection operations retain their documented meanings. No Task A program was compiled or executed. This is the lowest-token sufficient reviewed candidate, not a proof of a global optimum.
+
+## Current token measurement
+
+Task A: **421 tokens**. Task B: **17 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

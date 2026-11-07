@@ -45,3 +45,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L13: 252 tokens (versus 278); removes `System.out.printf(Locale.ROOT, "%5d", sum);`.
 - Without L14: 273 tokens (versus 278); removes `}`.
 - Without L15: 266 tokens (versus 278); removes `System.out.println();`.
+
+## Current token measurement
+
+Task A: **321 tokens**. Task B: **277 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

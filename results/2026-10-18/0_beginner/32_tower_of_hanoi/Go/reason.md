@@ -39,3 +39,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 131 tokens (versus 167); removes `fmt.Printf("move disk %d from %c to %c\n", n, source, target)`.
 - Without L11: 140 tokens (versus 167); removes `return count + 1 + hanoi(n-1, auxiliary, target, source)`.
 - Without L15: 128 tokens (versus 167); removes `fmt.Printf("total moves: %d\n", hanoi(4, 'A', 'C', 'B'))`.
+
+## Current token measurement
+
+Task A: **191 tokens**. Task B: **167 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

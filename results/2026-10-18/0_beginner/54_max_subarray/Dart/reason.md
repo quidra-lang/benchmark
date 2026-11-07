@@ -13,3 +13,7 @@ In array 2, initialize at −4, restart at 7 because 7 is greater than the sum o
 Data through the second array and the candidate and best updates are necessary. Output and independent third-array data do not participate; a trailing delimiter does not govern any further retained step.
 
 Selected complete lines of `main.dart`: 2–4, 6–18. The prior excerpt measured 306 tokens; this excerpt measures 296 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **396 tokens**. Task B: **296 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

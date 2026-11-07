@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.swift`, in source order. Retained sour
 ## Minimization and alternatives
 
 The command prefix, stack initializers, guarded transfers, reset and string operations determine the trace. Output-only status assignments and writes add no information about whether buffer or stack state changes. The prior selection used 422 tokens; this selection uses 354 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **450 tokens**. Task B: **349 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

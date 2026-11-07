@@ -25,3 +25,7 @@ Each selected statement was reviewed against the answer dependencies above. Scop
 The following smaller deletion candidates were measured as alternative line sets. They lose the indicated original statement and therefore the corresponding calculation/control/data/output evidence described above; a lower count alone is insufficient. This is a source-dependency minimization, not a proof of a global mathematical optimum.
 
 - Without L3: 0 tokens (versus 31); removes `for (const group of groups.values()) console.log(group.join(" "));`.
+
+## Current token measurement
+
+Task A: **103 tokens**. Task B: **30 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

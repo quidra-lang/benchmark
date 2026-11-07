@@ -7,3 +7,7 @@ Use 10 as the divisor for the accumulated squared differences before taking the 
 Only the denominator changes. Where the expression is an unnamed argument in a multiline print call, the format identifies its destination. The mean, accumulation, input literals, and formatting internals are otherwise outside the edit. The unchanged formatter is used under the Task B assumptions.
 
 Source: `main.kt`, original lines 2, 19. The previous excerpt measures 32 tokens; this evidence set measures 40 tokens.
+
+## Current token measurement
+
+Task A: **337 tokens**. Task B: **40 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

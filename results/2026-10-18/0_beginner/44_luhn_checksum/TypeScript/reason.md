@@ -43,3 +43,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 278 tokens (versus 320); removes `const expected = (10 - (total - Number(number.at(-1))) % 10) % 10;`.
 - Without L11: 276 tokens (versus 320); removes `const result = total % 10 === 0 ? "valid" : `invalid (expected check digit ${expected})`;`.
 - Without L12: 301 tokens (versus 320); removes `console.log(`${number}: ${result}`);`.
+
+## Current token measurement
+
+Task A: **344 tokens**. Task B: **319 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

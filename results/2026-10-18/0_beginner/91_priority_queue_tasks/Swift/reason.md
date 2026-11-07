@@ -5,3 +5,7 @@ Replace the sequence branch of Task.precedes with ascending name comparison. Hea
 Selected complete source lines: 1, 2, 6, 7, 14, 19, 25, 32, 33, 44, 51, 52, 55.
 
 With the benchmark tokenizer, this selection measures 283 tokens; the previous selection measured 279. The full source is 815 tokens.
+
+## Current token measurement
+
+Task A: **810 tokens**. Task B: **280 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

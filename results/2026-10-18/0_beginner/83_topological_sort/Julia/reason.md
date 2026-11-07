@@ -5,3 +5,7 @@ Search the ascending array with findlast instead of findfirst for the same untak
 Selected complete source lines: 10, 12, 13, 22.
 
 With the benchmark tokenizer, this selection measures 63 tokens; the previous selection measured 60. The full source is 657 tokens.
+
+## Current token measurement
+
+Task A: **656 tokens**. Task B: **63 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -33,3 +33,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L4: 216 tokens (versus 233); removes `for (i in 0 until 3) {`.
 - Without L5: 170 tokens (versus 233); removes `val row = (0 until 2).map { j -> (0 until 4).sumOf { k -> a[i][k] * b[k][j] } }`.
 - Without L6: 201 tokens (versus 233); removes `println(row.joinToString("") { it.toString().padStart(5) })`.
+
+## Current token measurement
+
+Task A: **244 tokens**. Task B: **232 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

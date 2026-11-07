@@ -69,3 +69,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L24: 442 tokens; removes `accepted++` from the dependency chain described above.
 - Without L26: 401 tokens; removes `println("${'A' + minOf(u, v)}-${'A' + maxOf(u, v)} $weight")` from the dependency chain described above.
 - Without L27: 433 tokens; removes `if (accepted == 7) break` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **506 tokens**. Task B: **447 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

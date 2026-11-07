@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 113 tokens (versus 132); removes `if numbers[j] > numbers[j+1]`.
 - Without L8: 100 tokens (versus 132); removes `numbers[j], numbers[j+1] = numbers[j+1], numbers[j]`.
 - Without L9: 122 tokens (versus 132); removes `total += 1`.
+
+## Current token measurement
+
+Task A: **225 tokens**. Task B: **132 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

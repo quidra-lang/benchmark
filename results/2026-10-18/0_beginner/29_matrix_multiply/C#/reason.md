@@ -43,3 +43,7 @@ The smaller deletion alternatives below were measured. Each drops the identified
 - Without L14: 243 tokens (versus 260); removes `Console.Write($"{sum,5}");`.
 - Without L15: 257 tokens (versus 260); removes `}`.
 - Without L16: 251 tokens (versus 260); removes `Console.WriteLine();`.
+
+## Current token measurement
+
+Task A: **290 tokens**. Task B: **259 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

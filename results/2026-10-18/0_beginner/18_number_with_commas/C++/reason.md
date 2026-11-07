@@ -5,3 +5,7 @@ For the input −456789 supplied in the question, the three-digit groups from th
 to_string leaves the minus in text. The start index skips it, prints it separately and starts the loop at the first digit; the first-digit guard prevents a separator immediately after the sign.
 
 Complete main.cpp lines: 7, 8, 9, 10, 11, 12, 13, 14, 15, 16. The literal collection and its traversal only deliver the input scalar that the question already provides. The selected formatter or grouping loop and output supply the algorithm and output evidence. The benchmark tokenizer counts 192 tokens in this excerpt.
+
+## Current token measurement
+
+Task A: **299 tokens**. Task B: **190 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

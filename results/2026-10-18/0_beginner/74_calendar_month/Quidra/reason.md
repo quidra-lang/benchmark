@@ -21,3 +21,7 @@ Using unchanged metric/tokenizer.py (SHA-256 3a2649e33a55f135c2fe88568f50c5d81e8
 The declaration-syntax migration keeps the same source locations and answer dependencies. The current tokenizer counts are 567 for Task A and 319 for Task B.
 
 Measurement: Task A 567; Task B 319. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **558 tokens**. Task B: **319 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -5,3 +5,7 @@ The retained north rows contribute 10×200, 8×150 and 20×80, totaling 4,800. T
 Selected complete source lines: 1, 3, 5, 7, 8, 10, 12, 13, 14, 16, 17, 19, 20, 21, 24.
 
 With the benchmark tokenizer, this selection measures 545 tokens; the previous selection measured 548. The full source is 846 tokens.
+
+## Current token measurement
+
+Task A: **839 tokens**. Task B: **539 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

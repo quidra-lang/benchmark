@@ -83,3 +83,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L45: 577 tokens; removes `productNames = append(productNames, name)` from the dependency chain described above.
 - Without L46: 590 tokens; removes `}` from the dependency chain described above.
 - Without L47: 584 tokens; removes `sort.Strings(productNames)` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **973 tokens**. Task B: **593 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

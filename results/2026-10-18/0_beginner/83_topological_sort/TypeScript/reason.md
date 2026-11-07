@@ -31,3 +31,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L8: 23 tokens; removes `const ready = courses.filter(course => indegree.get(course) === 0).sort();` from the dependency chain described above.
 - Without L11: 40 tokens; removes `const course = ready.shift()!;` from the dependency chain described above.
 - Without L17: 47 tokens; removes `ready.sort();` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **723 tokens**. Task B: **52 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

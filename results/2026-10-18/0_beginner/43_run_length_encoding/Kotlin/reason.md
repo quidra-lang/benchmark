@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 189 tokens (versus 202); removes `for (text in values) {`.
 - Without L9: 163 tokens (versus 202); removes `val encoded = runs.replace(text) { "${it.value.length}${it.value[0]}" }`.
 - Without L10: 161 tokens (versus 202); removes `val decoded = counts.replace(encoded) { it.groupValues[2].repeat(it.groupValues[1].toInt()) }`.
+
+## Current token measurement
+
+Task A: **267 tokens**. Task B: **201 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -27,3 +27,7 @@ The following smaller deletion candidates were measured as alternative line sets
 
 - Without L15: 22 tokens (versus 41); removes `final s = original.toList()..sort();`.
 - Without L16: 19 tokens (versus 41); removes `out.write('${original.join(' ')}: ');`.
+
+## Current token measurement
+
+Task A: **436 tokens**. Task B: **39 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

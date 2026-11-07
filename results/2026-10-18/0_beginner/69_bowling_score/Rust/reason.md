@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.rs`, in source order. Retained source 
 ## Minimization and alternatives
 
 Adjacent differences preserve the current scoring calculation and avoid changing the strike/spare and tenth-frame branches. The frame loop, collection or write identify the emission sites. Keeping every branch is a larger alternative needed only if rewriting the scoring calculation. The prior selection used 54 tokens; this selection uses 42 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **765 tokens**. Task B: **42 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ The selected lines show the fetch and split, the first field that identifies the
 Selected complete lines of `main.kt`: L12, L13, L24. The dispatch selector establishes the opcode position where the implementation does not bind it separately. For J the selected local split helper establishes the field order. The remaining opcode implementations and the final printing line add no edit location.
 
 The selected excerpt measures **38 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **620 tokens**. Task B: **38 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

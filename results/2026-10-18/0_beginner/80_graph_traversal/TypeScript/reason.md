@@ -95,3 +95,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L35: 570 tokens; removes `const component: number[] = [];` from the dependency chain described above.
 - Without L36: 571 tokens; removes `dfs(vertex, seen, component);` from the dependency chain described above.
 - Without L37: 557 tokens; removes `components.push(component.sort((a, b) => a - b));` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **698 tokens**. Task B: **581 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

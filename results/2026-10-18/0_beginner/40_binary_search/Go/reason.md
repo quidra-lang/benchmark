@@ -7,3 +7,7 @@ Starting with bounds (0, 15), probe 7 (31) and raise the lower bound to 8; probe
 The question provides target 50, but the searched array and the index arithmetic must come from source. The equality assignment and result test show that a failed search leaves the original sentinel. Probe recording and string joining or sequential writes fix the output spacing. The success-only break or output body is unnecessary for this trace.
 
 Source: `main.go`, original lines 6, 8–14, 16–23, 25–26. The previous excerpt measures 326 tokens; this evidence set measures 287 tokens.
+
+## Current token measurement
+
+Task A: **383 tokens**. Task B: **287 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

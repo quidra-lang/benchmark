@@ -13,3 +13,7 @@ The food records/mask select milk, bread, apple and eggs. Price × quantity give
 Unrelated category inputs and report lines can be omitted when independent. Shared lines are copied whole. The final payment expression is necessary; a separate print of its already computed result is not.
 
 Selected complete lines of `main.js`: 1–2, 4–5, 7–19. The prior excerpt measured 512 tokens; this excerpt measures 390 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **511 tokens**. Task B: **389 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

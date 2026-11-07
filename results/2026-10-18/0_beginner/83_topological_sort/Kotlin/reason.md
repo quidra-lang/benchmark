@@ -5,3 +5,7 @@ Use lastOrNull instead of firstOrNull for the current eligibility predicate. The
 Selected complete source lines: 2, 15, 24.
 
 With the benchmark tokenizer, this selection measures 84 tokens; the previous selection measured 66. The full source is 728 tokens.
+
+## Current token measurement
+
+Task A: **725 tokens**. Task B: **83 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

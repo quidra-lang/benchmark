@@ -35,3 +35,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 108 tokens (versus 140); removes `state = (state * 48271) % 2147483647;`.
 - Without L13: 121 tokens (versus 140); removes `const b = state % 6 + 1;`.
 - Without L14: 119 tokens (versus 140); removes `counts[@intCast(a + b)] += 1;`.
+
+## Current token measurement
+
+Task A: **419 tokens**. Task B: **140 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

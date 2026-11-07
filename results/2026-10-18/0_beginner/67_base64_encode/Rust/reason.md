@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.rs`, in source order. Retained source 
 ## Minimization and alternatives
 
 Keeping the group size and padding decisions is sufficient. An unchanged alphabet literal or bit construction would only identify symbol identity. A trailing loop close adds no scope information when no following operation is retained. The prior selection used 271 tokens; this selection uses 267 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **463 tokens**. Task B: **263 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

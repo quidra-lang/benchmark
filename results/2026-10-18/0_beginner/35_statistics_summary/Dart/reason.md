@@ -9,3 +9,7 @@ Only the denominator changes. Where the expression is an unnamed argument in a m
 The import identifies the square root behind the `math` alias; the three-place call and label share a line with the denominator.
 
 Source: `main.dart`, original lines 1, 21. The previous excerpt measures 86 tokens; this evidence set measures 99 tokens.
+
+## Current token measurement
+
+Task A: **379 tokens**. Task B: **99 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

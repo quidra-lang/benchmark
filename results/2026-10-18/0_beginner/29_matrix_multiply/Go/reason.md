@@ -45,3 +45,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 227 tokens (versus 244); removes `fmt.Printf("%5d", sum)`.
 - Without L15: 240 tokens (versus 244); removes `}`.
 - Without L16: 236 tokens (versus 244); removes `fmt.Println()`.
+
+## Current token measurement
+
+Task A: **267 tokens**. Task B: **243 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

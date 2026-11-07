@@ -22,3 +22,7 @@ The custom two helper is included because its name alone does not guarantee zero
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. An arithmetic-only excerpt cannot establish zero padding; a format-only excerpt cannot establish elapsed hours and component ranges. The selected arithmetic and formatting union excludes unrelated input rows unless inseparable from a needed type declaration.
 
 The selected excerpt contains **93 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 142 tokens; the complete source contains 159 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **157 tokens**. Task B: **92 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

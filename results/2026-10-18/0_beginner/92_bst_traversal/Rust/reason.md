@@ -159,3 +159,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L102: 1000 tokens; removes `print!("preorder after deletions:");` from the dependency chain described above.
 - Without L103: 1001 tokens; removes `traverse(&nodes, root, 1);` from the dependency chain described above.
 - Without L104: 986 tokens; removes `println!("\nheight after deletions: {}", height(&nodes, root));` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1411 tokens**. Task B: **1011 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

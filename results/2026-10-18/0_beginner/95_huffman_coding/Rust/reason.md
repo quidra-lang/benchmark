@@ -13,3 +13,7 @@ The first assign call selects the left child and adds 0 to the path. The second 
 Selected complete lines of `main.rs`: L27, L29, L30, L33. The first call spans several source lines. The retained call head, child and path establish the left move and label. The separate arguments for the node store and code output, and the call terminator, add no fact about the bit assignment.
 
 The selected excerpt measures **62 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **949 tokens**. Task B: **59 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

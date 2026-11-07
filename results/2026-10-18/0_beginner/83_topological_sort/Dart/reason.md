@@ -35,3 +35,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L13: 85 tokens; removes `indegree[i] == 0 &&` from the dependency chain described above.
 - Without L14: 66 tokens; removes `(best == null || names[i].compareTo(names[best]) < 0)) {` from the dependency chain described above.
 - Without L15: 89 tokens; removes `best = i;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **707 tokens**. Task B: **99 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -45,3 +45,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 173 tokens (versus 178); removes `}`.
 - Without L15: 174 tokens (versus 178); removes `}`.
 - Without L16: 170 tokens (versus 178); removes `total += swaps`.
+
+## Current token measurement
+
+Task A: **304 tokens**. Task B: **178 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

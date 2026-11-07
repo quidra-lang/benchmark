@@ -22,3 +22,7 @@ math.Pi is a documented standard constant, so no local numeric pi declaration is
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A formatter-only excerpt cannot recover either formula or multiplication order. An arithmetic-only excerpt cannot establish three fractional digits. The selected union of these two sites is smaller than the entire radius loop; no separate precomputed output is used.
 
 The selected excerpt contains **65 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 65 tokens; the complete source contains 142 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **141 tokens**. Task B: **65 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

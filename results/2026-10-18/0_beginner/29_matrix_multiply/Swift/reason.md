@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L9: 228 tokens (versus 237); removes `row.append(sum)`.
 - Without L10: 234 tokens (versus 237); removes `}`.
 - Without L11: 188 tokens (versus 237); removes `print(row.map { String(format: "%5d", locale: Locale(identifier: "en_US_POSIX"), $0) }.joined())`.
+
+## Current token measurement
+
+Task A: **242 tokens**. Task B: **235 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

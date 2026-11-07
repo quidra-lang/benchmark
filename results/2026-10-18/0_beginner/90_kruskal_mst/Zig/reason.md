@@ -91,3 +91,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L44: 588 tokens; removes `'A' + @as(u8, @intCast(@max(e[0], e[1]))),` from the dependency chain described above.
 - Without L47: 613 tokens; removes `if (accepted == 7)` from the dependency chain described above.
 - Without L48: 619 tokens; removes `break;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **871 tokens**. Task B: **625 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

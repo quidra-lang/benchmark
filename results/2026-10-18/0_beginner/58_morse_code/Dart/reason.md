@@ -13,3 +13,7 @@ The forward table supplies M=--, E=., A=.-, and T=-. Encoding generates “-- . 
 Only the code entries through T are needed for this trace when they occupy independent lines; earlier entries establish positional lookup. Packed lines are kept verbatim. Printing is needed only if it performs a required join or directly emits a decoded character.
 
 Selected complete lines of `main.dart`: 2–22, 39–49. The prior excerpt measured 458 tokens; this excerpt measures 341 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **480 tokens**. Task B: **340 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -55,3 +55,7 @@ The smaller deletion alternatives below were measured. Each drops the identified
 - Without L22: 210 tokens (versus 213); removes `}`.
 - Without L24: 197 tokens (versus 213); removes `for i, n := range primes {`.
 - Without L28: 204 tokens (versus 213); removes `fmt.Print(n)`.
+
+## Current token measurement
+
+Task A: **354 tokens**. Task B: **213 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

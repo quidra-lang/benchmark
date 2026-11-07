@@ -31,3 +31,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L25: 19 tokens; removes `parts = split(program[pc+1])` from the dependency chain described above.
 - Without L26: 24 tokens; removes `operation = parts[1]` from the dependency chain described above.
 - Without L27: 27 tokens; removes `executed += 1` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **623 tokens**. Task B: **35 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

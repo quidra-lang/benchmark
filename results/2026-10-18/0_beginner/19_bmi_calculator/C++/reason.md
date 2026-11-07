@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 282 tokens (versus 305); removes `double bmi = static_cast<double>(numerator) / denominator;`.
 - Without L13: 242 tokens (versus 305); removes `const char *category = bmi < 18.5 ? "underweight" : bmi < 25 ? "normal" : bmi < 30 ? "overweight" : "obese";`.
 - Without L14: 259 tokens (versus 305); removes `std::cout << names[i] << ": BMI " << bmi << " (" << category << ")\n";`.
+
+## Current token measurement
+
+Task A: **372 tokens**. Task B: **305 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

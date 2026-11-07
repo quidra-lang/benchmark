@@ -15,3 +15,7 @@ Selected complete lines of `main.qui`: 1, 2, 3. The excerpt preserves their text
 The newline-only line is an unchanged action and adds no edit site. The alternative using the range headers alone would not identify the field-width change. The previous excerpt contained 53 tokens; the selected excerpt contains **43 tokens** using `metric/tokenizer.py`.
 
 Measurement: Task A 48; Task B 43. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **47 tokens**. Task B: **43 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

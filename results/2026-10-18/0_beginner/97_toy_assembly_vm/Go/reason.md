@@ -31,3 +31,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L24: 16 tokens; removes `parts := strings.Fields(program[pc])` from the dependency chain described above.
 - Without L25: 21 tokens; removes `op := parts[0]` from the dependency chain described above.
 - Without L26: 27 tokens; removes `executed++` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **743 tokens**. Task B: **32 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ The counter starts at zero and the while condition changes its inclusive bound f
 Selected complete lines of `main.zig`: 7, 8, 9. The excerpt preserves their text, indentation and order.
 
 The loop header alone does not reveal the integer representation. Selecting the full loop body adds unchanged calculations or output that do not introduce another edit. The previous excerpt contained 60 tokens; the selected excerpt contains **50 tokens** using `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **219 tokens**. Task B: **50 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

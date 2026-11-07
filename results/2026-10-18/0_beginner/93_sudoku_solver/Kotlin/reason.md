@@ -27,3 +27,7 @@ Complete lines remain verbatim and in original order, without repeating source l
 Measured deletion alternatives identify the removed source dependency or boundary:
 
 - Without L10: 0 tokens; removes `for (digit in 1..9) {` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **548 tokens**. Task B: **18 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

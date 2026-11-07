@@ -5,3 +5,7 @@ Ascending neighbors give DFS 0, 2, 7, 5, 3, 8. DFS first enters 7 from 2 and mar
 Selected complete source lines: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52.
 
 With the benchmark tokenizer, this selection measures 591 tokens; the previous selection measured 569. The full source is 710 tokens.
+
+## Current token measurement
+
+Task A: **707 tokens**. Task B: **589 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

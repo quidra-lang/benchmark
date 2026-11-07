@@ -13,3 +13,7 @@ The current program counter selects a line, split supplies its fields, and the f
 Selected complete lines of `main.py`: L29, L30, L31. The selected fetch, opcode and increment are sufficient to locate the guarded count. The HALT and JNZ control flow, register updates and output can all remain as written, so the larger dispatch excerpt is unnecessary.
 
 The selected excerpt measures **30 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **544 tokens**. Task B: **29 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

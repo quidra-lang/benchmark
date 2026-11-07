@@ -9,3 +9,9 @@ Task A uses 569 tokens. Task B uses 457 tokens.
 Measurement: Task A 569; Task B 457. Tokenizer: metric/tokenizer.py, unchanged.
 
 The Queue<int> contract determines the removed vertex as int. The inferred binding preserves the same success type and failure handling.
+
+## Current token measurement
+
+The tuple-array fixture types are inferred from the retained nonempty literal entries using Core numeric and string literal defaults; removing the redundant annotations does not remove a fact needed for this answer.
+
+Task A: **555 tokens**. Task B: **446 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

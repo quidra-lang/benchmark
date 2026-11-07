@@ -35,3 +35,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 113 tokens (versus 143); removes `x = x * 48271 % 2147483647;`.
 - Without L11: 116 tokens (versus 143); removes `int b = static_cast<int>(x % 6) + 1;`.
 - Without L12: 130 tokens (versus 143); removes `++counts[a + b];`.
+
+## Current token measurement
+
+Task A: **343 tokens**. Task B: **143 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -7,3 +7,7 @@ The comprehension extracts b’s indexed column. The Math dot extension is the s
 Complete main.qui lines: 1, 4, 5, 6, 7, 8, 9, 10, 11. The chosen input rows and all four right-column entries are required. The positional consumer must actually receive the calculated sum; unrelated allocation, namespace imports already identified by the call, and I/O setup do not establish a dependency. The benchmark tokenizer counts 178 tokens in this excerpt.
 
 Measurement: Task A 183; Task B 178. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **182 tokens**. Task B: **177 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

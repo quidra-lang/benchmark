@@ -71,3 +71,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L29: 441 tokens; removes `accepted++;` from the dependency chain described above.
 - Without L31: 391 tokens; removes `char first = (char)('A' + Math.Min(u, v)), second = (char)('A' + Math.Max(u, v));` from the dependency chain described above.
 - Without L33: 432 tokens; removes `if (accepted == 7) break;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **554 tokens**. Task B: **445 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

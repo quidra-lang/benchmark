@@ -9,3 +9,7 @@ The question provides 9973. The original-to-working-value assignment, trial boun
 The prior-factor flag is initialized for the first factor and can only be cleared by a positive exponent in the trial loop.
 
 Source: `main.cpp`, original lines 6–15, 21–27, 29. The previous excerpt measures 302 tokens; this evidence set measures 225 tokens.
+
+## Current token measurement
+
+Task A: **409 tokens**. Task B: **225 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

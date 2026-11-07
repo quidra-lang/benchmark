@@ -7,3 +7,9 @@ Selected complete source lines in order are 1, 4, 8, 9, 10, 11, 12, 13, 16.
 Tokenizer: Task A 250 tokens; Task B 168 tokens.
 
 Measurement: Task A 250; Task B 168. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+The tuple-array fixture types are inferred from the retained nonempty literal entries using Core numeric and string literal defaults; removing the redundant annotations does not remove a fact needed for this answer.
+
+Task A: **239 tokens**. Task B: **157 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -49,3 +49,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L18: 302 tokens (versus 307); removes `}`.
 - Without L19: 303 tokens (versus 307); removes `}`.
 - Without L20: 291 tokens (versus 307); removes `try out.writeByte('\n');`.
+
+## Current token measurement
+
+Task A: **449 tokens**. Task B: **307 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

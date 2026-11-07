@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 189 tokens (versus 223); removes `for run in encoded.split_inclusive(|c: char| c.is_ascii_uppercase()) {`.
 - Without L15: 191 tokens (versus 223); removes `let (count, letter) = run.split_at(run.len() - 1);`.
 - Without L16: 192 tokens (versus 223); removes `decoded.push_str(&letter.repeat(count.parse::<usize>().unwrap()));`.
+
+## Current token measurement
+
+Task A: **299 tokens**. Task B: **215 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

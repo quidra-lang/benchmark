@@ -9,3 +9,7 @@ The question fixes the amount. Denomination order, remainder and quotient, initi
 The StringBuffer writes construct the line and the final stdout write emits the accumulated text.
 
 Source: `main.dart`, original lines 4–5, 7–15, 17. The previous excerpt measures 249 tokens; this evidence set measures 203 tokens.
+
+## Current token measurement
+
+Task A: **270 tokens**. Task B: **202 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

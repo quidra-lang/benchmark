@@ -9,3 +9,7 @@ The sorting operations show where ascending values come from. Replacing only the
 The collection's element type is a three-element array, so assigning p to a copies the sides. Slicing a gives the sorter access to the copy.
 
 Source: `main.go`, original lines 9–13. The previous excerpt measures 56 tokens; this evidence set measures 173 tokens.
+
+## Current token measurement
+
+Task A: **489 tokens**. Task B: **173 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

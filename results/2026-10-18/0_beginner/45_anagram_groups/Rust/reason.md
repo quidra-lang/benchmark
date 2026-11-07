@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 The group vector is already available after scanning matches for the first unused index; put the test after that scan, retaining used-marking.
 
 Source: `main.rs`, original lines 17–24. The previous excerpt measures 23 tokens; this evidence set measures 127 tokens.
+
+## Current token measurement
+
+Task A: **347 tokens**. Task B: **126 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

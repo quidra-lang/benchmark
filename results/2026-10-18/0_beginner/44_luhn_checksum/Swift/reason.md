@@ -53,3 +53,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L15: 326 tokens (versus 329); removes `}`.
 - Without L16: 294 tokens (versus 329); removes `let expected = (10 - (sum - digits.last!) % 10) % 10`.
 - Without L17: 276 tokens (versus 329); removes `print(number + ": " + (sum % 10 == 0 ? "valid" : "invalid (expected check digit \(expected))"))`.
+
+## Current token measurement
+
+Task A: **352 tokens**. Task B: **327 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 An insertion-ordered map provides first appearance, and appending to each group preserves input order.
 
 Source: `Main.java`, original lines 18–19. The previous excerpt measures 23 tokens; this evidence set measures 46 tokens.
+
+## Current token measurement
+
+Task A: **317 tokens**. Task B: **45 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

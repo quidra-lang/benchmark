@@ -19,3 +19,7 @@ Using unchanged `metric/tokenizer.py`: Task A **476** tokens; Task B **298** tok
 Measurement: Task A 476; Task B 298. Tokenizer: metric/tokenizer.py, unchanged.
 
 The day-step range inherits int from days in the typed input tuple; its positive iteration count is unchanged.
+
+## Current token measurement
+
+Task A: **462 tokens**. Task B: **298 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

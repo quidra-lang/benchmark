@@ -20,3 +20,7 @@ The threshold expression and letter mapping identify A and B, including zero-bas
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Editing printed letters or final totals would not update the shared classification and would require more unrelated sites. The selected shared decision plus its direct consumers demonstrates the smaller sufficient change. Where numeric indices are used, omitting the mapping would lose which boundary denotes A.
 
 The selected excerpt contains **107 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 216 tokens; the complete source contains 408 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **406 tokens**. Task B: **107 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

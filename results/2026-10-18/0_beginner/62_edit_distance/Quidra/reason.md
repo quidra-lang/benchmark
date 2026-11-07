@@ -17,3 +17,7 @@ Selected complete lines of `main.qui`: 9, 10, 11, 12, 13, 14, 15, 16. The prior 
 Measurement: Task A 342; Task B 221. Tokenizer: metric/tokenizer.py, unchanged.
 
 The prefix ranges inherit int from the explicitly converted lengths. The cost conditional has only integer-literal branches and therefore also infers int.
+
+## Current token measurement
+
+Task A: **327 tokens**. Task B: **214 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -38,3 +38,7 @@ Final original source lines: L2, L3, L4, L5, L6, L7, L8, L17.
 - L8: `    }` — Finish the membership/input traversal before computing the final removed count, so both later12 occurrences are excluded before the15-minus-retained calculation.
 
 Final selection: 149 metric tokens; contiguous span L2–L17: 216 tokens; complete source: 226 tokens. Scope-only lines are retained where they distinguish relevant branch/loop timing.
+
+## Current token measurement
+
+Task A: **220 tokens**. Task B: **146 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

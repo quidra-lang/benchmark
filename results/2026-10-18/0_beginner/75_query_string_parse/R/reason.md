@@ -19,3 +19,7 @@ The selected calls/assignments link decoded keys and values to the accumulation 
 ## Semantics and measured alternatives
 
 Final excerpt: **95 tokens** by metric/tokenizer.py tokenize. The prior broader excerpt was **232 tokens**. That sufficient alternative redundantly included unchanged decoder, sorting and output code. The final selection retains the actual affected statement and necessary decoded-result linkage. Standard iteration, string equality, list/array ordering and collection operations retain their documented meanings. No Task A program was compiled or executed. This is the lowest-token sufficient reviewed candidate, not a proof of a global optimum.
+
+## Current token measurement
+
+Task A: **456 tokens**. Task B: **95 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

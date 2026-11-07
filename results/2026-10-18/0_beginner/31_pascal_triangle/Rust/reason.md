@@ -49,3 +49,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 147 tokens (versus 161); removes `.map(i32::to_string)`.
 - Without L13: 146 tokens (versus 161); removes `.collect::<Vec<_>>()`.
 - Without L14: 149 tokens (versus 161); removes `.join(" ")`.
+
+## Current token measurement
+
+Task A: **175 tokens**. Task B: **158 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

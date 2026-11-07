@@ -9,3 +9,7 @@ The sorting operations show where ascending values come from. Replacing only the
 Both outputs use the same prefix, which currently precedes the ascending side preparation; move the prefix after that preparation.
 
 Source: `Main.java`, original lines 9–13, 19. The previous excerpt measures 110 tokens; this evidence set measures 180 tokens.
+
+## Current token measurement
+
+Task A: **484 tokens**. Task B: **178 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

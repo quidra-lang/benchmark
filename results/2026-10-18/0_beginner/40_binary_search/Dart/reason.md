@@ -9,3 +9,7 @@ The question provides target 50, but the searched array and the index arithmetic
 The probe text is written into the StringBuffer, and the final stdout write makes that buffer the printed output.
 
 Source: `main.dart`, original lines 4–5, 7–14, 16–22, 24. The previous excerpt measures 328 tokens; this evidence set measures 305 tokens.
+
+## Current token measurement
+
+Task A: **367 tokens**. Task B: **304 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

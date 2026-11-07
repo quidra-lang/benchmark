@@ -11,3 +11,7 @@ The shared side prefix is written unconditionally for each set, so replacing its
 Source: `main.qui`, original lines 3, 7. The previous excerpt measures 69 tokens; this evidence set measures 39 tokens.
 
 Measurement: Task A 366; Task B 39. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **365 tokens**. Task B: **38 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

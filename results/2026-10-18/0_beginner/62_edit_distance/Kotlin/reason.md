@@ -13,3 +13,7 @@ The table’s boundary entries are the length of the nonempty prefix: from empty
 The question supplies both inputs. Case arrays, unrelated examples, and caller prints are unnecessary; the selected table indexing, boundary writes and recurrence determine the answer.
 
 Selected complete lines of `main.kt`: 6–11. The prior excerpt measured 337 tokens; this excerpt measures 205 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **376 tokens**. Task B: **205 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

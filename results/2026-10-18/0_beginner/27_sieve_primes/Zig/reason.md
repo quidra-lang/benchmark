@@ -45,3 +45,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L20: 150 tokens (versus 167); removes `for (2..201) |p| {`.
 - Without L21: 154 tokens (versus 167); removes `if (prime[p]) {`.
 - Without L24: 144 tokens (versus 167); removes `try out.print("{d}", .{p});`.
+
+## Current token measurement
+
+Task A: **462 tokens**. Task B: **167 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

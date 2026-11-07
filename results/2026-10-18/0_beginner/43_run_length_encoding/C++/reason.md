@@ -9,3 +9,7 @@ The original literal line is necessary for the separator and trailing run. The s
 The standard from_chars consumes consecutive decimal digits and returns the pointer to the first character after that prefix.
 
 Source: `main.cpp`, original lines 7, 9–22. The previous excerpt measures 314 tokens; this evidence set measures 310 tokens.
+
+## Current token measurement
+
+Task A: **412 tokens**. Task B: **305 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

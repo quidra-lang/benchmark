@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 137 tokens (versus 162); removes `if (a[j] > a[j + 1]) {`.
 - Without L13: 130 tokens (versus 162); removes `std.mem.swap(i32, &a[j], &a[j + 1]);`.
 - Without L14: 151 tokens (versus 162); removes `total += 1;`.
+
+## Current token measurement
+
+Task A: **426 tokens**. Task B: **162 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

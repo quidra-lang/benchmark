@@ -55,3 +55,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L22: 293 tokens (versus 297); removes `}`.
 - Without L24: 262 tokens (versus 297); removes `for (int i = 0; i < primes.size(); i += 10) {`.
 - Without L25: 248 tokens (versus 297); removes `System.out.println(String.join(" ", primes.subList(i, Math.min(i + 10, primes.size()))));`.
+
+## Current token measurement
+
+Task A: **420 tokens**. Task B: **295 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -47,3 +47,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 134 tokens (versus 161); removes `primes = [n for n = 2:limit if prime[n+1]]`.
 - Without L14: 144 tokens (versus 161); removes `for first = 1:10:length(primes)`.
 - Without L15: 133 tokens (versus 161); removes `println(join(primes[first:min(first+9, end)], " "))`.
+
+## Current token measurement
+
+Task A: **203 tokens**. Task B: **161 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

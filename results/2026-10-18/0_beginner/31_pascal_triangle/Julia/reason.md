@@ -31,3 +31,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L3: 59 tokens (versus 71); removes `for n = 0:11`.
 - Without L4: 56 tokens (versus 71); removes `println(join(row, " "))`.
 - Without L5: 36 tokens (versus 71); removes `row = vcat(1, row[1:(end-1)] .+ row[2:end], 1)`.
+
+## Current token measurement
+
+Task A: **85 tokens**. Task B: **71 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

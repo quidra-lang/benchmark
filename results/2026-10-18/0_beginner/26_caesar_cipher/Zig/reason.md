@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L16: 171 tokens (versus 189); removes `cipher[i] = shift(c, 3);`.
 - Without L17: 171 tokens (versus 189); removes `for (cipher, 0..) |c, i|`.
 - Without L18: 170 tokens (versus 189); removes `plain[i] = shift(c, 23);`.
+
+## Current token measurement
+
+Task A: **404 tokens**. Task B: **189 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

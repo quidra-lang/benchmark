@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 214 tokens (versus 226); removes `return result.toString();`.
 - Without L12: 189 tokens (versus 226); removes `String encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3);`.
 - Without L14: 207 tokens (versus 226); removes `System.out.println(cipher(encrypted, -3));`.
+
+## Current token measurement
+
+Task A: **290 tokens**. Task B: **224 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

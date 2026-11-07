@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.swift`, in source order. Retained sour
 ## Minimization and alternatives
 
 The final outer-loop close and display-only lines do not contribute any requested fact. Inner boundaries separating conditional turns from unconditional movement remain. The prior selection used 258 tokens; this selection uses 256 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **323 tokens**. Task B: **256 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

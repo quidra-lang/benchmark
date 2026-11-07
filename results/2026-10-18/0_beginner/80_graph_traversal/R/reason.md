@@ -109,3 +109,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L43: 625 tokens; removes `result <- walk(vertex, seen)` from the dependency chain described above.
 - Without L44: 629 tokens; removes `seen <- result$seen` from the dependency chain described above.
 - Without L45: 616 tokens; removes `components[[length(components) + 1]] <- sort(result$order)` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **758 tokens**. Task B: **637 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

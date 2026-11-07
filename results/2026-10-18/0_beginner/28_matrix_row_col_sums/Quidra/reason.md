@@ -13,3 +13,7 @@ The row sum is emitted at the end of each original row. The columns array starts
 The existing row-element print statements are unchanged. The column field statement is needed because its value now represents a maximum, and the final width-six field is emitted separately. Selected complete lines of `main.qui`: 2, 3, 4, 7, 8, 9, 10.
 
 Measurement: Task A 228; Task B 95. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **226 tokens**. Task B: **93 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

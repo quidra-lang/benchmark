@@ -51,3 +51,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L21: 211 tokens (versus 215); removes `}`.
 - Without L22: 199 tokens (versus 215); removes `try out.writeByte('\n');`.
 - Without L23: 206 tokens (versus 215); removes `previous = row;`.
+
+## Current token measurement
+
+Task A: **385 tokens**. Task B: **215 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

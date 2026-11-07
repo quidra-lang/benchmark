@@ -20,3 +20,7 @@ The array line supplies the order, both 5 occurrences and all values needed to e
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A final output reference alone would not expose the data or accumulation. Conversely, where a standard aggregate directly establishes both statistics, separate getter/output lines add no fact required by this question. The data plus the actual reductions are the narrower sufficient alternative.
 
 The selected excerpt contains **81 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 126 tokens; the complete source contains 140 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **131 tokens**. Task B: **76 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

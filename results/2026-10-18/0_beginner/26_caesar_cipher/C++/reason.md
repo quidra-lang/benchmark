@@ -39,3 +39,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L9: 147 tokens (versus 188); removes `c = static_cast<char>('A' + (c - 'A' + shift) % 26);`.
 - Without L15: 178 tokens (versus 188); removes `cipher(message, 3);`.
 - Without L17: 177 tokens (versus 188); removes `cipher(message, 23);`.
+
+## Current token measurement
+
+Task A: **284 tokens**. Task B: **188 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

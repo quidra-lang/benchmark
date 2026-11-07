@@ -29,3 +29,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 
 - Without L7: 23 tokens; removes `var digit: u8 = 1;` from the dependency chain described above.
 - Without L8: 13 tokens; removes `while (digit <= 9) : (digit += 1) {` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **870 tokens**. Task B: **36 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -7,3 +7,7 @@ The initial call must use 5 in place of 4, with source A, target C and auxiliary
 The recursive parameter binding makes the peg permutations unambiguous. The final output either includes the call directly or consumes its result or shared count. Selecting the call alone in the latter case cannot establish the final output; main wrappers and output setup beyond these dependencies are unnecessary.
 
 Source: `main.cpp`, original lines 3–8, 12–13. The previous excerpt measures 178 tokens; this evidence set measures 205 tokens.
+
+## Current token measurement
+
+Task A: **225 tokens**. Task B: **205 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

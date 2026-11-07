@@ -20,3 +20,7 @@ The sentence literal is required for the exact characters and final word. The fi
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Neither reversal operation alone answers the comparison. Omitting the literal loses the exact resulting prefixes. The selected data and both transformations are smaller than complete wrapper/import/flush code and avoid reproducing standard split/reverse/join implementations.
 
 The selected excerpt contains **99 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 99 tokens; the complete source contains 113 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **107 tokens**. Task B: **94 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

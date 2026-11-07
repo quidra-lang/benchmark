@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.py`, in source order. Retained source 
 ## Minimization and alternatives
 
 The month title and standalone weekday heading are outside the two requested lines. A leap calculation used only for the February field can be omitted; prior-month accumulation must still account for February because it affects the August weekday. The prior selection used 363 tokens; this selection uses 298 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **529 tokens**. Task B: **298 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

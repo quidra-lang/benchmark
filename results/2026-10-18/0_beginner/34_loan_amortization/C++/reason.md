@@ -33,3 +33,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 60 tokens (versus 75); removes `int principal = payment - interest;`.
 - Without L11: 66 tokens (versus 75); removes `balance -= principal;`.
 - Without L13: 64 tokens (versus 75); removes `total_paid += payment;`.
+
+## Current token measurement
+
+Task A: **288 tokens**. Task B: **75 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

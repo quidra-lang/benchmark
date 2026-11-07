@@ -7,3 +7,7 @@ The discriminant is 57. With denominator −4, the plus-square-root numerator pr
 The tuple is supplied by the question, so the other coefficient sets and unrelated real/complex branches do not supply evidence. The positive-discriminant branch, numeric root operations and field mapping are retained. A custom formatter is retained only where its behavior is needed to connect a root to the corresponding printed field.
 
 Source: `main.kt`, original lines 3, 11, 13–16. The previous excerpt measures 260 tokens; this evidence set measures 178 tokens.
+
+## Current token measurement
+
+Task A: **535 tokens**. Task B: **176 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

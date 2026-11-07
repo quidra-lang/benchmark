@@ -57,3 +57,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L23: 332 tokens (versus 336); removes `}`.
 - Without L24: 315 tokens (versus 336); removes `if (error < 0 && !stack.empty())`.
 - Without L25: 314 tokens (versus 336); removes `error = static_cast<int>(s.size());`.
+
+## Current token measurement
+
+Task A: **625 tokens**. Task B: **330 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

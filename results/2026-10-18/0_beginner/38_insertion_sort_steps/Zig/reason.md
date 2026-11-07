@@ -7,3 +7,7 @@ Shift only a preceding element strictly less than the saved value, keeping the e
 The saved key, predecessor index, shift and final insertion identify why the strict condition is sufficient for stability. The loop bound, any size dependency, and one-based output adjustment identify which positions it processes. The counting and output logic need no changes.
 
 Source: `main.zig`, original lines 9–15, 17–18. The previous excerpt measures 49 tokens; this evidence set measures 129 tokens.
+
+## Current token measurement
+
+Task A: **438 tokens**. Task B: **129 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

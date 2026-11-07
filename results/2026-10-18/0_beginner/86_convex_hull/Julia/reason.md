@@ -85,3 +85,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L33: 389 tokens; removes `])` from the dependency chain described above.
 - Without L34: 371 tokens; removes `lower, upper = chain(points), chain(reverse(points))` from the dependency chain described above.
 - Without L35: 362 tokens; removes `hull = vcat(lower[1:(end-1)], upper[1:(end-1)])` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **569 tokens**. Task B: **393 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

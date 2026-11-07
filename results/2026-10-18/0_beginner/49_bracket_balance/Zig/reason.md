@@ -59,3 +59,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L32: 331 tokens (versus 335); removes `}`.
 - Without L33: 315 tokens (versus 335); removes `if (err == null and len > 0)`.
 - Without L34: 323 tokens (versus 335); removes `err = s.len;`.
+
+## Current token measurement
+
+Task A: **739 tokens**. Task B: **335 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

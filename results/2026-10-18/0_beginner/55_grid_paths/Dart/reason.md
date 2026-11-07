@@ -13,3 +13,7 @@ The row/column sweep accumulates counts from above and left, with destination fi
 The grid contents and unaffected output do not change. The mode binding, destination filter and predecessor updates show where to add the new term.
 
 Selected complete lines of `main.dart`: 10–20. The prior excerpt measured 270 tokens; this excerpt measures 260 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **384 tokens**. Task B: **260 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

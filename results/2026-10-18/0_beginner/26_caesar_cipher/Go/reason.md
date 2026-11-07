@@ -43,3 +43,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 183 tokens (versus 191); removes `return string(out)`.
 - Without L19: 178 tokens (versus 191); removes `encrypted := cipher(message, 3)`.
 - Without L21: 176 tokens (versus 191); removes `fmt.Println(cipher(encrypted, 23))`.
+
+## Current token measurement
+
+Task A: **257 tokens**. Task B: **191 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

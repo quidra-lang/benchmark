@@ -13,3 +13,7 @@ The selected row and column axes connect each element to the current row and col
 Selected complete lines of `main.zig`: L13, L14, L15, L16, L17, L18, L19, L21, L22, L23, L24, L25, L26, L27. The original loop boundaries establish which updates happen per element, which occur once per row and which produce the final summary line. The sample matrix and the unchanged printing of original row elements are not needed to locate the changed fields.
 
 The selected excerpt measures **206 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **486 tokens**. Task B: **206 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

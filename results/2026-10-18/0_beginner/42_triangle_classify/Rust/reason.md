@@ -29,3 +29,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 46 tokens (versus 59); removes `let mut a = p;`.
 - Without L13: 50 tokens (versus 59); removes `a.sort();`.
 - Without L14: 22 tokens (versus 59); removes `print!("{} {} {}: ", p[0], p[1], p[2]);`.
+
+## Current token measurement
+
+Task A: **502 tokens**. Task B: **58 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

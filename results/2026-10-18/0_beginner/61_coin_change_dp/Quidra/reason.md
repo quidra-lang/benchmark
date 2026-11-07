@@ -25,3 +25,7 @@ Current measurement with unchanged `metric/tokenizer.py`: Task A 312; Task B 72.
 Measurement: Task A 312; Task B 72. Tokenizer: metric/tokenizer.py, unchanged.
 
 The amount ranges inherit int from maximum and coin; removing the repeated range type preserves both table recurrences.
+
+## Current token measurement
+
+Task A: **310 tokens**. Task B: **72 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

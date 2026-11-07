@@ -31,3 +31,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L36: 25 tokens; removes `var tokens = std.mem.splitScalar(u8, program[@intCast(pc)], ' ');` from the dependency chain described above.
 - Without L37: 44 tokens; removes `const op = tokens.next().?;` from the dependency chain described above.
 - Without L38: 51 tokens; removes `executed += 1;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1089 tokens**. Task B: **59 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

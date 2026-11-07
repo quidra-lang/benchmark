@@ -27,3 +27,7 @@ The following smaller deletion candidates were measured as alternative line sets
 
 - Without L11: 21 tokens (versus 82); removes `std::cout << std::dec << n << ": bin=" << bits << " oct=" << std::oct << n << " hex=" << std::hex`.
 - Without L12: 61 tokens (versus 82); removes `<< std::uppercase << n << '\n';`.
+
+## Current token measurement
+
+Task A: **247 tokens**. Task B: **82 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

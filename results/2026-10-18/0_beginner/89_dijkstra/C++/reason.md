@@ -5,3 +5,7 @@ Move the zero-distance seed from A to G (index 6). The selected predecessor init
 Selected complete source lines: 15, 16, 29, 31, 32, 33, 34, 36, 37, 38.
 
 With the benchmark tokenizer, this selection measures 214 tokens; the previous selection measured 129. The full source is 813 tokens.
+
+## Current token measurement
+
+Task A: **809 tokens**. Task B: **212 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -11,3 +11,9 @@ The `:=` bindings infer their static types from their initializers under the cur
 Current measurement with unchanged `metric/tokenizer.py`: Task A 481; Task B 345.
 
 Measurement: Task A 481; Task B 345. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+The tuple-array fixture types are inferred from the retained nonempty literal entries using Core numeric and string literal defaults; removing the redundant annotations does not remove a fact needed for this answer.
+
+Task A: **470 tokens**. Task B: **334 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

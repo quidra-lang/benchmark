@@ -15,3 +15,7 @@ Only the code entries through T are needed for this trace when they occupy indep
 Selected complete lines of `main.qui`: 1, 3–4, 6–9, 11–23. The prior excerpt measured 487 tokens; this excerpt measures 421 with `metric/tokenizer.py`.
 
 Measurement: Task A 489; Task B 421. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **487 tokens**. Task B: **419 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

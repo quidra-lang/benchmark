@@ -33,3 +33,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L10: 216 tokens (versus 230); removes `.GroupBy(m => m.Value)`.
 - Without L11: 204 tokens (versus 230); removes `.ToDictionary(g => g.Key, g => g.Count());`.
 - Without L12: 182 tokens (versus 230); removes `foreach (var pair in counts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal).Take(5))`.
+
+## Current token measurement
+
+Task A: **318 tokens**. Task B: **228 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

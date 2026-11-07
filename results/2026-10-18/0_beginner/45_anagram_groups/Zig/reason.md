@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 The key is a 26-bin histogram. The first unprocessed index begins a group, and matches are visited in original index order. Count those matches before entering the existing output path.
 
 Source: `main.zig`, original lines 17–31. The previous excerpt measures 130 tokens; this evidence set measures 216 tokens.
+
+## Current token measurement
+
+Task A: **510 tokens**. Task B: **216 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

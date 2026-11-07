@@ -35,3 +35,7 @@ Final original source lines: L2, L4, L6, L7, L8.
 - L2: `    val phrases = listOf(` — Associate the supplied Step on no pets. literal with the actual phrase sequence/iteration. Where normalization or comparison uses explicit blocks, finish that region before testing the fully normalized sequence or printing the retained original phrase.
 
 Final selection: 134 metric tokens; contiguous span L2–L8: 190 tokens; complete source: 203 tokens. Scope-only lines are retained where they distinguish relevant branch/loop timing.
+
+## Current token measurement
+
+Task A: **200 tokens**. Task B: **132 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -5,3 +5,7 @@ For the input −456789 supplied in the question, the three-digit groups from th
 abs supplies just the digits, while a negative input produces a separate leading minus. The positive index and divisibility test control commas before later groups, and println ends the line.
 
 Complete main.rs lines: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. The literal collection and its traversal only deliver the input scalar that the question already provides. The selected formatter or grouping loop and output supply the algorithm and output evidence. The benchmark tokenizer counts 155 tokens in this excerpt.
+
+## Current token measurement
+
+Task A: **222 tokens**. Task B: **149 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.js`, in source order. Retained source 
 ## Minimization and alternatives
 
 The prior transactions that alter either balance, the target transactions, parsing and account lookup determine the trace. Leo-only withdrawals have no effect when they can be omitted as whole lines, and later commands are outside the trace. The prior selection used 408 tokens; this selection uses 411 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **516 tokens**. Task B: **411 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

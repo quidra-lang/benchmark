@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.dart`, in source order. Retained sourc
 ## Minimization and alternatives
 
 The resulting deck is a larger alternative that cannot establish the generator updates. Retain deck construction or numeric-to-card mapping, and discard the final terminator of a scope with no later dependent operation. The prior selection used 220 tokens; this selection uses 217 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **290 tokens**. Task B: **217 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

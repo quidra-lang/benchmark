@@ -21,3 +21,7 @@ The retained aggregate, accumulator initialization/updates where present, and di
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. A filter at the input declaration is an alternative design, but would obscure the requirement to retain the original input and needs the aggregation site as well to handle the empty case. Selecting the aggregation/dependent division sites is sufficient with fewer source tokens. A standalone output call cannot reveal how the mean is obtained.
 
 The selected excerpt contains **34 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 34 tokens; the complete source contains 96 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **95 tokens**. Task B: **34 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

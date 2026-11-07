@@ -33,3 +33,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L3: 243 tokens (versus 300); removes `for (const word of text.toLowerCase().match(/[a-z]+/g)) counts.set(word, (counts.get(word) ?? 0) + 1);`.
 - Without L4: 226 tokens (versus 300); removes `const ordered = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : a > b ? 1 : 0));`.
 - Without L5: 257 tokens (versus 300); removes `for (const word of ordered.slice(0, 5)) console.log(`${word}: ${counts.get(word)}`);`.
+
+## Current token measurement
+
+Task A: **317 tokens**. Task B: **297 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

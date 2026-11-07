@@ -13,3 +13,7 @@ The full input scan supplies the position used by each push and by the immediate
 The unchanged input texts and output formatting do not affect the new representation or the error assignment. The matching evidence shows which comparison must still use the symbol after the stack gains a position.
 
 Selected complete lines of `main.py`: 10, 12–23. The prior excerpt measured 140 tokens; this excerpt measures 175 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **388 tokens**. Task B: **174 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

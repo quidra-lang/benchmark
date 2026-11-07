@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L5: 138 tokens (versus 168); removes `return string.char(base + (code - base + shift) % 26)`.
 - Without L9: 134 tokens (versus 168); removes `local ciphertext = caesar("Zoe, meet Max by the Old Bridge at six!", 3)`.
 - Without L10: 139 tokens (versus 168); removes `io.write(ciphertext, "\n", caesar(ciphertext, -3), "\n")`.
+
+## Current token measurement
+
+Task A: **175 tokens**. Task B: **167 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

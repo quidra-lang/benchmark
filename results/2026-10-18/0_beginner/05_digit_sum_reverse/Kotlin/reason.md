@@ -20,3 +20,7 @@ The question provides the focused original input. The selected conversion or rem
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Reading only the final output expression would leave the counters or reversed value unexplained. Reading the full input traversal adds unrelated numbers without changing this trace. The selected per-value computation and format are the sufficient smaller alternative.
 
 The selected excerpt contains **89 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 89 tokens; the complete source contains 169 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **164 tokens**. Task B: **85 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

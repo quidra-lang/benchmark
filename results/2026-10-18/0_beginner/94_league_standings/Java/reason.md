@@ -83,3 +83,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L34: 726 tokens; removes `.thenComparing(Comparator.<Integer>comparingInt(i -> stats[i][4] - stats[i][5]).reversed())` from the dependency chain described above.
 - Without L35: 736 tokens; removes `.thenComparing(Comparator.<Integer>comparingInt(i -> stats[i][4]).reversed())` from the dependency chain described above.
 - Without L36: 749 tokens; removes `.thenComparing(i -> names[i]));` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **1134 tokens**. Task B: **765 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

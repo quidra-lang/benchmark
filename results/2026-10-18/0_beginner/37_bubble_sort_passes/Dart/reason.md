@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L9: 166 tokens (versus 185); removes `a[j] = a[j + 1];`.
 - Without L10: 169 tokens (versus 185); removes `a[j + 1] = value;`.
 - Without L11: 179 tokens (versus 185); removes `total++;`.
+
+## Current token measurement
+
+Task A: **272 tokens**. Task B: **185 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

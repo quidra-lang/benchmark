@@ -9,3 +9,7 @@ The loop over completed groups supplies the insertion site for the check without
 The separate group sequence is extended on the first signature occurrence; appends retain each group's word order.
 
 Source: `main.jl`, original lines 25–26. The previous excerpt measures 9 tokens; this evidence set measures 24 tokens.
+
+## Current token measurement
+
+Task A: **239 tokens**. Task B: **24 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

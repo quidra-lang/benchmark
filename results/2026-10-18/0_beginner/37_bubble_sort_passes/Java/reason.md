@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L12: 183 tokens (versus 205); removes `values[j] = values[j + 1];`.
 - Without L13: 186 tokens (versus 205); removes `values[j + 1] = temp;`.
 - Without L15: 196 tokens (versus 205); removes `swaps++;`.
+
+## Current token measurement
+
+Task A: **393 tokens**. Task B: **205 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

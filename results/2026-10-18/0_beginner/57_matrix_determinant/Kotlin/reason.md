@@ -13,3 +13,7 @@ The one-entry branch remains unchanged. In the recursive expansion, select the s
 The selected expansion and column filter establish both axes of the minor. The matrices and callers do not change because the same function computes the same determinant; output formatting is independent.
 
 Selected complete lines of `main.kt`: 1–7. The prior excerpt measured 169 tokens; this excerpt measures 164 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **483 tokens**. Task B: **164 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

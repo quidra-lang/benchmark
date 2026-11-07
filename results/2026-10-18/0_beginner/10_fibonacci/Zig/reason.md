@@ -20,3 +20,7 @@ The initial integer state or typed collection identifies the representation; the
 Use the language's ordinary evaluation, indexing, iteration and numeric semantics, and the documented behavior of the standard-library operations visible in the excerpt. The Task B assumptions apply; this is not a build or correctness verification. Selecting only the count literal would not expose a separately bounded summation or a numeric representation issue. Selecting final output alone would not show how many terms are generated. The retained extent and dependent sum/representation sites provide the sufficient smaller union.
 
 The selected excerpt contains **77 tokens** under `metric/tokenizer.py`. The contiguous source span from its first through last selected line contains 127 tokens; the complete source contains 290 tokens. These counts compare source-line sets, not LLM billing. Boilerplate and unchanged processing are omitted when they contribute no required fact. The excerpt need not be a standalone compilable program; omitted closing delimiters are not evidence for additional behavior.
+
+## Current token measurement
+
+Task A: **288 tokens**. Task B: **77 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

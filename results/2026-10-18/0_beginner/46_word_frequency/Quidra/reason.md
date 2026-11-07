@@ -7,3 +7,7 @@ Selected complete lines in order are 1, 2, 4, 5, 6, 7.
 Task A uses 208 tokens. Task B uses 175 tokens.
 
 Measurement: Task A 208; Task B 175. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **206 tokens**. Task B: **174 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

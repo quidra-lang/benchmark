@@ -79,3 +79,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L28: 563 tokens; removes `parent.set(rootB, rootA);` from the dependency chain described above.
 - Without L29: 572 tokens; removes `accepted++;` from the dependency chain described above.
 - Without L32: 557 tokens; removes `if (accepted === vertices.length - 1) break;` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **659 tokens**. Task B: **577 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.go`, in source order. Retained source 
 ## Minimization and alternatives
 
 The numerical item literals do not affect the modification design. The recurrence and reconstruction name the weight/value dependencies without retaining the unchanged item fixture or solving the modified instance. The prior selection used 448 tokens; this selection uses 381 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **518 tokens**. Task B: **381 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

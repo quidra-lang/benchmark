@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 193 tokens (versus 202); removes `}.joinToString("")`.
 - Without L11: 167 tokens (versus 202); removes `val encrypted = cipher("Zoe, meet Max by the Old Bridge at six!", 3)`.
 - Without L13: 189 tokens (versus 202); removes `println(cipher(encrypted, -3))`.
+
+## Current token measurement
+
+Task A: **220 tokens**. Task B: **201 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

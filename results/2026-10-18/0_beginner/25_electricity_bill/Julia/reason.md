@@ -27,3 +27,7 @@ The following smaller deletion candidates were measured as alternative line sets
 
 - Without L12: 64 tokens (versus 70); removes `bill =`.
 - Without L13: 6 tokens (versus 70); removes `900 + min(usage, 120)*30 + min(max(usage-120, 0), 180)*36 + max(usage-300, 0)*40`.
+
+## Current token measurement
+
+Task A: **259 tokens**. Task B: **70 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

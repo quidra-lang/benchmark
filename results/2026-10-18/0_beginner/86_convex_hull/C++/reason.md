@@ -69,3 +69,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L28: 527 tokens; removes `lower.pop_back();` from the dependency chain described above.
 - Without L29: 527 tokens; removes `upper.pop_back();` from the dependency chain described above.
 - Without L30: 510 tokens; removes `lower.insert(lower.end(), upper.begin(), upper.end());` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **789 tokens**. Task B: **520 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

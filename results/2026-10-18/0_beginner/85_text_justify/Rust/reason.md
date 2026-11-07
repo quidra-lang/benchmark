@@ -5,3 +5,7 @@ The retained guard separates the final or one-word line from full justification.
 Selected complete source lines: 11, 12, 14, 16, 17, 19, 20.
 
 With the benchmark tokenizer, this selection measures 149 tokens; the previous selection measured 132. The full source is 586 tokens.
+
+## Current token measurement
+
+Task A: **577 tokens**. Task B: **148 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

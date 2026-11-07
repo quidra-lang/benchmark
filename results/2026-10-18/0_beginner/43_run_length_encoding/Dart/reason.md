@@ -43,3 +43,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L14: 157 tokens (versus 166); removes `.allMatches(encoded)`.
 - Without L15: 135 tokens (versus 166); removes `.map((run) => run[2]! * int.parse(run[1]!))`.
 - Without L16: 158 tokens (versus 166); removes `.join();`.
+
+## Current token measurement
+
+Task A: **226 tokens**. Task B: **164 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

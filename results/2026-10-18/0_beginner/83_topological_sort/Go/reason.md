@@ -29,3 +29,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 
 - Without L28: 10 tokens; removes `if !taken[v] && indegree[v] == 0 && (best < 0 || names[v] < names[best]) {` from the dependency chain described above.
 - Without L29: 48 tokens; removes `best = v` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **941 tokens**. Task B: **58 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

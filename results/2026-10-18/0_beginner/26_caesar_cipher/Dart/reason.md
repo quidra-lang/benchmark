@@ -41,3 +41,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 136 tokens (versus 173); removes `return base < 0 ? c : base + (c - base + amount) % 26;`.
 - Without L14: 157 tokens (versus 173); removes `final cipher = caesar(message, 3);`.
 - Without L15: 156 tokens (versus 173); removes `final plain = caesar(cipher, 23);`.
+
+## Current token measurement
+
+Task A: **239 tokens**. Task B: **173 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

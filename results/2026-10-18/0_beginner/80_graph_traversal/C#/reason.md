@@ -117,3 +117,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L51: 609 tokens; removes `Dfs(v, graph, seen, component);` from the dependency chain described above.
 - Without L52: 617 tokens; removes `component.Sort();` from the dependency chain described above.
 - Without L53: 616 tokens; removes `components.Add(component);` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **798 tokens**. Task B: **619 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

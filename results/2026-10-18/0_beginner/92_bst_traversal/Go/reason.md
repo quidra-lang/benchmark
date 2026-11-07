@@ -13,3 +13,7 @@ The insertion data and placement rules establish the tree. After removing 6, the
 Selected complete lines of `main.go`: L6, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L24, L25, L26, L27, L28, L29, L30, L31, L35, L41, L42, L43, L44, L45, L48, L52, L53, L54, L55, L56, L57, L58, L59, L60, L61, L62, L63, L64, L65, L66, L67, L68, L69, L70, L75, L76, L77, L78, L97, L98, L99, L100, L101. The selected construction, search, successor splice and traversal calls support the trace. Deleting the specified keys never searches an absent subtree, so a separate missing-key return is unnecessary here. The recursive insertion, preorder and height base cases still support their required facts. Output-only joining does not affect traversal.
 
 The selected excerpt measures **834 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **1231 tokens**. Task B: **834 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

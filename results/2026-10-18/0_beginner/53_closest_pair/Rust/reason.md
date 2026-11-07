@@ -13,3 +13,7 @@ The squared-distance expression and the selected-pair updates show that the scor
 Print-only evidence would not establish that the value supplied to the square root is the squared value used by the comparisons. The strict comparisons and score stores suffice without the point literals or a trace of all pairs.
 
 Selected complete lines of `main.rs`: 14, 19, 21–22, 29–36. The prior excerpt measured 200 tokens; this excerpt measures 261 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **561 tokens**. Task B: **260 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

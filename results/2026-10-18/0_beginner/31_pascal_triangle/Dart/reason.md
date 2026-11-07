@@ -37,3 +37,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L7: 123 tokens (versus 126); removes `}`.
 - Without L8: 112 tokens (versus 126); removes `print(row.join(' '));`.
 - Without L9: 118 tokens (versus 126); removes `previous = row;`.
+
+## Current token measurement
+
+Task A: **151 tokens**. Task B: **126 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

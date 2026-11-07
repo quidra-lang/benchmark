@@ -31,3 +31,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L33: 23 tokens; removes `let parts: Vec<&str> = program[pc as usize].split(' ').collect();` from the dependency chain described above.
 - Without L34: 49 tokens; removes `executed += 1;` from the dependency chain described above.
 - Without L35: 44 tokens; removes `let op = parts[0];` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **830 tokens**. Task B: **57 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

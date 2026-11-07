@@ -9,3 +9,7 @@ With the benchmark tokenizer, this selection measures 107 tokens; the previous s
 Measurement: Task A 653; Task B 107. Tokenizer: metric/tokenizer.py, unchanged.
 
 The candidate range inherits nat from the natural length n; the candidate order and first eligible selection are unchanged.
+
+## Current token measurement
+
+Task A: **631 tokens**. Task B: **102 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

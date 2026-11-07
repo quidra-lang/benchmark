@@ -13,3 +13,7 @@ The source enumerates A, B, C, D in that order. The last A-prefixed leaf is ADCB
 The initial call, choice and restore operations, and base-case counter update are necessary. A separate print statement does not explain how the leaf obtains its number; the excerpt retains output when it shares the increment line.
 
 Selected complete lines of `main.go`: 5–7, 9–18, 21. The prior excerpt measured 193 tokens; this excerpt measures 169 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **215 tokens**. Task B: **169 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

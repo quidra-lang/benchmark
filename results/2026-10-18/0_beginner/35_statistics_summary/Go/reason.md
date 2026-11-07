@@ -9,3 +9,7 @@ Only the denominator changes. Where the expression is an unnamed argument in a m
 The format and deviation are separated in source, so both the format's last slot and the argument supplying it are retained.
 
 Source: `main.go`, original lines 34–35. The previous excerpt measures 39 tokens; this evidence set measures 81 tokens.
+
+## Current token measurement
+
+Task A: **419 tokens**. Task B: **81 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

@@ -9,3 +9,7 @@ The original literal line is necessary for the separator and trailing run. The s
 The count loop multiplies the prior accumulator by ten before adding the next digit, so 1 followed by 2 becomes 12.
 
 Source: `main.go`, original lines 9, 11–28. The previous excerpt measures 307 tokens; this evidence set measures 303 tokens.
+
+## Current token measurement
+
+Task A: **383 tokens**. Task B: **303 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

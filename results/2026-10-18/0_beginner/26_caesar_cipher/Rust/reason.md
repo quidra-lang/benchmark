@@ -47,3 +47,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L11: 162 tokens (versus 192); removes `(base + (c - base + shift) % 26) as char`.
 - Without L18: 176 tokens (versus 192); removes `let encrypted = cipher(message, 3);`.
 - Without L20: 170 tokens (versus 192); removes `println!("{}", cipher(&encrypted, 23));`.
+
+## Current token measurement
+
+Task A: **262 tokens**. Task B: **189 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

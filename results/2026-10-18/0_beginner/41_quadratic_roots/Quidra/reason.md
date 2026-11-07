@@ -11,3 +11,7 @@ The swap moves the greater value into the first output argument after both roots
 Source: `main.qui`, original lines 1, 5–7, 9–15. The previous excerpt measures 191 tokens; this evidence set measures 170 tokens.
 
 Measurement: Task A 443; Task B 166. Tokenizer: metric/tokenizer.py, unchanged.
+
+## Current token measurement
+
+Task A: **432 tokens**. Task B: **166 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

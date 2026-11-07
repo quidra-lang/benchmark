@@ -37,3 +37,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L21: 99 tokens; removes `base, extra = divrem(spaces, length(words)-1)` from the dependency chain described above.
 - Without L23: 108 tokens; removes `for i in eachindex(words)` from the dependency chain described above.
 - Without L25: 83 tokens; removes `i < length(words) && print(output, repeat(" ", base+(i <= extra)))` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **517 tokens**. Task B: **122 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

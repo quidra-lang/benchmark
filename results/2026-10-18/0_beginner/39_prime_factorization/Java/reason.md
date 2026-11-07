@@ -7,3 +7,7 @@ The starting divisor is 2. No integer from 2 through 99 divides 9973, so the rem
 The question provides 9973. The original-to-working-value assignment, trial bounds and factor guards matter; other inputs do not. An empty list joined with a single factor produces no separator; in streaming versions the first-factor flag remains unchanged. The exponent formatting of earlier factors need not be read beyond the lines required to identify their guarded insertion.
 
 Source: `Main.java`, original lines 7–20, 22. The previous excerpt measures 296 tokens; this evidence set measures 261 tokens.
+
+## Current token measurement
+
+Task A: **392 tokens**. Task B: **260 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

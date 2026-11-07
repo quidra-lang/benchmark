@@ -13,3 +13,7 @@ The row/column sweep accumulates counts from above and left, with destination fi
 The grid contents and unaffected output do not change. The mode binding, destination filter and predecessor updates show where to add the new term.
 
 Selected complete lines of `main.go`: 7–18. The prior excerpt measured 230 tokens; this excerpt measures 212 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **368 tokens**. Task B: **212 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

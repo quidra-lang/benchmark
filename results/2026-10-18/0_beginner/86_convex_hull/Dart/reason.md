@@ -99,3 +99,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L37: 501 tokens; removes `final lower = chain(points)..removeLast();` from the dependency chain described above.
 - Without L38: 499 tokens; removes `final upper = chain(points.reversed)..removeLast();` from the dependency chain described above.
 - Without L39: 502 tokens; removes `final hull = [...lower, ...upper];` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **702 tokens**. Task B: **516 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

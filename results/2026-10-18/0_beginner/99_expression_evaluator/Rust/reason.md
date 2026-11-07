@@ -13,3 +13,7 @@ The declarations or typed operand producer establish signed integer operands. Re
 Selected complete lines of `main.rs`: L10, L31, L37, L44. The division operation and just enough operand-type evidence identify the correct integer operation. A bare slash would also be consistent with floating-point division. The surrounding precedence, zero-divisor check, error handling and assignment logic are unaffected by this local edit.
 
 The selected excerpt measures **68 tokens** with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **1581 tokens**. Task B: **66 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

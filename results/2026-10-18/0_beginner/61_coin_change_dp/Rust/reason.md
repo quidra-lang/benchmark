@@ -13,3 +13,7 @@ The existing coin-first traversal builds combinations one denomination at a time
 Only the ways storage, base and loop ordering/recurrence govern the modification. Target literals and unaffected algorithms do not add evidence.
 
 Selected complete lines of `main.rs`: 4–5, 14–16. The prior excerpt measured 82 tokens; this excerpt measures 75 with `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **394 tokens**. Task B: **75 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

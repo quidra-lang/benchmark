@@ -39,3 +39,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L8: 101 tokens (versus 116); removes `@printf("%5d", value)`.
 - Without L9: 113 tokens (versus 116); removes `end`.
 - Without L10: 111 tokens (versus 116); removes `println()`.
+
+## Current token measurement
+
+Task A: **122 tokens**. Task B: **115 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

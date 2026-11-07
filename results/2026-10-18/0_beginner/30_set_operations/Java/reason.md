@@ -27,3 +27,7 @@ The following smaller deletion candidates were measured as alternative line sets
 
 - Without L13: 11 tokens (versus 33); removes `Set<Integer> difference = new TreeSet<>(a);`.
 - Without L14: 22 tokens (versus 33); removes `difference.removeAll(b);`.
+
+## Current token measurement
+
+Task A: **456 tokens**. Task B: **33 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

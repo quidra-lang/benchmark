@@ -9,3 +9,7 @@ The current iteration, tie boundary and position-based assignment establish why 
 The first-position guard and adjacent total comparison already detect exactly the distinct-score boundaries, so only the rank assignment needs to change.
 
 Source: `main.rs`, original lines 15–18. The previous excerpt measures 55 tokens; this evidence set measures 84 tokens.
+
+## Current token measurement
+
+Task A: **422 tokens**. Task B: **82 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

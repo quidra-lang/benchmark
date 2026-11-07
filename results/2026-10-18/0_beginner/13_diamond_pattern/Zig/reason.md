@@ -15,3 +15,7 @@ With n=5 from the question, these lines use i=5 and i=4, giving 0 spaces and 9 a
 Selected complete lines of `main.zig`: 5, 6, 8, 9, 10, 11, 12. The excerpt preserves their text, indentation and order.
 
 Adding the size declaration would repeat a supplied fact. Removing the traversal instead would lose the connection between output line numbers and the internal row index. The previous excerpt contained 188 tokens; the selected excerpt contains **175 tokens** using `metric/tokenizer.py`.
+
+## Current token measurement
+
+Task A: **259 tokens**. Task B: **174 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

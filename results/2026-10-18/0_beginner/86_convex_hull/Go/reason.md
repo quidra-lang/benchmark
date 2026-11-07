@@ -77,3 +77,7 @@ Measured deletion alternatives identify the removed source dependency or boundar
 - Without L33: 589 tokens; removes `upper = append(upper, p)` from the dependency chain described above.
 - Without L34: 600 tokens; removes `}` from the dependency chain described above.
 - Without L35: 573 tokens; removes `hull := append(lower[:len(lower)-1], upper[:len(upper)-1]...)` from the dependency chain described above.
+
+## Current token measurement
+
+Task A: **793 tokens**. Task B: **603 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

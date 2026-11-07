@@ -57,3 +57,7 @@ The following smaller deletion candidates were measured as alternative line sets
 - Without L18: 345 tokens (versus 402); removes `int expected = (10 - (sum - (number.charAt(number.length() - 1) - '0')) % 10) % 10;`.
 - Without L19: 384 tokens (versus 402); removes `System.out.println(number + ": "`.
 - Without L20: 350 tokens (versus 402); removes `+ (sum % 10 == 0 ? "valid" : "invalid (expected check digit " + expected + ")"));`.
+
+## Current token measurement
+
+Task A: **478 tokens**. Task B: **400 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

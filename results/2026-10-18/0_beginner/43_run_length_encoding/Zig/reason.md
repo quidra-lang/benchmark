@@ -9,3 +9,7 @@ The original literal line is necessary for the separator and trailing run. The s
 Digit parsing advances i while accumulating the count. The fill writes at dlen, the next run starts after dlen increases, and the output slices decoded at that length.
 
 Source: `main.zig`, original lines 7, 9, 14, 16–25, 27–38. The previous excerpt measures 395 tokens; this evidence set measures 449 tokens.
+
+## Current token measurement
+
+Task A: **635 tokens**. Task B: **449 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.

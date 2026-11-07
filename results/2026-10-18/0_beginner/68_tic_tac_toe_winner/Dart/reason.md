@@ -13,3 +13,7 @@ The excerpt is copied verbatim from `main.dart`, in source order. Retained sourc
 ## Minimization and alternatives
 
 Keep the fixture entries that establish board positions and the full candidate-line search. Table delimiters and boundaries of blocks used by later retained operations matter; standalone trailing control terminators do not. The prior selection used 478 tokens; this selection uses 475 tokens. Task A is assumed to satisfy its requirements for this analysis, as specified in README §2.3.
+
+## Current token measurement
+
+Task A: **507 tokens**. Task B: **474 tokens**. Remeasured with `metric/tokenizer.py`, which counts contiguous `()` as one token. Earlier numerical token comparisons in this rationale are historical and are superseded by these totals; the selected source lines and answer requirements remain the basis of the rationale.
