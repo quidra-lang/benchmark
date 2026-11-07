@@ -10,6 +10,35 @@ The benchmark measures two source-code-based quantities:
 
 These are reproducible proxies for token usage, not measurements of complete LLM conversations. Natural-language prompts and explanations are not counted.
 
+### Task requirements and understanding scope
+
+Each Task A includes a topic-specific `Restriction:` section consistent with its programming requirements. Restrictions identify relevant values, variables, or local contracts without requiring a particular language's declaration syntax, helper-function structure, or call notation. Type inference and idiomatic standard-library APIs remain allowed. A represented value's type and a statically enforced type guarantee are distinct requirements; do not impose the latter unless a task explicitly requests it.
+
+Task B samples a continuum of dependency scopes. The following five bands are sampling and reporting guides, not mutually exclusive kinds of programming work or a requirement to organize code into particular files or functions. Questions vary within each band and can combine a local fact with a wider dependency:
+
+| Scope label | Intended extent of the question |
+| --- | --- |
+| `expression` | One value, expression, comparison, or immediate decision. |
+| `block` | A short sequence of related operations or one local state transition. |
+| `routine` | One logical operation from its inputs through its internal decisions to its result. |
+| `interaction` | Related operations or processing stages and the dependency between them, within one feature. |
+| `end_to_end` | A meaningful scenario from original input through central processing to observable output, including the necessary stages but not unrelated features. |
+
+Each difficulty contains 20 questions in each band, giving 60 per band overall. These are declared sampling proportions, not estimates of real-work frequency. The scope describes the evidence actually needed by the whole question: appending one local clause to a broad question does not make the combined question local. For combined requirements, select the minimum source-line set sufficient for all of them together and count a shared source location once.
+
+Assignments were fixed independently of language scores, using seed `20261107`, scheme `continuum-v2`, sorted difficulty/topic paths, and the following procedure. The sampling runtime was Python 3.12.14; this does not change any benchmarked language version. `RNG(label)` means Python's `random.Random` initialized with the big-endian integer represented by `SHA-256("20261107:<difficulty-directory>:<label>")`.
+
+1. With `RNG("stratified-v1")`, shuffle a list containing 33 `local`, then 33 `broad`, then 33 `combined` pool labels, plus one extra `local` for Beginner, `broad` for Intermediate, and `combined` for Advanced. Assign the list to sorted topics. These pools are intermediate sampling strata, not the final scope labels.
+2. With that same generator, shuffle the balanced focus pool described below and assign it to non-`broad` topics in sorted order.
+3. With a fresh `RNG("continuum-v2")`, shuffle each topic pool in this order: `local`, `combined`, `broad`. From `local`, assign 20 topics to `expression` and the remainder to `block`. From `combined`, first fill `block` to 20, then assign 20 to `routine` and the rest to `interaction`. From `broad`, first fill `interaction` to 20 and assign the remaining 20 to `end_to_end`.
+4. Apply the content-eligibility focus swap recorded below. Scope assignments remain unchanged. Record the final scope, applicable focus, seed and scheme in each `taskB.txt`. The question's comprehension/modification category remains a separate axis.
+
+The ordered focus pool is `type_and_value_contract`, `name_and_call_resolution`, `initialization_and_defaults`, `boundaries_and_comparisons`, `indexing_and_iteration_order`, `numeric_units_and_rounding`, `output_representation`, `local_updates_and_mutation`, `parsing_and_normalization`, `empty_missing_and_errors`, `data_copy_and_aliasing`, and `short_circuit_and_control_flow`. Repeat this ordered pool six times, truncate to the number of non-`broad` topics, then shuffle as in Step 2. Thus type and call questions form a minority, alongside everyday value, formatting, parsing, boundary, update, ownership and control-flow work. A focus label does not authorize inventing new behavior or prescribing an implementation.
+
+Content-eligibility adjustment: in Beginner, swap the focuses of `49_bracket_balance` and `64_spiral_matrix`. Bracket checking explicitly classifies bracket/nonbracket characters, making parsing applicable; spiral construction has no parser and instead explicitly requires fixed-width output. Bracket checking is the first output-focus topic in sorted order with applicable character parsing. This documented swap preserves the focus counts, avoids inventing work merely to fit a label, and does not depend on language implementations or scores.
+
+All languages share the same task text and answer requirements. Task B answers must be supported by the selected source and known language/library semantics; a fact stated in Task A's restrictions is not source evidence by itself. When running the benchmark, first bring the approved languages' Task A implementations into conformance, then reselect and validate Task B excerpts and rationales, regenerate token views/counts, and aggregate fresh results. Regeneration is required by changed task definitions even when a language version has not changed. Report the scope bands and applicable focus groups separately alongside any overall result; do not silently change weights after inspecting results.
+
 When the user asks you to "start the benchmark," follow the steps below.
 
 ## File change restrictions
