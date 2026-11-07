@@ -7,7 +7,7 @@
 
 ## Implementation decision
 
-Use a natural index directly against the natural length returned by `.len()`. The index starts at two and advances positively; its bound `sales.len()` determines nat, removing the need for a repeated range type or a conversion of the length while preserving its slice and day labels.
+Use a natural index directly against the natural length returned by `.len()`. The index starts at two and advances positively; its bound `#sales` determines nat, removing the need for a repeated range type or a conversion of the length while preserving its slice and day labels.
 
 ## Evidence and answer
 
