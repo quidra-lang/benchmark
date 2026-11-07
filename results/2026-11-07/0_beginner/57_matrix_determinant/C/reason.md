@@ -1,0 +1,5 @@
+For n=1, return the sole integer entry. Otherwise expand along row zero, building each minor from rows 1..n-1 while excluding column j; recursively multiply the minor determinant by that row entry and alternate +,- signs in an integer subtotal. Matrix 1’s first term is 2*det([[4,-2],[6,3]]) = 2*(12+12)=48. Signed int parameters, terms and result retain exact signed integer arithmetic for these inputs. No real division or rounding occurs in this operation before output. Only the first matrix and full recurrence are required, not other inputs or rendering.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

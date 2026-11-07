@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Zero-filled table gives zero value for no items or zero capacity. The first tent has weight 10/value 120, so capacities below 10 retain zero; capacities at least 10 can take its value once. Each item transition reads only the previous item stage, including the weight-reduced capacity, which prevents reuse of the same item. Traceback starts at full capacity, walks item stages backward, marks an item only when value differs from the preceding stage and subtracts its weight. JS/TS reverses the backward-built chosen list; PHP records flags then scans original items to gather names. The base/table/transition and name reconstruction/output stages are needed; final value/weight rendering and unrelated item literals are omitted.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

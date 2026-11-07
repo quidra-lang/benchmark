@@ -1,0 +1,5 @@
+The initial depth/partial string is empty, all four choices are unused, and the counter is zero. Depth-first increasing A..D choices mark a character used, append/store it, recurse, then restore its used status and pop the string character. Completion at four positions increments the shared counter once and prints the permutation. First is `1: ABCD`; after `6: ADCB`, returns restore the A branch and choose B, yielding `7: BACD`. All distinct character choices give 4!=24 branches without duplicates; last line is `24: DCBA`. The recursive body and initial call are necessary, while unrelated writer setup is omitted.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

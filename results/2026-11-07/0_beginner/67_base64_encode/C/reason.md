@@ -1,0 +1,5 @@
+Pack each three-byte group into 24 bits, leaving missing low bytes zero, then take four six-bit alphabet indices. For Hello, World!, the groups encode as SGVs,bG8s,IFdv,cmxk and IQ==; the final single byte ! supplies only I and Q. Omit emitted padding branches/characters, while retaining zero-fill and bit packing, to get `"Hello, World!" -> "SGVsbG8sIFdvcmxkIQ"`. Man is a complete three-byte group and remains TWFu; empty input executes no group and retains an empty encoded result. Keep quoted output, spaces around the arrow and final LF.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

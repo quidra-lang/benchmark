@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Replace forward increment with day decrement. When day becomes 0, first move to the preceding month, wrapping month 0 to December of year-1, then set day to that resulting month length using Gregorian leap rules for the resulting year. During the 120-day case, moving back from 2023-11-01 crosses to 2023-10-31; October length 31 must be consulted after month change. Preserve the original string/initial components separately and pass only evolving year/month/day to the same 4/2/2 zero-padded formatter. Change displayed + to -. Initialization, day loop, rollover/month-length logic and formatter/output linkage establish the coordinated change; stored case literals are unnecessary because the question supplies the boundary scenario.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

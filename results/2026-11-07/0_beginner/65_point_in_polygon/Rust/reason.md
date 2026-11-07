@@ -1,0 +1,9 @@
+The current question asks: Suppose each result gains a suffix crossings=N, and classification must use the parity of that same crossing count. Explain the complete path for point (4, 8), from its coordinates and the closed polygon edge sequence through strict y tests, real-valued intersection calculation, crossing accumulation and formatted result. Identify where to keep a count if the source currently stores only parity, and derive that point's revised line without changing the crossing rules.
+
+Answer and source evidence: The closed edge loop includes final-to-first via modulo. The strict y straddle test guards real intersection division and strict intersection>px selects crossings to the right. At (4,8), right crossings occur at x=89/7,11,43/5,17/3, totaling 4, so parity is even and classification outside. Replace the parity toggle with a named integer count increment, classify from count%2, and append that same count to form (4, 8): outside crossings=4. Preserve all crossing tests.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Polygon coordinates, point binding, edge closure, strict conditions, real division, accumulation and output all contribute to this end-to-end modified result.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

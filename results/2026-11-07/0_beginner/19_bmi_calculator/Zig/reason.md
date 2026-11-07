@@ -1,0 +1,5 @@
+Add a height==0 guard immediately after selecting each person and before multiplying the height into the denominator or computing BMI. That path prints the current name followed by `: invalid height` and LF and continues to the next record, bypassing integer numerator/denominator work, real division, category tests and BMI formatting. Append the new Person to the people array; iteration follows its inferred length. Existing valid records remain in input order, and their category continues to use unrounded `bmi` before the one-decimal display.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

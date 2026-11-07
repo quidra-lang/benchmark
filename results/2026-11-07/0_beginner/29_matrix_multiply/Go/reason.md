@@ -1,0 +1,9 @@
+The current question asks: Connect the calculation of C at row 1, column 2 with its position in the printed product matrix. Identify the four A/B value pairs, their products, the reduction result and the operation that places it in the second field of the first line. Then use the zero at row 2, column 3 of A to establish whether this source takes an ordinary multiplication path or has a conditional zero-skipping optimization. Explain the actual evaluation rather than assuming multiplication short-circuits.
+
+Answer and source evidence: First-row second-column multiplication uses (3,4),(-2,2),(5,-1),(1,7), giving products 12,-4,-5,7 and sum 10. The j=1 result is appended/stored as the second row entry and later printed as the second width-five field on the first line. The complete accumulation/map/reduce loop has no test for a zero A entry, so row 2 column 3 still performs ordinary 0*B multiplication; arithmetic multiplication does not short-circuit.
+
+Selection: `main.go` lines 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21. Both matrices, indices, complete reduction body, ordered row storage and row output are needed to establish values, placement and the absence of a zero-skipping branch in that operation.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

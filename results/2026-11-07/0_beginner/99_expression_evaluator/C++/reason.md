@@ -1,0 +1,5 @@
+The prior assignment data establishes height=12-5=7. For the selected assignment, parser starts at token 2 and sum/product/unary apply precedence: 100 divided by parenthesized height-7 evaluates a right operand zero. Product sets the error before returning; the sum loop requires error.empty(), so bonus is never looked up. Main prints `error: division by zero` and skips the assignment-only else-if, preserving height=7. Lookup is a read through map.find and the only table write is after successful evaluation. Tokenizer implementation and other inputs are unnecessary for this token-input question.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

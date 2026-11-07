@@ -1,0 +1,9 @@
+The current question asks: Suppose stored parent values must uniformly be (row, column) pairs rather than flattened cell numbers. In the first-discovery parent-write block and its corresponding reconstruction read, identify the current representation and where and how both sides and the start marker must agree on the new value contract. Explain if the source already satisfies it; preserve BFS discovery order and the path itself.
+
+Answer and source evidence: Parents currently store flattened cell integers row*13+column, with -1/None for undiscovered and the flattened start as its own parent marker. Change stored parent values to row/column pairs, using optional/invalid-pair absence and a start pair. At first discovery store the predecessor (r,c); at traceback read/deconstruct the pair and either use pair coordinates throughout or flatten only for existing storage lookup. Update start comparison/marker and any maze indexing coherently; BFS neighbor/discovery order and path stay unchanged.
+
+Selection: `main.swift` lines 19, 20, 23, 29, 30, 31, 36, 37, 38, 40. The parent declaration/absence, start marker, coordinate mapping, discovery write and reconstruction read expose both ends of the representation contract. Full BFS and maze input are unrelated.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

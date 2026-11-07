@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+The named placements counter is retained and currently printed directly as an integer quantity. At this reporting expression divide by 1000 using real / (or 1000.0 where a port could truncate), then use toFixed(3)/%.3F and change the literal label to placements (thousands):. Do not assign the converted value back to the counter. For example 1234 becomes 1.234. An integer number of placements divided by 1000 has at most three decimal fractional places mathematically, so the requested display does not discard count precision; formatting supplies any trailing zeroes. Counter binding and current line emission suffice; solver/backtracking operations are unnecessary to change reporting units.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. TypeScript preserves the JavaScript runtime operations; inferred number types alone do not enforce integer-only values. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Replace only the equal-priority sequence comparison with ascending task-name comparison. The heap push and pop both call less, so the new tie rule applies to insertion repair, removal repair and final draining. PHP SplPriorityQueue is a max queue: replace its secondary -sequence priority with a comparison that reverses strcmp for ascending names while retaining smaller numeric priority first. Parsing supplies name and numeric priority. Runs become deploy(1), test(2), email(3), review(2), build(1), lint(3), each in run: NAME (priority N) format. Final remaining: report docs backup cleanup, obtained by the same removals, not internal heap order. The operation list, parsing, priority implementation and both output paths are required; unrelated braces and sequence increment are omitted because the new rule no longer uses it.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

@@ -1,0 +1,5 @@
+Every row/column cell computes a fresh count over offsets -1..1, excluding (0,0). The chained &&/and guard evaluates left-to-right with short-circuiting: at corner (0,0), rr=-1 fails rr>=0 before any board access. Next state is live for count 3 or an already-live cell with count 2. All neighbor reads use current board, all writes go to separate next storage; only after the complete traversal is board replaced/copied. std::array of std::string copies its strings by value, so next cell writes do not alias board text. Rendering and later generations are unnecessary.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,9 @@
+The current question asks: At a candidate search for TIGER from row 0, column 0 in direction E, identify the local bindings used for the word, start cell and direction offsets. Explain how the corresponding cell-comparison block resolves those names and obtains the board, whether through parameters, enclosing scope or inline iteration. Focus on this one candidate block, without tracing the whole search.
+
+Answer and source evidence: For candidate TIGER at (r,c)=(0,0), E selects offsets (dr,dc)=(0,1). The per-character local k/ch or k index combines with those enclosing bindings to form the candidate cell, then compares the board element with the corresponding word character. Go/Swift resolve board from the enclosing top-level/main binding and word/start/direction from nested iteration; Rust receives board and word parameters while r,c and dr,dc are local loop bindings captured by the all closure.
+
+Selection: `main.rs` lines 1, 2, 3, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21. Keep binding sites, E-offset association and the comparison expression. Board values are needed only when their declaration shares the actual enclosing binding; Rust's typed parameter already establishes its board source, so caller data is omitted.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

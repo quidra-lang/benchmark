@@ -1,0 +1,9 @@
+The current question asks: If an empty vertex sequence were substituted for polygon 1, follow the local initialization and edge-loop entry/exit block. Explain whether the last-to-first access would be evaluated or skipped, whether another access fails first, and which defaults would reach formatting if execution continues. Distinguish an explicit rejection, an implicit failure and a default result using the actual source rather than the nonempty-input promise.
+
+Answer and source evidence: With an empty vertex sequence the iteration is empty: the last-to-first modulo/index expression is never evaluated, nor is any earlier vertex access. There is no explicit rejection or implicit failure in this block. The integer shoelace accumulator and real perimeter remain zero, reaching area 0.0 and perimeter 0.000 formatting for polygon 1.
+
+Selection: `main.swift` lines 10, 11, 12, 16, 17, 18. The initial states, edge-loop header, guarded access and exit, and formatting show the skip and defaults; actual nonempty polygons do not determine the substituted-input behavior.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The empty-loop header proves the coordinate differences, shoelace updates and square-root accumulation are never evaluated, so those unused arithmetic lines are excluded. The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,5 @@
+The inorder item is the current integer `nodes[root].key` at mode==0, emitted between left and right traversal. It is currently printed immediately, without retaining a sequence. To print the original result after deleting 27, append a copy of that integer value at this emission site to independent integer storage before deletion, then print the saved integers later. Do not retain a node index/reference for deferred key lookup: deletion can assign a successor key into the same node. Only the item expression, integer type and actual key-replacement operation are needed; the whole tree is unnecessary.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

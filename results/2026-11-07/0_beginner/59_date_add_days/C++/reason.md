@@ -1,0 +1,5 @@
+Retain original input dates and operate on their y/m/d working values for the same number of days. Replace forward increment with decrement; if day would pass before 1, first move to the preceding month (January -> December of previous year) then set day to that month’s Gregorian length. Reuse the leap rule when obtaining February’s length. In the 2023-11-15 minus-120 case, crossing backward from November 1 gives October 31; the result is 2023-07-18. Pass working y/m/d to the existing zero-padded fields and change only the displayed ` + ` operator to ` - `; original date fields remain on the left.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

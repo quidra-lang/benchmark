@@ -1,0 +1,5 @@
+Cache order is MRU to LRU and begins empty with hit/miss totals zero. After B,A,C, it is [C,A,B]; fourth access B finds a hit, removes/moves it to front, producing [B,C,A] and totals hits=1,misses=3. Next D misses, evicts LRU A and inserts D at front, producing [D,B,C] and misses=4. Vector erase/pop_back/insert mutate the same cache object reused by the next iteration. The original immutable/string access sequence has separate storage and is only read, so cache rearrangement cannot reorder future accesses. Unrelated full-cache rendering is omitted.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

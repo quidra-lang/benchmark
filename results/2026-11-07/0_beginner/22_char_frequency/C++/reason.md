@@ -1,0 +1,5 @@
+Replace the current lowercase-only 26-entry key space with separate uppercase and lowercase keys, for example 52 counters. Filter original ASCII letters first, then map A..Z and a..z separately without lowering before key selection. Iterate uppercase keys in A..Z order followed by lowercase a..z, emitting only nonzero counters and the corresponding original-case label. The sentence has `P: 2` and `p: 7`, replacing combined p:9. Spaces and `!` still fail the letter filter. The excerpt exposes normalization, filtering, key arithmetic and output traversal that must agree.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+JavaScript/TypeScript divides the sum of word.length values by words.length with /. Those are exact counts but JavaScript Number division already retains fractional quotients; on an integer-truncating target, convert one operand to the real type or otherwise request real division before dividing. PHP computes $totalLength=array_sum($lengths), where array_map(strlen,$words) provides integer word lengths, then divides by count($words); PHP / already preserves a fractional result. No existing cast is needed in these sources, but the port must preserve this semantics rather than merely casting after truncation. Word literals, extrema and display formatting are unrelated to locating the affected arithmetic.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

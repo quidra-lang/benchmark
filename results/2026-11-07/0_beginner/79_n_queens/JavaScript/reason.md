@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Change the candidate loop to start at n-1, continue while column>=0 and decrement. Empty placement/zero count feed a row-by-row exhaustive search; prior-row column and diagonal tests reject conflicts, while push/pop restores the JS/TS prefix. PHP overwrites the current row and tests only previous rows, so no stale later row affects eligibility. A full placement increments count and the first retained solution is copied only once. Size-eight descending first solution is [7,3,0,2,5,1,6,4], the mirror of the ascending first solution; rendering puts Q at those zero-based columns. The same complete choices and rejection rules preserve counts 2,10,4,40,92 for N=4..8. Search, caller retention and rendering are all required; no specific input literal is needed beyond requested size loop.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

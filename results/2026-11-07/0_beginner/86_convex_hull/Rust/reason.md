@@ -1,0 +1,9 @@
+The current question asks: Explain the upper-chain construction operation from coordinate-sorted points to its completed chain. Identify the reverse traversal order and its first two points, then show how the current point, the last two chain points and the cross-product comparison control repeated removal and append. Explain why this reverses sorted order rather than original input order. Stop before lower/upper concatenation and area calculation.
+
+Answer and source evidence: Sort coordinates lexicographically by x then y, then traverse that sorted sequence in reverse; its first two points are (8,4) and (7,-1). For each candidate, while the chain has two points and the cross product of its final two plus the candidate is <=0, remove the last point repeatedly; then append the candidate. This reverses coordinate order rather than raw input order because the sort result is the traversed source.
+
+Selection: `main.rs` lines 1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 32, 33, 34, 35, 36, 37. Only the cross operation, all coordinates needed to establish the first two, sorting, upper initialization and upper-chain construction are retained. Lower construction, concatenation and area are expressly excluded.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.
