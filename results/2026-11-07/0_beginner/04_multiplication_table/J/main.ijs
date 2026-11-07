@@ -1,0 +1,10 @@
+main =: 3 : 0
+  for_row. >:i.9 do.
+    fields =. ''
+    for_column. >:i.9 do.
+      fields =. fields,, '3.0' 8!:2 row*column
+    end.
+    smoutput fields
+  end.
+)
+main ''

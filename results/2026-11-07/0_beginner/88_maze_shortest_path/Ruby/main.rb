@@ -1,0 +1,33 @@
+rows = [
+  '#############', '#S..#.......#', '#.#.#.###.#.#', '#.#...#...#.#', '#.###.#.###.#',
+  '#...#...#...#', '###.#####.#.#', '#.......#..G#', '#############'
+]
+height, width = rows.length, rows[0].length
+maze = rows.join.chars
+start, goal = maze.index('S'), maze.index('G')
+parent = {start => start}
+queue = [start]
+until queue.empty?
+  cell = queue.shift
+  break if cell == goal
+  row, column = cell.divmod(width)
+  [[-1, 0], [1, 0], [0, -1], [0, 1]].each do |dr, dc|
+    r, c = row + dr, column + dc
+    if r.between?(0, height - 1) && c.between?(0, width - 1)
+      neighbor = r * width + c
+      if maze[neighbor] != '#' && !parent.key?(neighbor)
+        parent[neighbor] = cell
+        queue << neighbor
+      end
+    end
+  end
+end
+steps = 0
+cell = goal
+until cell == start
+  steps += 1
+  maze[cell] = '*' if maze[cell] == '.'
+  cell = parent[cell]
+end
+puts "steps: #{steps}"
+maze.each_slice(width) { |line| puts line.join }

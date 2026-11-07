@@ -1,0 +1,50 @@
+fn main() {
+    let commands = [
+        "undo",
+        "type hello world",
+        "delete 5",
+        "type there",
+        "undo",
+        "undo",
+        "redo",
+        "type friend",
+        "redo",
+        "delete 20",
+        "undo",
+        "redo",
+        "redo",
+        "type see you",
+    ];
+    let mut buffer = String::new();
+    let mut undo = Vec::new();
+    let mut redo = Vec::new();
+    for command in commands {
+        if command == "undo" {
+            if let Some(previous) = undo.pop() {
+                redo.push(buffer);
+                buffer = previous;
+            } else {
+                println!("undo => nothing to undo");
+                continue;
+            }
+        } else if command == "redo" {
+            if let Some(next) = redo.pop() {
+                undo.push(buffer);
+                buffer = next;
+            } else {
+                println!("redo => nothing to redo");
+                continue;
+            }
+        } else {
+            undo.push(buffer.clone());
+            redo.clear();
+            if let Some(text) = command.strip_prefix("type ") {
+                buffer.push_str(text);
+            } else {
+                let count: usize = command[7..].parse().unwrap();
+                buffer.truncate(buffer.len().saturating_sub(count));
+            }
+        }
+        println!("{} => \"{}\"", command, buffer);
+    }
+}

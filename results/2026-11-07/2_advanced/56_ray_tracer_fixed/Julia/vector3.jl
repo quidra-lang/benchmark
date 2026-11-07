@@ -1,0 +1,7 @@
+add(u,v) = ntuple(a->u[a]+v[a],3)
+sub(u,v) = ntuple(a->u[a]-v[a],3)
+neg(u) = ntuple(a->-u[a],3)
+dot(u,v) = fld(sum(u[a]*v[a] for a in 1:3),S)
+sc(u,k) = ntuple(a->fld(u[a]*k,S),3)
+vector_length(u) = isqrt(sum(value*value for value in u))
+norm(u) = ntuple(a->fld(u[a]*S,vector_length(u)),3)

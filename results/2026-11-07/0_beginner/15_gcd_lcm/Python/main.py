@@ -1,0 +1,10 @@
+def gcd(a, b):
+    while b:
+        a, b = b, a % b
+    return a
+
+
+for a, b in [(48, 180), (1071, 462), (7, 91), (13, 97), (36288, 98280)]:
+    divisor = gcd(a, b)
+    multiple = a // divisor * b
+    print(f"gcd({a}, {b}) = {divisor}, lcm({a}, {b}) = {multiple}")

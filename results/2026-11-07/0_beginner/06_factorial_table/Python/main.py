@@ -1,0 +1,4 @@
+from math import factorial
+
+for n in range(13):
+    print(f"{n}! = {factorial(n)}")

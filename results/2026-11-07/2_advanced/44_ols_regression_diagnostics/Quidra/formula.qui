@@ -1,0 +1,240 @@
+public import dataframe = "./dataframe.qui"
+
+bool contains_name(string[] values, string value)
+    for item := values[]
+        if item == value
+            return true
+    return false
+
+bool contains_int(int[] values, int value)
+    for item := values[]
+        if item == value
+            return true
+    return false
+
+int power_two(int exponent)
+    result := 1
+    for _ < exponent
+        result *= 2
+    return result
+
+class Factor(string name, int column, int power, bool categorical)
+class Term(Factor[] factors, string name, string[] keys)
+class Model(string original, string response, int response_column, string weight, int weight_column, Term[] terms, int[] factor_columns, int[] categorical_columns, int[] variables)
+class Component(Factor factor, string name, string level)
+class DesignColumn(int term_index, string name, Component[] components)
+class Design(Model model, int[] row_numbers, string[][] rows, string[][] levels, DesignColumn[] columns, real64[][] matrix, real64[] response, real64[] weights)
+
+Factor parse_factor(string name, string[] columns)
+    categorical := #name >= 2 and name[0:<2] == "C("
+    column := name
+    power := 1
+    if categorical
+        column = name[2:<int(#name) - 1]
+    elif #name >= 2 and name[0:<2] == "I("
+        parts := name[2:<int(#name) - 1].split("^")
+        column = parts[0]
+        power = if parts[1] == "2" then 2 else 3
+    return Factor(name, dataframe.find_name(columns, column), power, categorical)
+
+Term make_term(Factor[] factors)
+    names := [for factor := factors[] then factor.name]
+    return Term(factors, names.join(":"), names.sorted())
+
+bool same_keys(string[] first, string[] second)
+    if #first != #second
+        return false
+    for: index < int(#first)
+        if first[index] != second[index]
+            return false
+    return true
+
+bool contained(Term first, Term second)
+    if #first.factors >= #second.factors
+        return false
+    for name := first.keys[]
+        if not contains_name(second.keys, name)
+            return false
+    return true
+
+Model parse(string line, string[] columns)
+    parts := line.split(" weights=")
+    original := parts[0]
+    weight := if #parts == 2 then parts[1] else ""
+    halves := original.split(" ~ ")
+    Term[] terms := []
+    int[] factor_columns := []
+    int[] categorical_columns := []
+    int[] variables := []
+    for expression := halves[1].split(" + ")[]
+        Factor[][] expanded := []
+        if expression.contains("*")
+            factors := [for name := expression.split("*")[] then parse_factor(name, columns)]
+            for: 1 <= size <= int(#factors)
+                for: 1 <= mask < power_two(int(#factors))
+                    Factor[] chosen := []
+                    for: index < int(#factors)
+                        if (mask / power_two(index)) % 2 == 1
+                            chosen = chosen.append(factors[index])
+                    if int(#chosen) == size
+                        expanded = expanded.append(chosen)
+        else
+            expanded = [[for name := expression.split(":")[] then parse_factor(name, columns)]]
+        for factors := expanded[]
+            item := make_term(factors)
+            exists := false
+            for previous := terms[]
+                if same_keys(item.keys, previous.keys)
+                    exists = true
+                    break
+            if exists
+                continue
+            terms = terms.append(item)
+            for factor := factors[]
+                if not contains_int(factor_columns, factor.column)
+                    factor_columns = factor_columns.append(factor.column)
+                    variables = variables.append(factor.column)
+                if factor.categorical and not contains_int(categorical_columns, factor.column)
+                    categorical_columns = categorical_columns.append(factor.column)
+    response_column := dataframe.find_name(columns, halves[0])
+    weight_column := if weight == "" then -1 else dataframe.find_name(columns, weight)
+    variables = variables.append(response_column)
+    if weight_column >= 0
+        variables = variables.append(weight_column)
+    return Model(original, halves[0], response_column, weight, weight_column, terms, factor_columns, categorical_columns, variables)
+
+string format_model(Model model, int[] indices)
+    names := [for index := indices[] then model.terms[index].name]
+    return model.response + " ~ " + (if #names == 0 then "1" else names.join(" + "))
+
+int[] removable(Term[] terms, int[] indices)
+    int[] result := []
+    for index := indices[]
+        allowed := true
+        current := terms[index]
+        for other := indices[]
+            candidate := terms[other]
+            if contained(current, candidate)
+                allowed = false
+                break
+        if allowed
+            result = result.append(index)
+    return result
+
+int[] candidates(Term[] terms, int[] indices)
+    int[] result := []
+    for: index < int(#terms)
+        allowed := not contains_int(indices, index)
+        item := terms[index]
+        for: other < int(#terms)
+            smaller := terms[other]
+            if contained(smaller, item) and not contains_int(indices, other)
+                allowed = false
+        if allowed
+            result = result.append(index)
+    return result
+
+bool hierarchical(Term[] terms, int[] indices)
+    for index := indices[]
+        item := terms[index]
+        for: other < int(#terms)
+            smaller := terms[other]
+            if contained(smaller, item) and not contains_int(indices, other)
+                return false
+    return true
+
+real64 component_value(Component component, string[] row)
+    factor := component.factor
+    value := row[factor.column]
+    if factor.categorical
+        return if value == component.level then 1.0 else 0.0
+    number := dataframe.decimal(value)
+    if factor.power == 2
+        return number * number
+    if factor.power == 3
+        return number * number * number
+    return number
+
+real64[] design_values(DesignColumn[] columns, string[] row)
+    real64[] result := []
+    for column := columns[]
+        real64 value := 1.0
+        for: index < int(#column.components)
+            component := column.components[index]
+            next_value := component_value(component, row)
+            value = if index == 0 then next_value else value * next_value
+        result = result.append(value)
+    return result
+
+real64[][] subset_matrix(real64[][] matrix, DesignColumn[] columns, int[] indices)
+    real64[][] result := []
+    for row := matrix[]
+        real64[] selected := []
+        for: column < int(#columns)
+            if columns[column].term_index < 0 or contains_int(indices, columns[column].term_index)
+                selected = selected.append(row[column])
+        result = result.append(selected)
+    return result
+
+bool predictable(Model model, string[][] levels, string[] row)
+    for column := model.factor_columns[]
+        if row[column] == "NA"
+            return false
+        if #levels[column] > 0 and not contains_name(levels[column], row[column])
+            return false
+    return true
+
+Design design(Model model, dataframe.Frame data)
+    int[] row_numbers := []
+    string[][] rows := []
+    for: index < int(#data.rows)
+        row := data.rows[index]
+        complete := true
+        for column := model.variables[]
+            if row[column] == "NA"
+                complete = false
+        if complete
+            rows = rows.append(row)
+            row_numbers = row_numbers.append(index + 1)
+    string[][] levels := []
+    for: column < int(#data.columns)
+        string[] items := []
+        if contains_int(model.categorical_columns, column)
+            for row := rows[]
+                if not contains_name(items, row[column])
+                    items = items.append(row[column])
+            items = items.sorted()
+        levels = levels.append(items)
+    columns := [DesignColumn(-1, "(Intercept)", [])]
+    for: term_index < int(#model.terms)
+        item := model.terms[term_index]
+        Component[][] choices := []
+        total := 1
+        for factor := item.factors[]
+            Component[] components := []
+            if factor.categorical
+                for: 1 <= index < int(#levels[factor.column])
+                    level := levels[factor.column][index]
+                    components = components.append(Component(factor, factor.name + level, level))
+            else
+                components = [Component(factor, factor.name, "")]
+            choices = choices.append(components)
+            total *= int(#components)
+        for: code < total
+            remaining := code
+            string[] names := []
+            Component[] components := []
+            for options := choices[]
+                component := options[remaining % int(#options)]
+                remaining /= int(#options)
+                names = names.append(component.name)
+                components = components.append(component)
+            columns = columns.append(DesignColumn(term_index, names.join(":"), components))
+    real64[][] matrix := []
+    real64[] response := []
+    real64[] weights := []
+    for row := rows[]
+        matrix = matrix.append(design_values(columns, row))
+        response = response.append(dataframe.decimal(row[model.response_column]))
+        weights = weights.append(if model.weight_column >= 0 then dataframe.decimal(row[model.weight_column]) else 1.0)
+    return Design(model, row_numbers, rows, levels, columns, matrix, response, weights)

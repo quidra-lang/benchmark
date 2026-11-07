@@ -1,0 +1,824 @@
+import eventlog = "./eventlog.qui"
+import dfg = "./dfg.qui"
+import alpha_miner = "./alpha_miner.qui"
+import heuristic_miner = "./heuristic_miner.qui"
+import conformance = "./conformance.qui"
+import report = "./report.qui"
+
+int sum_values(int[] values)
+    result := 0
+    for value := values[]
+        result += value
+    return result
+
+int index_of(string[] values, string wanted)
+    for: i < int(#values)
+        if values[i] == wanted
+            return i
+    return -1
+
+int integer_index(int[] values, int wanted)
+    for: i < int(#values)
+        if values[i] == wanted
+            return i
+    return -1
+
+string[] unique_strings(string[] values)
+    string[] result := []
+    for value := values.sorted()[]
+        if #result == 0 or result[-1] != value
+            result = result.append(value)
+    return result
+
+string integer_key(int[] values)
+    return [for value := values[] then string(value)].join(",")
+
+int lookup_id(map<string, int> values, string key)
+    match values.get(key)
+        int found
+            return found
+        none
+            return -1
+
+int[] parse_fraction(string value)
+    parts := value.split("/")
+    return [eventlog.parse_integer(parts[0]), eventlog.parse_integer(parts[1])]
+
+string fraction_value(int numerator, int denominator)
+    return report.fraction([numerator, denominator])
+
+string yes_no(bool value)
+    return if value then "yes" else "no"
+
+class Params(int filter_min, int sla, int observations, int[] dependency_threshold, int[] relative_best, int[] loop1_threshold, int[] loop2_threshold, int[] and_threshold)
+
+Params extract_parameters()
+    rows := eventlog.read_parameters()
+    return Params(eventlog.parse_integer(rows[0][1]), eventlog.parse_integer(rows[1][1]), eventlog.parse_integer(rows[2][1]), parse_fraction(rows[3][1]), parse_fraction(rows[4][1]), parse_fraction(rows[5][1]), parse_fraction(rows[6][1]), parse_fraction(rows[7][1]))
+
+class Validated(eventlog.Event[] events, string[] errors)
+
+Validated validate_rows(string[][] rows)
+    eventlog.Event[] events := []
+    string[] errors := []
+    distinct<string> adopted
+    for: i < int(#rows)
+        row := rows[i]
+        minute := eventlog.timestamp_minutes(row[2])
+        if minute < 0
+            errors = errors.append("line {i + 2}: bad timestamp {row[2]}")
+            continue
+        string identity := row[0] + HT + row[1] + HT + row[2]
+        if adopted.has(identity)
+            errors = errors.append("line {i + 2}: duplicate event {row[0]} {row[1]} {row[2]}")
+            continue
+        .adopted.add(identity)
+        events = events.append(eventlog.Event(i + 2, row[0], row[1], row[2], row[3], minute))
+    return Validated(events, errors)
+
+class Case(string identifier, eventlog.Event[] events, int[] trace, int[] resources)
+    int duration := events[-1].time_value - events[0].time_value
+    variant := 0
+
+class Variant(int[] trace, int[] cases, bool keep)
+
+bool variant_before(Variant first, Variant second)
+    return if #first.cases != #second.cases then #first.cases > #second.cases else alpha_miner.sequence_before(first.trace, second.trace)
+
+Variant[] make_variants(Case[] cases, int[][] counts, int minimum)
+    Variant[] grouped := []
+    for: i < int(#cases)
+        group := -1
+        for: j < int(#grouped)
+            if grouped[j].trace == cases[i].trace
+                group = j
+                break
+        if group < 0
+            keep := true
+            trace := cases[i].trace
+            for: 1 <= j < int(#trace)
+                if counts[trace[j - 1]][trace[j]] < minimum
+                    keep = false
+            grouped = grouped.append(Variant(trace, [i], keep))
+        else
+            grouped[group].cases = grouped[group].cases.append(i)
+    Variant[] result := []
+    for item := grouped[]
+        position := int(#result)
+        for: i < int(#result)
+            if variant_before(item, result[i])
+                position = i
+                break
+        result = result[0:<position].concat([item]).concat(result[position:<int(#result)])
+    return result
+
+int[] log_activities(int[][] traces, int size)
+    present := [for i := (0:<int(size))[] then false]
+    for trace := traces[]
+        for activity := trace[]
+            present[activity] = true
+    return [for i := (0:<int(size))[] if present[i] then i]
+
+string[] footprint_lines(string[] names, int[] activities, string[][] relations)
+    selected_names := [for i := activities[] then names[i]]
+    cells := [for a := activities[] then [for b := activities[] then relations[a][b]]]
+    return dfg.footprint(selected_names, cells)
+
+class Discovery(conformance.Net net, int candidate_count, int causal_count, int[][] pairs, int[] activities, string[][] relations)
+
+Discovery discover_net(int[][] traces, int[] activities, string[] names, string[][] relations)
+    size := int(#names)
+    int[][] candidates := []
+    distinct<string> seen
+    causal := 0
+    for a := activities[]
+        for b := activities[]
+            if relations[a][b] != "->"
+                continue
+            causal += 1
+            if relations[a][a] == "#" and relations[b][b] == "#"
+                pair := [2 ^ a, 2 ^ b]
+                key := integer_key(pair)
+                if not seen.has(key)
+                    .seen.add(key)
+                    candidates = candidates.append(pair)
+    cursor := 0
+    while cursor < int(#candidates)
+        pair := candidates[cursor]
+        cursor += 1
+        for activity := activities[]
+            for: side < 2
+                if alpha_miner.extend_pair(pair, activity, side, relations, size)
+                    grown := pair
+                    grown[side] += 2 ^ activity
+                    key := integer_key(grown)
+                    if not seen.has(key)
+                        .seen.add(key)
+                        candidates = candidates.append(grown)
+    int[][] maximal := []
+    for pair := candidates[]
+        extendable := false
+        for activity := activities[]
+            for: side < 2
+                extendable = extendable or alpha_miner.extend_pair(pair, activity, side, relations, size)
+        if extendable
+            continue
+        position := int(#maximal)
+        for: i < int(#maximal)
+            if alpha_miner.pair_before(pair, maximal[i], size)
+                position = i
+                break
+        maximal = maximal[0:<position].concat([pair]).concat(maximal[position:<int(#maximal)])
+    string[] places := ["start"].concat([for i := (0:<int(#maximal))[] then "p{i + 1}"]).concat(["end"])
+    transitions := [for activity := activities[] then names[activity]]
+    int[][] inputs := [for t := (0:<int(#transitions))[] then []]
+    outputs := inputs
+    final := int(#places) - 1
+    starts := [for i := (0:<int(size))[] then false]
+    ends := starts
+    for trace := traces[]
+        starts[trace[0]] = true
+        ends[trace[-1]] = true
+    for: t < int(#activities)
+        activity := activities[t]
+        if starts[activity]
+            inputs[t] = inputs[t].append(0)
+        for: i < int(#maximal)
+            if alpha_miner.contains(maximal[i][1], activity)
+                inputs[t] = inputs[t].append(i + 1)
+            if alpha_miner.contains(maximal[i][0], activity)
+                outputs[t] = outputs[t].append(i + 1)
+        if ends[activity]
+            outputs[t] = outputs[t].append(final)
+    return Discovery(conformance.Net(places, transitions, inputs, outputs, 0, final), int(#candidates), causal, maximal, activities, relations)
+
+class PlusResult(Discovery discovery, int[] loop_places, int[][] triangles)
+
+PlusResult discover_plus(int[][] traces, int[] weights, int[] activities, int[] loops, string[] names, int[][] counts)
+    size := int(#names)
+    reduced_activities := [for activity := activities[] if integer_index(loops, activity) < 0 then activity]
+    reduced := [for trace := traces[] then [for activity := trace[] if integer_index(loops, activity) < 0 then activity]]
+    reduced_counts := dfg.directly_follows(reduced, weights, size)
+    triangles := alpha_miner.triangle_counts(reduced, weights, size)
+    relations := [for a := (0:<int(size))[] then [for b := (0:<int(size))[] then alpha_miner.plus_relation(reduced_counts, triangles, a, b)]]
+    discovered := discover_net(reduced, reduced_activities, names, relations)
+    int[][] inputs := [for activity := activities[] then []]
+    outputs := inputs
+    for: i < int(#reduced_activities)
+        t := integer_index(activities, reduced_activities[i])
+        inputs[t] = discovered.net.inputs[i]
+        outputs[t] = discovered.net.outputs[i]
+    loop_places := [for i := (0:<int(size))[] then -1]
+    for loop_activity := loops[]
+        predecessors := 0
+        successors := 0
+        for activity := reduced_activities[]
+            if counts[activity][loop_activity] > 0
+                predecessors += 2 ^ activity
+            if counts[loop_activity][activity] > 0
+                successors += 2 ^ activity
+        for: p < int(#discovered.pairs)
+            if discovered.pairs[p] == [predecessors, successors]
+                t := integer_index(activities, loop_activity)
+                loop_places[loop_activity] = p + 1
+                inputs[t] = [p + 1]
+                outputs[t] = [p + 1]
+                break
+    transitions := [for activity := activities[] then names[activity]]
+    discovered.net = conformance.Net(discovered.net.places, transitions, inputs, outputs, discovered.net.initial, discovered.net.final)
+    return PlusResult(discovered, loop_places, triangles)
+
+class Reachability(int markings, int edges, int unsafe, int deadlocks, int stuck, bool final, int[] dead, bool sound, bool[][] follows)
+
+Reachability explore_net(conformance.Net net)
+    transitions := int(#net.transitions)
+    markings := [net.initial_marking]
+    map<string, int> positions
+    .positions.set(integer_key(net.initial_marking), 0)
+    int[][] edges := []
+    unsafe := 0
+    deadlocks := 0
+    enabled_ever := [for t := (0:<int(transitions))[] then false]
+    follows := [for t := (0:<int(transitions))[] then [for u := (0:<int(transitions))[] then false]]
+    cursor := 0
+    while cursor < int(#markings)
+        marking := markings[cursor]
+        enabled := net.enabled_transitions(marking)
+        if #enabled == 0 and marking != net.final_marking
+            deadlocks += 1
+        for t := enabled[]
+            enabled_ever[t] = true
+            following := net.fire(marking, t)
+            safe := true
+            for tokens := following[]
+                safe = safe and tokens <= 1
+            if not safe
+                unsafe += 1
+                continue
+            key := integer_key(following)
+            target := lookup_id(positions, key)
+            if target < 0
+                target = int(#markings)
+                .positions.set(key, target)
+                markings = markings.append(following)
+            edges = edges.append([cursor, target, t])
+            for u := net.enabled_transitions(following)[]
+                follows[t][u] = true
+        cursor += 1
+    final_index := lookup_id(positions, integer_key(net.final_marking))
+    reaches_final := [for i := (0:<int(#markings))[] then i == final_index]
+    changed := true
+    while changed
+        changed = false
+        for edge := edges[]
+            if reaches_final[edge[1]] and not reaches_final[edge[0]]
+                reaches_final[edge[0]] = true
+                changed = true
+    stuck := int(#[for reaches := reaches_final[] if not reaches then reaches])
+    dead := [for t := (0:<int(transitions))[] if not enabled_ever[t] then t]
+    return Reachability(int(#markings), int(#edges), unsafe, deadlocks, stuck, final_index >= 0, dead, unsafe == 0 and stuck == 0 and #dead == 0, follows)
+
+conformance.Replay replay_case(Case record, conformance.Net net, string[] activity_names)
+    places := int(#net.places)
+    result := conformance.Replay(places, int(#net.transitions))
+    int[][] tokens := [for p := (0:<int(places))[] then []]
+    tokens[net.initial] = [record.events[0].time_value]
+    result.produced = 1
+    for: i < int(#record.trace)
+        t := index_of(net.transitions, activity_names[record.trace[i]])
+        if t < 0
+            result.skipped += 1
+            continue
+        minute := record.events[i].time_value
+        for p := net.inputs[t][]
+            result.consumed += 1
+            if #tokens[p] == 0
+                result.missing += 1
+                result.place_missing[p] += 1
+            else
+                result.waiting[p] = result.waiting[p].append(minute - tokens[p][0])
+                tokens[p] = tokens[p][1:<int(#tokens[p])]
+                result.routes[p][t] += 1
+        for p := net.outputs[t][]
+            tokens[p] = tokens[p].append(minute)
+            result.produced += 1
+    result.consumed += 1
+    final := net.final
+    if #tokens[final] == 0
+        result.missing += 1
+        result.place_missing[final] += 1
+    else
+        tokens[final] = tokens[final][1:<int(#tokens[final])]
+    for: p < places
+        remaining := int(#tokens[p])
+        result.place_remaining[p] = remaining
+        result.remaining += remaining
+        result.deviating[p] = if remaining > 0 or result.place_missing[p] > 0 then 1 else 0
+    return result
+
+class Replays(conformance.Replay[] cases, conformance.Replay totals, int fitting)
+
+Replays replay_all(Case[] cases, conformance.Net net, string[] names)
+    totals := conformance.Replay(int(#net.places), int(#net.transitions))
+    conformance.Replay[] records := []
+    fitting := 0
+    for record := cases[]
+        result := replay_case(record, net, names)
+        records = records.append(result)
+        if result.missing == 0 and result.remaining == 0
+            fitting += 1
+        totals.missing += result.missing
+        totals.remaining += result.remaining
+        totals.consumed += result.consumed
+        totals.produced += result.produced
+        totals.skipped += result.skipped
+        for: p < int(#net.places)
+            totals.place_missing[p] += result.place_missing[p]
+            totals.place_remaining[p] += result.place_remaining[p]
+            totals.deviating[p] += result.deviating[p]
+            totals.waiting[p] = totals.waiting[p].concat(result.waiting[p])
+            for: t < int(#net.transitions)
+                totals.routes[p][t] += result.routes[p][t]
+    return Replays(records, totals, fitting)
+
+class Prefix(int[] trace, int weight, bool[] followers)
+
+Prefix[] build_prefixes(Case[] cases, int activity_count)
+    Prefix[] prefixes := []
+    map<string, int> positions
+    for record := cases[]
+        for: length <= int(#record.trace)
+            trace := record.trace[0:<length]
+            key := integer_key(trace)
+            index := lookup_id(positions, key)
+            if index < 0
+                index = int(#prefixes)
+                .positions.set(key, index)
+                prefixes = prefixes.append(Prefix(trace, 0, [for a := (0:<int(activity_count))[] then false]))
+            prefixes[index].weight += 1
+            if length < int(#record.trace)
+                prefixes[index].followers[record.trace[length]] = true
+    return prefixes
+
+class Precision(int prefixes, int allowed, int escaping, int[] escape_weights)
+
+Precision prefix_precision(conformance.Net net, Prefix[] prefixes, string[] activities)
+    fitting := 0
+    allowed := 0
+    escaping := 0
+    weights := [for name := net.transitions[] then 0]
+    for prefix := prefixes[]
+        marking := net.initial_marking
+        fit := true
+        for activity := prefix.trace[]
+            t := index_of(net.transitions, activities[activity])
+            if t < 0 or not net.enabled(marking, t)
+                fit = false
+                break
+            marking = net.fire(marking, t)
+        if not fit
+            continue
+        fitting += 1
+        for t := net.enabled_transitions(marking)[]
+            allowed += prefix.weight
+            activity := index_of(activities, net.transitions[t])
+            if activity < 0 or not prefix.followers[activity]
+                escaping += prefix.weight
+                weights[t] += prefix.weight
+    return Precision(fitting, allowed, escaping, weights)
+
+string[] net_lines(conformance.Net net, int[][] pairs, string[] activities)
+    string[] lines := []
+    size := int(#activities)
+    for: p < int(#net.places)
+        string[] before := []
+        string[] after := []
+        for: t < int(#net.transitions)
+            if integer_index(net.outputs[t], p) >= 0
+                before = before.append(net.transitions[t])
+            if integer_index(net.inputs[t], p) >= 0
+                after = after.append(net.transitions[t])
+        if p > 0 and p + 1 < int(#net.places)
+            before = [for a := alpha_miner.members(pairs[p - 1][0], size)[] then activities[a]]
+            after = [for a := alpha_miner.members(pairs[p - 1][1], size)[] then activities[a]]
+        lines = lines.append("PLACE {net.places[p]} " + report.names(before) + " " + report.names(after))
+    for: t < int(#net.transitions)
+        inputs := [for p := net.inputs[t][] then net.places[p]]
+        outputs := [for p := net.outputs[t][] then net.places[p]]
+        lines = lines.append("TRANSITION {net.transitions[t]} in " + report.names(inputs) + " out " + report.names(outputs))
+    return lines.append("NET places {#net.places} transitions {#net.transitions} arcs {net.arc_count}")
+
+string[] heuristic_lines(int[][] counts, int[][] triangles, string[] names, Params params)
+    size := int(#names)
+    loop1 := [for a := (0:<int(size))[] then false]
+    loop2 := [for a := (0:<int(size))[] then [for b := (0:<int(size))[] then false]]
+    edges := loop2
+    string[] lines := []
+    loops1 := 0
+    loops2 := 0
+    for: a < size
+        count := counts[a][a]
+        if count == 0
+            continue
+        measure := heuristic_miner.loop_measure(count)
+        accepted := count >= params.observations and report.compare(measure, params.loop1_threshold) >= 0
+        loop1[a] = accepted
+        edges[a][a] = accepted
+        if accepted
+            loops1 += 1
+        lines = lines.append("L1 {names[a]} count {count} measure " + report.fraction(measure) + " " + (if accepted then "ACCEPT" else "REJECT"))
+    for: a < size
+        for: a + 1 <= b < size
+            count := triangles[a][b] + triangles[b][a]
+            if loop1[a] or loop1[b] or count == 0
+                continue
+            measure := heuristic_miner.loop_measure(count)
+            accepted := count >= params.observations and report.compare(measure, params.loop2_threshold) >= 0
+            loop2[a][b] = accepted
+            loop2[b][a] = accepted
+            if accepted
+                loops2 += 1
+            lines = lines.append("L2 {names[a]} {names[b]} count {count} measure " + report.fraction(measure) + " " + (if accepted then "ACCEPT" else "REJECT"))
+    int[][] best_out := [for a := (0:<int(size))[] then [-1, 1]]
+    best_in := best_out
+    for: a < size
+        for: b < size
+            if a == b or counts[a][b] == 0
+                continue
+            measure := heuristic_miner.dependency(counts, a, b)
+            if report.compare(measure, best_out[a]) > 0
+                best_out[a] = measure
+            if report.compare(measure, best_in[b]) > 0
+                best_in[b] = measure
+    for: a < size
+        for: b < size
+            if a == b or counts[a][b] == 0
+                continue
+            measure := heuristic_miner.dependency(counts, a, b)
+            verdict := "ACCEPT"
+            if loop2[a][b]
+                verdict = "LOOP2"
+            elif counts[a][b] < params.observations
+                verdict = "REJECT_COUNT"
+            elif report.compare(measure, params.dependency_threshold) < 0
+                verdict = "REJECT_MEASURE"
+            elif report.compare(report.difference(best_out[a], measure), params.relative_best) > 0 and report.compare(report.difference(best_in[b], measure), params.relative_best) > 0
+                verdict = "REJECT_BEST"
+            if verdict == "ACCEPT" or verdict == "LOOP2"
+                edges[a][b] = true
+            lines = lines.append("DEP {names[a]} {names[b]} count {counts[a][b]} reverse {counts[b][a]} measure " + report.fraction(measure) + " {verdict}")
+    for: a < size
+        inputs := [for b := (0:<int(size))[] if edges[b][a] then names[b]]
+        outputs := [for b := (0:<int(size))[] if edges[a][b] then names[b]]
+        lines = lines.append("NODE {names[a]} in " + report.names(inputs) + " out " + report.names(outputs))
+    edge_count := 0
+    for: a < size
+        for: b < size
+            if edges[a][b]
+                edge_count += 1
+        for: side < 2
+            neighbours := [for b := (0:<int(size))[] if b != a and (if side == 0 then edges[a][b] else edges[b][a]) then b]
+            for: i < int(#neighbours)
+                for: i + 1 <= j < int(#neighbours)
+                    b := neighbours[i]
+                    c := neighbours[j]
+                    measure := if side == 0 then heuristic_miner.split_measure(counts, a, b, c) else heuristic_miner.join_measure(counts, a, b, c)
+                    kind := if side == 0 then "SPLIT" else "JOIN"
+                    verdict := if report.compare(measure, params.and_threshold) >= 0 then "AND" else "XOR"
+                    lines = lines.append("{kind} {names[a]} {names[b]} {names[c]} measure " + report.fraction(measure) + " {verdict}")
+    return lines.append("GRAPH activities {size} edges {edge_count} loops1 {loops1} loops2 {loops2}")
+
+class Study(string[][] rows, Params params, conformance.Net reference)
+    validated := validate_rows(rows)
+    eventlog.Event[] events := validated.events
+    string[] activities := unique_strings([for event := events[] then event.activity])
+    string[] resources := unique_strings([for event := events[] then event.resource])
+    activity_count := int(#activities)
+    resource_count := int(#resources)
+    Case[] cases := [for record := eventlog.group_cases(events)[] then Case(record.identifier, record.events, [for event := record.events[] then index_of(activities, event.activity)], [for event := record.events[] then index_of(resources, event.resource)])]
+    case_count := int(#cases)
+    int[][] traces := [for record := cases[] then record.trace]
+    int[] weights := [for record := cases[] then 1]
+    int[][] counts := dfg.directly_follows(traces, weights, activity_count)
+    int[][] triangles := alpha_miner.triangle_counts(traces, weights, activity_count)
+    Variant[] variants := make_variants(cases, counts, params.filter_min)
+    for: i < int(#variants)
+        for case_index := variants[i].cases[]
+            cases[case_index].variant = i + 1
+    int[][] filtered := [for variant := variants[] if variant.keep then variant.trace]
+    int[] filtered_weights := [for variant := variants[] if variant.keep then int(#variant.cases)]
+    kept_cases := sum_values(filtered_weights)
+    int kept_events := sum_values([for i := (0:<int(#filtered))[] then int(#filtered[i]) * filtered_weights[i]])
+    int[][] filtered_counts := dfg.directly_follows(filtered, filtered_weights, activity_count)
+    filtered_activities := log_activities(filtered, activity_count)
+    int[] loops := [for a := filtered_activities[] if filtered_counts[a][a] > 0 then a]
+    string[][] full_relations := [for a := (0:<int(activity_count))[] then [for b := (0:<int(activity_count))[] then dfg.basic_relation(counts, a, b)]]
+    string[][] filtered_relations := [for a := (0:<int(activity_count))[] then [for b := (0:<int(activity_count))[] then dfg.basic_relation(filtered_counts, a, b)]]
+    alpha := discover_net(filtered, filtered_activities, activities, filtered_relations)
+    plus := discover_plus(filtered, filtered_weights, filtered_activities, loops, activities, filtered_counts)
+    conformance.Net[] nets := [reference, alpha.net, plus.discovery.net]
+    net_names := ["reference", "alpha", "alpha_plus"]
+    Reachability[] reachability := [for net := nets[] then explore_net(net)]
+    prefixes := build_prefixes(cases, activity_count)
+    Precision[] precisions := [for net := nets[] then prefix_precision(net, prefixes, activities)]
+    Replays[] replays := [for net := nets[] then replay_all(cases, net, activities)]
+
+    string trace_names(int[] trace)
+        return report.names([for activity := trace[] then activities[activity]])
+
+    string[] log_summary()
+        lines := [for problem := validated.errors[] then "ERROR " + problem]
+        first := 0
+        last := 0
+        for: i < int(#events)
+            if events[i].time_value < events[first].time_value
+                first = i
+            if events[i].time_value > events[last].time_value
+                last = i
+        lines = lines.append("LOG rows {#rows} adopted {#events} rejected {#validated.errors} cases {case_count} activities {activity_count} resources {resource_count} first {events[first].timestamp} last {events[last].timestamp}")
+        event_counts := [for a := (0:<int(activity_count))[] then 0]
+        case_counts := event_counts
+        starts := event_counts
+        ends := event_counts
+        rework := event_counts
+        int[][] waiting := [for a := (0:<int(activity_count))[] then []]
+        used_resources := [for a := (0:<int(activity_count))[] then [for r := (0:<int(resource_count))[] then false]]
+        weekday_events := [for d := (0:<7)[] then 0]
+        weekday_starts := weekday_events
+        weekday_ends := weekday_events
+        for record := cases[]
+            occurrences := [for a := (0:<int(activity_count))[] then 0]
+            starts[record.trace[0]] += 1
+            ends[record.trace[-1]] += 1
+            weekday_starts[(record.events[0].time_value / 1440 + 3) % 7] += 1
+            weekday_ends[(record.events[-1].time_value / 1440 + 3) % 7] += 1
+            for: i < int(#record.trace)
+                activity := record.trace[i]
+                occurrences[activity] += 1
+                event_counts[activity] += 1
+                used_resources[activity][record.resources[i]] = true
+                weekday_events[(record.events[i].time_value / 1440 + 3) % 7] += 1
+                if i > 0
+                    waiting[activity] = waiting[activity].append(record.events[i].time_value - record.events[i - 1].time_value)
+            for: a < activity_count
+                if occurrences[a] > 0
+                    case_counts[a] += 1
+                if occurrences[a] > 1
+                    rework[a] += 1
+        for: a < activity_count
+            wait := if #waiting[a] == 0 then "-" else fraction_value(sum_values(waiting[a]), int(#waiting[a]))
+            resource_total := int(#[for used := used_resources[a][] if used then used])
+            lines = lines.append("ACTIVITY {activities[a]} events {event_counts[a]} cases {case_counts[a]} start {starts[a]} end {ends[a]} rework {rework[a]} wait {wait} resources {resource_total} model " + yes_no(index_of(reference.transitions, activities[a]) >= 0))
+        lengths := [for record := cases[] then int(#record.trace)]
+        durations := [for record := cases[] then record.duration]
+        lists := [lengths, durations]
+        labels := ["LENGTH", "DURATION"]
+        for: i < 2
+            ordered := lists[i].sorted()
+            lines = lines.append("{labels[i]} min {ordered[0]} max {ordered[case_count - 1]} mean " + fraction_value(sum_values(ordered), case_count) + " median " + report.fraction(eventlog.median(ordered)))
+        days := [for duration := durations[] then duration / 1440]
+        max_day := days.sorted()[case_count - 1]
+        for: day <= max_day
+            count := int(#[for value := days[] if value == day then value])
+            lines = lines.append("DAYS {day} cases {count} share " + report.percentage(count, case_count))
+        late := int(#[for duration := durations[] if duration > params.sla then duration])
+        lines = lines.append("SLA limit {params.sla} late {late} share " + report.percentage(late, case_count))
+        weekdays := ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for: day < 7
+            lines = lines.append("WEEKDAY {weekdays[day]} events {weekday_events[day]} starts {weekday_starts[day]} ends {weekday_ends[day]}")
+        return lines
+
+    string[] variant_lines()
+        string[] lines := []
+        for: i < int(#variants)
+            variant := variants[i]
+            count := int(#variant.cases)
+            duration_sum := sum_values([for index := variant.cases[] then cases[index].duration])
+            late := int(#[for index := variant.cases[] if cases[index].duration > params.sla then index])
+            replay := replays[0].cases[variant.cases[0]]
+            fitness := conformance.fitness(replay.missing, replay.remaining, replay.consumed, replay.produced)
+            decision := if variant.keep then "KEEP" else "DROP"
+            lines = lines.append("VARIANT {i + 1} count {count} share " + report.percentage(count, case_count) + " length {#variant.trace} first {cases[variant.cases[0]].identifier} duration " + fraction_value(duration_sum, count) + " late {late} fitness " + report.fraction(fitness) + " {decision} " + trace_names(variant.trace))
+        return lines.append("FILTER min_follows {params.filter_min} variants {#filtered} of {#variants} cases {kept_cases} of {case_count} events {kept_events} of {#events}")
+
+    string[] dfg_lines()
+        starts := [for a := (0:<int(activity_count))[] then 0]
+        int[][] durations := [for a := (0:<int(activity_count))[] then []]
+        int[][][] waiting := [for a := (0:<int(activity_count))[] then [for b := (0:<int(activity_count))[] then []]]
+        case_counts := [for a := (0:<int(activity_count))[] then [for b := (0:<int(activity_count))[] then 0]]
+        for record := cases[]
+            starts[record.trace[0]] += 1
+            end := record.trace[-1]
+            durations[end] = durations[end].append(record.duration)
+            seen := [for a := (0:<int(activity_count))[] then [for b := (0:<int(activity_count))[] then false]]
+            for: 1 <= i < int(#record.trace)
+                a := record.trace[i - 1]
+                b := record.trace[i]
+                waiting[a][b] = waiting[a][b].append(record.events[i].time_value - record.events[i - 1].time_value)
+                seen[a][b] = true
+            for: a < activity_count
+                for: b < activity_count
+                    if seen[a][b]
+                        case_counts[a][b] += 1
+        upper := int(#events)
+        keys := [for a := (0:<int(activity_count))[] if starts[a] > 0 then (upper - starts[a]) * activity_count + a]
+        string[] lines := []
+        for key := keys.sorted()[]
+            a := key % activity_count
+            lines = lines.append("START {activities[a]} count {starts[a]}")
+        keys = [for a := (0:<int(activity_count))[] if #durations[a] > 0 then (upper - int(#durations[a])) * activity_count + a]
+        for key := keys.sorted()[]
+            a := key % activity_count
+            lines = lines.append("END {activities[a]} count {#durations[a]} duration " + fraction_value(sum_values(durations[a]), int(#durations[a])))
+        base := activity_count * activity_count
+        keys = []
+        for: a < activity_count
+            for: b < activity_count
+                if counts[a][b] > 0
+                    keys = keys.append((upper - counts[a][b]) * base + a * activity_count + b)
+        for key := keys.sorted()[]
+            pair := key % base
+            a := pair / activity_count
+            b := pair % activity_count
+            ordered := waiting[a][b].sorted()
+            lines = lines.append("EDGE {activities[a]} {activities[b]} count {counts[a][b]} cases {case_counts[a][b]} mean " + fraction_value(sum_values(ordered), int(#ordered)) + " min {ordered[0]} max {ordered[-1]}")
+        return lines.concat(footprint_lines(activities, [for a := (0:<int(activity_count))[] then a], full_relations))
+
+    string pair_summary(Discovery discovery)
+        return "PAIRS causal {discovery.causal_count} candidates {discovery.candidate_count} maximal {#discovery.pairs}"
+
+    string[] alpha_lines()
+        string[] lines := ["LOG variants {#filtered} cases {kept_cases} activities " + trace_names(filtered_activities), "LOOPS " + trace_names(loops), "MINER alpha"]
+        lines = lines.concat(footprint_lines(activities, alpha.activities, alpha.relations)).append(pair_summary(alpha)).concat(net_lines(alpha.net, alpha.pairs, activities))
+        lines = lines.append("MINER alpha_plus")
+        for: a < activity_count
+            for: b < activity_count
+                if plus.triangles[a][b] > 0
+                    lines = lines.append("TRIANGLE {activities[a]} {activities[b]} count {plus.triangles[a][b]}")
+        discovery := plus.discovery
+        lines = lines.concat(footprint_lines(activities, discovery.activities, discovery.relations)).append(pair_summary(discovery))
+        for activity := loops[]
+            before := [for other := discovery.activities[] if filtered_counts[other][activity] > 0 then other]
+            after := [for other := discovery.activities[] if filtered_counts[activity][other] > 0 then other]
+            p := plus.loop_places[activity]
+            place := if p < 0 then "-" else discovery.net.places[p]
+            lines = lines.append("LOOP {activities[activity]} before " + trace_names(before) + " after " + trace_names(after) + " place {place}")
+        return lines.concat(net_lines(discovery.net, discovery.pairs, activities))
+
+    string[] conformance_rows()
+        lines := ["case_id,variant,events,skipped,missing,remaining,consumed,produced,fitness"]
+        for: i < case_count
+            record := cases[i]
+            replay := replays[0].cases[i]
+            fitness := report.fraction(conformance.fitness(replay.missing, replay.remaining, replay.consumed, replay.produced))
+            lines = lines.append("{record.identifier},{record.variant},{#record.trace},{replay.skipped},{replay.missing},{replay.remaining},{replay.consumed},{replay.produced},{fitness}")
+        return lines
+
+    string model_relation(int net_index, string first, string second)
+        net := nets[net_index]
+        a := index_of(net.transitions, first)
+        b := index_of(net.transitions, second)
+        if a < 0 or b < 0
+            return "#"
+        forward := reachability[net_index].follows[a][b]
+        backward := reachability[net_index].follows[b][a]
+        return if forward and not backward then "->" elif backward and not forward then "<-" elif forward then "||" else "#"
+
+    string[] footprint_check_lines(int net_index)
+        names := unique_strings(activities.concat(nets[net_index].transitions))
+        size := int(#names)
+        differing := 0
+        string[] differences := []
+        for: i < size
+            for: j < size
+                a := index_of(activities, names[i])
+                b := index_of(activities, names[j])
+                log_relation := if a < 0 or b < 0 then "#" else full_relations[a][b]
+                string net_relation := model_relation(net_index, names[i], names[j])
+                if log_relation != net_relation
+                    differing += 1
+                    if net_index == 0 and i <= j
+                        differences = differences.append("DIFF {names[i]} {names[j]} log {log_relation} model {net_relation}")
+        line := "FOOTPRINT {net_names[net_index]} activities {size} cells {size * size} differing {differing} fitness " + fraction_value(size * size - differing, size * size)
+        return [line].concat(differences)
+
+    string[] conformance_lines()
+        lines := ["MODEL places {#reference.places} transitions {#reference.transitions} arcs {reference.arc_count}"]
+        for: i < 3
+            result := reachability[i]
+            dead := [for t := result.dead[] then nets[i].transitions[t]]
+            lines = lines.append("REACHABILITY {net_names[i]} markings {result.markings} edges {result.edges} unsafe {result.unsafe} deadlocks {result.deadlocks} stuck {result.stuck} final " + yes_no(result.final) + " dead " + report.names(dead) + " sound " + yes_no(result.sound))
+        for: i < 3
+            lines = lines.concat(footprint_check_lines(i))
+        for: i < 3
+            precision := precisions[i]
+            value := if precision.allowed == 0 then fraction_value(1, 1) else fraction_value(precision.allowed - precision.escaping, precision.allowed)
+            lines = lines.append("PRECISION {net_names[i]} prefixes {precision.prefixes} allowed {precision.allowed} escaping {precision.escaping} precision {value}")
+            size := int(#nets[i].transitions)
+            maximum_weight := 0
+            for weight := precision.escape_weights[]
+                if weight > maximum_weight
+                    maximum_weight = weight
+            keys := [for t := (0:<int(size))[] if precision.escape_weights[t] > 0 then (maximum_weight - precision.escape_weights[t]) * size + t]
+            for key := keys.sorted()[]
+                t := key % size
+                lines = lines.append("ESCAPE {net_names[i]} {nets[i].transitions[t]} weight {precision.escape_weights[t]}")
+        for: i < 3
+            net := nets[i]
+            totals := replays[i].totals
+            fitness := report.fraction(conformance.fitness(totals.missing, totals.remaining, totals.consumed, totals.produced))
+            lines = lines.append("REPLAY {net_names[i]} cases {case_count} fitting {replays[i].fitting} skipped {totals.skipped} missing {totals.missing} remaining {totals.remaining} consumed {totals.consumed} produced {totals.produced} fitness {fitness}")
+            for: p < int(#net.places)
+                waiting := totals.waiting[p]
+                average := if #waiting == 0 then "-" else fraction_value(sum_values(waiting), int(#waiting))
+                maximum_wait := if #waiting == 0 then "-" else string(waiting.sorted()[-1])
+                lines = lines.append("PLACE {net_names[i]} {net.places[p]} missing {totals.place_missing[p]} remaining {totals.place_remaining[p]} deviating {totals.deviating[p]} tokens {#waiting} mean {average} max {maximum_wait}")
+            for: p < int(#net.places)
+                if #net.routes[p] < 2
+                    continue
+                consumptions := [for t := net.routes[p][] then net.transitions[t] + "={totals.routes[p][t]}"]
+                lines = lines.append("ROUTE {net_names[i]} {net.places[p]} " + consumptions.join(","))
+        return lines
+
+    string[] resource_lines()
+        work := [for r := (0:<int(resource_count))[] then [for a := (0:<int(activity_count))[] then 0]]
+        case_counts := [for r := (0:<int(resource_count))[] then 0]
+        handovers := [for r := (0:<int(resource_count))[] then [for s := (0:<int(resource_count))[] then 0]]
+        handover_cases := handovers
+        subcontracts := handovers
+        together := handovers
+        for record := cases[]
+            present := [for r := (0:<int(resource_count))[] then false]
+            seen_handover := [for r := (0:<int(resource_count))[] then [for s := (0:<int(resource_count))[] then false]]
+            for: i < int(#record.trace)
+                r := record.resources[i]
+                present[r] = true
+                work[r][record.trace[i]] += 1
+                if i > 0
+                    previous := record.resources[i - 1]
+                    handovers[previous][r] += 1
+                    seen_handover[previous][r] = true
+                if i >= 2 and record.resources[i - 2] == r and record.resources[i - 1] != r
+                    subcontracts[r][record.resources[i - 1]] += 1
+            for: r < resource_count
+                if present[r]
+                    case_counts[r] += 1
+                for: s < resource_count
+                    if seen_handover[r][s]
+                        handover_cases[r][s] += 1
+                    if r < s and present[r] and present[s]
+                        together[r][s] += 1
+        string[] lines := []
+        for: r < resource_count
+            items := [for a := (0:<int(activity_count))[] if work[r][a] > 0 then activities[a] + "={work[r][a]}"]
+            lines = lines.append("RESOURCE {r + 1} {resources[r]} events {sum_values(work[r])} cases {case_counts[r]} work " + items.join(","))
+        base := resource_count * resource_count
+        upper := int(#events)
+        int[] keys := []
+        for: r < resource_count
+            for: s < resource_count
+                if r != s and handovers[r][s] > 0
+                    keys = keys.append((upper - handovers[r][s]) * base + r * resource_count + s)
+        for key := keys.sorted()[]
+            pair := key % base
+            r := pair / resource_count
+            s := pair % resource_count
+            lines = lines.append("HANDOVER {resources[r]} {resources[s]} count {handovers[r][s]} cases {handover_cases[r][s]}")
+        cells := [for row := handovers[] then [for value := row[] then string(value)]]
+        lines = lines.concat(dfg.table(cells, 5))
+        keys = []
+        for: r < resource_count
+            for: s < resource_count
+                if subcontracts[r][s] > 0
+                    keys = keys.append((upper - subcontracts[r][s]) * base + r * resource_count + s)
+        for key := keys.sorted()[]
+            pair := key % base
+            r := pair / resource_count
+            s := pair % resource_count
+            lines = lines.append("SUBCONTRACT {resources[r]} {resources[s]} count {subcontracts[r][s]}")
+        keys = []
+        for: r < resource_count
+            for: r + 1 <= s < resource_count
+                if together[r][s] > 0
+                    keys = keys.append((case_count - together[r][s]) * base + r * resource_count + s)
+        for key := keys.sorted()[]
+            pair := key % base
+            r := pair / resource_count
+            s := pair % resource_count
+            lines = lines.append("TOGETHER {resources[r]} {resources[s]} cases {together[r][s]}")
+        all_handovers := sum_values([for row := handovers[] then sum_values(row)])
+        self_handovers := sum_values([for r := (0:<int(resource_count))[] then handovers[r][r]])
+        return lines.append("TOTAL handovers {all_handovers} self {self_handovers} other {all_handovers - self_handovers}")
+
+void run_program()
+    study := Study(eventlog.read_log(), extract_parameters(), conformance.read_model())
+    report.write("log_summary.txt", study.log_summary())
+    report.write("variants.txt", study.variant_lines())
+    report.write("dfg.txt", study.dfg_lines())
+    report.write("alpha_net.txt", study.alpha_lines())
+    report.write("heuristic_net.txt", heuristic_lines(study.counts, study.triangles, study.activities, study.params))
+    report.write("conformance.csv", study.conformance_rows())
+    report.write("conformance.txt", study.conformance_lines())
+    report.write("resources.txt", study.resource_lines())
+
+run_program()

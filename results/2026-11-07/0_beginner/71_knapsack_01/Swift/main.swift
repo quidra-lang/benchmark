@@ -1,0 +1,23 @@
+let names = ["tent", "stove", "lantern", "rope", "camera", "blanket", "water"]
+let weights = [10, 3, 2, 3, 5, 5, 6], values = [120, 65, 45, 20, 90, 85, 100]
+let capacityLimit = 20
+var dp = [[Int]](repeating: [Int](repeating: 0, count: capacityLimit + 1), count: 8)
+for i in 1...7 {
+    for capacity in 0...capacityLimit {
+        dp[i][capacity] = dp[i - 1][capacity]
+        if weights[i - 1] <= capacity {
+            dp[i][capacity] = max(dp[i][capacity], dp[i - 1][capacity - weights[i - 1]] + values[i - 1])
+        }
+    }
+}
+var chosen = [Bool](repeating: false, count: 7), capacity = capacityLimit
+for i in stride(from: 7, through: 1, by: -1) {
+    if dp[i][capacity] != dp[i - 1][capacity] {
+        chosen[i - 1] = true
+        capacity -= weights[i - 1]
+    }
+}
+let items = names.indices.filter { chosen[$0] }.map { names[$0] }
+print("max value: \(dp[7][capacityLimit])")
+print("total weight: \(capacityLimit - capacity)")
+print("items: \(items.joined(separator: " "))")

@@ -1,0 +1,9 @@
+for start in [1, 6, 27, 97, 871]
+    n, steps, peak = start, 0, start
+    while n != 1
+        n = iseven(n) ? div(n, 2) : 3*n+1
+        steps += 1
+        peak = max(peak, n)
+    end
+    println(start, ": steps=", steps, " max=", peak)
+end

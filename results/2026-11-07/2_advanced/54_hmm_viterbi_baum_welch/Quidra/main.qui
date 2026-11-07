@@ -1,0 +1,616 @@
+import math
+import model_io = "./model_io.qui"
+import inference = "./inference.qui"
+import training = "./training.qui"
+import evaluation = "./evaluation.qui"
+import sampler = "./sampler.qui"
+
+int index_of(string[] values, string target)
+    for: j < int(#values)
+        if values[j] == target
+            return j
+    return -1
+
+int integer(string text)
+    result := int(text)
+    return result
+
+string uppercase(string text)
+    const alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    result := ""
+    for: j < int(#text)
+        int code := text[j].codepoints()[0]
+        result += if 97 <= code <= 122 then alphabet[code - 97] else text[j]
+    return result
+
+string lowercase_symbol(string text)
+    const alphabet := "abcdefghijklmnopqrstuvwxyz"
+    return alphabet[text.codepoints()[0] - 65]
+
+class Settings(local string[][] rows, local string[] states, local string[] symbols)
+    int iterations := integer(rows[0][1])
+    real64 pseudocount := model_io.number(rows[1][1])
+    string[] smoothing := rows[2][1:<int(#rows[2])]
+    int folds := integer(rows[3][1])
+    int min_sequence_length := integer(rows[4][1])
+    int max_missing_percent := integer(rows[5][1])
+    int segment_state := index_of(states, rows[6][1])
+    int merge_gap := integer(rows[7][1])
+    int min_segment_length := integer(rows[8][1])
+    int[] motif := [index_of(symbols, rows[9][1]), index_of(symbols, rows[9][2])]
+    int[] rich_symbols := [for symbol := rows[10][1:<int(#rows[10])][] then index_of(symbols, symbol)]
+    int min_rich_percent := integer(rows[11][1])
+    int min_motif_percent := integer(rows[12][1])
+    real64 confidence := model_io.number(rows[13][1])
+    int boundary_tolerance := integer(rows[14][1])
+    int posterior_seed := integer(rows[15][1])
+    int posterior_samples := integer(rows[16][1])
+    int sample_seed := integer(rows[17][1])
+    int sample_count := integer(rows[18][1])
+    int sample_length := integer(rows[19][1])
+
+bool has_int(int[] values, int target)
+    for value := values[]
+        if value == target
+            return true
+    return false
+
+class Record(string name, int[] observations, int[] path)
+
+string rejection(string name, string text, string labels, bool labeled, string[] &seen, model_io.Model model, Settings settings)
+    if index_of(seen, name) >= 0
+        return "duplicate name"
+    seen = seen.append(name)
+    for: t < int(#text)
+        character := text[t]
+        if character != model.missing and index_of(model.symbols, character) < 0
+            return "invalid symbol {character} at position {t + 1}"
+    if labeled
+        for: t < int(#labels)
+            if index_of(model.states, labels[t]) < 0
+                return "invalid label {labels[t]} at position {t + 1}"
+        if #text != #labels
+            return "length mismatch {#text} {#labels}"
+    if int(#text) < settings.min_sequence_length
+        return "too short {#text}"
+    missing := 0
+    for: t < int(#text)
+        if text[t] == model.missing
+            missing += 1
+    if 100 * missing > settings.max_missing_percent * int(#text)
+        return "too many missing {missing}"
+    return ""
+
+int[] encode(string text, string[] alphabet, missing := "")
+    return [for t := (0:<int(#text))[] then (if text[t] == missing then -1 else index_of(alphabet, text[t]))]
+
+int[][] observations(Record[] records)
+    return [for record := records[] then record.observations]
+
+int[][] true_paths(Record[] records)
+    return [for record := records[] then record.path]
+
+int positions(Record[] records)
+    total := 0
+    for record := records[]
+        total += int(#record.observations)
+    return total
+
+string[] join_blocks(string[][] blocks)
+    string[] result := []
+    for: j < int(#blocks)
+        if j > 0
+            result = result.append("")
+        result = result.concat(blocks[j])
+    return result
+
+(int[][], real64) viterbi_paths(real64[][] model, int[][] sequences)
+    int[][] paths := []
+    real64 total := 0.0
+    for sequence := sequences[]
+        path, logprob := inference.viterbi(model, sequence)
+        paths = paths.append(path)
+        total += logprob
+    return (paths, total)
+
+int[][] segments(int[] path, Settings settings)
+    int[][] merged := []
+    for state_run := evaluation.runs(path)[]
+        if state_run[0] != settings.segment_state
+            continue
+        last := int(#merged) - 1
+        if last >= 0 and state_run[1] - merged[last][1] - 1 <= settings.merge_gap
+            merged[last][1] = state_run[2]
+        else
+            merged = merged.append([state_run[1], state_run[2]])
+    return [for segment := merged[] if segment[1] - segment[0] + 1 >= settings.min_segment_length then segment]
+
+(real64 | none, real64 | none, bool) composition(int[] sequence, int[] segment, Settings settings)
+    observed := 0
+    rich := 0
+    first := 0
+    second := 0
+    pairs := 0
+    for: segment[0] <= t <= segment[1]
+        symbol := sequence[t]
+        if symbol >= 0
+            observed += 1
+            if has_int(settings.rich_symbols, symbol)
+                rich += 1
+            if symbol == settings.motif[0]
+                first += 1
+            if symbol == settings.motif[1]
+                second += 1
+        if t < segment[1] and symbol == settings.motif[0] and sequence[t + 1] == settings.motif[1]
+            pairs += 1
+    real64 | none rich_fraction := if observed > 0 then real64(rich) / real64(observed) else none
+    real64 | none pair_ratio := if first * second > 0 then real64(pairs * observed) / real64(first * second) else none
+    island := first * second > 0 and 100 * rich >= settings.min_rich_percent * observed and 100 * pairs * observed >= settings.min_motif_percent * first * second
+    return (rich_fraction, pair_ratio, island)
+
+string path_text(int[] path, string[] alphabet)
+    return [for state := path[] then alphabet[state]].join("")
+
+(int[], int[], int) path_statistics(int[][] paths, int count)
+    counts := [for state := (0:<int(count))[] then 0]
+    runs := counts
+    total := 0
+    for path := paths[]
+        total += int(#path)
+        for state_run := evaluation.runs(path)[]
+            counts[state_run[0]] += state_run[2] - state_run[1] + 1
+            runs[state_run[0]] += 1
+    return (counts, runs, total)
+
+real64 | none mean_ratio(int numerator, int denominator)
+    return if denominator > 0 then real64(numerator) / real64(denominator) else none
+
+real64[] stationary(real64[][] model)
+    count := int(#model[0])
+    real64[][] matrix := []
+    for: equation < count - 1
+        real64[] row := [for state := (0:<int(count))[] then model[state + 1][equation] - (if state == equation then 1.0 else 0.0)]
+        matrix = matrix.append(row.append(0.0))
+    matrix = matrix.append([for j := (0:<int(count + 1))[] then 1.0])
+    for: column < count
+        pivot := column
+        for: column + 1 <= row < count
+            candidate := matrix[row][column]
+            previous := matrix[pivot][column]
+            if (if candidate < 0.0 then -candidate else candidate) > (if previous < 0.0 then -previous else previous)
+                pivot = row
+        temporary := matrix[column]
+        matrix[column] = matrix[pivot]
+        matrix[pivot] = temporary
+        divisor := matrix[column][column]
+        for: column <= j <= count
+            matrix[column][j] /= divisor
+        for: row < count
+            if row == column
+                continue
+            factor := matrix[row][column]
+            for: column <= j <= count
+                matrix[row][j] -= factor * matrix[column][j]
+    return [for state := (0:<int(count))[] then matrix[state][count]]
+
+int[][] permutations(int[] prefix, int count)
+    if int(#prefix) == count
+        return [prefix]
+    int[][] result := []
+    for: state < count
+        if not has_int(prefix, state)
+            result = result.concat(permutations(prefix.append(state), count))
+    return result
+
+class CrossValidation(string candidate, int correct_count, int[][] folds, int[][] matrix)
+
+class Analysis(model_io.Model initial, string[][] sequence_rows, string[][] labeled_rows, local string[][] parameter_rows)
+    settings := Settings(parameter_rows, initial.states, initial.symbols)
+    Record[] sequences := []
+    Record[] train_records := []
+    Record[] test_records := []
+    string[] rejections := []
+    models := [initial]
+    string[] baum_trace := []
+    string[] viterbi_trace := []
+    real64 first_loglik := 0.0
+    real64 final_loglik := 0.0
+    violations := 0
+    best_iteration := 0
+    viterbi_iterations := 0
+    converged := false
+    CrossValidation[] candidates := []
+    selected_candidate := 0
+    string[] cv_lines := []
+    string[] learning_lines := []
+    string[][] evaluation_blocks := []
+    int[][] scores := []
+    inference.Decoding[][] decoded := []
+
+    void .validate()
+        string[] seen := []
+        for: j < int(#sequence_rows)
+            name := sequence_rows[j][0]
+            text := uppercase(sequence_rows[j][1])
+            reason := rejection(name, text, "", false, &seen, initial, settings)
+            if reason != ""
+                rejections = rejections.append("REJECT sequences.txt line {j + 1} {name} {reason}")
+            else
+                sequences = sequences.append(Record(name, encode(text, initial.symbols, initial.missing), []))
+        seen = []
+        for: j < int(#labeled_rows) step 2
+            name := labeled_rows[j][0]
+            role := labeled_rows[j][1]
+            text := uppercase(labeled_rows[j][2])
+            labels := labeled_rows[j + 1][0]
+            reason := rejection(name, text, labels, true, &seen, initial, settings)
+            if reason != ""
+                rejections = rejections.append("REJECT labeled.txt line {j + 1} {name} {reason}")
+                continue
+            record := Record(name, encode(text, initial.symbols, initial.missing), encode(labels, initial.states))
+            if role == "TRAIN"
+                train_records = train_records.append(record)
+            else
+                test_records = test_records.append(record)
+
+    void .train_unsupervised()
+        unlabeled := observations(sequences)
+        heldout := observations(train_records.concat(test_records))
+        current := initial.probabilities
+        previous_loglik := training.total_loglik(current, unlabeled)
+        first_loglik = previous_loglik
+        best_heldout := training.total_loglik(current, heldout)
+        baum_trace = ["iteration,loglik,heldout,change,max_change,status", "0," + model_io.decimal(first_loglik) + "," + model_io.decimal(best_heldout) + ",,,"]
+        for: 1 <= int iteration <= settings.iterations
+            updated := training.baum_welch_step(current, unlabeled, settings.pseudocount)
+            loglik := training.total_loglik(updated, unlabeled)
+            heldout_loglik := training.total_loglik(updated, heldout)
+            real64 max_change := 0.0
+            for: row < int(#current)
+                for: column < int(#current[row])
+                    difference := updated[row][column] - current[row][column]
+                    if difference < 0.0
+                        difference = -difference
+                    if difference > max_change
+                        max_change = difference
+            violation := loglik < previous_loglik - 0.000001 * (if previous_loglik < 0.0 then -previous_loglik else previous_loglik)
+            if violation
+                violations += 1
+            if heldout_loglik > best_heldout
+                best_heldout = heldout_loglik
+                best_iteration = iteration
+            status := if violation then "violation" else "ok"
+            baum_trace = baum_trace.append("{iteration}," + model_io.decimal(loglik) + "," + model_io.decimal(heldout_loglik) + "," + model_io.decimal(loglik - previous_loglik) + "," + model_io.decimal(max_change, 6) + ",{status}")
+            current = updated
+            previous_loglik = loglik
+        final_loglik = previous_loglik
+        models = models.append(model_io.Model("BAUM_WELCH", initial.states, initial.symbols, initial.missing, current))
+        current = initial.probabilities
+        paths, logprob := viterbi_paths(current, unlabeled)
+        viterbi_trace = ["iteration,logprob,loglik,changed", "0," + model_io.decimal(logprob) + "," + model_io.decimal(first_loglik) + ","]
+        for: 1 <= int iteration <= settings.iterations
+            current = training.estimate_by_counting(initial.probabilities, unlabeled, paths, settings.pseudocount)
+            next_paths, next_logprob := viterbi_paths(current, unlabeled)
+            changed := 0
+            for: j < int(#paths)
+                changed += int(#paths[j]) - evaluation.correct(paths[j], next_paths[j])
+            loglik := training.total_loglik(current, unlabeled)
+            viterbi_trace = viterbi_trace.append("{iteration}," + model_io.decimal(next_logprob) + "," + model_io.decimal(loglik) + ",{changed}")
+            paths = next_paths
+            viterbi_iterations = iteration
+            converged = changed == 0
+            if converged
+                break
+        models = models.append(model_io.Model("VITERBI_TRAINING", initial.states, initial.symbols, initial.missing, current))
+
+    void .train_supervised()
+        train_positions := positions(train_records)
+        test_positions := positions(test_records)
+        for candidate := settings.smoothing[]
+            matrix := evaluation.matrix(int(#initial.states))
+            int[][] fold_results := []
+            total_correct := 0
+            for: int fold < settings.folds
+                Record[] fitting := []
+                Record[] validating := []
+                for: j < int(#train_records)
+                    if j % settings.folds == fold
+                        validating = validating.append(train_records[j])
+                    else
+                        fitting = fitting.append(train_records[j])
+                model := training.estimate_by_counting(initial.probabilities, observations(fitting), true_paths(fitting), model_io.number(candidate))
+                fold_positions := 0
+                fold_correct := 0
+                for record := validating[]
+                    path, logprob := inference.viterbi(model, record.observations)
+                    fold_positions += int(#path)
+                    fold_correct += evaluation.correct(record.path, path)
+                    evaluation.accumulate(&matrix, record.path, path)
+                total_correct += fold_correct
+                fold_results = fold_results.append([int(#validating), fold_positions, fold_correct])
+            candidates = candidates.append(CrossValidation(candidate, total_correct, fold_results, matrix))
+            last := int(#candidates) - 1
+            if candidates[last].correct_count > candidates[selected_candidate].correct_count
+                selected_candidate = last
+        selected := candidates[selected_candidate]
+        alpha := model_io.number(selected.candidate)
+        supervised := training.estimate_by_counting(initial.probabilities, observations(train_records), true_paths(train_records), alpha)
+        models = models.append(model_io.Model("SUPERVISED", initial.states, initial.symbols, initial.missing, supervised))
+        cv_lines = ["CROSS_VALIDATION folds {settings.folds}"]
+        for candidate := candidates[]
+            cv_lines = cv_lines.append("SMOOTHING {candidate.candidate} positions {train_positions} correct {candidate.correct_count} accuracy " + evaluation.fraction(candidate.correct_count, train_positions))
+        cv_lines = cv_lines.append("SELECTED {selected.candidate}")
+        for: int fold < settings.folds
+            row := selected.folds[fold]
+            cv_lines = cv_lines.append("FOLD {fold + 1} records {row[0]} positions {row[1]} correct {row[2]} accuracy " + evaluation.fraction(row[2], row[1]))
+        cv_lines = cv_lines.concat(evaluation.matrix_lines(initial.states, selected.matrix)).concat(evaluation.metric_lines(initial.states, selected.matrix))
+        learning_lines = ["LEARNING_CURVE"]
+        for: 1 <= count <= int(#train_records)
+            fitting := train_records[0:<count]
+            model := training.estimate_by_counting(initial.probabilities, observations(fitting), true_paths(fitting), alpha)
+            correct := 0
+            for record := test_records[]
+                path, logprob := inference.viterbi(model, record.observations)
+                correct += evaluation.correct(record.path, path)
+            learning_lines = learning_lines.append("RECORDS {count} correct {correct} accuracy " + evaluation.fraction(correct, test_positions))
+
+    void .evaluate()
+        for model := models[]
+            results := [for record := test_records[] then inference.decode(model.probabilities, record.observations)]
+            int[] totals := []
+            for: decoder < 2
+                name := if decoder == 0 then "VITERBI" else "POSTERIOR"
+                matrix := evaluation.matrix(int(#model.states))
+                regions := [0, 0, 0, 0]
+                boundaries := regions
+                calibration := [for bucket := (0:<10)[] then [0, 0]]
+                string[] record_lines := []
+                total_correct := 0
+                for: j < int(#test_records)
+                    record := test_records[j]
+                    result := results[j]
+                    path := if decoder == 0 then result.viterbi_path else result.posterior_path
+                    correct := evaluation.correct(record.path, path)
+                    total_correct += correct
+                    evaluation.accumulate(&matrix, record.path, path)
+                    truth := [for state_run := evaluation.runs(record.path)[] if state_run[0] == settings.segment_state then [state_run[1], state_run[2]]]
+                    rc := evaluation.region_counts(segments(path, settings), truth)
+                    bc := evaluation.boundary_counts(path, record.path, settings.boundary_tolerance)
+                    for: k < 4
+                        regions[k] += rc[k]
+                        boundaries[k] += bc[k]
+                    if decoder == 1
+                        for: t < int(#path)
+                            raw := math.floor(10.0 * result.confidence[t])
+                            bucket := int(raw)
+                            if bucket > 9
+                                bucket = 9
+                            calibration[bucket][0] += 1
+                            if path[t] == record.path[t]
+                                calibration[bucket][1] += 1
+                    record_lines = record_lines.append("RECORD {record.name} length {#path} correct {correct}")
+                block := ["EVALUATION {model.name} {name}"]
+                block = block.concat(evaluation.matrix_lines(model.states, matrix)).concat(evaluation.metric_lines(model.states, matrix))
+                block = block.append("REGIONS {model.states[settings.segment_state]} predicted {regions[0]} true {regions[1]} precision " + evaluation.fraction(regions[2], regions[0]) + " recall " + evaluation.fraction(regions[3], regions[1]))
+                block = block.append("BOUNDARIES predicted {boundaries[0]} true {boundaries[1]} precision " + evaluation.fraction(boundaries[2], boundaries[0]) + " recall " + evaluation.fraction(boundaries[3], boundaries[1]))
+                if decoder == 1
+                    for: bucket < 10
+                        row := calibration[bucket]
+                        if row[0] == 0
+                            continue
+                        range := if bucket == 9 then "0.9-1.0" else "0.{bucket}-0.{bucket + 1}"
+                        block = block.append("CALIBRATION {range} positions {row[0]} correct {row[1]} accuracy " + evaluation.fraction(row[1], row[0]))
+                evaluation_blocks = evaluation_blocks.append(block.concat(record_lines))
+                totals = totals.append(total_correct)
+            scores = scores.append(totals)
+            decoded = decoded.append([for record := sequences[] then inference.decode(model.probabilities, record.observations)])
+        evaluation_blocks = evaluation_blocks.concat([cv_lines, learning_lines])
+
+    void annotate()
+        model := models[1]
+        generator := sampler.Generator(settings.posterior_seed)
+        string[] decoding_lines := []
+        segment_lines := ["sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"]
+        for: j < int(#sequences)
+            record := sequences[j]
+            result := decoded[1][j]
+            int[][] samples := []
+            sample_segments := 0
+            for: int sample < settings.posterior_samples
+                path := sampler.posterior_path(model.probabilities, result.fb.forward, &generator)
+                samples = samples.append(path)
+                sample_segments += int(#segments(path, settings))
+            uncertain := 0
+            confident := ""
+            imputed := ""
+            for: t < int(#record.observations)
+                if result.confidence[t] < settings.confidence
+                    uncertain += 1
+                    confident += "."
+                else
+                    confident += model.states[result.posterior_path[t]]
+                observation := record.observations[t]
+                if observation >= 0
+                    imputed += model.symbols[observation]
+                else
+                    real64[] probabilities := []
+                    for: symbol < int(#model.symbols)
+                        real64 total := 0.0
+                        for: state < int(#model.states)
+                            total += result.fb.posterior[t][state] * model.probabilities[int(#model.states) + state + 1][symbol]
+                        probabilities = probabilities.append(total)
+                    imputed += lowercase_symbol(model.symbols[inference.maximum(probabilities)])
+            differences := int(#record.observations) - evaluation.correct(result.viterbi_path, result.posterior_path)
+            decoding_lines = decoding_lines.concat(["SEQUENCE {record.name} length {#record.observations} loglik " + model_io.decimal(result.fb.loglik) + " viterbi " + model_io.decimal(result.logprob) + " differences {differences} uncertain {uncertain} expected_segments " + model_io.decimal(real64(sample_segments) / real64(settings.posterior_samples)), "VITERBI " + path_text(result.viterbi_path, model.states), "POSTERIOR " + path_text(result.posterior_path, model.states), "CONFIDENT " + confident, "IMPUTED " + imputed])
+            for: decoder < 2
+                name := if decoder == 0 then "viterbi" else "posterior"
+                path := if decoder == 0 then result.viterbi_path else result.posterior_path
+                for segment := segments(path, settings)[]
+                    length := segment[1] - segment[0] + 1
+                    real64 total := 0.0
+                    for: segment[0] <= t <= segment[1]
+                        total += result.fb.posterior[t][settings.segment_state]
+                    support := 0
+                    for sample := samples[]
+                        count := 0
+                        for: segment[0] <= t <= segment[1]
+                            if sample[t] == settings.segment_state
+                                count += 1
+                        if 2 * count > length
+                            support += 1
+                    (real64 | none rich, real64 | none ratio, bool island) := composition(record.observations, segment, settings)
+                    judgement := if island then "yes" else "no"
+                    segment_lines = segment_lines.append("{record.name},{name},{segment[0] + 1},{segment[1] + 1},{length}," + model_io.decimal(total / real64(length)) + ",{support}," + model_io.optional(rich) + "," + model_io.optional(ratio) + ",{judgement}")
+        model_io.write_lines("decodings.txt", decoding_lines)
+        model_io.write_lines("segments.csv", segment_lines)
+
+    void synthetic_output()
+        model := models[1]
+        generator := sampler.Generator(settings.sample_seed)
+        string[] rows := []
+        total_positions := 0
+        viterbi_total := 0
+        posterior_total := 0
+        for: 1 <= int number <= settings.sample_count
+            truth, sequence := sampler.synthetic(model.probabilities, settings.sample_length, &generator)
+            result := inference.decode(model.probabilities, sequence)
+            vc := evaluation.correct(truth, result.viterbi_path)
+            pc := evaluation.correct(truth, result.posterior_path)
+            total_positions += int(#truth)
+            viterbi_total += vc
+            posterior_total += pc
+            rows = rows.concat(["SAMPLE {number} loglik " + model_io.decimal(result.fb.loglik) + " viterbi " + model_io.decimal(result.logprob) + " viterbi_correct {vc} posterior_correct {pc}", "STATES " + path_text(truth, model.states), "SYMBOLS " + path_text(sequence, model.symbols), "VITERBI " + path_text(result.viterbi_path, model.states), "POSTERIOR " + path_text(result.posterior_path, model.states)])
+        rows = rows.append("TOTAL positions {total_positions} viterbi_accuracy " + evaluation.fraction(viterbi_total, total_positions) + " posterior_accuracy " + evaluation.fraction(posterior_total, total_positions))
+        model_io.write_lines("samples.txt", rows)
+
+    string[] input_report()
+        Record[] labeled := train_records.concat(test_records)
+        total_positions := positions(sequences)
+        missing := 0
+        labeled_missing := 0
+        symbols := [for symbol := (0:<int(#initial.symbols))[] then 0]
+        for record := sequences[]
+            for symbol := record.observations[]
+                if symbol < 0
+                    missing += 1
+                else
+                    symbols[symbol] += 1
+        for record := labeled[]
+            for symbol := record.observations[]
+                if symbol < 0
+                    labeled_missing += 1
+        rows := ["INPUT", "SEQUENCES accepted {#sequences} rejected {int(#sequence_rows) - int(#sequences)} positions {total_positions} missing {missing}", "LABELED train {#train_records} test {#test_records} rejected {int(#labeled_rows) / 2 - int(#labeled)} positions {positions(labeled)} missing {labeled_missing}"]
+        rows = rows.concat(rejections)
+        line := "COMPOSITION"
+        for: symbol < int(#initial.symbols)
+            line += " {initial.symbols[symbol]} " + model_io.decimal(real64(symbols[symbol]) / real64(total_positions - missing))
+        rows = rows.append(line)
+        for: role < 2
+            records := if role == 0 then train_records else test_records
+            name := if role == 0 then "TRAIN" else "TEST"
+            counts, runs, total := path_statistics(true_paths(records), int(#initial.states))
+            for: state < int(#initial.states)
+                rows = rows.append("TRUTH {name} {initial.states[state]} occupancy " + model_io.decimal(real64(counts[state]) / real64(total)) + " mean_run " + model_io.optional(mean_ratio(counts[state], runs[state])))
+        return rows
+
+    string[] training_report()
+        convergence := if converged then "yes" else "no"
+        rows := ["TRAINING BAUM_WELCH iterations {settings.iterations} initial_loglik " + model_io.decimal(first_loglik) + " final_loglik " + model_io.decimal(final_loglik) + " violations {violations} best_heldout_iteration {best_iteration}", "TRAINING VITERBI_TRAINING iterations {viterbi_iterations} converged {convergence}", "TRAINING SUPERVISED smoothing {candidates[selected_candidate].candidate}"]
+        preferences := [0, 0, 0, 0]
+        for: j < int(#sequences)
+            real64[] likelihoods := [for k := (0:<4)[] then decoded[k][j].fb.loglik]
+            preferences[inference.maximum(likelihoods)] += 1
+        line := "PREFERENCE"
+        for: k < 4
+            line += " {models[k].name} {preferences[k]}"
+        rows = rows.append(line)
+        total := positions(sequences)
+        for: first < 3
+            for: first + 1 <= second < 4
+                correct := 0
+                for: j < int(#sequences)
+                    correct += evaluation.correct(decoded[first][j].viterbi_path, decoded[second][j].viterbi_path)
+                rows = rows.append("AGREEMENT {models[first].name} {models[second].name} " + evaluation.fraction(correct, total))
+        for: decoder < 2
+            best := 0
+            for: 1 <= k < 4
+                if scores[k][decoder] > scores[best][decoder]
+                    best = k
+            name := if decoder == 0 then "VITERBI" else "POSTERIOR"
+            rows = rows.append("BEST {name} {models[best].name} accuracy " + evaluation.fraction(scores[best][decoder], positions(test_records)))
+        return rows
+
+    string alignment(model_io.Model model)
+        count := int(#model.states)
+        matrix := evaluation.matrix(count)
+        for record := train_records[]
+            path, logprob := inference.viterbi(model.probabilities, record.observations)
+            evaluation.accumulate(&matrix, record.path, path)
+        int[] best := []
+        best_correct := -1
+        for permutation := permutations([], count)[]
+            correct := 0
+            for: j < count
+                correct += matrix[permutation[j]][j]
+            if correct > best_correct
+                best_correct = correct
+                best = permutation
+        line := "ALIGNMENT"
+        for: j < count
+            line += " {model.states[j]}={model.states[best[j]]}"
+        return line + " agreement " + evaluation.fraction(best_correct, positions(train_records))
+
+    string[] model_report(int index)
+        model := models[index]
+        count := int(#model.states)
+        real64 loglik := 0.0
+        observed := 0
+        segment_count := 0
+        segment_length := 0
+        islands := 0
+        int[][] paths := []
+        for: j < int(#sequences)
+            record := sequences[j]
+            result := decoded[index][j]
+            loglik += result.fb.loglik
+            paths = paths.append(result.viterbi_path)
+            for symbol := record.observations[]
+                if symbol >= 0
+                    observed += 1
+            for segment := segments(result.viterbi_path, settings)[]
+                segment_count += 1
+                segment_length += segment[1] - segment[0] + 1
+                (real64 | none rich, real64 | none ratio, bool island) := composition(record.observations, segment, settings)
+                if island
+                    islands += 1
+        counts, runs, total := path_statistics(paths, count)
+        phi := stationary(model.probabilities)
+        test_loglik := training.total_loglik(model.probabilities, observations(test_records))
+        string[] rows := ["MODEL {model.name}", "LOGLIK unlabeled " + model_io.decimal(loglik) + " per_symbol " + model_io.decimal(loglik / real64(observed)) + " test " + model_io.decimal(test_loglik), "SEGMENTS count {segment_count} mean_length " + model_io.optional(mean_ratio(segment_length, segment_count)) + " islands {islands}", alignment(model)]
+        for: state < count
+            rows = rows.append("STATE {model.states[state]} stationary " + model_io.decimal(phi[state]) + " duration " + model_io.decimal(1.0 / (1.0 - model.probabilities[state + 1][state])) + " occupancy " + model_io.decimal(real64(counts[state]) / real64(total)) + " mean_run " + model_io.optional(mean_ratio(counts[state], runs[state])))
+        return rows
+
+    void .run()
+        .validate()
+        .train_unsupervised()
+        .train_supervised()
+        .evaluate()
+        annotate()
+        synthetic_output()
+        trained := [for j := (1:<4)[] then model_io.model_lines(models[j])]
+        model_io.write_lines("trained_model.txt", join_blocks(trained))
+        model_io.write_lines("loglik_trace.csv", baum_trace)
+        model_io.write_lines("viterbi_trace.csv", viterbi_trace)
+        model_io.write_lines("evaluation.txt", join_blocks(evaluation_blocks))
+        string[][] blocks := [input_report(), training_report()]
+        for: j < 4
+            blocks = blocks.append(model_report(j))
+        model_io.write_lines("report.txt", join_blocks(blocks))
+
+void run()
+    initial, sequence_rows, labeled_rows, parameter_rows := model_io.read_inputs()
+    analysis := Analysis(initial, sequence_rows, labeled_rows, parameter_rows)
+    .analysis.run()
+
+run()

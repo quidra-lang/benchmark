@@ -1,0 +1,6 @@
+for _, n in ipairs({0, 7, 999, 1000, -456789, 3141592, 9876543210}) do
+    local negative = n < 0
+    local digits = tostring(math.abs(n))
+    local grouped = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    io.write(negative and "-" or "", grouped, "\n")
+end

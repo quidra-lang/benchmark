@@ -1,0 +1,710 @@
+import collections
+import math
+import schema_io = "./schema_io.qui"
+import bitstream = "./bitstream.qui"
+import encoding = "./encoding.qui"
+import query = "./query.qui"
+
+class Page(kind := 0, method := 0, values := 0, nulls := 0, offset := 0, header_bytes := 0, body_bytes := 0, checksum := 0, bounds := encoding.Bounds())
+class Chunk(int offset, int size, int[] methods, bool has_dictionary, int page_count, int nulls, encoding.Bounds bounds)
+    dictionary := Page()
+    Page[] pages := []
+class RowGroup(int rows, int first_row, Chunk[] chunks)
+class Store(int[] data, schema_io.Column[] columns, int rows, RowGroup[] groups, int footer_offset, int footer_bytes, version := 1)
+class Candidate(int[] data, int fallback_pages, int dictionary_pages, int[] methods)
+class Built(int[] data, string[] report)
+class Zone(encoding.Bounds bounds, int nulls, int count)
+class Plan(query.Parsed parsed, int[] item_columns, int[] condition_columns, int[] needed, int[] comparison_columns, string[] headers, int group, int order, bool aggregate)
+class Checked(string error_code, Plan plan)
+class Scan(schema_io.Cell[][] rows, int[] counts, string[] records)
+class Result(string kind, int matched, string[] lines)
+
+string method_list(int[] methods)
+    return [for method := methods[] then encoding.method_names()[method]].join(",")
+
+string column_line(int index, schema_io.Column column)
+    return "column {index} {column.name} {column.kind} " + (if column.nullable then "NULLABLE" else "REQUIRED")
+
+int count_nulls(schema_io.Cell[] values)
+    result := 0
+    for value := values[]
+        if value.is_null
+            result += 1
+    return result
+
+int[] make_page(schema_io.Column column, int kind, int method, schema_io.Cell[] values, schema_io.Cell[] dictionary := [])
+    int[] body := []
+    nulls := if kind == 1 then 0 else count_nulls(values)
+    bounds := if kind == 1 then encoding.Bounds() else encoding.bounds_of(values)
+    if kind == 0 and column.nullable
+        definitions := bitstream.hybrid_encode([for value := values[] then if value.is_null then 0 else 1], 1)
+        body = bitstream.integer_bytes(int(#definitions)).concat(definitions)
+    body = body.concat(encoding.encode_values(column.kind, method, [for value := values[] if not value.is_null then value], dictionary))
+    return [kind, method].concat(bitstream.uleb(int(#values))).concat(bitstream.uleb(nulls)).concat(bitstream.uleb(int(#body))).concat(bitstream.integer_bytes(bitstream.adler32(body))).concat(encoding.write_bounds(bounds)).concat(body)
+
+Candidate make_chunk(schema_io.Column column, schema_io.Cell[] values, int method, schema_io.Options options)
+    schema_io.Cell[][] pages := []
+    start := 0
+    while start < int(#values)
+        end := math.min(start + options.page_size, int(#values))
+        pages = pages.append(values[start:<end])
+        start = end
+    schema_io.Cell[] dictionary := []
+    dictionary_pages := 0
+    if method == 1
+        for page_values := pages[]
+            expanded := dictionary
+            distinct<string> known
+            for value := dictionary[]
+                .known.add(schema_io.cell_text(value))
+            for value := page_values[]
+                if not value.is_null and not known.has(schema_io.cell_text(value))
+                    .known.add(schema_io.cell_text(value))
+                    expanded = expanded.append(value)
+            if int(#encoding.encode_values(column.kind, 0, expanded)) > options.dictionary_limit
+                break
+            dictionary = expanded
+            dictionary_pages += 1
+        if #dictionary == 0
+            dictionary_pages = 0
+    int[] data := if dictionary_pages > 0 then make_page(column, 1, 0, dictionary) else []
+    distinct<int> used
+    for: page_index < int(#pages)
+        page_method := if method == 1 then (if page_index < dictionary_pages then 1 else 0) else method
+        .used.add(page_method)
+        data = data.concat(make_page(column, 0, page_method, pages[page_index], dictionary))
+    return Candidate(data, if method == 1 then int(#pages) - dictionary_pages else 0, dictionary_pages, used.sorted())
+
+Built build_file(schema_io.Inputs inputs)
+    data := schema_io.ascii_bytes("MPTC")
+    report := ["row_group,column,encoding,bytes,fallback_pages,chosen"]
+    RowGroup[] groups := []
+    start := 0
+    while start < int(#inputs.rows)
+        int end := math.min(start + inputs.settings.row_group_size, int(#inputs.rows))
+        Chunk[] chunks := []
+        group_number := int(#groups)
+        for: column_index < int(#inputs.columns)
+            schema_io.Column column := inputs.columns[column_index]
+            schema_io.Cell[] values := [for row := (start:<end)[] then inputs.rows[row][column_index]]
+            choices := encoding.candidates(column.kind)
+            encoded := [for method := choices[] then make_chunk(column, values, method, inputs.settings)]
+            chosen := 0
+            if inputs.settings.methods[column_index] == "AUTO"
+                for: index < int(#choices)
+                    if #encoded[index].data < #encoded[chosen].data
+                        chosen = index
+            else
+                for: index < int(#choices)
+                    if encoding.method_names()[choices[index]] == inputs.settings.methods[column_index]
+                        chosen = index
+            if choices[chosen] == 1 and encoded[chosen].dictionary_pages == 0
+                chosen = 0
+            for: index < int(#choices)
+                report = report.append("{group_number},{column.name},{encoding.method_names()[choices[index]]},{#encoded[index].data},{encoded[index].fallback_pages}," + (if index == chosen then "yes" else "no"))
+            selected := encoded[chosen]
+            chunks = chunks.append(Chunk(int(#data), int(#selected.data), selected.methods, selected.dictionary_pages > 0, (end - start + inputs.settings.page_size - 1) / inputs.settings.page_size, count_nulls(values), encoding.bounds_of(values)))
+            data = data.concat(selected.data)
+        groups = groups.append(RowGroup(end - start, start, chunks))
+        start = end
+    int[] footer := bitstream.uleb(1).concat(bitstream.uleb(int(#inputs.columns)))
+    for column := inputs.columns[]
+        footer = footer.concat(bitstream.uleb(int(#column.name))).concat(schema_io.ascii_bytes(column.name)).concat([encoding.type_number(column.kind), if column.nullable then 1 else 0])
+    footer = footer.concat(bitstream.uleb(int(#inputs.rows))).concat(bitstream.uleb(int(#groups)))
+    for group := groups[]
+        footer = footer.concat(bitstream.uleb(group.rows))
+        for chunk := group.chunks[]
+            footer = footer.concat(bitstream.uleb(chunk.offset)).concat(bitstream.uleb(chunk.size)).concat(bitstream.uleb(int(#chunk.methods))).concat(chunk.methods).concat([if chunk.has_dictionary then 1 else 0]).concat(bitstream.uleb(chunk.page_count)).concat(bitstream.uleb(chunk.nulls)).concat(encoding.write_bounds(chunk.bounds))
+    data = data.concat(footer).concat(bitstream.integer_bytes(int(#footer))).concat(schema_io.ascii_bytes("MPTC"))
+    return Built(data, report)
+
+Page parse_page(bitstream.Reader &reader, string kind)
+    offset := reader.position
+    page_kind := bitstream.read_byte(&reader)
+    method := bitstream.read_byte(&reader)
+    values := bitstream.read_uleb(&reader)
+    nulls := bitstream.read_uleb(&reader)
+    body_bytes := bitstream.read_uleb(&reader)
+    checksum := bitstream.read_integer(&reader)
+    bounds := encoding.read_bounds(&reader, kind)
+    header_bytes := reader.position - offset
+    reader.position += body_bytes
+    return Page(page_kind, method, values, nulls, offset, header_bytes, body_bytes, checksum, bounds)
+
+Store parse_file(int[] data)
+    trailer := bitstream.Reader(data, int(#data) - 8)
+    footer_bytes := bitstream.read_integer(&trailer)
+    footer_offset := int(#data) - 8 - footer_bytes
+    reader := bitstream.Reader(data, footer_offset)
+    version := bitstream.read_uleb(&reader)
+    columns_count := bitstream.read_uleb(&reader)
+    schema_io.Column[] columns := []
+    for: index < columns_count
+        length := bitstream.read_uleb(&reader)
+        name := schema_io.ascii_text(bitstream.take(&reader, length))
+        kind := bitstream.read_byte(&reader)
+        nullable := bitstream.read_byte(&reader) == 1
+        columns = columns.append(schema_io.Column(name, encoding.type_names()[kind], nullable))
+    rows := bitstream.read_uleb(&reader)
+    group_count := bitstream.read_uleb(&reader)
+    RowGroup[] groups := []
+    first_row := 0
+    for: group_index < group_count
+        group_rows := bitstream.read_uleb(&reader)
+        Chunk[] chunks := []
+        for: column_index < columns_count
+            offset := bitstream.read_uleb(&reader)
+            size := bitstream.read_uleb(&reader)
+            method_count := bitstream.read_uleb(&reader)
+            methods := bitstream.take(&reader, method_count)
+            dictionary := bitstream.read_byte(&reader) == 1
+            page_count := bitstream.read_uleb(&reader)
+            nulls := bitstream.read_uleb(&reader)
+            bounds := encoding.read_bounds(&reader, columns[column_index].kind)
+            chunk := Chunk(offset, size, methods, dictionary, page_count, nulls, bounds)
+            pages := bitstream.Reader(data, offset)
+            while pages.position < offset + size
+                page := parse_page(&pages, columns[column_index].kind)
+                if page.kind == 1
+                    chunk.dictionary = page
+                else
+                    chunk.pages = chunk.pages.append(page)
+            chunks = chunks.append(chunk)
+        groups = groups.append(RowGroup(group_rows, first_row, chunks))
+        first_row += group_rows
+    return Store(data, columns, rows, groups, footer_offset, footer_bytes, version)
+
+int[] page_body(Store store, Page page)
+    return store.data[page.offset + page.header_bytes:<(page.offset + page.header_bytes + page.body_bytes)]
+
+schema_io.Cell[] decode_dictionary(Store store, schema_io.Column column, Page page)
+    reader := bitstream.Reader(page_body(store, page))
+    return encoding.decode_values(&reader, column.kind, 0, page.values)
+
+schema_io.Cell[] decode_page(Store store, schema_io.Column column, Page page, schema_io.Cell[] dictionary)
+    reader := bitstream.Reader(page_body(store, page))
+    definitions := array(nat(page.values), fill = 1)
+    if column.nullable
+        size := bitstream.read_integer(&reader)
+        position := reader.position
+        definitions = bitstream.hybrid_decode(&reader, 1, page.values)
+        reader.position = position + size
+    count := 0
+    for level := definitions[]
+        count += level
+    values := encoding.decode_values(&reader, column.kind, page.method, count, dictionary)
+    schema_io.Cell[] result := []
+    position := 0
+    for level := definitions[]
+        if level == 0
+            result = result.append(schema_io.Cell(kind = column.kind))
+        else
+            result = result.append(values[position])
+            position += 1
+    return result
+
+string[] describe(Store store, schema_io.Cell[][] originals)
+    lines := ["file bytes {#store.data} footer_offset {store.footer_offset} footer_bytes {store.footer_bytes}", "table version {store.version} rows {store.rows} columns {#store.columns} row_groups {#store.groups}"]
+    for: index < int(#store.columns)
+        lines = lines.append(column_line(index, store.columns[index]))
+    sizes := array(#store.columns, fill = 0)
+    data_pages := array(#store.columns, fill = 0)
+    dictionary_pages := array(#store.columns, fill = 0)
+    used := [for column := store.columns[] then array(5, fill = false)]
+    cells := 0
+    nulls := 0
+    mismatches := 0
+    checksum_errors := 0
+    for: group_index < int(#store.groups)
+        group := store.groups[group_index]
+        total_bytes := 0
+        for chunk := group.chunks[]
+            total_bytes += chunk.size
+        lines = lines.append("row_group {group_index} rows {group.rows} first_row {group.first_row} bytes {total_bytes}")
+        for: column_index < int(#store.columns)
+            column := store.columns[column_index]
+            chunk := group.chunks[column_index]
+            sizes[column_index] += chunk.size
+            data_pages[column_index] += chunk.page_count
+            for method := chunk.methods[]
+                used[column_index][method] = true
+            lines = lines.append("chunk {group_index} {column.name} offset {chunk.offset} size {chunk.size} encodings {method_list(chunk.methods)} dictionary " + (if chunk.has_dictionary then "yes" else "no") + " pages {chunk.page_count} nulls {chunk.nulls} {encoding.bounds_text(chunk.bounds)}")
+            schema_io.Cell[] dictionary := []
+            if chunk.has_dictionary
+                Page page := chunk.dictionary
+                dictionary_pages[column_index] += 1
+                if bitstream.adler32(page_body(store, page)) != page.checksum
+                    checksum_errors += 1
+                dictionary = decode_dictionary(store, column, page)
+                lines = lines.append("page {group_index} {column.name} dict offset {page.offset} header {page.header_bytes} body {page.body_bytes} checksum {schema_io.hex_text(page.checksum, 8)} entries {page.values}")
+            row := group.first_row
+            for: page_index < int(#chunk.pages)
+                page := chunk.pages[page_index]
+                if bitstream.adler32(page_body(store, page)) != page.checksum
+                    checksum_errors += 1
+                lines = lines.append("page {group_index} {column.name} {page_index} offset {page.offset} header {page.header_bytes} body {page.body_bytes} checksum {schema_io.hex_text(page.checksum, 8)} encoding {encoding.method_names()[page.method]} values {page.values} nulls {page.nulls} {encoding.bounds_text(page.bounds)}")
+                for value := decode_page(store, column, page, dictionary)[]
+                    cells += 1
+                    if value.is_null
+                        nulls += 1
+                    if schema_io.compare_cells(value, originals[row][column_index]) != 0
+                        mismatches += 1
+                    row += 1
+    for: index < int(#store.columns)
+        methods := [for method := (int(0):<5)[] if used[index][method] then method]
+        lines = lines.append("summary {store.columns[index].name} bytes {sizes[index]} data_pages {data_pages[index]} dictionary_pages {dictionary_pages[index]} encodings {method_list(methods)}")
+    status := if mismatches == 0 and checksum_errors == 0 then "ok" else "failed"
+    return lines.append("roundtrip {status} cells {cells} nulls {nulls} mismatches {mismatches} checksum_errors {checksum_errors}")
+
+int find_column(schema_io.Column[] columns, string name)
+    for: index < int(#columns)
+        if columns[index].name == name
+            return index
+    return -1
+
+string item_header(query.Item item)
+    if item.operation == "COLUMN"
+        return item.name
+    if item.operation == "COUNT_DISTINCT"
+        return "COUNT(DISTINCT {item.name})"
+    return item.operation + "(" + (if item.name == "" then "*" else item.name) + ")"
+
+Checked check_query(query.Parsed parsed, schema_io.Column[] columns)
+    if #parsed.items == 0
+        parsed.items = [for column := columns[] then query.Item("COLUMN", column.name)]
+    string[] names := [for item := parsed.items[] if item.name != "" then item.name]
+    for node := parsed.nodes[]
+        if node.name != ""
+            names = names.append(node.name)
+    if parsed.group != ""
+        names = names.append(parsed.group)
+    if parsed.order != ""
+        names = names.append(parsed.order)
+    plan := Plan(parsed, [], [], [], [], [], -1, -1, false)
+    for name := names[]
+        if find_column(columns, name) < 0
+            return Checked("unknown_column", plan)
+    for node := parsed.nodes[]
+        if node.name == ""
+            continue
+        kind := columns[find_column(columns, node.name)].kind
+        expected := if kind == "DATE" then "STRING" else kind
+        for value := node.literals[]
+            if value.kind != expected
+                return Checked("type_mismatch", plan)
+    for item := parsed.items[]
+        if (item.operation == "SUM" or item.operation == "AVG") and columns[find_column(columns, item.name)].kind != "INT"
+            return Checked("bad_aggregate", plan)
+    plan.aggregate = parsed.group != ""
+    for item := parsed.items[]
+        if item.operation != "COLUMN"
+            plan.aggregate = true
+    if plan.aggregate
+        for item := parsed.items[]
+            if item.operation == "COLUMN" and item.name != parsed.group
+                return Checked("not_grouped", plan)
+        if parsed.order != ""
+            return Checked("bad_order", plan)
+    needed := array(#columns, fill = false)
+    condition_needed := array(#columns, fill = false)
+    for name := names[]
+        needed[find_column(columns, name)] = true
+    for: node_index < int(#plan.parsed.nodes)
+        query.Condition node := plan.parsed.nodes[node_index]
+        index := if node.name == "" then -1 else find_column(columns, node.name)
+        plan.comparison_columns = plan.comparison_columns.append(index)
+        if index >= 0
+            condition_needed[index] = true
+            if columns[index].kind == "DATE"
+                for: literal_index < int(#node.literals)
+                    node.literals[literal_index] = schema_io.parse_cell("DATE", node.literals[literal_index].text)
+                plan.parsed.nodes[node_index] = node
+    plan.needed = [for index := (0:<(int(#columns)))[] if needed[index] then index]
+    plan.condition_columns = [for index := (0:<(int(#columns)))[] if condition_needed[index] then index]
+    plan.item_columns = [for item := parsed.items[] then if item.name == "" then -1 else find_column(columns, item.name)]
+    plan.headers = [for item := parsed.items[] then item_header(item)]
+    plan.group = if parsed.group == "" then -1 else find_column(columns, parsed.group)
+    plan.order = if parsed.order == "" then -1 else find_column(columns, parsed.order)
+    return Checked("", plan)
+
+int tri_not(int value)
+    return if value == 2 then 2 else 1 - value
+
+int tri_pair(string operation, int first, int second)
+    if operation == "AND"
+        return if first == 0 or second == 0 then 0 elif first == 2 or second == 2 then 2 else 1
+    return if first == 1 or second == 1 then 1 elif first == 2 or second == 2 then 2 else 0
+
+bool comparison(string operation, schema_io.Cell value, schema_io.Cell[] literals)
+    if operation == "BETWEEN"
+        return schema_io.compare_cells(literals[0], value) <= 0 and schema_io.compare_cells(value, literals[1]) <= 0
+    if operation == "IN"
+        for candidate := literals[]
+            if schema_io.compare_cells(value, candidate) == 0
+                return true
+        return false
+    relation := schema_io.compare_cells(value, literals[0])
+    if operation == "="
+        return relation == 0
+    if operation == "<>"
+        return relation != 0
+    if operation == "<"
+        return relation < 0
+    if operation == "<="
+        return relation <= 0
+    if operation == ">"
+        return relation > 0
+    return relation >= 0
+
+int evaluate(Plan plan, schema_io.Cell[] row)
+    if plan.parsed.root < 0
+        return 1
+    int[] results := []
+    for: index < int(#plan.parsed.nodes)
+        query.Condition node := plan.parsed.nodes[index]
+        value := 0
+        if node.operation == "NOT"
+            value = tri_not(results[node.left])
+        elif node.operation == "AND" or node.operation == "OR"
+            value = tri_pair(node.operation, results[node.left], results[node.right])
+        else
+            cell := row[plan.comparison_columns[index]]
+            if node.operation == "IS_NULL" or node.operation == "IS_NOT_NULL"
+                value = if cell.is_null == (node.operation == "IS_NULL") then 1 else 0
+            elif cell.is_null
+                value = 2
+            else
+                value = if comparison(node.operation, cell, node.literals) then 1 else 0
+        results = results.append(value)
+    return results[plan.parsed.root]
+
+bool[] zone_leaf(query.Condition node, Zone zone)
+    result := [false, false, false]
+    if node.operation == "IS_NULL" or node.operation == "IS_NOT_NULL"
+        test_null := node.operation == "IS_NULL"
+        result[if test_null then 1 else 0] = zone.nulls > 0
+        result[if test_null then 0 else 1] = zone.nulls < zone.count
+        return result
+    result[2] = zone.nulls > 0
+    if not zone.bounds.present
+        return result
+    low := zone.bounds.low
+    high := zone.bounds.high
+    can_true := false
+    can_false := false
+    if node.operation == "BETWEEN"
+        can_true = schema_io.compare_cells(low, node.literals[1]) <= 0 and schema_io.compare_cells(high, node.literals[0]) >= 0 and schema_io.compare_cells(node.literals[0], node.literals[1]) <= 0
+        can_false = schema_io.compare_cells(low, node.literals[0]) < 0 or schema_io.compare_cells(high, node.literals[1]) > 0
+    elif node.operation == "IN"
+        for value := node.literals[]
+            if schema_io.compare_cells(low, value) <= 0 and schema_io.compare_cells(value, high) <= 0
+                can_true = true
+        can_false = not (schema_io.compare_cells(low, high) == 0 and comparison("IN", low, node.literals))
+    else
+        first := schema_io.compare_cells(low, node.literals[0])
+        last := schema_io.compare_cells(high, node.literals[0])
+        if node.operation == "=" or node.operation == "<>"
+            can_true = first <= 0 and last >= 0
+            can_false = not (first == 0 and last == 0)
+            if node.operation == "<>"
+                temporary := can_true
+                can_true = can_false
+                can_false = temporary
+        elif node.operation == "<"
+            can_true = first < 0
+            can_false = last >= 0
+        elif node.operation == "<="
+            can_true = first <= 0
+            can_false = last > 0
+        elif node.operation == ">"
+            can_true = last > 0
+            can_false = first <= 0
+        else
+            can_true = last >= 0
+            can_false = first < 0
+    result[0] = can_false
+    result[1] = can_true
+    return result
+
+bool zone_possible(Plan plan, Zone[] zones)
+    if plan.parsed.root < 0
+        return true
+    bool[][] results := []
+    for: index < int(#plan.parsed.nodes)
+        query.Condition node := plan.parsed.nodes[index]
+        values := [false, false, false]
+        if node.operation == "NOT"
+            for: value < 3
+                if results[node.left][value]
+                    values[tri_not(value)] = true
+        elif node.operation == "AND" or node.operation == "OR"
+            for: first < 3
+                for: second < 3
+                    if results[node.left][first] and results[node.right][second]
+                        values[tri_pair(node.operation, first, second)] = true
+        else
+            values = zone_leaf(node, zones[plan.comparison_columns[index]])
+        results = results.append(values)
+    return results[plan.parsed.root][1]
+
+schema_io.Cell[] scan_page(Store store, int group_index, int column_index_value, int page_index, map<(int, int), schema_io.Cell[]> &dictionaries, int[] &counts)
+    column := store.columns[column_index_value]
+    chunk := store.groups[group_index].chunks[column_index_value]
+    page := chunk.pages[page_index]
+    schema_io.Cell[] dictionary := []
+    if page.method == 1
+        (int, int) key := (group_index, column_index_value)
+        if not dictionaries.has(key)
+            .dictionaries.set(key, decode_dictionary(store, column, chunk.dictionary))
+            counts[5] += 1
+            counts[6] += chunk.dictionary.header_bytes + chunk.dictionary.body_bytes
+        match dictionaries.get(key)
+            schema_io.Cell[] found
+                dictionary = found
+            none
+                dictionary = []
+    counts[2] += 1
+    counts[6] += page.header_bytes + page.body_bytes
+    return decode_page(store, column, page, dictionary)
+
+Scan scan_store(Store store, Plan plan)
+    counts := array(9, fill = 0)
+    string[] records := []
+    schema_io.Cell[][] matched := []
+    map<(int, int), schema_io.Cell[]> dictionaries
+    distinct<int> conditions
+    for index := plan.condition_columns[]
+        .conditions.add(index)
+    remaining := [for index := plan.needed[] if not conditions.has(index) then index]
+    for: group_index < int(#store.groups)
+        group := store.groups[group_index]
+        zones := [for chunk := group.chunks[] then Zone(chunk.bounds, chunk.nulls, group.rows)]
+        if not zone_possible(plan, zones)
+            counts[1] += 1
+            records = records.append("")
+            continue
+        counts[0] += 1
+        if #plan.needed == 0
+            counts[7] += group.rows
+            matched = matched.concat([for row := (0:<(group.rows))[] then array(#store.columns, fill = schema_io.Cell())])
+            records = records.append("-")
+            continue
+        record := ""
+        for: page_index < group.chunks[0].page_count
+            zones = [for chunk := group.chunks[] then Zone(chunk.pages[page_index].bounds, chunk.pages[page_index].nulls, chunk.pages[page_index].values)]
+            if not zone_possible(plan, zones)
+                counts[3] += int(#plan.needed)
+                record += "s"
+                continue
+            row_count := group.chunks[0].pages[page_index].values
+            counts[7] += row_count
+            rows := [for row := (0:<row_count)[] then array(#store.columns, fill = schema_io.Cell())]
+            for index := plan.condition_columns[]
+                decoded := scan_page(store, group_index, index, page_index, &dictionaries, &counts)
+                for: row < row_count
+                    rows[row][index] = decoded[row]
+            selected := [for row := (0:<row_count)[] if evaluate(plan, rows[row]) == 1 then row]
+            if #selected == 0 and #remaining > 0
+                counts[4] += int(#remaining)
+                record += "u"
+                continue
+            for index := remaining[]
+                decoded := scan_page(store, group_index, index, page_index, &dictionaries, &counts)
+                for: row < row_count
+                    rows[row][index] = decoded[row]
+            matched = matched.concat([for row := selected[] then rows[row]])
+            record += "r"
+        records = records.append(record)
+    counts[8] = int(#matched)
+    return Scan(matched, counts, records)
+
+int[] ordered_rows(schema_io.Cell[][] rows, int column_number, bool descending)
+    indices := [for index := (0:<(int(#rows)))[] then index]
+    present := [for row := rows[] then not row[column_number].is_null]
+    numbers := [for row := rows[] then row[column_number].number]
+    texts := [for row := rows[] then row[column_number].text]
+    return indices.sorted(by = (present, numbers, texts), descending = descending)
+
+int greatest_common_divisor(int first, int second)
+    left := if first < 0 then -first else first
+    right := second
+    while right != 0
+        left, right = right, left % right
+    return left
+
+string aggregate_value(query.Item item, int column_number, schema_io.Cell[][] rows, schema_io.Cell key)
+    if item.operation == "COLUMN"
+        return schema_io.cell_text(key)
+    if item.operation == "COUNT" and column_number < 0
+        return "{#rows}"
+    values := [for row := rows[] if not row[column_number].is_null then row[column_number]]
+    if item.operation == "COUNT"
+        return "{#values}"
+    if item.operation == "COUNT_DISTINCT"
+        distinct<string> unique
+        for value := values[]
+            .unique.add(schema_io.cell_text(value))
+        return "{unique.size()}"
+    if #values == 0
+        return "NULL"
+    if item.operation == "SUM" or item.operation == "AVG"
+        total := 0
+        for value := values[]
+            total += value.number
+        if item.operation == "SUM"
+            return "{total}"
+        divisor := greatest_common_divisor(total, int(#values))
+        numerator := total / divisor
+        denominator := int(#values) / divisor
+        return if denominator == 1 then "{numerator}" else "{numerator}/{denominator}"
+    best := values[0]
+    for value := values[]
+        relation := schema_io.compare_cells(value, best)
+        if (item.operation == "MIN" and relation < 0) or (item.operation == "MAX" and relation > 0)
+            best = value
+    return schema_io.cell_text(best)
+
+Result build_result(Plan plan, schema_io.Cell[][] matched)
+    kind := if not plan.aggregate then "rows" elif plan.group >= 0 then "grouped" else "aggregate"
+    string[] output := []
+    if not plan.aggregate
+        indices := [for index := (0:<(int(#matched)))[] then index]
+        if plan.order >= 0
+            indices = ordered_rows(matched, plan.order, plan.parsed.descending)
+        for index := indices[]
+            output = output.append([for column_number := plan.item_columns[] then schema_io.cell_text(matched[index][column_number])].join(","))
+    else
+        schema_io.Cell[][][] groups := []
+        schema_io.Cell[] keys := []
+        if plan.group < 0
+            groups = [matched]
+            keys = [schema_io.Cell()]
+        else
+            indices := ordered_rows(matched, plan.group, false)
+            for index := indices[]
+                key := matched[index][plan.group]
+                group_index := int(#keys) - 1
+                if group_index < 0 or schema_io.compare_cells(key, keys[group_index]) != 0
+                    keys = keys.append(key)
+                    groups = groups.append([])
+                    group_index += 1
+                groups[group_index] = groups[group_index].append(matched[index])
+        for: group_index < int(#groups)
+            string[] fields := []
+            for: item_index < int(#plan.parsed.items)
+                fields = fields.append(aggregate_value(plan.parsed.items[item_index], plan.item_columns[item_index], groups[group_index], keys[group_index]))
+            output = output.append(fields.join(","))
+    if plan.parsed.limit >= 0
+        output = output[0:<math.min(plan.parsed.limit, int(#output))]
+    return Result(kind, int(#matched), output)
+
+string counts_text(int[] counts)
+    names := ["row_groups_read", "row_groups_skipped", "pages_read", "pages_skipped", "pages_unneeded", "dictionary_pages_read", "bytes_read", "rows_scanned", "rows_matched"]
+    return [for index := (int(0):<9)[] then "{names[index]} {counts[index]}"].join(" ")
+
+void execute_queries(Store store, schema_io.Cell[][] originals, string[] queries)
+    string[] result_lines := []
+    string[] stats_lines := []
+    totals := array(9, fill = 0)
+    errors := 0
+    checks_ok := 0
+    for: query_index < int(#queries)
+        number := query_index + 1
+        checked := check_query(query.parse(queries[query_index]), store.columns)
+        if checked.error_code != ""
+            line := "query {number} error {checked.error_code}"
+            result_lines = result_lines.append(line)
+            stats_lines = stats_lines.append(line)
+            errors += 1
+            continue
+        plan := checked.plan
+        scanned := scan_store(store, plan)
+        result := build_result(plan, scanned.rows)
+        reference := build_result(plan, [for row := originals[] if evaluate(plan, row) == 1 then row])
+        equal := result.kind == reference.kind and result.matched == reference.matched and result.lines == reference.lines
+        if equal
+            checks_ok += 1
+        result_lines = result_lines.append("query {number} {result.kind} matched {result.matched} output {#result.lines}").append("columns " + plan.headers.join(",")).concat(result.lines)
+        needed := [for index := plan.needed[] then store.columns[index].name].join(",")
+        if needed == ""
+            needed = "-"
+        stats_lines = stats_lines.append("query {number} columns {needed} " + counts_text(scanned.counts) + " check " + (if equal then "ok" else "mismatch"))
+        for: group_index < int(#store.groups)
+            detail := if scanned.records[group_index] == "" then "skipped" else "pages " + scanned.records[group_index]
+            stats_lines = stats_lines.append("query {number} row_group {group_index} {detail}")
+        for: index < 9
+            totals[index] += scanned.counts[index]
+    stats_lines = stats_lines.append("total queries {#queries} errors {errors} " + counts_text(totals) + " checks_ok {checks_ok}")
+    schema_io.write_lines("output/query_results.txt", result_lines)
+    schema_io.write_lines("output/query_stats.txt", stats_lines)
+
+void recover(int[] data)
+    store := parse_file(data)
+    rows := [for row := (0:<(store.rows))[] then array(#store.columns, fill = schema_io.Cell(unknown = true))]
+    lines := ["file bytes {#data} rows {store.rows} columns {#store.columns} row_groups {#store.groups}"]
+    for: index < int(#store.columns)
+        lines = lines.append(column_line(index, store.columns[index]))
+    pages_examined := 0
+    damaged_pages := 0
+    lost_pages := 0
+    lost_cells := 0
+    for: group_index < int(#store.groups)
+        group := store.groups[group_index]
+        for: column_number < int(#store.columns)
+            column := store.columns[column_number]
+            chunk := group.chunks[column_number]
+            schema_io.Cell[] dictionary := []
+            dictionary_damaged := false
+            Page[] pages := if chunk.has_dictionary then [chunk.dictionary].concat(chunk.pages) else chunk.pages
+            data_index := 0
+            row := group.first_row
+            for page := pages[]
+                pages_examined += 1
+                checksum := bitstream.adler32(page_body(store, page))
+                damaged := checksum != page.checksum
+                label := if page.kind == 1 then "dict" else "{data_index}"
+                if damaged
+                    damaged_pages += 1
+                    lines = lines.append("damaged {group_index} {column.name} {label} offset {page.offset} stored {schema_io.hex_text(page.checksum, 8)} computed {schema_io.hex_text(checksum, 8)}")
+                if page.kind == 1
+                    dictionary_damaged = damaged
+                    if not damaged
+                        dictionary = decode_dictionary(store, column, page)
+                    continue
+                reason := if damaged then "checksum" elif page.method == 1 and dictionary_damaged then "dictionary" else ""
+                if reason != ""
+                    lost_pages += 1
+                    lost_cells += page.values
+                    lines = lines.append("lost {group_index} {column.name} {data_index} rows {page.values} reason {reason}")
+                else
+                    values := decode_page(store, column, page, dictionary)
+                    for: index < page.values
+                        rows[row + index][column_number] = values[index]
+                row += page.values
+                data_index += 1
+    recovered_cells := store.rows * int(#store.columns) - lost_cells
+    lines = lines.append("summary pages {pages_examined} damaged {damaged_pages} lost_pages {lost_pages} lost_cells {lost_cells} recovered_cells {recovered_cells}")
+    recovered := [[for column := store.columns[] then column.name].join(",")]
+    for row := rows[]
+        recovered = recovered.append([for value := row[] then schema_io.cell_text(value, "")].join(","))
+    schema_io.write_lines("output/recovery.txt", lines)
+    schema_io.write_lines("output/recovered.csv", recovered)
+
+void run_program()
+    inputs := schema_io.read_inputs()
+    built := build_file(inputs)
+    store := parse_file(built.data)
+    string[] hexadecimal := []
+    offset := 0
+    while offset < int(#built.data)
+        end := math.min(offset + 32, int(#built.data))
+        hexadecimal = hexadecimal.append([for index := (offset:<end)[] then schema_io.hex_text(built.data[index], 2)].join(""))
+        offset = end
+    schema_io.write_lines("output/file.hex", hexadecimal)
+    schema_io.write_lines("output/encoding_report.csv", built.report)
+    schema_io.write_lines("output/metadata.txt", describe(store, inputs.rows))
+    execute_queries(store, inputs.rows, inputs.queries)
+    recover(inputs.damaged)
+
+if main
+    run_program()

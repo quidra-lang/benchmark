@@ -1,0 +1,744 @@
+import math
+import chain = "./chain.qui"
+
+string[] read_lines(string path)
+    string content := string.from_utf8(file.read_bin(path))
+    lines := content.split(NL)
+    return lines[0:<#lines - 1]
+
+class Params(local string[][] rows)
+    int initial_difficulty := int(rows[0][1])
+    int retarget_interval := int(rows[1][1])
+    int target_spacing := int(rows[1][2])
+    int initial_reward := int(rows[2][1])
+    int halving_interval := int(rows[2][2])
+    int maturity := int(rows[3][1])
+    int max_block_size := int(rows[4][1])
+    int min_fee_rate := int(rows[5][1])
+    int mempool_limit := int(rows[6][1])
+    int orphan_limit := int(rows[7][1])
+    int drift := int(rows[8][1])
+    int expiry := int(rows[9][1])
+    int max_reorg := int(rows[10][1])
+    int ban_score := int(rows[11][1])
+    int block_penalty := int(rows[11][2])
+    int tx_penalty := int(rows[11][3])
+    string[] genesis := rows[12][1:]
+
+class Peer(string name)
+    accepted_blocks := 0
+    rejected_blocks := 0
+    orphaned_blocks := 0
+    accepted_txs := 0
+    rejected_txs := 0
+    ignored := 0
+    score := 0
+
+class MempoolEntry(chain.blocks.transactions.Transaction transaction, int fee, int arrival, returned := false)
+class Orphan(chain.blocks.Block block, int peer)
+class Reorganization(int moment, int fork_height, int disconnected, int connected, string old_hash, string new_hash)
+class Acceptance(string reason, fee := 0, string[] conflicts := [])
+class Validation(string reason, map<string, chain.blocks.transactions.Coin> utxo, int[] fees)
+
+bool text_before(string first, string second)
+    values := [first, second].sorted()
+    return first != second and values[0] == first
+
+bool priority_before(MempoolEntry first, MempoolEntry second)
+    int left := first.fee * second.transaction.size
+    int right := second.fee * first.transaction.size
+    return left > right or (left == right and text_before(first.transaction.txid, second.transaction.txid))
+
+bool reference_before(string first, string second)
+    left := first.split(":")
+    right := second.split(":")
+    left_index := int(left[1])
+    right_index := int(right[1])
+    return text_before(left[0], right[0]) or (left[0] == right[0] and left_index < right_index)
+
+string signed(int value)
+    return if value >= 0 then "+{value}" else "{value}"
+
+class Node(Params params, chain.blocks.transactions.wallets.Wallet[] managed)
+    owners := map<string, chain.blocks.transactions.wallets.Wallet>()
+    named := map<string, chain.blocks.transactions.wallets.Wallet>()
+    chain.Record[] records := []
+    record_index := map<string, int>()
+    tip := 0
+    now := 0
+    int[] main_chain := []
+    map<string, int> confirmed
+    MempoolEntry[] mempool := []
+    Orphan[] orphans := []
+    rejected := distinct<string>()
+    drop_record := map<string, string>()
+    Peer[] peers := []
+    peer_index := map<string, int>()
+    rejections := map<string, int>()
+    Reorganization[] reorganizations := []
+    string[] log_lines := []
+
+    for wallet := managed[]
+        .owners.set(wallet.address, wallet)
+        .named.set(wallet.name, wallet)
+    local chain.blocks.transactions.Output[] initial_outputs := []
+    for: 0 <= position < int(#params.genesis) step 2
+        local chain.blocks.transactions.wallets.Wallet destination := chain.blocks.transactions.entry(named, params.genesis[position])
+        initial_outputs = initial_outputs.append(chain.blocks.transactions.Output(destination.address, int(params.genesis[position + 1])))
+    local chain.blocks.transactions.Transaction genesis_tx := chain.blocks.transactions.create_coinbase(0, initial_outputs)
+    local genesis_block := chain.blocks.Block(0, "0" * 32, genesis_tx.txid, 0, 0, 0, [genesis_tx])
+    local map<string, chain.blocks.transactions.Coin> genesis_utxo
+    chain.blocks.transactions.apply_transaction(&genesis_utxo, genesis_tx, 0)
+    records = [chain.Record(genesis_block, -1, genesis_utxo, [], "genesis", 1)]
+    .record_index.set(genesis_block.hash, 0)
+    .refresh()
+
+    void .refresh()
+        main_chain = chain.chain_to(records, tip)
+        confirmed = map<string, int>()
+        for index := main_chain[]
+            for payment := records[index].block.txs[]
+                .confirmed.set(payment.txid, records[index].height)
+
+    void .log(string text)
+        log_lines = log_lines.append("{now} " + text)
+
+    void .tally(string category, string reason)
+        key := category + " " + reason
+        count := 0
+        if rejections.has(key)
+            count = chain.blocks.transactions.entry(rejections, key)
+        .rejections.set(key, count + 1)
+
+    int .peer(string name)
+        if not peer_index.has(name)
+            .peer_index.set(name, int(#peers))
+            peers = peers.append(Peer(name))
+        return chain.blocks.transactions.entry(peer_index, name)
+
+    int next_height()
+        return records[tip].height + 1
+
+    int reward(int height)
+        return chain.reward(height, params.initial_reward, params.halving_interval)
+
+    int difficulty(int parent)
+        return chain.required_difficulty(records, parent, params.initial_difficulty, params.retarget_interval, params.target_spacing)
+
+    bool mature(chain.blocks.transactions.Coin coin)
+        return coin.mature(next_height(), params.maturity)
+
+    distinct<string> locked()
+        distinct<string> result
+        for pending := mempool[]
+            for reference := pending.transaction.inputs[]
+                .result.add(reference)
+        return result
+
+    MempoolEntry[] priority()
+        MempoolEntry[] ranked := []
+        for pending := mempool[]
+            position := int(#ranked)
+            ranked = ranked.append(pending)
+            while position > 0 and priority_before(pending, ranked[position - 1])
+                ranked[position] = ranked[position - 1]
+                position -= 1
+            ranked[position] = pending
+        return ranked
+
+    int find_entry(string txid)
+        for: index < int(#mempool)
+            if mempool[index].transaction.txid == txid
+                return index
+        return -1
+
+    Acceptance acceptance(chain.blocks.transactions.Transaction payment)
+        if payment.is_coinbase()
+            return Acceptance("coinbase")
+        if confirmed.has(payment.txid) or find_entry(payment.txid) >= 0
+            return Acceptance("duplicate")
+        distinct<string> spent
+        chain.blocks.transactions.Check result := chain.blocks.transactions.check_transaction(payment, records[tip].utxo, spent, next_height(), owners, params.maturity)
+        if result.reason != ""
+            return Acceptance(result.reason)
+        if result.fee * 1000 < params.min_fee_rate * payment.size
+            return Acceptance("low-fee")
+        string[] conflicts := []
+        total := 0
+        higher_rate := true
+        for pending := mempool[]
+            conflict := false
+            for reference := pending.transaction.inputs[]
+                for candidate := payment.inputs[]
+                    if reference == candidate
+                        conflict = true
+            if conflict
+                conflicts = conflicts.append(pending.transaction.txid)
+                total += pending.fee
+                if result.fee * pending.transaction.size <= pending.fee * payment.size
+                    higher_rate = false
+        if #conflicts > 0 and (result.fee <= total or not higher_rate)
+            return Acceptance("conflict")
+        return Acceptance("", result.fee, conflicts)
+
+    void .record_drop(string txid, string reason)
+        .drop_record.set(txid, reason)
+        .log("DROP " + chain.blocks.transactions.wallets.hashing.short(txid) + " " + reason)
+
+    void .drop(string txid, string reason)
+        mempool = [for pending := mempool[] if pending.transaction.txid != txid then pending]
+        .record_drop(txid, reason)
+
+    void .register(chain.blocks.transactions.Transaction payment, Acceptance result, int arrival)
+        for txid := result.conflicts[]
+            .drop(txid, "replaced")
+        mempool = mempool.append(MempoolEntry(payment, result.fee, arrival))
+        if int(#mempool) > params.mempool_limit
+            MempoolEntry[] ranked := priority()
+            .drop(ranked[-1].transaction.txid, "mempool-full")
+
+    void .rebuild(chain.blocks.transactions.Transaction[] returned)
+        previous := mempool
+        mempool = []
+        MempoolEntry[] candidates := [for payment := returned[] then MempoolEntry(payment, 0, now, true)].concat(previous)
+        for candidate := candidates[]
+            payment := candidate.transaction
+            if confirmed.has(payment.txid)
+                continue
+            Acceptance result := acceptance(payment)
+            if result.reason != ""
+                .record_drop(payment.txid, result.reason)
+            else
+                if candidate.returned
+                    .log("RETURN " + chain.blocks.transactions.wallets.hashing.short(payment.txid))
+                .register(payment, result, candidate.arrival)
+
+    void .switch_tip(int target)
+        old_tip := tip
+        fork := chain.fork_point(records, tip, target)
+        disconnected := records[tip].height - records[fork].height
+        connected := records[target].height - records[fork].height
+        candidate := records[target]
+        fork_height := records[fork].height
+        if disconnected > params.max_reorg
+            .log("REFUSE {candidate.height} " + chain.blocks.transactions.wallets.hashing.short(candidate.hash) + " work {candidate.cumulative_work} fork {fork_height} depth {disconnected}")
+            return
+        chain.blocks.transactions.Transaction[] returned := []
+        for index := main_chain[fork_height + 1:][]
+            returned = returned.concat(records[index].block.txs[1:])
+        tip = target
+        .refresh()
+        if disconnected == 0
+            .log("TIP {candidate.height} " + chain.blocks.transactions.wallets.hashing.short(candidate.hash) + " work {candidate.cumulative_work}")
+        else
+            .log("REORG {candidate.height} " + chain.blocks.transactions.wallets.hashing.short(candidate.hash) + " work {candidate.cumulative_work} fork {fork_height} disconnected {disconnected} connected {connected}")
+            reorganizations = reorganizations.append(Reorganization(now, fork_height, disconnected, connected, records[old_tip].hash, candidate.hash))
+        .rebuild(returned)
+
+    void .penalize(int peer_number, int points)
+        before := peers[peer_number].score
+        peers[peer_number].score += points
+        if before < params.ban_score and peers[peer_number].score >= params.ban_score
+            .log("BAN {peers[peer_number].name} score {peers[peer_number].score}")
+
+    void .pay(string[] fields)
+        chain.blocks.transactions.wallets.Wallet sender := chain.blocks.transactions.entry(named, fields[2])
+        fee := int(fields[3])
+        chain.blocks.transactions.Output[] outputs := []
+        total := 0
+        for: 4 <= position < int(#fields) step 2
+            chain.blocks.transactions.wallets.Wallet destination := chain.blocks.transactions.entry(named, fields[position])
+            amount := int(fields[position + 1])
+            outputs = outputs.append(chain.blocks.transactions.Output(destination.address, amount))
+            total += amount
+        prefix := "PAY {sender.name} fee {fee} total {total}"
+        distinct<string> held := locked()
+        string[] coins := []
+        map<string, chain.blocks.transactions.Coin> utxo := records[tip].utxo
+        for reference := utxo.keys()[]
+            chain.blocks.transactions.Coin coin := chain.blocks.transactions.entry(utxo, reference)
+            if coin.address != sender.address or held.has(reference) or not mature(coin)
+                continue
+            position := int(#coins)
+            coins = coins.append(reference)
+            while position > 0
+                previous_reference := coins[position - 1]
+                chain.blocks.transactions.Coin previous_coin := chain.blocks.transactions.entry(utxo, previous_reference)
+                if coin.amount < previous_coin.amount or (coin.amount == previous_coin.amount and not reference_before(reference, previous_reference))
+                    break
+                coins[position] = previous_reference
+                position -= 1
+            coins[position] = reference
+        string[] inputs := []
+        gathered := 0
+        for reference := coins[]
+            if gathered >= total + fee
+                break
+            inputs = inputs.append(reference)
+            chain.blocks.transactions.Coin selected := chain.blocks.transactions.entry(utxo, reference)
+            gathered += selected.amount
+        if gathered < total + fee
+            .log(prefix + " rejected insufficient-funds")
+            .tally("pay", "insufficient-funds")
+            return
+        if gathered > total + fee
+            outputs = outputs.append(chain.blocks.transactions.Output(sender.address, gathered - total - fee))
+        chain.blocks.transactions.Transaction payment := chain.blocks.transactions.create_transaction(inputs, outputs, sender.secret)
+        Acceptance result := acceptance(payment)
+        prefix += " tx " + chain.blocks.transactions.wallets.hashing.short(payment.txid)
+        if result.reason != ""
+            .log(prefix + " rejected " + result.reason)
+            .tally("pay", result.reason)
+            return
+        .log(prefix + " accepted inputs {#inputs} outputs {#outputs} size {payment.size}")
+        .register(payment, result, now)
+
+    void .bump(string txid, int fee)
+        string prefix := "BUMP " + chain.blocks.transactions.wallets.hashing.short(txid) + " fee {fee}"
+        int index := find_entry(txid)
+        if index < 0
+            .log(prefix + " rejected unknown")
+            .tally("bump", "unknown")
+            return
+        pending := mempool[index]
+        original := pending.transaction
+        chain.blocks.transactions.Output[] outputs := original.outputs
+        last := int(#outputs) - 1
+        string address := outputs[last].address
+        outputs[last].amount -= fee - pending.fee
+        valid := outputs[last].amount >= 1
+        for reference := original.inputs[]
+            chain.blocks.transactions.Coin coin := chain.blocks.transactions.entry<chain.blocks.transactions.Coin>(records[tip].utxo, reference)
+            if coin.address != address
+                valid = false
+        if not valid
+            .log(prefix + " rejected no-change")
+            .tally("bump", "no-change")
+            return
+        chain.blocks.transactions.wallets.Wallet owner := chain.blocks.transactions.entry(owners, address)
+        chain.blocks.transactions.Transaction payment := chain.blocks.transactions.create_transaction(original.inputs, outputs, owner.secret)
+        Acceptance result := acceptance(payment)
+        prefix += " tx " + chain.blocks.transactions.wallets.hashing.short(payment.txid)
+        if result.reason != ""
+            .log(prefix + " rejected " + result.reason)
+            .tally("bump", result.reason)
+            return
+        .log(prefix + " accepted size {payment.size}")
+        .register(payment, result, now)
+
+    void .receive_transaction(int peer_number, chain.blocks.transactions.Transaction payment)
+        Acceptance result := acceptance(payment)
+        string prefix := "TX {peers[peer_number].name} " + chain.blocks.transactions.wallets.hashing.short(payment.txid)
+        if result.reason != ""
+            peers[peer_number].rejected_txs += 1
+            .tally("tx", result.reason)
+            .log(prefix + " rejected " + result.reason)
+            if result.reason == "coinbase" or result.reason == "bad-output" or result.reason == "bad-sig" or result.reason == "overspend"
+                .penalize(peer_number, params.tx_penalty)
+        else
+            peers[peer_number].accepted_txs += 1
+            .log(prefix + " accepted fee {result.fee} size {payment.size}")
+            .register(payment, result, now)
+
+    void .mine(chain.blocks.transactions.wallets.Wallet wallet)
+        int height := next_height()
+        chain.blocks.transactions.Transaction[] payments := []
+        int[] fees := []
+        size := 0
+        for pending := priority()[]
+            if size + pending.transaction.size <= params.max_block_size
+                payments = payments.append(pending.transaction)
+                fees = fees.append(pending.fee)
+                size += pending.transaction.size
+        chain.blocks.transactions.Transaction coinbase := chain.blocks.transactions.create_coinbase(height, [chain.blocks.transactions.Output(wallet.address, reward(height) + fees.sum())])
+        payments = [coinbase].concat(payments)
+        chain.blocks.Block block := chain.blocks.mine_block(height, records[tip].hash, payments, math.max(now, chain.median_time(records, tip) + 1), difficulty(tip))
+        map<string, chain.blocks.transactions.Coin> utxo := records[tip].utxo
+        for payment := payments[]
+            chain.blocks.transactions.apply_transaction(&utxo, payment, height)
+        int work := records[tip].cumulative_work + 16 ^ block.difficulty
+        records = records.append(chain.Record(block, tip, utxo, fees, "local", work))
+        index := int(#records) - 1
+        .record_index.set(block.hash, index)
+        .log("MINE {wallet.name} {height} " + chain.blocks.transactions.wallets.hashing.short(block.hash) + " bits {block.difficulty} nonce {block.nonce} txs {#payments} size {size} fees {fees.sum()} work {work}")
+        .switch_tip(index)
+
+    void .reject_block(string kind, chain.blocks.Block block, int peer_number, string reason)
+        .rejected.add(block.hash)
+        peers[peer_number].rejected_blocks += 1
+        .tally("block", reason.split(" ")[0])
+        .log("{kind} {peers[peer_number].name} {block.height} " + chain.blocks.transactions.wallets.hashing.short(block.hash) + " rejected " + reason)
+        if reason != "time-too-new"
+            .penalize(peer_number, params.block_penalty)
+
+    Validation validate(chain.blocks.Block block, int parent)
+        map<string, chain.blocks.transactions.Coin> utxo := records[parent].utxo
+        int[] fees := []
+        if block.height != records[parent].height + 1
+            return Validation("bad-height", utxo, fees)
+        if block.difficulty != difficulty(parent)
+            return Validation("bad-difficulty", utxo, fees)
+        if block.timestamp <= chain.median_time(records, parent)
+            return Validation("time-too-old", utxo, fees)
+        if block.timestamp > now + params.drift
+            return Validation("time-too-new", utxo, fees)
+        distinct<string> spent
+        for: 1 <= position < int(#block.txs)
+            chain.blocks.transactions.Transaction payment := block.txs[position]
+            chain.blocks.transactions.Check result := chain.blocks.transactions.check_transaction(payment, utxo, spent, block.height, owners, params.maturity)
+            if result.reason != ""
+                return Validation(result.reason + " tx {position + 1}", utxo, fees)
+            for reference := payment.inputs[]
+                .spent.add(reference)
+            chain.blocks.transactions.apply_transaction(&utxo, payment, block.height)
+            fees = fees.append(result.fee)
+        chain.blocks.transactions.Transaction coinbase := block.txs[0]
+        for output := coinbase.outputs[]
+            if not owners.has(output.address) or output.amount == 0
+                return Validation("bad-output tx 1", utxo, fees)
+        if coinbase.output_total() > reward(block.height) + fees.sum()
+            return Validation("bad-coinbase", utxo, fees)
+        chain.blocks.transactions.apply_transaction(&utxo, coinbase, block.height)
+        return Validation("", utxo, fees)
+
+    void .connect(string kind, chain.blocks.Block block, int peer_number)
+        int parent := chain.blocks.transactions.entry(record_index, block.previous)
+        Validation result := validate(block, parent)
+        if result.reason != ""
+            .reject_block(kind, block, peer_number, result.reason)
+            return
+        int work := records[parent].cumulative_work + 16 ^ block.difficulty
+        records = records.append(chain.Record(block, parent, result.utxo, result.fees, peers[peer_number].name, work))
+        index := int(#records) - 1
+        .record_index.set(block.hash, index)
+        peers[peer_number].accepted_blocks += 1
+        .log("{kind} {peers[peer_number].name} {block.height} " + chain.blocks.transactions.wallets.hashing.short(block.hash) + " accepted work {work}")
+        if work > records[tip].cumulative_work
+            .switch_tip(index)
+
+    void .resolve(string start)
+        queue := [start]
+        head := 0
+        while head < int(#queue)
+            parent_hash := queue[head]
+            head += 1
+            children := [for orphan := orphans[] if orphan.block.previous == parent_hash then orphan]
+            orphans = [for orphan := orphans[] if orphan.block.previous != parent_hash then orphan]
+            for orphan := children[]
+                if rejected.has(parent_hash)
+                    .reject_block("UNORPHAN", orphan.block, orphan.peer, "bad-parent")
+                else
+                    .connect("UNORPHAN", orphan.block, orphan.peer)
+                queue = queue.append(orphan.block.hash)
+
+    void .receive_block(int peer_number, chain.blocks.Block block)
+        duplicate := record_index.has(block.hash) or rejected.has(block.hash)
+        for orphan := orphans[]
+            if orphan.block.hash == block.hash
+                duplicate = true
+        string prefix := "BLOCK {peers[peer_number].name} {block.height} " + chain.blocks.transactions.wallets.hashing.short(block.hash)
+        if duplicate
+            .log(prefix + " rejected duplicate")
+            peers[peer_number].rejected_blocks += 1
+            .tally("block", "duplicate")
+            return
+        string reason := chain.blocks.context_free_error(block, params.max_block_size)
+        if reason == "" and rejected.has(block.previous)
+            reason = "bad-parent"
+        if reason != ""
+            .reject_block("BLOCK", block, peer_number, reason)
+            .resolve(block.hash)
+            return
+        if not record_index.has(block.previous)
+            orphans = orphans.append(Orphan(block, peer_number))
+            peers[peer_number].orphaned_blocks += 1
+            .log(prefix + " orphan parent " + chain.blocks.transactions.wallets.hashing.short(block.previous))
+            if int(#orphans) > params.orphan_limit
+                .log("EVICT " + chain.blocks.transactions.wallets.hashing.short(orphans[0].block.hash) + " orphan-limit")
+                orphans = orphans[1:]
+            return
+        .connect("BLOCK", block, peer_number)
+        .resolve(block.hash)
+
+    void .status(string txid)
+        string prefix := "STATUS " + chain.blocks.transactions.wallets.hashing.short(txid)
+        if confirmed.has(txid)
+            int height := chain.blocks.transactions.entry(confirmed, txid)
+            .log(prefix + " confirmed {height} confirmations {next_height() - height}")
+            return
+        MempoolEntry[] ranked := priority()
+        for: rank < int(#ranked)
+            if ranked[rank].transaction.txid == txid
+                .log(prefix + " mempool rank {rank + 1} of {#ranked}")
+                return
+        if drop_record.has(txid)
+            string reason := chain.blocks.transactions.entry(drop_record, txid)
+            .log(prefix + " dropped " + reason)
+            return
+        for record := records[]
+            for payment := record.block.txs[]
+                if payment.txid == txid
+                    .log(prefix + " stale")
+                    return
+        .log(prefix + " unknown")
+
+    int balance(string address)
+        total := 0
+        for coin := records[tip].utxo.values()[]
+            if coin.address == address
+                total += coin.amount
+        return total
+
+    void .print_state()
+        MempoolEntry[] ranked := priority()
+        size := 0
+        for pending := ranked[]
+            size += pending.transaction.size
+        head := records[tip]
+        .log("PRINT height {head.height} tip " + chain.blocks.transactions.wallets.hashing.short(head.hash) + " work {head.cumulative_work} bits {difficulty(tip)} reward {reward(next_height())} mempool {#ranked} size {size} orphans {#orphans}")
+        for: rank < int(#ranked)
+            pending := ranked[rank]
+            .log("MEMPOOL {rank + 1} " + chain.blocks.transactions.wallets.hashing.short(pending.transaction.txid) + " fee {pending.fee} size {pending.transaction.size}")
+        for wallet := managed[]
+            .log("BALANCE {wallet.name} {balance(wallet.address)}")
+
+    void .process_event(string[] fields, string[] texts)
+        now = int(fields[0])
+        previous := mempool
+        for pending := previous[]
+            if now - pending.arrival >= params.expiry
+                .drop(pending.transaction.txid, "expired")
+        kind := fields[1]
+        if kind == "PAY"
+            .pay(fields)
+        elif kind == "BUMP"
+            .bump(fields[2], int(fields[3]))
+        elif kind == "MINE"
+            chain.blocks.transactions.wallets.Wallet wallet := chain.blocks.transactions.entry(named, fields[2])
+            .mine(wallet)
+        elif kind == "STATUS"
+            .status(fields[2])
+        elif kind == "PRINT"
+            .print_state()
+        else
+            int peer_number := .peer(fields[2])
+            if peers[peer_number].score >= params.ban_score
+                peers[peer_number].ignored += 1
+                .log("IGNORE {peers[peer_number].name} {kind}")
+            elif kind == "TX"
+                .receive_transaction(peer_number, chain.blocks.transactions.parse_transaction(fields[3]))
+            else
+                .receive_block(peer_number, chain.blocks.parse_block_event(fields, texts))
+
+    string[] chain_lines()
+        head := records[tip]
+        lines := ["TIP {head.height} {head.hash} work {head.cumulative_work} stored {#records} orphans {#orphans}"]
+        distinct<string> main_hashes
+        rewards := 0
+        fees := 0
+        minted := 0
+        for index := main_chain[]
+            record := records[index]
+            chain.blocks.Block block := record.block
+            .main_hashes.add(record.hash)
+            miner_name := "-"
+            if record.height > 0
+                chain.blocks.transactions.wallets.Wallet owner := chain.blocks.transactions.entry(owners, block.txs[0].outputs[0].address)
+                miner_name = owner.name
+                rewards += reward(record.height)
+                fees += record.fees
+                minted += block.txs[0].output_total()
+            lines = lines.append("BLOCK {block.height} {block.hash} prev " + chain.blocks.transactions.wallets.hashing.short(block.previous) + " time {block.timestamp} bits {block.difficulty} nonce {block.nonce} txs {#block.txs} size {block.size()} fees {record.fees} miner {miner_name} source {record.source} work {record.cumulative_work}")
+            for: position < int(#block.txs)
+                chain.blocks.transactions.Transaction payment := block.txs[position]
+                if payment.is_coinbase()
+                    category := if block.height == 0 then "genesis" else "coinbase"
+                    lines = lines.append("TX {position + 1} {payment.txid} {category} out {#payment.outputs} amount {payment.output_total()}")
+                else
+                    lines = lines.append("TX {position + 1} {payment.txid} payment in {#payment.inputs} out {#payment.outputs} size {payment.size} fee {record.transaction_fees[position - 1]}")
+        int[] stale := []
+        for: index < int(#records)
+            if main_hashes.has(records[index].hash)
+                continue
+            position := int(#stale)
+            stale = stale.append(index)
+            while position > 0
+                previous := records[stale[position - 1]]
+                candidate := records[index]
+                if candidate.height > previous.height or (candidate.height == previous.height and not text_before(candidate.hash, previous.hash))
+                    break
+                stale[position] = stale[position - 1]
+                position -= 1
+            stale[position] = index
+        for index := stale[]
+            record := records[index]
+            lines = lines.append("STALE {record.height} {record.hash} prev " + chain.blocks.transactions.wallets.hashing.short(record.block.previous) + " source {record.source} work {record.cumulative_work}")
+        for orphan := orphans[]
+            lines = lines.append("ORPHAN {orphan.block.height} {orphan.block.hash} prev " + chain.blocks.transactions.wallets.hashing.short(orphan.block.previous) + " source {peers[orphan.peer].name}")
+        for change := reorganizations[]
+            lines = lines.append("REORG {change.moment} fork {change.fork_height} disconnected {change.disconnected} connected {change.connected} old " + chain.blocks.transactions.wallets.hashing.short(change.old_hash) + " new " + chain.blocks.transactions.wallets.hashing.short(change.new_hash))
+        for wallet := managed[]
+            count := 0
+            coinbase := 0
+            paid := 0
+            for index := main_chain[1:][]
+                record := records[index]
+                if record.block.txs[0].outputs[0].address == wallet.address
+                    count += 1
+                    coinbase += record.block.txs[0].output_total()
+                    paid += record.fees
+            if count > 0
+                lines = lines.append("MINER {wallet.name} blocks {count} coinbase {coinbase} fees {paid}")
+        first := 1
+        while first < int(#main_chain)
+            last := first
+            int bits := records[main_chain[first]].block.difficulty
+            while last + 1 < int(#main_chain) and records[main_chain[last + 1]].block.difficulty == bits
+                last += 1
+            lines = lines.append("BITS {bits} heights {first}-{last} blocks {last - first + 1}")
+            first = last + 1
+        for name := peer_index.keys().sorted()[]
+            int peer_number := chain.blocks.transactions.entry(peer_index, name)
+            sender := peers[peer_number]
+            state := if sender.score >= params.ban_score then "banned" else "ok"
+            lines = lines.append("PEER {name} blocks {sender.accepted_blocks} rejected {sender.rejected_blocks} orphans {sender.orphaned_blocks} txs {sender.accepted_txs} rejected {sender.rejected_txs} ignored {sender.ignored} score {sender.score} {state}")
+        MempoolEntry[] ranked := priority()
+        for: rank < int(#ranked)
+            pending := ranked[rank]
+            lines = lines.append("MEMPOOL {rank + 1} {pending.transaction.txid} fee {pending.fee} size {pending.transaction.size} time {pending.arrival}")
+        for key := rejections.keys().sorted()[]
+            int count := chain.blocks.transactions.entry(rejections, key)
+            lines = lines.append("REJECT {key} {count}")
+        utxo_total := 0
+        for coin := head.utxo.values()[]
+            utxo_total += coin.amount
+        lines = lines.append("SUPPLY genesis {records[0].block.txs[0].output_total()} rewards {rewards} fees {fees} burned {rewards + fees - minted} utxo {utxo_total}")
+        return lines
+
+    string[] balance_lines()
+        lines := ["wallet,address,balance,immature,locked,incoming,utxos"]
+        distinct<string> held := locked()
+        map<string, chain.blocks.transactions.Coin> utxo := records[tip].utxo
+        for wallet := managed[]
+            total := 0
+            immature := 0
+            locked_amount := 0
+            count := 0
+            incoming := 0
+            for reference := utxo.keys()[]
+                chain.blocks.transactions.Coin coin := chain.blocks.transactions.entry(utxo, reference)
+                if coin.address != wallet.address
+                    continue
+                total += coin.amount
+                count += 1
+                if not mature(coin)
+                    immature += coin.amount
+                if held.has(reference)
+                    locked_amount += coin.amount
+            for pending := mempool[]
+                for output := pending.transaction.outputs[]
+                    if output.address == wallet.address
+                        incoming += output.amount
+            lines = lines.append("{wallet.name},{wallet.address},{total},{immature},{locked_amount},{incoming},{count}")
+        return lines
+
+    string[] utxo_lines()
+        string[] lines := []
+        string[] hashes := []
+        total := 0
+        distinct<string> held := locked()
+        map<string, chain.blocks.transactions.Coin> utxo := records[tip].utxo
+        string[] references := []
+        for reference := utxo.keys()[]
+            position := int(#references)
+            references = references.append(reference)
+            while position > 0 and reference_before(reference, references[position - 1])
+                references[position] = references[position - 1]
+                position -= 1
+            references[position] = reference
+        for reference := references[]
+            chain.blocks.transactions.Coin coin := chain.blocks.transactions.entry(utxo, reference)
+            chain.blocks.transactions.wallets.Wallet owner := chain.blocks.transactions.entry(owners, coin.address)
+            category := if coin.height == 0 then "genesis" elif coin.coinbase then "coinbase" else "payment"
+            state := if not mature(coin) then "immature" elif held.has(reference) then "locked" else "free"
+            line := "{reference} {owner.name} {coin.amount} height {coin.height} {category} {state}"
+            lines = lines.append(line)
+            hashes = hashes.append(chain.blocks.transactions.wallets.hashing.digest(line))
+            total += coin.amount
+        return lines.concat(["TOTAL {utxo.size()} {total}", "ROOT " + chain.blocks.transactions.wallets.hashing.merkle_root(hashes)])
+
+    string[] history_lines()
+        map<string, chain.blocks.transactions.Transaction> payments
+        for index := main_chain[]
+            for payment := records[index].block.txs[]
+                .payments.set(payment.txid, payment)
+        string[] lines := []
+        for wallet := managed[]
+            lines = lines.append("WALLET {wallet.name} {wallet.address}")
+            count := 0
+            spent_total := 0
+            received_total := 0
+            running_balance := 0
+            for index := main_chain[]
+                record := records[index]
+                for payment := record.block.txs[]
+                    spent := 0
+                    received := 0
+                    involved := false
+                    for reference := payment.inputs[]
+                        string[] parts := reference.split(":")
+                        chain.blocks.transactions.Transaction earlier := chain.blocks.transactions.entry(payments, parts[0])
+                        chain.blocks.transactions.Output output := earlier.outputs[int(parts[1])]
+                        if output.address == wallet.address
+                            spent += output.amount
+                            involved = true
+                    for output := payment.outputs[]
+                        if output.address == wallet.address
+                            received += output.amount
+                            involved = true
+                    if not involved
+                        continue
+                    count += 1
+                    spent_total += spent
+                    received_total += received
+                    running_balance += received - spent
+                    category := if not payment.is_coinbase() then "payment" elif record.height == 0 then "genesis" else "coinbase"
+                    lines = lines.append("{record.height} " + chain.blocks.transactions.wallets.hashing.short(payment.txid) + " {category} spent {spent} received {received} net " + signed(received - spent) + " balance {running_balance}")
+            pending_count := 0
+            for pending := priority()[]
+                spent := 0
+                received := 0
+                for reference := pending.transaction.inputs[]
+                    chain.blocks.transactions.Coin coin := chain.blocks.transactions.entry<chain.blocks.transactions.Coin>(records[tip].utxo, reference)
+                    if coin.address == wallet.address
+                        spent += coin.amount
+                for output := pending.transaction.outputs[]
+                    if output.address == wallet.address
+                        received += output.amount
+                if spent != 0 or received != 0
+                    pending_count += 1
+                    lines = lines.append("pending " + chain.blocks.transactions.wallets.hashing.short(pending.transaction.txid) + " spent {spent} received {received} net " + signed(received - spent))
+            lines = lines.append("END {wallet.name} txs {count} spent {spent_total} received {received_total} balance {running_balance} pending {pending_count}")
+        return lines
+
+void write_lines(string name, string[] lines)
+    writer1 := file.write("output/" + name)
+    .writer1(if #lines == 0 then "" else lines.join(NL) + NL)
+
+settings := Params([for line := read_lines("input/params.txt")[] then line.split(" ")])
+node := Node(settings, chain.blocks.transactions.wallets.read_wallets("input/wallets.txt"))
+events := read_lines("input/events.txt")
+position := 0
+while position < int(#events)
+    fields := events[position].split(" ")
+    int count := if fields[1] == "BLOCK" then int(fields[9]) else 0
+    .node.process_event(fields, events[position + 1:<position + 1 + count])
+    position += count + 1
+bool output_exists := file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+write_lines("log.txt", node.log_lines)
+write_lines("chain.txt", node.chain_lines())
+write_lines("balances.csv", node.balance_lines())
+write_lines("utxo.txt", node.utxo_lines())
+write_lines("history.txt", node.history_lines())

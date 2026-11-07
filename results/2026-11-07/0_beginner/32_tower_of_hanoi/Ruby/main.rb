@@ -1,0 +1,9 @@
+def hanoi(n, source, target, auxiliary)
+  return 0 if n.zero?
+  count = hanoi(n - 1, source, auxiliary, target)
+  puts "move disk #{n} from #{source} to #{target}"
+  count + 1 + hanoi(n - 1, auxiliary, target, source)
+end
+
+moves = hanoi(4, 'A', 'C', 'B')
+puts "total moves: #{moves}"
