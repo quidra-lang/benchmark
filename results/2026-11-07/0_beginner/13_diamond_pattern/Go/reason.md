@@ -1,0 +1,9 @@
+The current question asks: Suppose every diamond row receives a prefix row k: followed by one ASCII space, with k numbering the emitted rows from 1. Explain how the row-generation operation must maintain this ordinal separately from the row-size value, spanning both expansion and contraction. Identify the initial states, both iteration ranges, the transition that avoids a repeated widest row, and the output sites that make the first shrinking row ordinal 6 rather than size 4. Keep the shape after each prefix unchanged.
+
+Answer and source evidence: This implementation has one combined ascending row ordinal 1..9, with n=5 and row-size i=min(row,10-row) or its equivalent conditional. Thus expansion sizes 1..5 become contraction sizes 4..1 without a repeated widest row; the first shrinking row already has ordinal row=6 and size i=4. Add literal row , this ordinal, and : plus one space at the output site while keeping the existing n-i and 2*i-1 shape terms. No second counter is required because row is already distinct from i.
+
+Selection: `main.go` lines 9, 10, 11, 12. The constant, combined iteration range, size transition and only output site establish both logical phases. Separate expansion/contraction loops must not be invented.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

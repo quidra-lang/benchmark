@@ -1,0 +1,5 @@
+`united` is a named membership bitmap: OR of input membership means each distinct value occupies at most one true entry despite repeated input slots. The union is operation k=0. Count true entries (or increment a counter once per included union value) and append a size field before that union line newline only. The unit is distinct set members, not numeric sum or source slots; the actual union has 11 members. Leave the other operation branches and their output unchanged. Membership construction, union lookup and local emission suffice; other set predicates are unnecessary.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

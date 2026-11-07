@@ -1,0 +1,9 @@
+The current question asks: Trace the complete formatting path for -456789, starting at its stored input value and ending at the printed line. Explain sign detection, extraction or traversal of magnitude digits, grouping from the right in threes, comma placement and reattachment of the minus sign. Derive the output line and identify why no comma can occur immediately after the sign or at the end.
+
+Answer and source evidence: The stored -456789 makes negative true. Magnitude digits are 456789; the explicit grouping implementations insert a comma before position 3 because six minus three is divisible by three and the index is positive. The Swift decimal NumberFormatter with POSIX locale groups that positive magnitude in threes. Prepending/emitting the minus sign separately yields -456,789 followed by a newline. Commas are only between magnitude digits, never adjacent to the sign or after the last digit.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14. The input, named sign test, magnitude conversion, grouping decisions and output/newline sites are all needed. Swift uses documented formatter grouping instead of an implementation loop.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

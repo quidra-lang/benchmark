@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+JavaScript/TypeScript runs selection only while ready.length>0, so shift never removes from an empty collection. When no eligible candidate remains, it exits even if courses are untaken; filtering courses not in order and sorting supplies cycle data to the list-2 caller/output. PHP scans alphabetically sorted courses for untaken indegree-zero eligibility with array_find; null triggers break before appending/taking anything, and array_diff of the sorted courses preserves alphabetical remaining order. All-taken also terminates, but the remaining list is then empty. The eligibility/stop, remaining-data construction and list-2 cycle consumer suffice; graph construction and prior selection trace are unnecessary for this local stopping question.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

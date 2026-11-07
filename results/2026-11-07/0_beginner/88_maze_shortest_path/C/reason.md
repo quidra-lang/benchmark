@@ -1,0 +1,5 @@
+Current parent values are flattened cell IDs row*13+column with -1 as unreached, and the start parent points to itself. To require pair values, change stored entries to signed (row,column) pairs or optional pairs, write the predecessor (v/13,v%13) on first discovery, and use a consistent missing marker plus self-pair start marker. Reconstruction must read a pair and either follow pair coordinates or flatten it only for the unchanged cell-index lookup. This source does not already satisfy the pair contract. Keep discovery direction/order, first-visit guard and actual path unchanged; write/read/marker sites must change together.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

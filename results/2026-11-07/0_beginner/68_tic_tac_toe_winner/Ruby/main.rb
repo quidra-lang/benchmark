@@ -1,0 +1,17 @@
+boards = [
+  ['XXX', 'OO.', 'O.X'], ['X.O', '.X.', 'O..'], ['XO.', '.OX', 'XO.'],
+  ['XOX', 'XOO', 'OXX'], ['X.O', 'XO.', 'O.X'], ['XOX', 'OXO', 'OXX']
+]
+boards.each_with_index do |board, number|
+  lines = board.dup
+  3.times { |column| lines << board.map { |row| row[column] }.join }
+  lines << (0...3).map { |i| board[i][i] }.join
+  lines << (0...3).map { |i| board[i][2 - i] }.join
+  winning = lines.find { |line| line[0] != '.' && line.chars.uniq.length == 1 }
+  result = if winning
+             "#{winning[0]} wins"
+           else
+             board.any? { |row| row.include?('.') } ? 'in progress' : 'draw'
+           end
+  puts "board #{number + 1}: #{result}"
+end

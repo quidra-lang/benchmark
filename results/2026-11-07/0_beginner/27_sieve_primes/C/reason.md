@@ -1,0 +1,5 @@
+Keep integer labels 0..limit=200, but allocate limit+2 positions and translate every flag access to k+1. Thus flags for 0,1,7,49,200 are at positions 1,2,8,50,201; the first two are false, 7 is prime, 49 is marked composite and 200 is composite. Initialize only translated integer positions, translate p and j accesses in marking and n accesses in counting/output, and leave printed n and ordered integer loops unchanged. Position 0 must be unused/false and excluded from counting. Field-layout code is unaffected.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,5 @@
+Replace the current window size 3 with positive input w, retain the complete-window interval ending at i from w-1 through sales length-1, sum entries i-w+1 through i and divide as a real number by w. Day labels remain i+1 and two fractional digits. For w=5 there are six results, days 5..10. Guard w greater than length before the loop and emit `no complete window` once, so w=11 avoids indexing/range construction and division. The current named window, sum, real conversion, bounds and output are the coordinated affected sites.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

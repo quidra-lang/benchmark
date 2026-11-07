@@ -1,0 +1,25 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+int main(void) {
+    int polygons[3][7][2] = {{{0, 0}, {5, 0}, {6, 4}, {1, 3}},
+                             {{2, 1}, {0, 4}, {3, 7}, {7, 6}, {8, 2}},
+                             {{0, 0}, {8, 0}, {8, 6}, {5, 6}, {4, 3}, {3, 6}, {0, 6}}};
+    int sizes[] = {4, 5, 7};
+    for (int k = 0; k < 3; k++) {
+        int twice = 0;
+        double perimeter = 0;
+        for (int i = 0; i < sizes[k]; i++) {
+            int j = (i + 1) % sizes[k];
+            int x = polygons[k][i][0], y = polygons[k][i][1];
+            int nx = polygons[k][j][0], ny = polygons[k][j][1];
+            int dx = x - nx, dy = y - ny;
+            twice += x * ny - nx * y;
+            perimeter += sqrt((double)(dx * dx + dy * dy));
+        }
+        twice = abs(twice);
+        printf("polygon %d: area=%.1f perimeter=%.3f\n", k + 1, twice / 2.0, perimeter);
+    }
+    return 0;
+}

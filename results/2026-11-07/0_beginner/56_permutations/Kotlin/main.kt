@@ -1,0 +1,18 @@
+fun main() {
+    var count = 0
+    val used = BooleanArray(4)
+    fun permute(prefix: String) {
+        if (prefix.length == 4) {
+            println("${++count}: $prefix")
+            return
+        }
+        for (i in 0 until 4) {
+            if (!used[i]) {
+                used[i] = true
+                permute(prefix + "ABCD"[i])
+                used[i] = false
+            }
+        }
+    }
+    permute("")
+}

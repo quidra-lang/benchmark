@@ -1,0 +1,9 @@
+The current question asks: For the matching i characters at prefix lengths 2 and 2 in kitten and sitting, follow the local DP-cell update. Identify the equality decision, zero replacement cost, neighboring-prefix candidates and final minimum. Explain whether a character match skips evaluation of other alternatives or only changes which computed candidate wins, using the actual conditional/expression evaluation in the source.
+
+Answer and source evidence: At i=j=2 the compared letters are both i, giving replacement cost zero. The cell compares deletion dp[1][2]+1, insertion dp[2][1]+1 and match dp[1][1]+0; for these prefixes these are 3,3,1, so the minimum is 1. All min arguments are ordinary eagerly evaluated arithmetic; matching only changes cost to zero and does not short-circuit the other alternatives.
+
+Selection: `main.swift` lines 4, 5, 6, 7, 8, 9, 10, 11. The local cost decision and complete minimum expression establish evaluation behavior and candidates. Neighbor values follow the stated DP meaning for the question's prefixes; the whole table initialization and previous cells are unnecessary to this local operation. The character arrays, zero table, prefix base assignments and increasing bounds establish the numeric neighbor states.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

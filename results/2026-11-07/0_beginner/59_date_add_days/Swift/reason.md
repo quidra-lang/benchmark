@@ -1,0 +1,9 @@
+The current question asks: Suppose each existing day count is subtracted instead of added and the displayed operator becomes a minus sign. Explain how backward day advancement must interact with month lengths and Gregorian leap-year handling at month/year boundaries, and how the resulting date is passed to the existing zero-padded formatter while the original date remains on the left. Use one boundary crossed during the 120-day case to make the dependency concrete; do not trace all 1500 days.
+
+Answer and source evidence: Change daily increment to decrement; when day becomes zero, decrement month (wrapping month 0 to December and decrementing year), then set day to the length of that newly selected month using Gregorian leap-year logic. In the 2023-11-15 minus 120 days case, crossing November 1 goes to October 31 rather than day 0. Keep original date bindings/text separate from evolving state, replace displayed + with -, and pass final year/month/day to the same zero-padded formatter.
+
+Selection: `main.swift` lines 3, 4, 7, 9, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28. Month lengths/leap calculation, current/initial state, day/month/year transition and formatted output form one dependency; unrelated separate cases are omitted where possible.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

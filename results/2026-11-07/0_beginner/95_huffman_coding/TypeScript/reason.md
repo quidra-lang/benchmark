@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Frequencies from the actual text determine priority by weight then smallest symbol. Each merge takes first as left and second as right, preserving the same tree under the proposed change. Swap only the appended traversal bit literals so left gets 1 and right gets 0. Space occurs 7 times; its path is right,right,left, so its old 110 becomes 001. Sorted-symbol output order and every code length stay unchanged. Weighted code-length accumulation therefore remains 114 encoded bits, while 37 characters*8 remains 296 fixed bits. Input/frequencies, priority/child construction, traversal labels and counting/output are required for the complete explanation; unrelated node-type boilerplate is omitted when runtime construction already supplies fields.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. TypeScript preserves the JavaScript runtime operations; inferred number types alone do not enforce integer-only values. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

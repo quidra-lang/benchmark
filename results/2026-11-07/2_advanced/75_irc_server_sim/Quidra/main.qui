@@ -1,0 +1,799 @@
+import math
+import protocol = "./protocol.qui"
+import masks = "./masks.qui"
+import clients = "./clients.qui"
+import channels = "./channels.qui"
+import modes = "./modes.qui"
+
+class Settings(map<string, string> values, string[] motd)
+class Traffic(int tick, string identifier, string kind, string body)
+class Server(Settings settings, Traffic[] traffic)
+    tick := 0
+    int end := traffic[-1].tick
+    clients.Client[] people := []
+    channels.Channel[] rooms := []
+    string[] sent := []
+    commands := map<string, int>()
+    numerics := map<int, int>()
+    counts := map<string, int>()
+    disconnections := map<string, int>()
+    string[] gone := []
+    peak_connections := 0
+    peak_connection_time := 0
+    peak_registered := 0
+    peak_registration_time := 0
+
+string setting(Settings settings, string key)
+    match settings.values.get(key)
+        string value
+            return value
+        none
+            return ""
+
+int number(Settings settings, string key)
+    return int(setting(settings, key))
+
+string[] input_lines(string path)
+    source := file.read(path)
+    string[] result := []
+    while .source(string &line)
+        result = result.append(line)
+    return result
+
+int first_space(string line, int start)
+    position := start
+    while position < int(#line) and line[position] != " "
+        position += 1
+    return position
+
+Settings read_settings()
+    map<string, string> values
+    string[] motd := []
+    for line := input_lines("input/server.txt")[]
+        split := first_space(line, 0)
+        key := line[0:<split]
+        value := line[split + 1:]
+        if key == "MOTD"
+            motd = motd.append(value)
+        else
+            .values.set(key, value)
+    return Settings(values, motd)
+
+Traffic[] read_traffic()
+    Traffic[] result := []
+    for line := input_lines("input/traffic.txt")[]
+        first := first_space(line, 0)
+        second := first_space(line, first + 1)
+        body := line[second + 1:]
+        kind := "messages"
+        if body.starts_with("CONNECT ")
+            host := body[8:]
+            valid := #host >= 1 and #host <= 63
+            for: i < int(#host)
+                if not (protocol.letters() + "0123456789.-").contains(host[i])
+                    valid = false
+            if valid
+                kind = "connect"
+        elif body == "DISCONNECT"
+            kind = "disconnect"
+        result = result.append(Traffic(int(line[0:<first]), line[first + 1:<second], kind, body))
+    return result
+
+int count(map<string, int> values, string key)
+    match values.get(key)
+        int value
+            return value
+        none
+            return 0
+
+bool contains(int[] values, int wanted)
+    for value := values[]
+        if value == wanted
+            return true
+    return false
+
+int connection(Server server, string identifier)
+    for: index < int(#server.people)
+        if server.people[index].active and server.people[index].identifier == identifier
+            return index
+    return -1
+
+int find_user(Server server, string nickname)
+    folded := protocol.fold(nickname)
+    for: index < int(#server.people)
+        client := server.people[index]
+        if client.active and client.registered and protocol.fold(client.nickname) == folded
+            return index
+    return -1
+
+int find_channel(Server server, string name)
+    folded := protocol.fold(name)
+    for: index < int(#server.rooms)
+        if server.rooms[index].active and protocol.fold(server.rooms[index].name) == folded
+            return index
+    return -1
+
+void send(Server &server, int client, string line)
+    server.sent = server.sent.append("{server.tick} {server.people[client].identifier} {line}")
+    server.people[client].sent += 1
+
+void reply(Server &server, int client, int code, string content)
+    .server.numerics.increment(code)
+    send(&server, client, ":" + setting(server.settings, "NAME") + " {code:03.} " + clients.addressee(server.people[client]) + " " + content)
+
+void broadcast(Server &server, int room, string line, exclude := -1)
+    for member := server.rooms[room].members[]
+        if member.client != exclude
+            send(&server, member.client, line)
+
+void send_peers(Server &server, int client, string line)
+    for: other < int(#server.people)
+        if other == client or not server.people[other].active
+            continue
+        peer := false
+        for room := server.people[client].channels[]
+            if channels.member(server.rooms[room], other) >= 0
+                peer = true
+        if peer
+            send(&server, other, line)
+
+string joined_channels(Server server, int client, string separator)
+    string[] names := []
+    for room := server.people[client].channels[]
+        position := channels.member(server.rooms[room], client)
+        names = names.append(channels.status(server.rooms[room].members[position]) + server.rooms[room].name)
+    return names.join(separator)
+
+void remove_member(Server &server, int client, int room)
+    channels.remove(&server.rooms[room], client)
+    server.people[client].channels = [for index := server.people[client].channels[] if index != room then index]
+    if #server.rooms[room].members == 0
+        server.rooms[room].active = false
+        for: index < int(#server.people)
+            server.people[index].invites = [for value := server.people[index].invites[] if value != room then value]
+
+void disconnect(Server &server, int index, string reason, string kind)
+    client := server.people[index]
+    if kind != "closed"
+        send(&server, index, "ERROR :Closing Link: " + clients.addressee(client) + "[{client.host}] ({reason})")
+        .server.counts.increment("errors")
+    if client.registered
+        send_peers(&server, index, ":" + clients.prefix(client) + " QUIT :" + reason)
+    for room := client.channels[]
+        remove_member(&server, index, room)
+    .server.counts.increment("discarded", by = int(#server.people[index].queue))
+    server.people[index].queue = []
+    server.people[index].active = false
+    server.gone = server.gone.append("GONE {server.tick} {client.identifier} " + clients.addressee(client) + " " + reason)
+    .server.disconnections.increment(kind)
+
+void complete_registration(Server &server, int index)
+    &client := &server.people[index]
+    if client.registered or client.nickname == "" or client.username == ""
+        return
+    client.registered = true
+    client.signon = server.tick
+    client.last_speaking = server.tick
+    registered := 0
+    for person := server.people[]
+        if person.active and person.registered
+            registered += 1
+    if registered > server.peak_registered
+        server.peak_registered = registered
+        server.peak_registration_time = server.tick
+    name := setting(server.settings, "NAME")
+    version := setting(server.settings, "VERSION")
+    reply(&server, index, 1, ":Welcome to the Internet Relay Network " + clients.prefix(client))
+    reply(&server, index, 2, ":Your host is {name}, running version {version}")
+    reply(&server, index, 3, ":This server was created " + setting(server.settings, "CREATED"))
+    reply(&server, index, 4, "{name} {version} i biklmnotv")
+    reply(&server, index, 5, "CASEMAPPING=rfc1459 CHANTYPES=# NICKLEN=" + setting(server.settings, "NICKLEN") + " CHANNELLEN=" + setting(server.settings, "CHANNELLEN") + " TOPICLEN=" + setting(server.settings, "TOPICLEN") + " CHANLIMIT=#:" + setting(server.settings, "MAXCHANNELS") + " CHANMODES=b,k,l,imnt PREFIX=(ov)@+ :are supported by this server")
+    reply(&server, index, 375, ":- {name} Message of the day -")
+    for line := server.settings.motd[]
+        reply(&server, index, 372, ":- " + line)
+    reply(&server, index, 376, ":End of /MOTD command.")
+    if client.invisible
+        send(&server, index, ":{client.nickname} MODE {client.nickname} :+i")
+
+void names_reply(Server &server, int client, int room)
+    names := channels.names(server.rooms[room], server.people, client)
+    name := server.rooms[room].name
+    if names != ""
+        reply(&server, client, 353, "= {name} :{names}")
+    reply(&server, client, 366, "{name} :End of /NAMES list.")
+
+void topic_reply(Server &server, int client, int room)
+    channel := server.rooms[room]
+    if channel.topic == ""
+        reply(&server, client, 331, "{channel.name} :No topic is set")
+    else
+        reply(&server, client, 332, "{channel.name} :{channel.topic}")
+        reply(&server, client, 333, "{channel.name} {channel.topic_setter} {channel.topic_time}")
+
+void nick(Server &server, int index, string[] parameters)
+    if #parameters == 0 or parameters[0] == ""
+        reply(&server, index, 431, ":No nickname given")
+        return
+    name := parameters[0][0:<math.min(int(#parameters[0]), number(server.settings, "NICKLEN"))]
+    if not protocol.valid_nickname(name)
+        reply(&server, index, 432, "{name} :Erroneous nickname")
+        return
+    if name == server.people[index].nickname
+        return
+    for: other < int(#server.people)
+        if other != index and server.people[other].active and server.people[other].nickname != "" and protocol.fold(server.people[other].nickname) == protocol.fold(name)
+            reply(&server, index, 433, "{name} :Nickname is already in use")
+            return
+    if server.people[index].registered
+        line := ":" + clients.prefix(server.people[index]) + " NICK :" + name
+        send(&server, index, line)
+        send_peers(&server, index, line)
+    server.people[index].nickname = name
+    complete_registration(&server, index)
+
+void user(Server &server, int index, string[] parameters)
+    if server.people[index].username != ""
+        reply(&server, index, 462, ":You may not reregister")
+        return
+    if #parameters < 4
+        reply(&server, index, 461, "USER :Not enough parameters")
+        return
+    server.people[index].username = parameters[0]
+    server.people[index].realname = parameters[3]
+    server.people[index].invisible = protocol.digits(parameters[1]) and #parameters[1] <= 3 and (int(parameters[1]) / 8) % 2 == 1
+    complete_registration(&server, index)
+
+void join(Server &server, int client, string[] parameters)
+    if #parameters == 0
+        reply(&server, client, 461, "JOIN :Not enough parameters")
+        return
+    prefix := clients.prefix(server.people[client])
+    if parameters[0] == "0"
+        rooms := server.people[client].channels
+        for room := rooms[]
+            broadcast(&server, room, ":{prefix} PART {server.rooms[room].name}")
+            remove_member(&server, client, room)
+        return
+    names := parameters[0].split(",")
+    string[] keys := if #parameters >= 2 then parameters[1].split(",") else []
+    for: i < int(#names)
+        name := names[i]
+        key := if i < int(#keys) then keys[i] else ""
+        if not protocol.valid_channel(name, number(server.settings, "CHANNELLEN"))
+            reply(&server, client, 403, "{name} :No such channel")
+            continue
+        room := find_channel(server, name)
+        if room >= 0 and channels.member(server.rooms[room], client) >= 0
+            continue
+        if int(#server.people[client].channels) >= number(server.settings, "MAXCHANNELS")
+            reply(&server, client, 405, "{name} :You have joined too many channels")
+            continue
+        if room < 0
+            room = int(#server.rooms)
+            server.rooms = server.rooms.append(channels.Channel(name, server.tick))
+        else
+            channel := server.rooms[room]
+            invited := contains(server.people[client].invites, room)
+            error_code := if channels.banned(channel, server.people[client]) and not invited then 474 elif channel.flags.has("i") and not invited then 473 elif channel.key != "" and key != channel.key then 475 elif channel.limit > 0 and int(#channel.members) >= channel.limit then 471 else 0
+            if error_code > 0
+                flag := if error_code == 474 then "b" elif error_code == 473 then "i" elif error_code == 475 then "k" else "l"
+                reply(&server, client, error_code, "{channel.name} :Cannot join channel (+{flag})")
+                continue
+        server.people[client].invites = [for value := server.people[client].invites[] if value != room then value]
+        channels.add(&server.rooms[room], client)
+        server.people[client].channels = server.people[client].channels.append(room)
+        broadcast(&server, room, ":{prefix} JOIN {server.rooms[room].name}")
+        if server.rooms[room].topic != ""
+            topic_reply(&server, client, room)
+        names_reply(&server, client, room)
+
+void part(Server &server, int client, string[] parameters)
+    if #parameters == 0
+        reply(&server, client, 461, "PART :Not enough parameters")
+        return
+    suffix := if #parameters >= 2 and parameters[1] != "" then " :" + parameters[1] else ""
+    prefix := clients.prefix(server.people[client])
+    for name := parameters[0].split(",")[]
+        room := find_channel(server, name)
+        if room < 0
+            reply(&server, client, 403, "{name} :No such channel")
+        elif channels.member(server.rooms[room], client) < 0
+            reply(&server, client, 442, "{server.rooms[room].name} :You're not on that channel")
+        else
+            broadcast(&server, room, ":{prefix} PART {server.rooms[room].name}{suffix}")
+            remove_member(&server, client, room)
+
+void message(Server &server, int client, string command, string[] parameters)
+    notice := command == "NOTICE"
+    if not notice
+        server.people[client].last_speaking = server.tick
+    if #parameters == 0 or parameters[0] == ""
+        if not notice
+            reply(&server, client, 411, ":No recipient given ({command})")
+        return
+    if #parameters < 2 or parameters[1] == ""
+        if not notice
+            reply(&server, client, 412, ":No text to send")
+        return
+    prefix := clients.prefix(server.people[client])
+    text := parameters[1]
+    for target := parameters[0].split(",")[]
+        if target.starts_with("#")
+            room := find_channel(server, target)
+            if room < 0
+                if not notice
+                    reply(&server, client, 401, "{target} :No such nick/channel")
+            elif not channels.can_speak(server.rooms[room], server.people[client], client)
+                if not notice
+                    reply(&server, client, 404, "{server.rooms[room].name} :Cannot send to channel")
+            else
+                server.rooms[room].messages += 1
+                broadcast(&server, room, ":{prefix} {command} {server.rooms[room].name} :{text}", client)
+        else
+            other := find_user(server, target)
+            if other < 0
+                if not notice
+                    reply(&server, client, 401, "{target} :No such nick/channel")
+            else
+                send(&server, other, ":{prefix} {command} {server.people[other].nickname} :{text}")
+                if not notice and server.people[other].away != ""
+                    reply(&server, client, 301, "{server.people[other].nickname} :{server.people[other].away}")
+
+void topic(Server &server, int client, string[] parameters)
+    if #parameters == 0
+        reply(&server, client, 461, "TOPIC :Not enough parameters")
+        return
+    room := find_channel(server, parameters[0])
+    if room < 0
+        reply(&server, client, 403, "{parameters[0]} :No such channel")
+        return
+    member := channels.member(server.rooms[room], client)
+    if member < 0
+        reply(&server, client, 442, "{server.rooms[room].name} :You're not on that channel")
+        return
+    if #parameters == 1
+        topic_reply(&server, client, room)
+        return
+    if server.rooms[room].flags.has("t") and not server.rooms[room].members[member].op
+        reply(&server, client, 482, "{server.rooms[room].name} :You're not channel operator")
+        return
+    &channel := &server.rooms[room]
+    channel.topic = parameters[1][0:<math.min(int(#parameters[1]), number(server.settings, "TOPICLEN"))]
+    channel.topic_setter = server.people[client].nickname
+    channel.topic_time = server.tick
+    broadcast(&server, room, ":" + clients.prefix(server.people[client]) + " TOPIC {channel.name} :{channel.topic}")
+
+void handle_names(Server &server, int client, string[] parameters)
+    if #parameters == 0
+        reply(&server, client, 366, "* :End of /NAMES list.")
+        return
+    for name := parameters[0].split(",")[]
+        room := find_channel(server, name)
+        if room < 0
+            reply(&server, client, 366, "{name} :End of /NAMES list.")
+        else
+            names_reply(&server, client, room)
+
+void whois(Server &server, int client, string[] parameters)
+    if #parameters == 0
+        reply(&server, client, 431, ":No nickname given")
+        return
+    other := find_user(server, parameters[0])
+    if other < 0
+        reply(&server, client, 401, "{parameters[0]} :No such nick/channel")
+        reply(&server, client, 318, "{parameters[0]} :End of /WHOIS list.")
+        return
+    person := server.people[other]
+    reply(&server, client, 311, "{person.nickname} {person.username} {person.host} * :{person.realname}")
+    if #person.channels > 0
+        reply(&server, client, 319, "{person.nickname} :" + joined_channels(server, other, " "))
+    reply(&server, client, 312, "{person.nickname} " + setting(server.settings, "NAME") + " :" + setting(server.settings, "DESCRIPTION"))
+    if person.away != ""
+        reply(&server, client, 301, "{person.nickname} :{person.away}")
+    reply(&server, client, 317, "{person.nickname} {server.tick - person.last_speaking} {person.signon} :seconds idle, signon time")
+    reply(&server, client, 318, "{person.nickname} :End of /WHOIS list.")
+
+void invite(Server &server, int client, string[] parameters)
+    if #parameters < 2
+        reply(&server, client, 461, "INVITE :Not enough parameters")
+        return
+    other := find_user(server, parameters[0])
+    if other < 0
+        reply(&server, client, 401, "{parameters[0]} :No such nick/channel")
+        return
+    room := find_channel(server, parameters[1])
+    if room < 0
+        reply(&server, client, 403, "{parameters[1]} :No such channel")
+        return
+    member := channels.member(server.rooms[room], client)
+    name := server.rooms[room].name
+    if member < 0
+        reply(&server, client, 442, "{name} :You're not on that channel")
+        return
+    if channels.member(server.rooms[room], other) >= 0
+        reply(&server, client, 443, "{server.people[other].nickname} {name} :is already on channel")
+        return
+    if server.rooms[room].flags.has("i") and not server.rooms[room].members[member].op
+        reply(&server, client, 482, "{name} :You're not channel operator")
+        return
+    if not contains(server.people[other].invites, room)
+        server.people[other].invites = server.people[other].invites.append(room)
+    reply(&server, client, 341, "{server.people[other].nickname} {name}")
+    if server.people[other].away != ""
+        reply(&server, client, 301, "{server.people[other].nickname} :{server.people[other].away}")
+    send(&server, other, ":" + clients.prefix(server.people[client]) + " INVITE {server.people[other].nickname} :{name}")
+
+void kick(Server &server, int client, string[] parameters)
+    if #parameters < 2
+        reply(&server, client, 461, "KICK :Not enough parameters")
+        return
+    room := find_channel(server, parameters[0])
+    if room < 0
+        reply(&server, client, 403, "{parameters[0]} :No such channel")
+        return
+    member := channels.member(server.rooms[room], client)
+    name := server.rooms[room].name
+    if member < 0
+        reply(&server, client, 442, "{name} :You're not on that channel")
+        return
+    if not server.rooms[room].members[member].op
+        reply(&server, client, 482, "{name} :You're not channel operator")
+        return
+    other := find_user(server, parameters[1])
+    if other < 0
+        reply(&server, client, 401, "{parameters[1]} :No such nick/channel")
+        return
+    if channels.member(server.rooms[room], other) < 0
+        reply(&server, client, 441, "{server.people[other].nickname} {name} :They aren't on that channel")
+        return
+    reason := if #parameters >= 3 and parameters[2] != "" then parameters[2] else server.people[client].nickname
+    broadcast(&server, room, ":" + clients.prefix(server.people[client]) + " KICK {name} {server.people[other].nickname} :{reason}")
+    remove_member(&server, other, room)
+
+void user_mode(Server &server, int client, string[] parameters)
+    other := find_user(server, parameters[0])
+    if other < 0
+        reply(&server, client, 401, "{parameters[0]} :No such nick/channel")
+        return
+    if other != client
+        reply(&server, client, 502, ":Cannot change mode for other users")
+        return
+    if #parameters == 1
+        reply(&server, client, 221, clients.mode(server.people[client]))
+        return
+    modes.Item[] changes := []
+    sign := "+"
+    unknown := false
+    for: i < int(#parameters[1])
+        character := parameters[1][i]
+        if character == "+" or character == "-"
+            sign = character
+        elif character == "i"
+            value := sign == "+"
+            if server.people[client].invisible != value
+                server.people[client].invisible = value
+                changes = changes.append(modes.Item(sign, "i"))
+        else
+            unknown = true
+    if #changes > 0
+        nickname := server.people[client].nickname
+        send(&server, client, ":{nickname} MODE {nickname} :" + modes.change_string(changes))
+    if unknown
+        reply(&server, client, 501, ":Unknown MODE flag")
+
+void channel_mode(Server &server, int client, string[] parameters)
+    room := find_channel(server, parameters[0])
+    if room < 0
+        reply(&server, client, 403, "{parameters[0]} :No such channel")
+        return
+    name := server.rooms[room].name
+    member := channels.member(server.rooms[room], client)
+    if #parameters == 1
+        reply(&server, client, 324, name + " " + channels.mode_display(server.rooms[room], member >= 0))
+        reply(&server, client, 329, "{name} {server.rooms[room].created}")
+        return
+    privileged := member >= 0 and server.rooms[room].members[member].op
+    denied := false
+    listed := false
+    modes.Item[] changes := []
+    for item := modes.channel_items(parameters[1], parameters[2:])[]
+        string character := item.character
+        if not "biklmnotv".contains(character)
+            reply(&server, client, 472, "{character} :is unknown mode char to me for {name}")
+            continue
+        if character == "b" and not item.present
+            if item.sign == "+" and not listed
+                for ban := server.rooms[room].bans[]
+                    reply(&server, client, 367, "{name} {ban.mask} {ban.setter} {ban.tick}")
+                reply(&server, client, 368, "{name} :End of channel ban list")
+                listed = true
+            continue
+        if ((character == "o" or character == "v") and not item.present) or (item.sign == "+" and (character == "k" or character == "l") and not item.present)
+            continue
+        if not privileged
+            if not denied
+                reply(&server, client, 482, "{name} :You're not channel operator")
+                denied = true
+            continue
+        adding := item.sign == "+"
+        changed := false
+        if character == "o" or character == "v"
+            other := find_user(server, item.argument)
+            if other < 0
+                reply(&server, client, 401, "{item.argument} :No such nick/channel")
+                continue
+            position := channels.member(server.rooms[room], other)
+            if position < 0
+                reply(&server, client, 441, "{server.people[other].nickname} {name} :They aren't on that channel")
+                continue
+            bool old := if character == "o" then server.rooms[room].members[position].op else server.rooms[room].members[position].voice
+            if old != adding
+                if character == "o"
+                    server.rooms[room].members[position].op = adding
+                else
+                    server.rooms[room].members[position].voice = adding
+                item.argument = server.people[other].nickname
+                changed = true
+        elif character == "b"
+            mask := masks.normalize(item.argument)
+            existing := -1
+            for: i < int(#server.rooms[room].bans)
+                if protocol.fold(server.rooms[room].bans[i].mask) == protocol.fold(mask)
+                    existing = i
+                    break
+            if adding and existing < 0
+                server.rooms[room].bans = server.rooms[room].bans.append(channels.Ban(mask, server.people[client].nickname, server.tick))
+                item.argument = mask
+                changed = true
+            elif not adding and existing >= 0
+                item.argument = server.rooms[room].bans[existing].mask
+                server.rooms[room].bans = [for i := (0:<(int(#server.rooms[room].bans)))[] if i != existing then server.rooms[room].bans[i]]
+                changed = true
+        elif character == "k"
+            if adding
+                if server.rooms[room].key != ""
+                    reply(&server, client, 467, "{name} :Channel key already set")
+                else
+                    server.rooms[room].key = item.argument
+                    changed = true
+            elif server.rooms[room].key != ""
+                server.rooms[room].key = ""
+                item.argument = "*"
+                changed = true
+        elif character == "l"
+            if adding
+                limit := int(item.argument)
+                if server.rooms[room].limit != limit
+                    server.rooms[room].limit = limit
+                    item.argument = "{limit}"
+                    changed = true
+            elif server.rooms[room].limit != 0
+                server.rooms[room].limit = 0
+                changed = true
+        else
+            if server.rooms[room].flags.has(character) != adding
+                if adding
+                    .server.rooms[room].flags.add(character)
+                else
+                    .server.rooms[room].flags.remove(character)
+                changed = true
+        if changed
+            changes = changes.append(item)
+    if #changes > 0
+        broadcast(&server, room, ":" + clients.prefix(server.people[client]) + " MODE {name} " + modes.change_string(changes))
+
+void process_line(Server &server, int client, string raw)
+    .server.counts.increment("processed")
+    parsed := protocol.parse(raw)
+    command := parsed.command
+    parameters := parsed.parameters
+    if command == ""
+        .server.counts.increment("empty")
+        return
+    .server.commands.increment(command)
+    if not server.people[client].registered and command != "NICK" and command != "USER" and command != "PING" and command != "PONG" and command != "QUIT"
+        reply(&server, client, 451, ":You have not registered")
+        return
+    if command == "NICK"
+        nick(&server, client, parameters)
+    elif command == "USER"
+        user(&server, client, parameters)
+    elif command == "PING"
+        if #parameters == 0 or parameters[0] == ""
+            reply(&server, client, 409, ":No origin specified")
+        else
+            name := setting(server.settings, "NAME")
+            send(&server, client, ":{name} PONG {name} :{parameters[0]}")
+    elif command == "PONG"
+        return
+    elif command == "QUIT"
+        reason := if #parameters > 0 and parameters[0] != "" then "Quit: " + parameters[0] else "Client Quit"
+        disconnect(&server, client, reason, "quit")
+    elif command == "JOIN"
+        join(&server, client, parameters)
+    elif command == "PART"
+        part(&server, client, parameters)
+    elif command == "PRIVMSG" or command == "NOTICE"
+        message(&server, client, command, parameters)
+    elif command == "TOPIC"
+        topic(&server, client, parameters)
+    elif command == "NAMES"
+        handle_names(&server, client, parameters)
+    elif command == "WHOIS"
+        whois(&server, client, parameters)
+    elif command == "AWAY"
+        server.people[client].away = if #parameters > 0 then parameters[0] else ""
+        if server.people[client].away == ""
+            reply(&server, client, 305, ":You are no longer marked as being away")
+        else
+            reply(&server, client, 306, ":You have been marked as being away")
+    elif command == "INVITE"
+        invite(&server, client, parameters)
+    elif command == "KICK"
+        kick(&server, client, parameters)
+    elif command == "MODE"
+        if #parameters == 0
+            reply(&server, client, 461, "MODE :Not enough parameters")
+        elif parameters[0].starts_with("#")
+            channel_mode(&server, client, parameters)
+        else
+            user_mode(&server, client, parameters)
+    else
+        reply(&server, client, 421, "{command} :Unknown command")
+
+void arrival(Server &server, Traffic event)
+    .server.counts.increment(event.kind)
+    if event.kind == "connect"
+        server.people = server.people.append(clients.Client(event.identifier, event.body[8:], server.tick, number(server.settings, "BUCKET")))
+        active := 0
+        for client := server.people[]
+            if client.active
+                active += 1
+        if active > server.peak_connections
+            server.peak_connections = active
+            server.peak_connection_time = server.tick
+        return
+    index := connection(server, event.identifier)
+    if event.kind == "disconnect"
+        if index >= 0
+            disconnect(&server, index, "Remote host closed the connection", "closed")
+        return
+    if index < 0
+        .server.counts.increment("dropped")
+        return
+    &client := &server.people[index]
+    client.received += 1
+    client.last_received = server.tick
+    client.ping_sent = -1
+    if #client.queue == 0 and client.tokens >= 1
+        clients.use_token(&client, server.tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+        process_line(&server, index, event.body)
+    elif int(#client.queue) >= number(server.settings, "QUEUE")
+        .server.counts.increment("discarded")
+        disconnect(&server, index, "Excess Flood", "flood")
+    else
+        client.queue = client.queue.append(event.body)
+        .server.counts.increment("queued")
+
+void run(Server &server)
+    traffic_index := 0
+    for: tick <= server.end
+        server.tick = tick
+        for: index < int(#server.people)
+            if not server.people[index].active
+                continue
+            clients.refill(&server.people[index], tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+            while server.people[index].active and #server.people[index].queue > 0 and server.people[index].tokens > 0
+                clients.use_token(&server.people[index], tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+                raw := server.people[index].queue[0]
+                server.people[index].queue = server.people[index].queue[1:]
+                process_line(&server, index, raw)
+        while traffic_index < int(#server.traffic) and server.traffic[traffic_index].tick == tick
+            arrival(&server, server.traffic[traffic_index])
+            traffic_index += 1
+        for: index < int(#server.people)
+            client := server.people[index]
+            if not client.active
+                continue
+            if client.ping_sent >= 0
+                if tick - client.ping_sent >= number(server.settings, "TIMEOUT")
+                    disconnect(&server, index, "Ping timeout: {tick - client.last_received} seconds", "timeout")
+            elif tick - client.last_received >= number(server.settings, "PINGFREQ")
+                send(&server, index, "PING :" + setting(server.settings, "NAME"))
+                .server.counts.increment("pings")
+                server.people[index].ping_sent = tick
+
+string[] channel_report(Server server)
+    string[] lines := []
+    total := 0
+    members := 0
+    bans := 0
+    for channel := server.rooms[]
+        if not channel.active
+            continue
+        total += 1
+        members += int(#channel.members)
+        bans += int(#channel.bans)
+        lines = lines.append("CHANNEL {channel.name} created {channel.created} members {#channel.members} peak {channel.peak} messages {channel.messages} modes " + channels.mode_display(channel))
+        lines = lines.append(if channel.topic == "" then "TOPIC none" else "TOPIC {channel.topic_setter} {channel.topic_time} {channel.topic}")
+        for ban := channel.bans[]
+            lines = lines.append("BAN {ban.mask} {ban.setter} {ban.tick}")
+        names := [for member := channel.members[] then channels.status(member) + server.people[member.client].nickname].join(" ")
+        lines = lines.append("MEMBERS " + names)
+    return lines.append("TOTAL channels {total} members {members} bans {bans}")
+
+string[] client_report(Server server)
+    string[] lines := []
+    active := 0
+    registered := 0
+    invisible := 0
+    away := 0
+    for: index < int(#server.people)
+        client := server.people[index]
+        if not client.active
+            continue
+        active += 1
+        if client.registered
+            registered += 1
+        if client.invisible
+            invisible += 1
+        if client.away != ""
+            away += 1
+        username := if client.username == "" then "*" else client.username
+        signon := if client.registered then "{client.signon}" else "-"
+        joined := joined_channels(server, index, ",")
+        invites := [for room := client.invites[] then server.rooms[room].name].join(",")
+        if joined == ""
+            joined = "none"
+        if invites == ""
+            invites = "none"
+        lines = lines.append("CLIENT {client.identifier} " + clients.addressee(client) + " {username} {client.host} " + clients.mode(client) + " connected {client.connected} signon {signon} received {client.received} sent {client.sent} tokens {client.tokens} queue {#client.queue} channels {joined} invites {invites}")
+        if client.away != ""
+            lines = lines.append("AWAY {client.identifier} {client.away}")
+    return lines.append("TOTAL clients {active} registered {registered} invisible {invisible} away {away}")
+
+string[] statistics(Server server)
+    pending := 0
+    numerics := 0
+    for client := server.people[]
+        if client.active
+            pending += int(#client.queue)
+    for value := server.numerics.values()[]
+        numerics += value
+    c := server.counts
+    lines := [
+        "END {server.end}",
+        "LINES total {#server.traffic} connect {count(c, "connect")} disconnect {count(c, "disconnect")} messages {count(c, "messages")}",
+        "MESSAGES dropped {count(c, "dropped")} queued {count(c, "queued")} processed {count(c, "processed")} discarded {count(c, "discarded")} pending {pending} empty {count(c, "empty")}",
+        "SENT lines {#server.sent} numerics {numerics} pings {count(c, "pings")} errors {count(c, "errors")}"
+    ]
+    for command := server.commands.keys().sorted()[]
+        lines = lines.append("COMMAND {command} {count(server.commands, command)}")
+    for code := server.numerics.keys().sorted()[]
+        match server.numerics.get(code)
+            int value
+                lines = lines.append("NUMERIC {code:03.} {value}")
+            none
+                continue
+    lines = lines.append("PEAK connections {server.peak_connections} at {server.peak_connection_time}")
+    lines = lines.append("PEAK registered {server.peak_registered} at {server.peak_registration_time}")
+    d := server.disconnections
+    lines = lines.append("DISCONNECTS quit {count(d, "quit")} closed {count(d, "closed")} flood {count(d, "flood")} timeout {count(d, "timeout")}")
+    return lines.concat(server.gone)
+
+void write_lines(string filename, string[] lines)
+    destination := file.write("output/" + filename)
+    if #lines > 0
+        .destination(lines.join(NL) + NL)
+
+void run_program()
+    server := Server(read_settings(), read_traffic())
+    run(&server)
+    if not file.exists("output")
+        file.mkdir("output")
+    write_lines("sent.txt", server.sent)
+    write_lines("channels.txt", channel_report(server))
+    write_lines("clients.txt", client_report(server))
+    write_lines("stats.txt", statistics(server))
+
+run_program()

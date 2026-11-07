@@ -1,0 +1,723 @@
+import parser = "./song_parser.qui"
+import instruments = "./instruments.qui"
+import sequencer = "./sequencer.qui"
+import mixer = "./mixer.qui"
+import report = "./report.qui"
+
+string hex(int value, width := 2)
+    return report.hexadecimal(value, width)
+
+string pad(string text, int width)
+    count := width - int(#text)
+    return if count > 0 then " " * nat(count) + text else text
+
+string[] effect_order()
+    return ["0", "1", "2", "3", "4", "5", "6", "7", "A", "B", "C", "D", "E1", "E2", "E9", "EA", "EB", "EC", "ED", "EE", "F", "P", "Q", "R", "V"]
+
+string[] tonic_names()
+    return ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+int name_index(string[] names, string name)
+    for: index < int(#names)
+        if names[index] == name
+            return index
+    return -1
+
+string hex_list(int[] values)
+    return if #values == 0 then "none" else [for value := values[] then hex(value)].join(" ")
+
+string note_range(int[] notes)
+    if #notes == 0
+        return "none"
+    sorted := notes.sorted()
+    return parser.note_name(sorted[0]) + ".." + parser.note_name(sorted[-1])
+
+class Record(int serial, int channel, int position, int row, int instrument, int note, int start)
+    length := 0
+    release := -1
+    reason := ""
+
+class PlayedRow(int position, int row, int start, int speed, int tempo, int[] notes)
+
+class Channel(int number)
+    instrument := -1
+    note := -1
+    frequency := 0
+    target := 0
+    portamento := 0
+    slide := 0
+    detune := 0
+    vibrato_speed := 0
+    vibrato_depth := 0
+    vibrato_position := 0
+    tremolo_speed := 0
+    tremolo_depth := 0
+    tremolo_position := 0
+    volume := 15
+    mode := 0
+    phase := 0
+    register := 1
+    age := 0
+    released := false
+    release_age := 0
+    release_level := 0
+    envelope := 0
+    output_frequency := 0
+    output_volume := 0
+    amplitude := 0
+    increment := 0
+    effect := parser.Effect("...")
+    sounding := false
+    record_index := -1
+    note_ons := 0
+    retriggers := 0
+    cuts := 0
+    active := 0
+    audible := 0
+
+    void .key_off()
+        release_age = age
+        release_level = envelope
+        released = true
+
+    void .approach(int step)
+        if frequency < target
+            frequency = if frequency + step < target then frequency + step else target
+        else
+            frequency = if frequency - step > target then frequency - step else target
+
+    void .volume_slide()
+        volume = instruments.clamp(volume + effect.high - effect.low, 0, 15)
+
+    void .update_output(parser.Instrument voice, int tick, int rate)
+        name := effect.name
+        semitones := 0
+        if name == "0"
+            offsets := [0, effect.high, effect.low]
+            semitones = offsets[tick % 3]
+        if #voice.arpeggio > 0
+            semitones += voice.arpeggio[age % int(#voice.arpeggio)]
+        value := instruments.transpose(frequency, semitones) + detune
+        if name == "4" or name == "6"
+            value += instruments.oscillation(vibrato_position, vibrato_depth, 4)
+        if #voice.vibrato > 0 and age >= voice.vibrato[0]
+            value += instruments.oscillation((age - voice.vibrato[0]) * voice.vibrato[1] % 64, voice.vibrato[2], 4)
+        output_frequency = instruments.clamp(value, 1000, 50 * rate)
+        envelope = instruments.envelope(voice.attack, voice.decay, voice.sustain, voice.release, age, released, release_age, release_level)
+        output_volume = volume
+        if name == "7"
+            output_volume = instruments.clamp(volume + instruments.oscillation(tremolo_position, tremolo_depth, 255), 0, 15)
+        amplitude = envelope * output_volume
+        increment = output_frequency * 65536 / (100 * rate)
+
+int generate(parser.Instrument[] voices, Channel[] &channels, int count, int gain, int[] muted, int[] &samples, int[][] &lanes)
+    string[] waves := []
+    int[][] tables := []
+    int[] modes := []
+    int[] phases := []
+    int[] registers := []
+    int[] increments := []
+    int[] amplitudes := []
+    bool[] sounding := []
+    for channel := channels[]
+        waves = waves.append(if channel.instrument < 0 then "PULSE" else voices[channel.instrument].wave)
+        tables = tables.append(if channel.instrument < 0 then [] else voices[channel.instrument].table)
+        modes = modes.append(channel.mode)
+        phases = phases.append(channel.phase)
+        registers = registers.append(channel.register)
+        increments = increments.append(channel.increment)
+        amplitudes = amplitudes.append(channel.amplitude)
+        sounding = sounding.append(channel.sounding)
+    clipped := mixer.tick(waves, tables, modes, &phases, &registers, increments, amplitudes, sounding, count, gain, muted, &samples, &lanes)
+    for: index < int(#channels)
+        channels[index].phase = phases[index]
+        channels[index].register = registers[index]
+    return clipped
+
+class Player(parser.Song song, parser.Params params)
+    channels := [Channel(1), Channel(2), Channel(3), Channel(4)]
+    int[][] lanes := array(4, fill = [])
+    int[] samples := []
+    int speed := song.speed
+    int tempo := song.tempo
+    delay := 0
+    position := 0
+    row := 0
+    parser.Cell[] cells := []
+    Record[] records := []
+    string[] warnings := []
+    string[] log := []
+    PlayedRow[] played := []
+    play_counts := array(#song.order * 64, fill = 0)
+    first_starts := array(#song.order * 64, fill = -1)
+    ticks := 0
+    clipped := 0
+    instrument_ticks := array(#song.instruments, fill = 0)
+    effect_counts := array(#effect_order(), fill = 0)
+    end_reason := "finished"
+    end_position := -1
+    end_row := -1
+    loop_start := -1
+
+    void .warn(int channel, string message)
+        warnings = warnings.append("warning " + hex(position) + ":" + hex(row) + " ch{channel} " + message)
+
+    void .end_record(Channel &channel, string reason)
+        index := channel.record_index
+        records[index].length = int(#samples) - records[index].start
+        records[index].reason = reason
+        channel.record_index = -1
+
+    void .note_on(Channel &channel, int note)
+        if channel.record_index >= 0
+            .end_record(&channel, "next")
+        channel.frequency = instruments.frequency(note)
+        channel.target = channel.frequency
+        channel.phase = 0
+        channel.age = 0
+        channel.vibrato_position = 0
+        channel.tremolo_position = 0
+        channel.released = false
+        channel.note = note
+        channel.note_ons += 1
+        channel.record_index = int(#records)
+        records = records.append(Record(int(#records) + 1, channel.number, position, row, channel.instrument, note, int(#samples)))
+
+    void .apply_cell(Channel &channel, parser.Cell cell, bool portamento)
+        if cell.instrument >= 0
+            selected := song.instrument_index[cell.instrument]
+            if selected < 0
+                .warn(channel.number, "undefined instrument " + hex(cell.instrument))
+            else
+                channel.instrument = selected
+                channel.volume = 15
+                channel.mode = song.instruments[selected].mode
+        if cell.volume >= 0
+            channel.volume = cell.volume
+        if cell.note == -2
+            if channel.note >= 0 and not channel.released
+                .channel.key_off()
+                selected := channel.record_index
+                records[selected].release = int(#samples) - records[selected].start
+            else
+                .warn(channel.number, "key off without note")
+        elif cell.note >= 0
+            if channel.instrument < 0
+                .warn(channel.number, "note without instrument")
+            elif portamento and channel.note >= 0
+                channel.target = instruments.frequency(cell.note)
+                channel.note = cell.note
+            else
+                if portamento
+                    .warn(channel.number, "portamento without note")
+                .note_on(&channel, cell.note)
+
+    void .start_effect(Channel &channel)
+        name := channel.effect.name
+        value := channel.effect.value
+        high := channel.effect.high
+        low := channel.effect.low
+        if name == "3"
+            if value > 0
+                channel.portamento = value
+        elif name == "4"
+            if high > 0
+                channel.vibrato_speed = high
+            if low > 0
+                channel.vibrato_depth = low
+        elif name == "7"
+            if high > 0
+                channel.tremolo_speed = high
+            if low > 0
+                channel.tremolo_depth = low
+        elif name == "C"
+            channel.volume = if value < 15 then value else 15
+        elif name == "E1"
+            channel.frequency = instruments.clamp(channel.frequency + 10 * value, 1000, 50 * song.rate)
+        elif name == "E2"
+            channel.frequency = instruments.clamp(channel.frequency - 10 * value, 1000, 50 * song.rate)
+        elif name == "EA"
+            channel.volume = instruments.clamp(channel.volume + value, 0, 15)
+        elif name == "EB"
+            channel.volume = instruments.clamp(channel.volume - value, 0, 15)
+        elif name == "EE"
+            delay = value
+        elif name == "F"
+            if value >= 1 and value <= 31
+                speed = value
+            elif value >= 32
+                tempo = value
+        elif name == "P"
+            channel.detune = value - 128
+        elif name == "Q" or name == "R"
+            if channel.note < 0
+                .warn(channel.number, "slide without note")
+            else
+                channel.note = instruments.clamp(channel.note + (if name == "Q" then low else -low), 12, 95)
+                channel.target = instruments.frequency(channel.note)
+                channel.slide = 2 * high + 1
+        elif name == "V"
+            valid := false
+            if channel.instrument >= 0
+                wave := song.instruments[channel.instrument].wave
+                valid = wave == "PULSE" and value <= 3 or wave == "NOISE" and value <= 1
+            if valid
+                channel.mode = value
+            else
+                .warn(channel.number, "invalid mode " + hex(value))
+
+    void .tick_effect(Channel &channel)
+        name := channel.effect.name
+        value := channel.effect.value
+        if name == "1"
+            channel.frequency = instruments.clamp(channel.frequency + 10 * value, 1000, 50 * song.rate)
+        elif name == "2"
+            channel.frequency = instruments.clamp(channel.frequency - 10 * value, 1000, 50 * song.rate)
+        elif name == "3" or name == "5"
+            .channel.approach(10 * channel.portamento)
+            if name == "5"
+                .channel.volume_slide()
+        elif name == "6" or name == "A"
+            .channel.volume_slide()
+        elif (name == "Q" or name == "R") and channel.slide != 0
+            .channel.approach(10 * channel.slide)
+
+    void .start_row()
+        delay = 0
+        for: index < 4
+            channel := channels[index]
+            cell := cells[index]
+            channel.effect = cell.effect
+            channel.slide = 0
+            name := channel.effect.name
+            value := channel.effect.value
+            if name != ""
+                effect_index := name_index(effect_order(), name)
+                effect_counts[effect_index] += 1
+            if not (name == "ED" and value >= 1)
+                .apply_cell(&channel, cell, name == "3" or name == "5")
+            if name != ""
+                .start_effect(&channel)
+            channels[index] = channel
+
+    void .process_tick(int tick)
+        for: index < 4
+            channel := channels[index]
+            name := channel.effect.name
+            value := channel.effect.value
+            if channel.note >= 0 and channel.age >= 1 and song.instruments[channel.instrument].sweep != 0
+                channel.frequency = instruments.clamp(channel.frequency + 10 * song.instruments[channel.instrument].sweep, 1000, 50 * song.rate)
+            if tick >= 1 and name != ""
+                .tick_effect(&channel)
+            if name == "ED" and value >= 1 and tick == value
+                .apply_cell(&channel, cells[index], false)
+            if name == "E9" and value >= 1 and tick >= 1 and tick % value == 0 and channel.note >= 0
+                channel.phase = 0
+                channel.age = 0
+                channel.released = false
+                channel.retriggers += 1
+            if name == "EC" and tick == value and channel.note >= 0
+                .end_record(&channel, "cut")
+                channel.note = -1
+                channel.cuts += 1
+            channel.sounding = channel.note >= 0
+            if channel.sounding
+                .channel.update_output(song.instruments[channel.instrument], tick, song.rate)
+                channel.active += 1
+                if channel.amplitude > 0
+                    channel.audible += 1
+                instrument_ticks[channel.instrument] += 1
+            channels[index] = channel
+
+    void .advance()
+        for: index < 4
+            if channels[index].note >= 0
+                channels[index].age += 1
+            name := channels[index].effect.name
+            if name == "4" or name == "6"
+                channels[index].vibrato_position = (channels[index].vibrato_position + channels[index].vibrato_speed) % 64
+            elif name == "7"
+                channels[index].tremolo_position = (channels[index].tremolo_position + channels[index].tremolo_speed) % 64
+        ticks += 1
+
+    void .log_row(int start)
+        parts := [hex(position) + " " + hex(song.order[position]) + " " + hex(row) + " {start:7.} {speed:2.} {tempo:3.}"]
+        int[] notes := []
+        for channel := channels[]
+            text := "--- --       - - " + hex(channel.volume, 1) + " " + channel.effect.text
+            if channel.note >= 0
+                text = parser.note_name(channel.note) + " " + hex(song.instruments[channel.instrument].number) + " {channel.output_frequency:7.} " + hex(channel.envelope, 1) + " " + hex(channel.output_volume, 1) + " " + channel.effect.text
+            parts = parts.append(text)
+            notes = notes.append(channel.note)
+        log = log.append(parts.join(" | "))
+        played = played.append(PlayedRow(position, row, start, speed, tempo, notes))
+
+    void .log_tick(int tick)
+        parts := ["  tick {tick:3.} {#samples:7.}"]
+        for channel := channels[]
+            text := "      -     - --"
+            if channel.sounding
+                text = "{channel.output_frequency:7.} {channel.increment:5.} " + hex(channel.envelope, 1) + hex(channel.output_volume, 1)
+            parts = parts.append(text)
+        log = log.append(parts.join(" | "))
+
+    bool .play_row(int next_position, int next_row)
+        position = next_position
+        row = next_row
+        cells = song.cells(position, row)
+        start := int(#samples)
+        key := position * 64 + row
+        if first_starts[key] < 0
+            first_starts[key] = start
+        .start_row()
+        tick_count := speed * (1 + delay)
+        for channel := channels[]
+            if channel.effect.name == "EC" and channel.effect.value >= tick_count
+                .warn(channel.number, "cut beyond row")
+            elif channel.effect.name == "ED" and channel.effect.value >= tick_count
+                .warn(channel.number, "delay beyond row")
+        tick_samples := sequencer.samples_per_tick(song.rate, tempo)
+        for: tick < tick_count
+            .process_tick(tick)
+            if tick == 0
+                .log_row(start)
+            if params.traces[key]
+                .log_tick(tick)
+            count := params.max_samples - int(#samples)
+            if tick_samples < count
+                count = tick_samples
+            clipped += generate(song.instruments, &channels, count, song.gain, params.muted, &samples, &lanes)
+            .advance()
+            if int(#samples) == params.max_samples
+                return false
+        return true
+
+    void .play()
+        current := 0
+        playing := true
+        while playing
+            play_counts[current] += 1
+            if not .play_row(current / 64, current % 64)
+                end_reason = "limit"
+                break
+            following := sequencer.next_row([for cell := cells[] then cell.effect.name], [for cell := cells[] then cell.effect.value], position, row)
+            if following < 0
+                end_reason = "stop"
+                end_position = position
+                end_row = row
+                break
+            current = following
+            if current >= int(#song.order) * 64
+                end_reason = "finished"
+                break
+            if play_counts[current] >= params.loops
+                end_reason = "loop"
+                end_position = current / 64
+                end_row = current % 64
+                loop_start = first_starts[current]
+                break
+        for: index < 4
+            channel := channels[index]
+            if channel.record_index >= 0
+                .end_record(&channel, "end")
+            channels[index] = channel
+        if (end_reason == "limit" or end_reason == "loop") and params.fade > 0
+            mixer.fade(&samples, params.fade)
+
+int[] instrument_numbers(parser.Song song)
+    int[] numbers := []
+    for: number < 256
+        if song.instrument_index[number] >= 0
+            numbers = numbers.append(number)
+    return numbers
+
+string[] note_lines(Player player)
+    string[] lines := []
+    for record := player.records[]
+        values := player.lanes[record.channel - 1][record.start:<record.start + record.length]
+        cycles := 0
+        for: 1 <= index < int(#values)
+            if values[index - 1] < 0 and values[index] >= 0
+                cycles += 1
+        release := if record.release < 0 then "-" else "{record.release}"
+        lines = lines.append("{record.serial:4.} ch={record.channel} at=" + hex(record.position) + ":" + hex(record.row) + " ins=" + hex(player.song.instruments[record.instrument].number) + " note=" + parser.note_name(record.note) + " start={record.start} length={record.length} release={release} end={record.reason} peak={report.peak(values, 0)} cycles={cycles}")
+    return lines
+
+string[] roll_lines(Player player)
+    start := player.params.roll_start
+    finish := start + player.params.roll_rows
+    if finish > int(#player.played)
+        finish = int(#player.played)
+    width := if finish > start then finish - start else 0
+    used := array(96, fill = false)
+    for: start <= index < finish
+        for note := player.played[index].notes[]
+            if note >= 0
+                used[note] = true
+    int[] pitches := []
+    for: offset < 96
+        note := 95 - offset
+        if used[note]
+            pitches = pitches.append(note)
+    lines := ["ROLL start={start} rows={width} pitches={#pitches}"]
+    for pitch := pitches[]
+        marks := ""
+        for: start <= index < finish
+            count := 0
+            owner := 0
+            for: channel < 4
+                if player.played[index].notes[channel] == pitch
+                    count += 1
+                    owner = channel + 1
+            marks += if count == 0 then " " elif count == 1 then "{owner}" else "*"
+        lines = lines.append(parser.note_name(pitch) + " |" + marks + "|")
+    ruler := ""
+    for: index < width
+        ruler += if index % 16 == 0 then "+" else "-"
+    return lines.append("    +" + ruler + "+")
+
+class Key(string name, int score)
+
+string[] stats_lines(Player player)
+    song := player.song
+    count := int(#player.samples)
+    low := player.samples[0]
+    high := low
+    for sample := player.samples[]
+        if sample < low
+            low = sample
+        if sample > high
+            high = sample
+    ending := player.end_reason
+    if ending == "stop" or ending == "loop"
+        ending += " order=" + hex(player.end_position) + " row=" + hex(player.end_row)
+    loop_start := if player.loop_start < 0 then "-" else "{player.loop_start}"
+    loop_length := if player.loop_start < 0 then "-" else "{count - player.loop_start}"
+    lines := ["title={song.title}", "rate={song.rate}", "samples={count}", "duration_ms={count * 1000 / song.rate}", "end={ending}", "loop_start={loop_start}", "loop_length={loop_length}", "rows={#player.played}", "ticks={player.ticks}", "clipped={player.clipped}", "peak={report.peak(player.samples, 128)}", "min={low}", "max={high}", "rms={report.rms(player.samples, 128)}", "zero_crossings={report.crossings(player.samples)}", "adler32=" + report.adler(player.samples)]
+    string[] path := []
+    previous_position := -1
+    for played := player.played[]
+        if played.position != previous_position
+            path = path.append(hex(played.position))
+            previous_position = played.position
+    lines = lines.append("path " + path.join(" "))
+    previous_speed := -1
+    previous_tempo := -1
+    for played := player.played[]
+        if played.speed != previous_speed or played.tempo != previous_tempo
+            lines = lines.append("timing sample={played.start} order=" + hex(played.position) + " row=" + hex(played.row) + " speed={played.speed} tempo={played.tempo}")
+        previous_speed = played.speed
+        previous_tempo = played.tempo
+    for: index < 4
+        channel := player.channels[index]
+        lines = lines.append("channel {index + 1} notes={channel.note_ons} retriggers={channel.retriggers} cuts={channel.cuts} active={channel.active} audible={channel.audible} peak={report.peak(player.lanes[index], 0)} rms={report.rms(player.lanes[index], 0)}")
+    voice_numbers := instrument_numbers(song)
+    used_instruments := array(256, fill = false)
+    note_counts := array(96, fill = 0)
+    pitch_classes := array(12, fill = 0)
+    for record := player.records[]
+        voice := song.instruments[record.instrument]
+        used_instruments[voice.number] = true
+        note_counts[record.note] += 1
+        if voice.wave != "NOISE"
+            pitch_classes[record.note % 12] += record.length
+    for number := voice_numbers[]
+        selected := song.instrument_index[number]
+        voice := song.instruments[selected]
+        int[] notes := []
+        length := 0
+        for record := player.records[]
+            if record.instrument == selected
+                notes = notes.append(record.note)
+                length += record.length
+        average := if #notes > 0 then "{length / int(#notes)}" else "-"
+        lines = lines.append("instrument " + hex(number) + " {voice.name} {voice.wave} notes={#notes} ticks={player.instrument_ticks[selected]} range=" + note_range(notes) + " average={average}")
+    order_counts := array(256, fill = 0)
+    for number := song.order[]
+        order_counts[number] += 1
+    for: number < 256
+        selected := song.pattern_index[number]
+        if selected >= 0
+            rows := 0
+            notes := 0
+            for cells := song.patterns[selected].rows[]
+                nonempty := false
+                for cell := cells[]
+                    nonempty = nonempty or not cell.empty
+                    if cell.has_note
+                        notes += 1
+                if nonempty
+                    rows += 1
+            lines = lines.append("pattern " + hex(number) + " rows={rows} notes={notes} orders={order_counts[number]}")
+    int[] following := []
+    for: position < int(#song.order)
+        for: row < 64
+            cells := song.cells(position, row)
+            following = following.append(sequencer.next_row([for cell := cells[] then cell.effect.name], [for cell := cells[] then cell.effect.value], position, row))
+    reached := sequencer.reachable(following)
+    played_positions := array(#song.order, fill = false)
+    for: position < int(#song.order)
+        rows := 0
+        first := "-"
+        dead := 0
+        for played := player.played[]
+            if played.position == position
+                if rows == 0
+                    first = "{played.start}"
+                rows += 1
+        played_positions[position] = rows > 0
+        for: row < 64
+            if not reached[position * 64 + row]
+                for cell := song.cells(position, row)[]
+                    if cell.has_note
+                        dead += 1
+                        break
+        lines = lines.append("order " + hex(position) + " pattern=" + hex(song.order[position]) + " rows={rows} first={first} dead={dead}")
+    for: note < 96
+        if note_counts[note] > 0
+            lines = lines.append("note " + parser.note_name(note) + " count={note_counts[note]}")
+    string[] effects := []
+    effect_names := effect_order()
+    for: index < int(#effect_names)
+        if player.effect_counts[index] > 0
+            effects = effects.append("{effect_names[index]}={player.effect_counts[index]}")
+    lines = lines.append("effects " + (if #effects == 0 then "none" else effects.join(" ")))
+    unused_instruments := [for number := voice_numbers[] if not used_instruments[number] then number]
+    int[] unused_patterns := []
+    for: number < 256
+        if song.pattern_index[number] >= 0 and order_counts[number] == 0
+            unused_patterns = unused_patterns.append(number)
+    int[] unreached_orders := []
+    for: position < int(#song.order)
+        if not played_positions[position]
+            unreached_orders = unreached_orders.append(position)
+    lines = lines.concat(["unused_instruments=" + hex_list(unused_instruments), "unused_patterns=" + hex_list(unused_patterns), "unreached_orders=" + hex_list(unreached_orders)])
+    tonics := tonic_names()
+    string[] classes := []
+    for: index < 12
+        classes = classes.append("{tonics[index]}={pitch_classes[index]}")
+    lines = lines.append("pitch_classes " + classes.join(" "))
+    int[][] weights := [[64, 22, 35, 23, 44, 41, 25, 52, 24, 37, 23, 29], [64, 27, 35, 54, 27, 35, 25, 48, 40, 27, 34, 32]]
+    modes := ["major", "minor"]
+    Key[] candidates := []
+    for: mode < 2
+        for: tonic < 12
+            score := 0
+            for: pitch < 12
+                score += weights[mode][(pitch - tonic + 12) % 12] * pitch_classes[pitch]
+            key := Key(tonics[tonic] + " " + modes[mode], score)
+            place := int(#candidates)
+            candidates = candidates.append(key)
+            while place > 0 and key.score > candidates[place - 1].score
+                candidates[place] = candidates[place - 1]
+                place -= 1
+            candidates[place] = key
+    lines = lines.append("key={candidates[0].name} score={candidates[0].score} runner_up={candidates[1].name} score={candidates[1].score}")
+    for: channel < 4
+        int[] notes := []
+        counts := array(256, fill = 0)
+        for record := player.records[]
+            if record.channel == channel + 1
+                notes = notes.append(record.note)
+                counts[song.instruments[record.instrument].number] += 1
+        fields := ["usage ch{channel + 1} range=" + note_range(notes)]
+        for number := voice_numbers[]
+            fields = fields.append(hex(number) + "={counts[number]}")
+        lines = lines.append(fields.join(" "))
+    return lines.concat(player.warnings)
+
+int plot_row(int value, int low, int high, int height)
+    return (2 * (high - value) * (height - 1) + (high - low)) / (2 * (high - low))
+
+string[] plot_lines(int[] values, int low, int high, int middle, int height, int width)
+    middle_row := plot_row(middle, low, high, height)
+    int[][] columns := []
+    for: column < width
+        start := column * int(#values) / width
+        finish := (column + 1) * int(#values) / width
+        top := values[start]
+        bottom := top
+        for: start <= index < finish
+            if values[index] > top
+                top = values[index]
+            if values[index] < bottom
+                bottom = values[index]
+        columns = columns.append([plot_row(top, low, high, height), plot_row(bottom, low, high, height)])
+    string[] lines := []
+    for: row < height
+        label := if row == 0 then "{high}" elif row == middle_row then "{middle}" elif row == height - 1 then "{low}" else ""
+        marks := ""
+        for limits := columns[]
+            marks += if row >= limits[0] and row <= limits[1] then "#" elif row == middle_row then "-" else " "
+        lines = lines.append(pad(label, 5) + " |" + marks + "|")
+    return lines
+
+string[] waveform_lines(Player player)
+    params := player.params
+    start := params.window_start
+    length := params.window_length
+    width := params.window_width
+    ruler := ""
+    labels := "    ms"
+    for: column < width
+        ruler += if column % 10 == 0 then "+" else "-"
+        if column % 10 == 0
+            spaces := 7 + column - int(#labels)
+            if spaces > 0
+                labels += " " * nat(spaces)
+            labels += "{(start + column * length / width) * 1000 / player.song.rate}"
+    axes := ["      +" + ruler + "+", labels]
+    lines := ["MIX start={start} length={length} width={width} height={params.window_height}"].concat(plot_lines(player.samples[start:<start + length], 0, 255, 128, params.window_height, width)).concat(axes)
+    for: channel < 4
+        lines = lines.append("CHANNEL {channel + 1}").concat(plot_lines(player.lanes[channel][start:<start + length], -3375, 3375, 0, params.window_scope, width))
+    return lines.concat(axes)
+
+string[] preview_lines(parser.Song song, parser.Params params, parser.Instrument voice)
+    channel := Channel(1)
+    channel.instrument = 0
+    channel.mode = voice.mode
+    channel.note = params.preview_note
+    channel.frequency = instruments.frequency(params.preview_note)
+    channel.target = channel.frequency
+    channel.sounding = true
+    tick_samples := sequencer.samples_per_tick(song.rate, song.tempo)
+    int[] samples := []
+    int[][] lanes := [[]]
+    string[] envelopes := []
+    string[] frequencies := []
+    voices := [voice]
+    for: tick < params.preview_ticks
+        channel.age = tick
+        if tick == params.preview_release
+            .channel.key_off()
+        if tick >= 1 and voice.sweep != 0
+            channel.frequency = instruments.clamp(channel.frequency + 10 * voice.sweep, 1000, 50 * song.rate)
+        .channel.update_output(voice, tick, song.rate)
+        envelopes = envelopes.append(hex(channel.envelope, 1))
+        frequencies = frequencies.append("{channel.output_frequency}")
+        channels := [channel]
+        generate(voices, &channels, tick_samples, song.gain, [0], &samples, &lanes)
+        channel = channels[0]
+    return ["instrument " + hex(voice.number) + " {voice.name} wave={voice.wave} samples={#samples} peak={report.peak(samples, 128)} rms={report.rms(samples, 128)} adler32=" + report.adler(samples), "  env " + envelopes.join(""), "  freq " + frequencies.join(" ")]
+
+void write_lines(string name, string[] lines)
+    writer1 := file.write("output/" + name)
+    .writer1(if #lines == 0 then "" else lines.join(NL) + NL)
+
+song := parser.read_song("input/song.txt")
+params := parser.read_params("input/params.txt")
+player := Player(song, params)
+.player.play()
+string[] previews := []
+for number := instrument_numbers(song)[]
+    previews = previews.concat(preview_lines(song, params, song.instruments[song.instrument_index[number]]))
+output_exists := file.is_directory("output")
+if not output_exists
+    file.mkdir("output")
+write_lines("samples.txt", report.hex_lines(player.samples))
+write_lines("channel_log.txt", player.log)
+write_lines("notes.txt", note_lines(player))
+write_lines("roll.txt", roll_lines(player))
+write_lines("stats.txt", stats_lines(player))
+write_lines("waveform.txt", waveform_lines(player))
+write_lines("instruments.txt", previews)

@@ -1,0 +1,5 @@
+The decoder already takes only the encoded Morse buffer: strtok yields complete space-delimited tokens; `/` appends one word space, and strcmp(token,codes[i])==0 matches an entire letter token. Thus `.` selects E and `.-` selects A independently, never a prefix. Pass standalone Morse text into this same tokenization stage (using writable storage for strtok), preserving the same decoded buffer joining and terminator; no original-message-letter fallback is present. The table prefix establishes E/A mapping without retaining unrelated table entries or encoding logic.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

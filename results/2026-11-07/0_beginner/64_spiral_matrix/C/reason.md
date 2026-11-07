@@ -1,0 +1,5 @@
+The stored matrix has five rows and six numeric integer cells per row. Rendering traverses rows and their cells in order, converting each number to decimal in a right-aligned width-3 field with ASCII leading spaces. Six adjacent fields give 6*3=18 characters because completed values 1..30 fit the width; one newline follows each row and no separator is added. Padding exists only in the output conversion and is never assigned back into the numeric matrix. Spiral-construction code is unnecessary for this rendering operation.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

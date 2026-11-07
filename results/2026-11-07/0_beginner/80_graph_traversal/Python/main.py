@@ -1,0 +1,43 @@
+from collections import deque
+
+edges = [(5, 0), (3, 8), (7, 2), (1, 6), (0, 2), (5, 3), (7, 5), (6, 4), (8, 7)]
+graph = [[] for _ in range(9)]
+for a, b in edges:
+    graph[a].append(b)
+    graph[b].append(a)
+for neighbors in graph:
+    neighbors.sort()
+
+
+def dfs(vertex, seen, order):
+    seen.add(vertex)
+    order.append(vertex)
+    for neighbor in graph[vertex]:
+        if neighbor not in seen:
+            dfs(neighbor, seen, order)
+
+
+depth = []
+dfs(0, set(), depth)
+queue = deque([0])
+seen = {0}
+breadth = []
+while queue:
+    vertex = queue.popleft()
+    breadth.append(vertex)
+    for neighbor in graph[vertex]:
+        if neighbor not in seen:
+            seen.add(neighbor)
+            queue.append(neighbor)
+components = []
+seen = set()
+for vertex in range(9):
+    if vertex not in seen:
+        component = []
+        dfs(vertex, seen, component)
+        components.append(sorted(component))
+print("DFS:", *depth)
+print("BFS:", *breadth)
+print(f"components: {len(components)}")
+for number, component in enumerate(components, 1):
+    print(f"component {number}:", *component)

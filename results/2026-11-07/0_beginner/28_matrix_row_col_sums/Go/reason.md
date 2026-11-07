@@ -1,0 +1,9 @@
+The current question asks: Suppose row sums, column sums and the grand total are replaced with the corresponding row maxima, column maxima and whole-matrix maximum. Explain the complete change from the stored 4-by-5 matrix through initialization and aggregation to the five-line, six-field output. Derive the first row's new summary field and the complete final summary row, and identify how original matrix entries and six-character field formatting remain intact.
+
+Answer and source evidence: Replace each zero-based sum accumulator with a maximum initialized from an actual matrix entry (or a suitable lower identity), update row and column summaries with max, and combine row maxima for the whole-matrix maximum. Keep matrix entries and six-character formatting. The first row summary becomes 912. Column maxima are 947,765,819,912,720 and whole maximum 947, so the final summary row is    947   765   819   912   720   947. Four data rows plus the summary remain five six-field lines.
+
+Selection: `main.go` lines 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23. All matrix values are needed for the column/global maxima; accumulator initialization, updates and output structure are all affected. Locale setup is unnecessary to integer field widths.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

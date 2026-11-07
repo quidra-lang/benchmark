@@ -1,0 +1,5 @@
+State begins at 12345. Two MINSTD steps per trial use multiplication by 48271 modulo 2147483647; the first states are 595905495 and 1558181227, giving dice 4 and 2 via state%6+1, sum 6. Exactly 1000 trials increment the corresponding sum bucket. All buckets start zero and sums 2..12 are printed ascending, including zero frequencies. Best begins at 2 and changes only for a strictly larger count, so ties choose the smaller sum. The final most-frequent line is the twelfth line. These retained stages establish the full run without listing all random states.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

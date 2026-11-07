@@ -1,0 +1,9 @@
+The current question asks: Suppose original team order must remain available after sorting the standings. Identify the source's sort expression and whether it reorders the existing ordering container or returns a separate order. Explain where and how that expression must change if needed so the two orders stay independent, distinguishing shared team records from shared ordering storage. Focus on sorting/aliasing rather than recomputing statistics.
+
+Answer and source evidence: Go sort.Slice and Rust teams.sort_by reorder the existing team ordering storage in place. Preserve original order by sorting an independent copy of the slice/vector or a separate index/reference sequence, keeping the comparator unchanged; a plain Go slice assignment aliases backing storage. Rust may sort a vector of references/indices to avoid cloning team records. Swift names.indices.sorted returns a new index array and already leaves original names and stats order intact. Sharing immutable/team records is separate from sharing mutable ordering storage.
+
+Selection: `main.swift` lines 13, 34. The ordering-container declaration and sort expression establish mutation versus fresh order. Comparator bodies and match-statistic updates are unrelated to aliasing, so they are omitted.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

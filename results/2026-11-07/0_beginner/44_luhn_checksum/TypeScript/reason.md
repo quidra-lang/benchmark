@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+The quoted input preserves 0128469655154 as a string. JavaScript/TypeScript reverses a character copy, uses zero-based i=0 for the undoubled rightmost digit and doubles odd i. PHP scans one-based positions from the right and doubles even positions. Doubled digits above 9 subtract 9; the checksum total is 54, so total%10 is nonzero. Removing the existing check digit 4 gives payload sum 50 and expected check digit 0. The complete line is 0128469655154: invalid (expected check digit 0). Only individual digit copies are converted to integers; output retains the original string and leading zero. Input, scan, transform, accumulation, decision and both output paths establish the full trace.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. TypeScript preserves the JavaScript runtime operations; inferred number types alone do not enforce integer-only values. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

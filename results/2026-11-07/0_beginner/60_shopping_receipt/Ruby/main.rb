@@ -1,0 +1,18 @@
+items = [
+  ['milk', 198, 2, 'food'], ['notebook', 165, 3, 'general'],
+  ['bread', 248, 1, 'food'], ['apple', 128, 4, 'food'],
+  ['detergent', 437, 1, 'general'], ['eggs', 268, 1, 'food']
+]
+totals = {'food' => 0, 'general' => 0}
+items.each do |name, price, quantity, category|
+  subtotal = price * quantity
+  totals[category] += subtotal
+  puts "#{name} #{price} x #{quantity} = #{subtotal}"
+end
+payment = totals.values.sum
+[['food', 8], ['general', 10]].each do |category, rate|
+  tax = totals[category] * rate / 100
+  payment += tax
+  puts "#{category}: #{totals[category]} yen, tax #{tax} yen"
+end
+puts "total: #{payment} yen"

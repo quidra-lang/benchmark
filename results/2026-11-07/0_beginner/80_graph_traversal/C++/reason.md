@@ -1,0 +1,5 @@
+Each edge is inserted in both directions. Neighbor loops scan vertex numbers 0..8, providing sorted adjacency without separately sorting lists. DFS marks on entry and reaches 7 from 2 along 0->2->7; BFS marks on enqueue and first discovers 7 while expanding 2. DFS order is `0 2 7 5 3 8`; BFS is `0 2 5 7 3 8`. Reset visited state and scan all vertices ascending: component 1 is sorted `0 2 3 5 7 8`, component 2 is `1 4 6`. Output is DFS/BFS labels, `components: 2`, then one-based `component 1:`/`component 2:` lines with space-separated values. Recursive visit semantics and all processing stages are necessary; entry-point scaffolding is omitted.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

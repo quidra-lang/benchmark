@@ -1,0 +1,9 @@
+The current question asks: Suppose the union line gains a size field containing its cardinality. In the local union/output block, identify where and how to count the distinct result elements rather than their sum or the number of original input slots. Connect result construction, the cardinality operation and insertion of the new field, explaining the unit being counted. Leave the other three set results unchanged.
+
+Answer and source evidence: Count distinct union members, not their sum or source array slots. Rust/Swift already store a distinct union result, so obtain values.len()/results[0].count and insert a size field only for the union output. Go stores union as a boolean membership table: count true entries, not len(union)=26; use that count in the union label/line and leave the other operation branches unchanged.
+
+Selection: `main.go` lines 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 31, 32, 33, 34, 35. Union construction/storage and the common emission block locate the new field. Other set-operation formulas and duplicate input literals do not determine cardinality of the already distinct union. The switch discriminator and local keep binding connect operation zero to union membership before output.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

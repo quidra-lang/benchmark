@@ -1,0 +1,7 @@
+<?php
+
+foreach ([0, 7, 999, 1000, -456789, 3141592, 9876543210] as $n) {
+    $negative = $n < 0;
+    $digits = number_format(abs($n), 0, '.', ',');
+    echo $negative ? '-' : '', $digits, "\n";
+}

@@ -1,0 +1,8 @@
+const values = [7, 98000, 4096, 50301, 2718281, 123456789];
+for (const value of values) {
+  const digits = String(value).split("");
+  const digitCount = digits.length;
+  const digitSum = digits.reduce((sum, digit) => sum + Number(digit), 0);
+  const reversed = Number(digits.reverse().join(""));
+  console.log(`${value}: digits=${digitCount} sum=${digitSum} reversed=${reversed}`);
+}

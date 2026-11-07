@@ -1,0 +1,816 @@
+import terms = "./terms.qui"
+import reader = "./reader.qui"
+import unify = "./unify.qui"
+import database = "./database.qui"
+import predicates = "./predicates.qui"
+
+bool control(string name, int arity)
+    return (name == "," and arity == 2) or (name == "!" and arity == 0) or (name == ";" and arity == 2) or (name == "->" and arity == 2) or (name == "\+" and arity == 1) or (name == "catch" and arity == 3) or (name == "call" and arity >= 1 and arity <= 8)
+
+bool builtin(string name, int arity)
+    return predicates.deterministic(name, arity) or (name == "findall" and arity == 3) or (name == "throw" and arity == 1) or (name == "between" and arity == 3) or (name == "length" and arity == 2)
+
+int goal_conversion(terms.Store &store, int term);
+
+int goal_conversion(terms.Store &store, int term)
+    index := terms.dereference(store, term)
+    terms.Node source := store.nodes[index]
+    if source.kind == "variable"
+        return terms.compound(&store, "call", [index])
+    if source.kind == "integer"
+        return -1
+    if source.kind == "compound" and #source.args == 2 and (source.name == "," or source.name == ";" or source.name == "->")
+        left := goal_conversion(&store, source.args[0])
+        if left < 0
+            return -1
+        right := goal_conversion(&store, source.args[1])
+        if right < 0
+            return -1
+        return terms.compound(&store, source.name, [left, right])
+    return index
+
+string atom_name(string name, bool quoted)
+    word := #name > 0 and reader.lowercase(name[0])
+    symbolic := #name > 0 and name != "."
+    for: position < int(#name)
+        word = word and reader.alphanumeric(name[position])
+        symbolic = symbolic and reader.symbols.contains(name[position])
+    if not quoted or word or symbolic or name == "[]" or name == "!" or name == ";"
+        return name
+    result := "'"
+    for: position < int(#name)
+        character := name[position]
+        if character == "\"
+            result += "\\"
+        elif character == "'"
+            result += "\'"
+        elif character == NL
+            result += "\n"
+        elif character == HT
+            result += "\t"
+        else
+            result += character
+    return result + "'"
+
+class Writer(quoted := true)
+    names := map<int, string>()
+    next_name := 1
+
+string write_term(Writer &writer, const terms.Store store, int term, limit := 1200, operand := false);
+
+string write_term(Writer &writer, const terms.Store store, int term, int limit, bool operand)
+    index := terms.dereference(store, term)
+    terms.Node node := store.nodes[index]
+    if node.kind == "variable"
+        match writer.names.get(index)
+            string existing
+                return existing
+            none
+                name := "_G{writer.next_name}"
+                writer.next_name += 1
+                .writer.names.set(index, name)
+                return name
+    if node.kind == "integer"
+        return string(node.value)
+    if node.kind == "atom"
+        text := atom_name(node.name, writer.quoted)
+        return if operand and (reader.operation(node.name).priority > 0 or reader.prefix_priority(node.name) > 0) then "({text})" else text
+    if node.name == "." and #node.args == 2
+        parts := terms.list_parts(store, index)
+        string[] elements := []
+        for element := parts.elements[]
+            elements = elements.append(write_term(&writer, store, element, 999))
+        result := "[" + elements.join(",")
+        if not terms.is_atom(store, parts.tail, "[]")
+            result += "|" + write_term(&writer, store, parts.tail, 999)
+        return result + "]"
+    op := reader.operation(node.name)
+    if #node.args == 2 and op.priority > 0
+        left := write_term(&writer, store, node.args[0], op.left, true)
+        right := write_term(&writer, store, node.args[1], op.right, true)
+        text := ""
+        if node.name == ","
+            text = left + "," + right
+        elif reader.lowercase(node.name[0])
+            text = left + " " + node.name + " " + right
+        else
+            before := if #left > 0 and reader.symbols.contains(left[int(#left) - 1]) then " " else ""
+            after := if #right > 0 and reader.symbols.contains(right[0]) then " " else ""
+            text = left + before + node.name + after + right
+        return if op.priority > limit then "({text})" else text
+    priority := reader.prefix_priority(node.name)
+    if #node.args == 1 and priority > 0
+        argument := write_term(&writer, store, node.args[0], priority, true)
+        space := #argument > 0 and (reader.symbols.contains(argument[0]) or reader.digit(argument[0]) or argument[0] == "(")
+        text := node.name + (if space then " " else "") + argument
+        return if priority > limit then "({text})" else text
+    string[] args := []
+    for argument := node.args[]
+        args = args.append(write_term(&writer, store, argument, 999))
+    return atom_name(node.name, writer.quoted) + "(" + args.join(",") + ")"
+
+string written(const terms.Store store, int term, quoted := true)
+    writer := Writer(quoted)
+    return write_term(&writer, store, term)
+
+string predicate_name(terms.Store &store, string name, int arity)
+    term := terms.indicator_term(&store, name, arity)
+    return written(store, term)
+
+string goal_name(terms.Store &store, int goal)
+    index := terms.dereference(store, goal)
+    string name := store.nodes[index].name
+    arity := terms.arity(store, index)
+    return predicate_name(&store, name, arity)
+
+class Consultant()
+    db := database.Database()
+    string[] reports := []
+    int[][] counts := [[0, 0, 0], [0, 0, 0]]
+    last := [-1, -1]
+    discontiguous := distinct<(int, int)>()
+
+string source_name(int source_index)
+    return if source_index == 0 then "prelude.pl" else "program.pl"
+
+void warning(Consultant &consultant, int source_index, int line, string message)
+    consultant.reports = consultant.reports.append("{source_name(source_index)}:{line}: warning: {message}")
+    consultant.counts[source_index][2] += 1
+
+bool has_source(const database.Predicate predicate, string filename)
+    for clause := predicate.clauses[]
+        if clause.filename == filename
+            return true
+    return false
+
+void add_clause(Consultant &consultant, terms.Store &store, int term, int source_index, int line, const reader.ReadState syntax)
+    filename := source_name(source_index)
+    head := term
+    body := -1
+    if terms.indicator(store, term, ":-", 2)
+        head = store.nodes[term].args[0]
+        body = store.nodes[term].args[1]
+    fault := -1
+    kind := terms.kind(store, head)
+    if kind == "variable"
+        fault = terms.atom(&store, "instantiation_error")
+    elif kind == "integer"
+        fault = terms.type_error(&store, "callable", head)
+    elif control(store.nodes[head].name, terms.arity(store, head)) or builtin(store.nodes[head].name, terms.arity(store, head))
+        modify := terms.atom(&store, "modify")
+        static_procedure := terms.atom(&store, "static_procedure")
+        indicator := terms.term_indicator(&store, head)
+        fault = terms.compound(&store, "permission_error", [modify, static_procedure, indicator])
+    elif body >= 0
+        converted := goal_conversion(&store, body)
+        if converted < 0
+            fault = terms.type_error(&store, "callable", body)
+        else
+            body = converted
+    if fault >= 0
+        consultant.reports = consultant.reports.append("{filename}:{line}: error: " + written(store, fault))
+        consultant.counts[source_index][1] += 1
+        return
+    predicate := database.goal_predicate(consultant.db, store, head)
+    if predicate >= 0
+        if source_index == 1 and has_source(consultant.db.predicates[predicate], "prelude.pl")
+            warning(&consultant, source_index, line, "redefining prelude procedure " + goal_name(&store, head))
+            consultant.db.predicates[predicate].clauses = []
+        if has_source(consultant.db.predicates[predicate], filename) and consultant.last[source_index] != predicate and not consultant.discontiguous.has((source_index, predicate))
+            warning(&consultant, source_index, line, "clauses of " + goal_name(&store, head) + " are not together")
+            .consultant.discontiguous.add((source_index, predicate))
+    predicate = database.add(&consultant.db, store, database.Clause(head, body, filename, line))
+    consultant.last[source_index] = predicate
+    consultant.counts[source_index][0] += 1
+    string[] singletons := []
+    string[] repeated := []
+    for name := syntax.counts.keys()[]
+        count := 0
+        match syntax.counts.get(name)
+            int found
+                count = found
+            none
+                count = 0
+        if name[0] != "_" and count == 1
+            singletons = singletons.append(name)
+        if #name > 1 and name[0] == "_" and count > 1
+            repeated = repeated.append(name)
+    if #singletons > 0
+        warning(&consultant, source_index, line, "singleton variables: " + singletons.join(", "))
+    if #repeated > 0
+        warning(&consultant, source_index, line, "variables starting with _ occur more than once: " + repeated.join(", "))
+
+string[] read_lines(string path)
+    input := file.read(path)
+    string[] result := []
+    while .input(string &line)
+        result = result.append(line)
+    return result
+
+void consult(Consultant &consultant, terms.Store &store, int source_index)
+    filename := source_name(source_index)
+    lines := read_lines("input/" + filename)
+    string text := if #lines == 0 then "" else lines.join(NL) + NL
+    state := reader.ReadState(reader.tokenize(text))
+    while reader.peek(state).kind != "eof"
+        line := reader.peek(state).line
+        term := reader.clause(&state, &store)
+        if state.error_index >= 0
+            reader.Token token := state.tokens[state.error_index]
+            consultant.counts[source_index][1] += 1
+            consultant.reports = consultant.reports.append("{filename}:{token.line}:{token.column}: syntax error: {state.message}")
+            if token.kind != "eof"
+                consultant.reports = consultant.reports.append("    " + lines[token.line - 1])
+                consultant.reports = consultant.reports.append(" " * nat(token.column + 3) + "^")
+            state.position = state.error_index
+            while reader.peek(state).kind != "end" and reader.peek(state).kind != "eof"
+                reader.take(&state)
+            if reader.peek(state).kind == "end"
+                reader.take(&state)
+        else
+            add_clause(&consultant, &store, term, source_index, line, state)
+
+void finish_consult(Consultant &consultant, terms.Store &store)
+    distinct<string> reported
+    for predicate := consultant.db.predicates[]
+        for clause := predicate.clauses[]
+            int[] pending := if clause.body < 0 then [] else [clause.body]
+            while #pending != 0
+                term := terms.dereference(store, pending[-1])
+                pending = pending[0:<int(#pending) - 1]
+                terms.Node node := store.nodes[term]
+                if node.kind == "variable" or node.kind == "integer"
+                    continue
+                arity := terms.arity(store, term)
+                if arity == 2 and (node.name == "," or node.name == ";" or node.name == "->")
+                    pending = pending.append(node.args[1]).append(node.args[0])
+                elif arity == 1 and (node.name == "\+" or node.name == "call")
+                    pending = pending.append(node.args[0])
+                elif node.name == "findall" and arity == 3
+                    pending = pending.append(node.args[1])
+                elif node.name == "catch" and arity == 3
+                    pending = pending.append(node.args[2]).append(node.args[0])
+                elif not control(node.name, arity) and not builtin(node.name, arity) and database.find(consultant.db, node.name, arity) < 0 and not reported.has(terms.key(store, term))
+                    .reported.add(terms.key(store, term))
+                    source_index := if clause.filename == "prelude.pl" then 0 else 1
+                    target := predicate_name(&store, node.name, arity)
+                    caller := predicate_name(&store, predicate.name, predicate.arity)
+                    warning(&consultant, source_index, clause.line, "undefined procedure {target} called from {caller}")
+    for: source_index < 2
+        counts := consultant.counts[source_index]
+        consultant.reports = consultant.reports.append("{source_name(source_index)}: clauses={counts[0]} errors={counts[1]} warnings={counts[2]}")
+    clauses := 0
+    for predicate := consultant.db.predicates[]
+        clauses += int(#predicate.clauses)
+    consultant.reports = consultant.reports.append("database: predicates={#consultant.db.predicates} clauses={clauses}")
+
+string[] listing(const database.Database db, const terms.Store store)
+    string[] lines := []
+    alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for predicate := db.predicates[]
+        if #lines > 0
+            lines = lines.append("")
+        for clause := predicate.clauses[]
+            variables := terms.variables_in(store, [clause.head, clause.body])
+            map<int, int> counts
+            for variable := variables[]
+                .counts.increment(variable)
+            writer := Writer()
+            serial := 0
+            for variable := variables[]
+                if writer.names.has(variable)
+                    continue
+                count := 0
+                match counts.get(variable)
+                    int found
+                        count = found
+                    none
+                        count = 0
+                if count == 1
+                    .writer.names.set(variable, "_")
+                else
+                    suffix := if serial < 26 then "" else string(serial / 26)
+                    .writer.names.set(variable, alphabet[serial % 26] + suffix)
+                    serial += 1
+            head := write_term(&writer, store, clause.head)
+            if clause.body < 0
+                lines = lines.append(head + ".")
+                continue
+            lines = lines.append(head + " :-")
+            int[] goals := []
+            int body := clause.body
+            while terms.indicator(store, body, ",", 2)
+                goals = goals.append(store.nodes[body].args[0])
+                body = store.nodes[body].args[1]
+            goals = goals.append(body)
+            for: index < int(#goals)
+                ending := if index + 1 == int(#goals) then "." else ","
+                lines = lines.append("    " + write_term(&writer, store, goals[index], 999) + ending)
+    return lines
+
+class QueryVariable(string name, int term)
+
+string answer(const terms.Store store, const QueryVariable[] variables)
+    writer := Writer()
+    for variable := variables[]
+        value := terms.dereference(store, variable.term)
+        if terms.kind(store, value) == "variable" and not writer.names.has(value)
+            .writer.names.set(value, variable.name)
+    map<int, string> previous
+    string[] items := []
+    for variable := variables[]
+        value := terms.dereference(store, variable.term)
+        if terms.kind(store, value) == "variable"
+            match previous.get(value)
+                string earlier
+                    items = items.append("{earlier} = {variable.name}")
+                    .previous.set(value, variable.name)
+                none
+                    .previous.set(value, variable.name)
+        else
+            items = items.append(variable.name + " = " + write_term(&writer, store, value, 699, true))
+    return if #items == 0 then "true" else items.join(", ")
+
+class Entry(goal := -1, barrier := 0, context := -1, marker := "", payload := -1)
+class GoalNode(Entry entry, int next)
+class Choice(string kind, int mark, int resume)
+    barrier := 0
+    context := -1
+    parent := -1
+    goal := -1
+    predicate := -1
+    int[] candidates := []
+    next_candidate := 0
+    catcher := -1
+    recovery := -1
+    template := -1
+    result := -1
+    int[] results := []
+    target := -1
+    tail := -1
+    number := -1
+    upper := 0
+    next := 0
+    count := 0
+
+class Profile(string name, int arity, calls := 0, tries := 0)
+class Profiles()
+    Profile[] rows := []
+
+int profile_index(Profiles &profiles, string name, int arity)
+    for: index < int(#profiles.rows)
+        if profiles.rows[index].name == name and profiles.rows[index].arity == arity
+            return index
+    index := int(#profiles.rows)
+    profiles.rows = profiles.rows.append(Profile(name, arity))
+    return index
+
+class Engine(QueryVariable[] variables, int limit)
+    trail := unify.Trail()
+    GoalNode[] goal_nodes := []
+    goals := -1
+    Choice[] choices := []
+    int[] stack := []
+    context := -1
+    current_name := ""
+    current_arity := 0
+    solutions := 0
+    inferences := 0
+    choicepoints := 0
+    backtracks := 0
+    string[] answers := []
+    output := ""
+    ball := -1
+    limit_exceeded := false
+
+int prepend(Engine &engine, int continuation, Entry[] entries)
+    result := continuation
+    position := int(#entries) - 1
+    while position >= 0
+        index := int(#engine.goal_nodes)
+        engine.goal_nodes = engine.goal_nodes.append(GoalNode(entries[position], result))
+        result = index
+        position -= 1
+    return result
+
+int create_choice(Engine &engine, string kind, int resume)
+    index := int(#engine.choices)
+    engine.choices = engine.choices.append(Choice(kind, int(#engine.trail.bindings), resume))
+    engine.stack = engine.stack.append(index)
+    engine.choicepoints += 1
+    return index
+
+void cut(Engine &engine, int height)
+    if height < int(#engine.stack)
+        engine.stack = engine.stack[0:<height]
+
+bool infer(Engine &engine, Profiles &profiles, string name, int arity)
+    if engine.inferences == 20000
+        engine.limit_exceeded = true
+        return false
+    engine.inferences += 1
+    index := profile_index(&profiles, name, arity)
+    profiles.rows[index].calls += 1
+    return true
+
+void fault(Engine &engine, terms.Store &store, int detail)
+    indicator := terms.indicator_term(&store, engine.current_name, engine.current_arity)
+    engine.ball = terms.compound(&store, "error", [detail, indicator])
+
+bool try_clause(Engine &engine, terms.Store &store, Profiles &profiles, const database.Database db, int predicate, int candidate, int goal, int barrier, int context, int continuation)
+    database.Predicate definition := db.predicates[predicate]
+    profile := profile_index(&profiles, definition.name, definition.arity)
+    profiles.rows[profile].tries += 1
+    clause := database.copy_clause(&store, definition.clauses[candidate])
+    if not unify.unify(&store, &engine.trail, clause.head, goal)
+        return false
+    engine.goals = if clause.body < 0 then continuation else prepend(&engine, continuation, [Entry(clause.body, barrier, context)])
+    return true
+
+bool user_call(Engine &engine, terms.Store &store, Profiles &profiles, const database.Database db, int goal, int context)
+    predicate := database.goal_predicate(db, store, goal)
+    if predicate < 0
+        procedure := terms.atom(&store, "procedure")
+        indicator := terms.term_indicator(&store, goal)
+        missing := terms.compound(&store, "existence_error", [procedure, indicator])
+        fault(&engine, &store, missing)
+        return false
+    candidates := database.candidates(db, store, predicate, goal)
+    if #candidates == 0
+        return false
+    height := int(#engine.stack)
+    if #candidates > 1
+        index := create_choice(&engine, "CLAUSES", engine.goals)
+        engine.choices[index].goal = goal
+        engine.choices[index].predicate = predicate
+        engine.choices[index].candidates = candidates
+        engine.choices[index].next_candidate = 1
+        engine.choices[index].barrier = height
+        engine.choices[index].context = context
+    return try_clause(&engine, &store, &profiles, db, predicate, candidates[0], goal, height, context, engine.goals)
+
+bool control_goal(Engine &engine, terms.Store &store, int goal, int barrier, int context)
+    terms.Node node := store.nodes[goal]
+    args := node.args
+    continuation := engine.goals
+    height := int(#engine.stack)
+    if node.name == ","
+        engine.goals = prepend(&engine, continuation, [Entry(args[0], barrier, context), Entry(args[1], barrier, context)])
+    elif node.name == "!"
+        cut(&engine, barrier)
+    elif node.name == ";"
+        resume := prepend(&engine, continuation, [Entry(args[1], barrier, context)])
+        create_choice(&engine, "ALT", resume)
+        left := terms.dereference(store, args[0])
+        if terms.indicator(store, left, "->", 2)
+            int[] condition := store.nodes[left].args
+            engine.goals = prepend(&engine, continuation, [Entry(condition[0], height + 1, context), Entry(barrier = barrier, context = context, marker = "ITE", payload = height), Entry(condition[1], barrier, context)])
+        else
+            engine.goals = prepend(&engine, continuation, [Entry(left, barrier, context)])
+    elif node.name == "->"
+        engine.goals = prepend(&engine, continuation, [Entry(args[0], height, context), Entry(barrier = barrier, context = context, marker = "ITE", payload = height), Entry(args[1], barrier, context)])
+    elif node.name == "\+"
+        create_choice(&engine, "ALT", continuation)
+        call := terms.compound(&store, "call", [args[0]])
+        engine.goals = prepend(&engine, continuation, [Entry(call, barrier, context), Entry(barrier = barrier, context = context, marker = "NAF", payload = height)])
+    elif node.name == "call"
+        target := terms.dereference(store, args[0])
+        kind := terms.kind(store, target)
+        if kind == "variable"
+            detail := terms.atom(&store, "instantiation_error")
+            fault(&engine, &store, detail)
+            return false
+        if kind == "integer"
+            detail := terms.type_error(&store, "callable", target)
+            fault(&engine, &store, detail)
+            return false
+        if #args > 1
+            terms.Node original := store.nodes[target]
+            int[] parameters := original.args.concat(args[1:<int(#args)])
+            target = terms.compound(&store, original.name, parameters)
+        converted := goal_conversion(&store, target)
+        if converted < 0
+            detail := terms.type_error(&store, "callable", target)
+            fault(&engine, &store, detail)
+            return false
+        engine.goals = prepend(&engine, continuation, [Entry(converted, height, context)])
+    elif node.name == "catch"
+        frame := create_choice(&engine, "CATCH", continuation)
+        engine.choices[frame].catcher = args[1]
+        engine.choices[frame].recovery = args[2]
+        engine.choices[frame].parent = context
+        call := terms.compound(&store, "call", [args[0]])
+        engine.goals = prepend(&engine, continuation, [Entry(call, barrier, frame), Entry(barrier = barrier, context = context, marker = "EXIT", payload = frame)])
+    return true
+
+bool execute_marker(Engine &engine, terms.Store &store, Entry entry)
+    if entry.marker == "ITE" or entry.marker == "NAF"
+        cut(&engine, entry.payload)
+        return entry.marker == "ITE"
+    if entry.marker == "EXIT"
+        if #engine.stack > 0 and engine.stack[-1] == entry.payload
+            engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+        return true
+    template := engine.choices[entry.payload].template
+    copy := terms.copy_term(&store, template)
+    engine.choices[entry.payload].results = engine.choices[entry.payload].results.append(copy)
+    return false
+
+bool between(Engine &engine, terms.Store &store, int[] args)
+    lower := predicates.require_integer(&store, args[0])
+    if lower.fault >= 0
+        fault(&engine, &store, lower.fault)
+        return false
+    upper := predicates.require_integer(&store, args[1])
+    if upper.fault >= 0
+        fault(&engine, &store, upper.fault)
+        return false
+    value := terms.dereference(store, args[2])
+    terms.Node target := store.nodes[value]
+    if target.kind != "variable" and target.kind != "integer"
+        detail := terms.type_error(&store, "integer", value)
+        fault(&engine, &store, detail)
+        return false
+    if target.kind == "integer"
+        return lower.value <= target.value and target.value <= upper.value
+    if lower.value > upper.value
+        return false
+    if lower.value < upper.value
+        index := create_choice(&engine, "BETWEEN", engine.goals)
+        engine.choices[index].upper = upper.value
+        engine.choices[index].target = value
+        engine.choices[index].next = lower.value + 1
+    number := terms.integer(&store, lower.value)
+    return unify.unify(&store, &engine.trail, value, number)
+
+bool length_goal(Engine &engine, terms.Store &store, int[] args)
+    number := terms.dereference(store, args[1])
+    terms.Node n := store.nodes[number]
+    if n.kind != "variable" and n.kind != "integer"
+        detail := terms.type_error(&store, "integer", number)
+        fault(&engine, &store, detail)
+        return false
+    if n.kind == "integer" and n.value < 0
+        detail := terms.domain_error(&store, "not_less_than_zero", number)
+        fault(&engine, &store, detail)
+        return false
+    parts := terms.list_parts(store, args[0])
+    count := int(#parts.elements)
+    if terms.is_atom(store, parts.tail, "[]")
+        value := terms.integer(&store, count)
+        return unify.unify(&store, &engine.trail, number, value)
+    if terms.kind(store, parts.tail) != "variable"
+        detail := terms.type_error(&store, "list", args[0])
+        fault(&engine, &store, detail)
+        return false
+    if n.kind == "integer"
+        if n.value < count
+            return false
+        sequence := terms.fresh_list(&store, n.value - count)
+        return unify.unify(&store, &engine.trail, parts.tail, sequence)
+    frame := create_choice(&engine, "LENGTH", engine.goals)
+    engine.choices[frame].tail = parts.tail
+    engine.choices[frame].number = number
+    engine.choices[frame].count = count
+    engine.choices[frame].next = count + 1
+    empty := terms.atom(&store, "[]")
+    value := terms.integer(&store, count)
+    return unify.unify(&store, &engine.trail, parts.tail, empty) and unify.unify(&store, &engine.trail, number, value)
+
+bool execute_step(Engine &engine, terms.Store &store, Profiles &profiles, const database.Database db)
+    first := engine.goal_nodes[engine.goals]
+    engine.goals = first.next
+    entry := first.entry
+    engine.context = entry.context
+    if #entry.marker > 0
+        return execute_marker(&engine, &store, entry)
+    goal := terms.dereference(store, entry.goal)
+    terms.Node node := store.nodes[goal]
+    arity := terms.arity(store, goal)
+    engine.current_name = node.name
+    engine.current_arity = arity
+    if control(node.name, arity)
+        return control_goal(&engine, &store, goal, entry.barrier, entry.context)
+    if not infer(&engine, &profiles, node.name, arity)
+        return false
+    if node.name == "findall" and arity == 3
+        frame := create_choice(&engine, "FINDALL", engine.goals)
+        engine.choices[frame].template = node.args[0]
+        engine.choices[frame].result = node.args[2]
+        call := terms.compound(&store, "call", [node.args[1]])
+        engine.goals = prepend(&engine, -1, [Entry(call, entry.barrier, entry.context), Entry(barrier = entry.barrier, context = entry.context, marker = "COLLECT", payload = frame)])
+        return true
+    if node.name == "throw" and arity == 1
+        ball := terms.dereference(store, node.args[0])
+        if terms.kind(store, ball) == "variable"
+            detail := terms.atom(&store, "instantiation_error")
+            fault(&engine, &store, detail)
+        else
+            engine.ball = ball
+        return false
+    if node.name == "between" and arity == 3
+        return between(&engine, &store, node.args)
+    if node.name == "length" and arity == 2
+        return length_goal(&engine, &store, node.args)
+    if (node.name == "write" or node.name == "writeq") and arity == 1
+        engine.output += written(store, node.args[0], node.name == "writeq")
+        return true
+    if node.name == "nl" and arity == 0
+        engine.output += NL
+        return true
+    if predicates.deterministic(node.name, arity)
+        result := predicates.execute(&store, &engine.trail, goal)
+        if result.fault >= 0
+            fault(&engine, &store, result.fault)
+        return result.success
+    return user_call(&engine, &store, &profiles, db, goal, entry.context)
+
+bool backtrack(Engine &engine, terms.Store &store, Profiles &profiles, const database.Database db)
+    while true
+        engine.backtracks += 1
+        while #engine.stack != 0
+            top := engine.stack[-1]
+            unify.undo(&store, &engine.trail, engine.choices[top].mark)
+            if engine.choices[top].kind != "CATCH"
+                break
+            engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+        if #engine.stack == 0
+            return false
+        index := engine.stack[-1]
+        choice := engine.choices[index]
+        if choice.kind == "ALT"
+            engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+            engine.goals = choice.resume
+            return true
+        if choice.kind == "CLAUSES"
+            candidate := choice.candidates[choice.next_candidate]
+            if choice.next_candidate + 1 == int(#choice.candidates)
+                engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+            else
+                engine.choices[index].next_candidate += 1
+            if try_clause(&engine, &store, &profiles, db, choice.predicate, candidate, choice.goal, choice.barrier, choice.context, choice.resume)
+                return true
+        elif choice.kind == "BETWEEN"
+            if not infer(&engine, &profiles, "between", 3)
+                return false
+            value := choice.next
+            if value == choice.upper
+                engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+            else
+                engine.choices[index].next += 1
+            term := terms.integer(&store, value)
+            if unify.unify(&store, &engine.trail, choice.target, term)
+                engine.goals = choice.resume
+                return true
+        elif choice.kind == "LENGTH"
+            if not infer(&engine, &profiles, "length", 2)
+                return false
+            count := choice.next
+            engine.choices[index].next += 1
+            sequence := terms.fresh_list(&store, count - choice.count)
+            number := terms.integer(&store, count)
+            if unify.unify(&store, &engine.trail, choice.tail, sequence) and unify.unify(&store, &engine.trail, choice.number, number)
+                engine.goals = choice.resume
+                return true
+        elif choice.kind == "FINDALL"
+            engine.stack = engine.stack[0:<int(#engine.stack) - 1]
+            result := terms.make_list(&store, choice.results)
+            if unify.unify(&store, &engine.trail, result, choice.result)
+                engine.goals = choice.resume
+                return true
+    return false
+
+bool handle_exception(Engine &engine, terms.Store &store)
+    ball := terms.copy_term(&store, engine.ball)
+    engine.ball = -1
+    context := engine.context
+    while context >= 0
+        frame := engine.choices[context]
+        position := 0
+        while engine.stack[position] != context
+            position += 1
+        engine.stack = engine.stack[0:<position]
+        unify.undo(&store, &engine.trail, frame.mark)
+        mark := int(#engine.trail.bindings)
+        copy := terms.copy_term(&store, ball)
+        if unify.unify(&store, &engine.trail, copy, frame.catcher)
+            call := terms.compound(&store, "call", [frame.recovery])
+            engine.goals = prepend(&engine, frame.resume, [Entry(call, int(#engine.stack), frame.parent)])
+            return true
+        unify.undo(&store, &engine.trail, mark)
+        context = frame.parent
+    engine.answers = engine.answers.append("uncaught exception: " + written(store, ball))
+    return false
+
+int[] execute_query(Engine &engine, terms.Store &store, Profiles &profiles, const database.Database db, int query)
+    call := terms.compound(&store, "call", [query])
+    engine.goals = prepend(&engine, -1, [Entry(call)])
+    while true
+        success := false
+        if engine.goals < 0
+            engine.solutions += 1
+            text := answer(store, engine.variables)
+            if (engine.limit > 0 and engine.solutions == engine.limit) or #engine.stack == 0
+                engine.answers = engine.answers.append(text + ".")
+                break
+            engine.answers = engine.answers.append(text + " ;")
+            success = backtrack(&engine, &store, &profiles, db)
+        else
+            success = execute_step(&engine, &store, &profiles, db)
+            if not success and engine.ball < 0 and not engine.limit_exceeded
+                success = backtrack(&engine, &store, &profiles, db)
+        if engine.limit_exceeded
+            engine.answers = engine.answers.append("inference limit exceeded")
+            break
+        if engine.ball >= 0
+            if handle_exception(&engine, &store)
+                continue
+            break
+        if not success
+            engine.answers = engine.answers.append("false.")
+            break
+    return [engine.solutions, engine.inferences, engine.choicepoints, engine.backtracks]
+
+string statistics(string prefix, int[] counts)
+    return "{prefix} solutions={counts[0]} inferences={counts[1]} choicepoints={counts[2]} backtracks={counts[3]}"
+
+void write_lines(string filename, string[] lines)
+    output := file.write("output/" + filename)
+    if #lines > 0
+        .output(lines.join(NL) + NL)
+
+void run()
+    store := terms.Store()
+    consultant := Consultant()
+    consult(&consultant, &store, 0)
+    consult(&consultant, &store, 1)
+    finish_consult(&consultant, &store)
+    string[] answers := []
+    writes := ""
+    string[] stats := []
+    profiles := Profiles()
+    totals := [0, 0, 0, 0]
+    queries := read_lines("input/queries.txt")
+    for: index < int(#queries)
+        number := index + 1
+        source := queries[index]
+        answers = answers.append(source)
+        writes += "== query {number} =={NL}"
+        marker := 0
+        match source.find("?- ")
+            nat position
+                marker = int(position)
+            none
+                marker = 0
+        int limit := if marker == 0 then 0 else int(source[0:<marker].trim())
+        start := marker + 3
+        syntax := reader.ReadState(reader.tokenize(source[start:<int(#source)], start + 1))
+        query := reader.clause(&syntax, &store, true)
+        if syntax.error_index >= 0
+            reader.Token token := syntax.tokens[syntax.error_index]
+            answers = answers.append("syntax error at column {token.column}: {syntax.message}")
+            stats = stats.append("query {number}: syntax error")
+            continue
+        QueryVariable[] variables := []
+        for name := syntax.names.keys()[]
+            if name[0] == "_"
+                continue
+            match syntax.names.get(name)
+                int term
+                    variables = variables.append(QueryVariable(name, term))
+                none
+                    continue
+        engine := Engine(variables, limit)
+        counts := execute_query(&engine, &store, &profiles, consultant.db, query)
+        totals += counts
+        answers = answers.concat(engine.answers)
+        writes += engine.output
+        if #engine.output > 0 and not engine.output.ends_with(NL)
+            writes += NL
+        stats = stats.append(statistics("query {number}:", counts))
+    stats = stats.append(statistics("total:", totals)).append("== profile ==")
+    int[] order := []
+    string[] names := []
+    int[] negatives := []
+    for: index < int(#profiles.rows)
+        profile := profiles.rows[index]
+        names = names.append(predicate_name(&store, profile.name, profile.arity))
+        negatives = negatives.append(-profile.calls)
+        order = order.append(index)
+    order = order.sorted(by = (negatives, names))
+    for index := order[]
+        profile := profiles.rows[index]
+        if profile.calls == 0
+            continue
+        text := "{names[index]} calls={profile.calls}"
+        if database.find(consultant.db, profile.name, profile.arity) >= 0
+            text += " tries={profile.tries}"
+        stats = stats.append(text)
+    write_lines("consult.txt", consultant.reports)
+    write_lines("listing.txt", listing(consultant.db, store))
+    write_lines("answers.txt", answers)
+    write_lines("stats.txt", stats)
+    output := file.write("output/write_output.txt")
+    .output(writes)
+
+run()

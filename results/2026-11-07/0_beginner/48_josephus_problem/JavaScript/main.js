@@ -1,0 +1,10 @@
+for (const [n, k] of [[7, 3], [10, 2], [41, 3]]) {
+  const people = Array.from({length: n}, (_, i) => i + 1), removed = [];
+  let index = 0;
+  while (people.length > 0) {
+    index = (index + k - 1) % people.length;
+    removed.push(people.splice(index, 1)[0]);
+  }
+  console.log(`n=${n} k=${k}: ${removed.join(" ")}`);
+  console.log(`survivor: ${removed.at(-1)}`);
+}

@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Splitting only on spaces keeps names, as one six-character word, including its comma. Greedy packing tests existing letter sum plus one gap per existing word plus the candidate length against named width=30; overflow stores the line and resets its state. For a nonfinal multiword line, total spaces=30-sum(word lengths), gaps=word count-1, base=floor/intdiv(spaces/gaps), remainder=spaces%gaps. Each gap receives base spaces and the leftmost remainder gaps one extra. This fills exactly 30 characters; vertical bars frame the result outside that width. Final or single-word lines instead join with single spaces and pad on the right. Packing state, width, both rendering paths and framing are needed; paragraph literal content beyond the supplied token is unnecessary.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. PHP array/string/arithmetic and formatting operations are interpreted with their standard runtime semantics; no stronger static invariant is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

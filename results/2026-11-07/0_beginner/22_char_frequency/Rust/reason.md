@@ -1,0 +1,9 @@
+The current question asks: Suppose uppercase and lowercase letters must be counted separately, with occurring uppercase letters printed first in A-to-Z order and lowercase letters next in a-to-z order. Explain the changes from scanning the original sentence through letter filtering, count-key selection, ordering and formatted output. Use P and p from the given sentence to derive the two counts that replace their combined count, and show how spaces and punctuation remain excluded.
+
+Answer and source evidence: Keep original case during scanning, replacing lowercase normalization and 26-key storage with separate A..Z and a..z keys. Retain ASCII-letter filtering so spaces and ! never enter counts. Emit occurring uppercase keys in A..Z order, then lowercase keys in a..z order, preserving the existing letter: count formatting. In the original sentence Peter and Piper supply P=2; picked, peck, pickled and the three p letters in peppers give p=6, replacing the combined count 8.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14. The sentence is required to derive both counts; normalization, keying, filtering, storage and ordered output all change together. Complete selected stages avoid relying on the old task definition.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

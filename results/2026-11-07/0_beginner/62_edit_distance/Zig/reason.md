@@ -1,0 +1,5 @@
+At prefixes ki and si, the compared characters are both i, giving replacement cost zero. From base prefix counts and the recurrence, the deletion and insertion neighbors each have distance 2, so their candidates are 3; diagonal k/s has distance 1, so its candidate is 1 and dp[2][2]=1. Only the 0/1 conditional cost chooses a branch; all @min arguments are evaluated, so matching does not skip deletion or insertion. Initialization and recurrence are retained to support the concrete neighboring values, not just the keyword equality.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

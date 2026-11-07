@@ -1,0 +1,5 @@
+Edges are sorted by increasing weight and each singleton root is initialized to itself. The first accepted edges are G-H 2, C-E 3, A-C 4; E-D 5 connects a new component, but D-C 6 is rejected because 3 and 5 already connect D to C. Continue A-B 7, F-G 8; B-C 9 is also a cycle, then E-H 10 is the seventh accepted edge and joins the remaining components. Endpoints are normalized ascending for display. Total is 39, skipped is 2. The accepted-count stop prevents examining weights 11,12,14,16. Input, comparator, find/union, count guard and output are all necessary; no unrelated scaffolding remains.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

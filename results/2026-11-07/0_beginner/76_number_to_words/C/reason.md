@@ -1,0 +1,5 @@
+Below 1000, zero remainder contributes no token; nonzero hundreds/tens/ones add only their needed spaces, and nonzero ones after tens use a hyphen. 71000 splits as 71 and 0, yielding `seventy-one thousand` without a trailing zero word. 300019 splits as 300 and 19, yielding `three hundred thousand nineteen`, with one joining space. Only the whole-input n==0 branch produces `zero`; it is separate from absent subparts. The helper logic, word table entries and thousand-part composition establish all three expressions without original input-list/output details.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.
