@@ -1,5 +1,0 @@
-factorial = 1
-(0..12).each do |n|
-  factorial *= n if n.positive?
-  puts "#{n}! = #{factorial}"
-end

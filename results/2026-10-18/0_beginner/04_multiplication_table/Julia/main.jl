@@ -1,8 +1,0 @@
-using Printf
-
-for i = 1:9
-    for j = 1:9
-        @printf("%3d", i * j)
-    end
-    println()
-end

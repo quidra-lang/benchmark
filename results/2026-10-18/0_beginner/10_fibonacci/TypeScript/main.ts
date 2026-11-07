@@ -1,4 +1,0 @@
-const terms = [1, 1];
-while (terms.length < 30) terms.push(terms[terms.length - 1] + terms[terms.length - 2]);
-console.log(terms.join(" "));
-console.log(`sum: ${terms.reduce((sum, n) => sum + n, 0)}`);

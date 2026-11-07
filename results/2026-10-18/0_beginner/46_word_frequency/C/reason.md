@@ -1,9 +1,0 @@
-# Task B selection: 46_word_frequency / C
-
-Trace normalized counting from the given passage, demonstrate an equal-frequency pair, and explain the tie rule applied before the first five entries are selected.
-
-`bird` occurs three times, in the singing, barking and flying clauses. `cat` occurs three times, in the sitting, watching and sleeping clauses. The secondary ascending word key puts `bird` before `cat` on equal counts; the primary key is descending frequency. The prefix operation or five-entry loop runs after ordering. Lowercasing happens before counting, so the capitalized `Dog` occurrence joins the lowercase `dog` occurrences, giving four.
-
-The passage, token boundaries, count data flow and comparison or documented sort keys are required. The output rendering and distinct-word summary do not affect which pair precedes the other. Standalone closing delimiters can be omitted when the data flow and block boundary remain clear.
-
-Source: `main.c`, original lines 11–15, 19–22, 25–32, 34, 36–37. The previous excerpt measures 483 tokens; this evidence set measures 473 tokens.
