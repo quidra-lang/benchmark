@@ -1,0 +1,131 @@
+    val empty: Boolean get() = when (this) {
+        is TextValue -> false
+private data class TextValue(val text: String) : Value
+private data class Entry(val value: Value, val expiry: Int? = null)
+private typealias Database = TreeMap<String, Entry>
+private data class Range(val start: Int, val end: Int)
+
+private fun quoted(text: String?): String = text?.let { "\"" + it.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" } ?: "(nil)"
+private fun integerReply(value: Int) = "(integer) $value"
+private fun splitLine(line: String): List<String>? {
+    val words = mutableListOf<String>()
+    var position = 0
+    while (position < line.length) {
+        if (line[position] == ' ') { position++; continue }
+        if (line[position] != '"') {
+            val start = position
+            while (position < line.length && line[position] != ' ') position++
+            words += line.substring(start, position)
+            continue
+        }
+    return words
+private fun parseInteger(text: String): Int? {
+    if (text == "0") return 0
+    val start = if (text.startsWith('-')) 1 else 0
+    if (text.length - start !in 1..9 || text[start] !in '1'..'9') return null
+    if ((start until text.length).any { text[it] !in '0'..'9' }) return null
+    return text.toInt()
+}
+private fun number(text: String) = parseInteger(text) ?: throw CommandError(NOT_INTEGER)
+private data class Arity(val minimum: Int, val maximum: Int = minimum, val parity: Int = -1) {
+    fun accepts(count: Int) = count >= minimum && (maximum < 0 || count <= maximum) && (parity < 0 || count % 2 == parity)
+}
+private fun arity(command: String): Arity? = when (command) {
+    "TIME", "DBSIZE", "FLUSH", "INFO", "BEGIN", "COMMIT", "ROLLBACK" -> Arity(0)
+    "GET", "INCR", "DECR", "STRLEN", "LLEN", "HGETALL", "HLEN", "HKEYS", "HVALS", "SMEMBERS", "SCARD",
+    "ZCARD", "TYPE", "KEYS", "TTL", "PERSIST", "TICK", "SNAPSHOT", "RESTORE" -> Arity(1)
+    "SET", "LPUSH", "RPUSH", "HDEL", "SADD", "SREM", "ZREM", "SINTERSTORE", "SUNIONSTORE", "SDIFFSTORE" -> Arity(2, -1)
+private class Store {
+    private var database = Database()
+    private val stack = mutableListOf<Database>()
+    private val snapshots = TreeMap<String, Database>()
+    private var time = 0
+
+    private inline fun <reified T : Value> read(key: String, empty: T): T {
+        val value = database[key]?.value ?: return empty
+        return value as? T ?: throw CommandError(WRONG_TYPE)
+    }
+    private fun text(key: String) = read(key, TextValue("")).text
+    private fun replace(key: String, value: Value, expiry: Int? = null) {
+        if (value.empty) database.remove(key) else database[key] = Entry(value, expiry)
+    }
+    private fun update(key: String, value: Value) = replace(key, value, database[key]?.expiry)
+    private fun purge(): Int {
+        val before = database.size
+        database.entries.removeIf { it.value.expiry?.let { deadline -> deadline <= time } == true }
+        return before - database.size
+    private fun textCommand(command: String, a: List<String>): String {
+        val key = a.first()
+        return when (command) {
+            "SET" -> {
+                val options = mutableSetOf<String>()
+                var secondsText: String? = null
+                var i = 2
+                while (i < a.size) {
+                    val option = a[i++].uppercase()
+                    if (option !in setOf("NX", "XX", "EX", "KEEPTTL", "GET") || !options.add(option)) throw CommandError("ERR syntax error")
+                    if (option == "EX") {
+                        if (i == a.size) throw CommandError("ERR syntax error")
+                        secondsText = a[i++]
+                    }
+                }
+                if (("NX" in options && "XX" in options) || ("EX" in options && "KEEPTTL" in options)) throw CommandError("ERR syntax error")
+                var expiry = secondsText?.let {
+                    val seconds = number(it)
+                    if (seconds <= 0) throw CommandError("ERR invalid expire time in 'set' command")
+                    time + seconds
+                }
+                val old = database[key]
+                val blocked = ("NX" in options && old != null) || ("XX" in options && old == null)
+                if (!blocked) {
+                    if ("KEEPTTL" in options && old != null) expiry = old.expiry
+                    replace(key, TextValue(a[1]), expiry)
+                }
+                if ("GET" in options) quoted(oldText) else if (blocked) "(nil)" else "OK"
+            else -> quoted(text(key).takeIf { key in database })
+    private fun keyCommand(command: String, a: List<String>): String {
+            "TICK" -> {
+                val ticks = number(a.first())
+                if (ticks <= 0) throw CommandError(POSITIVE)
+                time += ticks
+                return integerReply(purge())
+    private fun controlCommand(command: String, a: List<String>): String {
+        when (command) {
+            "BEGIN" -> stack.add(Database(database))
+            "COMMIT", "ROLLBACK" -> {
+                if (stack.isEmpty()) throw CommandError("ERR no transaction")
+                val saved = stack.removeAt(stack.lastIndex)
+                if (command == "ROLLBACK") { database = saved; purge() }
+            }
+            "SNAPSHOT" -> snapshots[a.first()] = Database(database)
+            "RESTORE" -> {
+                val saved = snapshots[a.first()] ?: throw CommandError("ERR no such snapshot")
+                database = Database(saved)
+                purge()
+            }
+        }
+        return "OK"
+    fun execute(command: String, args: List<String>): String = when (command) {
+        "SET", "GET", "MSET", "MGET", "INCR", "DECR", "INCRBY", "DECRBY", "APPEND", "STRLEN", "GETRANGE" -> textCommand(command, args)
+        "BEGIN", "COMMIT", "ROLLBACK", "SNAPSHOT", "RESTORE" -> controlCommand(command, args)
+        else -> keyCommand(command, args)
+    }
+fun main() {
+    val input = System.`in`.bufferedReader()
+    val output = System.out.bufferedWriter()
+    val store = Store()
+    repeat(input.readLine().toInt()) {
+        val words = splitLine(input.readLine())
+        val result = if (words == null) "Invalid argument(s)" else {
+            val command = words.first().uppercase()
+            val format = arity(command)
+            when {
+                format == null -> "(error) ERR unknown command '${words.first()}'"
+                !format.accepts(words.size - 1) -> "(error) ERR wrong number of arguments for '${command.lowercase()}' command"
+                else -> try { store.execute(command, words.drop(1)) } catch (error: CommandError) { "(error) ${error.message}" }
+            }
+        }
+        output.write(result)
+        output.write("\n")
+    }
+    output.flush()

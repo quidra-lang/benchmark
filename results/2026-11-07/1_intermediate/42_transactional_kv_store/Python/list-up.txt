@@ -1,0 +1,178 @@
+INTEGER_NOTATION = re.compile(r"0|-?[1-9][0-9]{0,8}")
+SET_OPTIONS = ("NX", "XX", "EX", "KEEPTTL", "GET")
+OK = "OK"
+NIL = "(nil)"
+ARITY_GROUPS = (
+    ((0, 0, 1), ("TIME", "DBSIZE", "FLUSH", "INFO", "BEGIN", "COMMIT", "ROLLBACK")),
+    ((1, 1, 1), (
+        "GET", "INCR", "DECR", "STRLEN", "LLEN", "HGETALL", "HLEN", "HKEYS", "HVALS", "SMEMBERS",
+        "SCARD", "ZCARD", "TYPE", "KEYS", "TTL", "PERSIST", "TICK", "SNAPSHOT", "RESTORE",
+    )),
+    ((2, None, 1), (
+        "SET", "LPUSH", "RPUSH", "HDEL", "SADD", "SREM", "ZREM", "SINTERSTORE", "SUNIONSTORE",
+        "SDIFFSTORE",
+    )),
+ARITIES = {name: arity for arity, names in ARITY_GROUPS for name in names}
+def arity_matches(arity, count):
+    minimum, maximum, step = arity
+    if count < minimum or (maximum is not None and count > maximum):
+        return False
+    return (count - minimum) % step == 0
+def split_line(line):
+    arguments = []
+    position = 0
+    while position < len(line):
+        if line[position] == " ":
+            position += 1
+        elif line[position] == '"':
+        else:
+            end = line.find(" ", position)
+            if end < 0:
+                end = len(line)
+            arguments.append(line[position:end])
+            position = end
+    return arguments
+def is_integer(text):
+    return INTEGER_NOTATION.fullmatch(text) is not None
+
+
+def integer_argument(text):
+    if not is_integer(text):
+        raise CommandError(NOTINT)
+    return int(text)
+def integer_reply(value):
+    return f"(integer) {value}"
+
+
+def string_reply(text):
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+def parse_set_options(options):
+    seen = set()
+    seconds = None
+    index = 0
+    while index < len(options):
+        option = options[index].upper()
+        if option not in SET_OPTIONS or option in seen:
+            raise CommandError(SYNTAX)
+        seen.add(option)
+        if option == "EX":
+            if index + 1 == len(options):
+                raise CommandError(SYNTAX)
+            index += 1
+            seconds = options[index]
+        index += 1
+    if {"NX", "XX"} <= seen or {"EX", "KEEPTTL"} <= seen:
+        raise CommandError(SYNTAX)
+    return seen, seconds
+class Entry:
+    def __init__(self, kind, value, expiry=None):
+        self.kind = kind
+        self.value = value
+        self.expiry = expiry
+
+    def copy(self):
+        value = self.value if self.kind == "string" else self.value.copy()
+        return Entry(self.kind, value, self.expiry)
+def copy_database(database):
+    return {key: entry.copy() for key, entry in database.items()}
+    def __init__(self):
+        self.database = {}
+        self.now = 0
+        self.saved = []
+        self.snapshots = {}
+        self.handlers = {
+            "SET": self.set_value,
+            "GET": self.get_value,
+            "TICK": self.tick,
+            "BEGIN": self.begin,
+            "COMMIT": self.commit,
+            "ROLLBACK": self.rollback,
+            "SNAPSHOT": self.snapshot,
+            "RESTORE": self.restore,
+        }
+    def execute(self, line):
+        arguments = split_line(line)
+        if arguments is None:
+            return INVALID_LINE
+        name = arguments[0].upper()
+        if name not in ARITIES:
+            return error_reply(f"ERR unknown command '{arguments[0]}'")
+        if not arity_matches(ARITIES[name], len(arguments) - 1):
+            return error_reply(f"ERR wrong number of arguments for '{name.lower()}' command")
+        try:
+            return self.handlers[name](arguments[1:])
+    def lookup(self, key, kind):
+        entry = self.database.get(key)
+        if entry is not None and entry.kind != kind:
+            raise CommandError(WRONGTYPE)
+        return entry
+    def remove_expired(self):
+        expired = [
+            key for key, entry in self.database.items()
+            if entry.expiry is not None and entry.expiry <= self.now
+        ]
+        for key in expired:
+            del self.database[key]
+        return len(expired)
+
+    def set_value(self, arguments):
+        key, value = arguments[0], arguments[1]
+        options, seconds_text = parse_set_options(arguments[2:])
+        expiry = None
+        if "EX" in options:
+            seconds = integer_argument(seconds_text)
+            if seconds <= 0:
+                raise CommandError("ERR invalid expire time in 'set' command")
+            expiry = self.now + seconds
+        if "GET" in options:
+        else:
+            previous = self.database.get(key)
+        exists = previous is not None
+        skipped = ("NX" in options and exists) or ("XX" in options and not exists)
+        if not skipped:
+            if "KEEPTTL" in options and exists:
+                expiry = previous.expiry
+            self.database[key] = Entry("string", value, expiry)
+        return NIL if skipped else OK
+    def get_value(self, arguments):
+        entry = self.lookup(arguments[0], "string")
+        return NIL if entry is None else string_reply(entry.value)
+    def tick(self, arguments):
+        ticks = integer_argument(arguments[0])
+        if ticks <= 0:
+            raise CommandError(POSITIVE)
+        self.now += ticks
+        return integer_reply(self.remove_expired())
+    def begin(self, arguments):
+        self.saved.append(copy_database(self.database))
+        return OK
+
+    def commit(self, arguments):
+        if not self.saved:
+            raise CommandError(NO_TRANSACTION)
+        self.saved.pop()
+        return OK
+
+    def rollback(self, arguments):
+        if not self.saved:
+            raise CommandError(NO_TRANSACTION)
+        self.database = self.saved.pop()
+        self.remove_expired()
+        return OK
+
+    def snapshot(self, arguments):
+        self.snapshots[arguments[0]] = copy_database(self.database)
+        return OK
+
+    def restore(self, arguments):
+        name = arguments[0]
+        if name not in self.snapshots:
+            raise CommandError("ERR no such snapshot")
+        self.database = copy_database(self.snapshots[name])
+        self.remove_expired()
+        return OK
+def main():
+    store = KeyValueStore()
+    count = int(sys.stdin.readline())
+    for _ in range(count):
+        print(store.execute(sys.stdin.readline().rstrip("\n")))

@@ -1,0 +1,151 @@
+#define SET_WORDS 4
+static void *take(Allocation **arena, size_t size) {
+    void *p = calloc(1, size ? size : 1);
+    return p;
+static void *allocate(size_t size) {
+    return take(&temporary, size);
+}
+static bool equal(const char *a, const char *b) {
+    return strcmp(a, b) == 0;
+}
+static void fail(const char *pattern, ...) {
+    longjmp(command_error, 1);
+typedef struct {
+    uint64_t words[SET_WORDS];
+} Set;
+
+static bool has(Set s, int i) {
+    return !!(s.words[i / 64] & (UINT64_C(1) << (i % 64)));
+}
+
+static bool insert(Set *s, int i) {
+    bool old = has(*s, i);
+    s->words[i / 64] |= UINT64_C(1) << (i % 64);
+    return !old;
+}
+
+static Set singleton(int i) {
+    Set s = {
+        {0}
+    };
+    insert(&s, i);
+    return s;
+}
+
+static void unite(Set *a, Set b) {
+    for (int i = 0; i < SET_WORDS; i++) a->words[i] |= b.words[i];
+}
+
+static bool intersects(Set a, Set b) {
+    for (int i = 0; i < SET_WORDS; i++) if (a.words[i] & b.words[i]) return true;
+    return false;
+}
+
+static bool same_set(Set a, Set b) {
+    for (int i = 0; i < SET_WORDS; i++) if (a.words[i] != b.words[i]) return false;
+    return true;
+}
+static int first(Set s) {
+    for (int i = 0; i < MAX_STATES; i++) if (has(s, i)) return i;
+    return -1;
+}
+typedef struct {
+    bool dfa;
+    char alphabet[11], states[MAX_STATES][9];
+    int symbols, count, start;
+    Set accepting, transitions[MAX_STATES][11];
+} Automaton;
+static Automaton *automaton(bool dfa, const char *alphabet) {
+    Automaton *a = allocate(sizeof *a);
+    a->dfa = dfa;
+    strcpy(a->alphabet, alphabet);
+    a->symbols = (int)strlen(alphabet);
+    return a;
+static int add_state(Automaton *a, const char *name) {
+    int id = a->count++;
+    strcpy(a->states[id], name);
+    return id;
+static void edge(Automaton *a, int p, int c, int q) {
+    insert(&a->transitions[p][c], q);
+}
+
+static int delta(const Automaton *a, int p, int c) {
+    return first(a->transitions[p][c]);
+}
+static Set closure(const Automaton *a, Set s) {
+    int queue[MAX_STATES], count = 0;
+    for (int i = 0; i < a->count; i++) if (has(s, i)) queue[count++] = i;
+    for (int at = 0; at < count; at++) {
+        Set edges = a->transitions[queue[at]][a->symbols];
+        for (int q = 0; q < a->count; q++) if (has(edges, q) && insert(&s, q)) queue[count++] = q;
+    }
+    return s;
+}
+
+static Set initial(const Automaton *a) {
+    return closure(a, singleton(a->start));
+}
+
+static Set move(const Automaton *a, Set s, int c) {
+    Set out = {
+        {0}
+    };
+    for (int p = 0; p < a->count; p++) if (has(s, p)) unite(&out, a->transitions[p][c]);
+    return closure(a, out);
+}
+static int find(const char *name) {
+    for (int i = 0; i < entry_count; i++) if (equal(entries[i].name, name)) return i;
+    return -1;
+}
+
+static Automaton *get(const char *name) {
+    int at = find(name);
+    if (at < 0) fail("unknown automaton %s", name);
+    return entries[at].automaton;
+static Automaton *determinize(const Automaton *a, Lines *details) {
+    Automaton *d = automaton(true, a->alphabet);
+    Set sets[MAX_STATES];
+    int count = 1;
+    sets[0] = initial(a);
+    add_state(d, "D0");
+    for (int i = 0; i < count; i++) {
+        if (intersects(sets[i], a->accepting)) insert(&d->accepting, i);
+        for (int c = 0; c < a->symbols; c++) {
+            Set next = move(a, sets[i], c);
+            int id = -1;
+            for (int j = 0; j < count; j++) if (same_set(sets[j], next)) {
+                id = j;
+                break;
+            }
+            if (id < 0) {
+                id = count;
+                sets[count++] = next;
+                add_state(d, format("D%d", id));
+            }
+            edge(d, i, c, id);
+        }
+    }
+    return d;
+static long long count_words(const Automaton *d, int length) {
+    long long values[MAX_STATES] = {0};
+    values[d->start] = 1;
+    for (int i = 0; i < length; i++) {
+        long long next[MAX_STATES] = {0};
+        for (int p = 0; p < d->count; p++) for (int c = 0; c < d->symbols; c++) next[delta(d, p, c)] += values[p];
+        memcpy(values, next, sizeof values);
+    }
+    long long total = 0;
+    for (int p = 0; p < d->count; p++) if (has(d->accepting, p)) total += values[p];
+    return total;
+    const char *name, *roles;
+static const Command commands[] = {
+    {"COUNT", "RO"},
+    Words words = split_words(line, ' ');
+    const char **w = words.items, *c = w[0], *roles = NULL;
+    for (size_t i = 0; i < sizeof commands / sizeof commands[0]; i++) if (equal(commands[i].name, c)) roles = commands[i].roles;
+    int count = (int)strlen(roles);
+    if (words.count != count + 1) fail("wrong number of arguments");
+    for (int i = 0; i < count; i++) if (roles[i] == 'R' || roles[i] == 'D') get(w[i + 1]);
+    Automaton *a = get(w[1]);
+    Automaton *d = determinize(a, NULL);
+    if (equal(c, "COUNT")) printf("%lld\n", count_words(d, atoi(w[2])));

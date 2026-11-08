@@ -1,0 +1,23 @@
+# Task B selection — Zig
+
+## Answer requirements shared across languages
+
+1. Trace bare command tokenization, command dispatch and relevant arity/numeric checks in a valid SET-with-TTL, BEGIN, nested BEGIN/COMMIT, SNAPSHOT/RESTORE, TICK, outer ROLLBACK, GET scenario.
+2. Explain that an expiry is an absolute deadline derived from the current logical clock, and that expiry at or before the current clock removes the key.
+3. Explain current database ownership, independent transaction and named-snapshot copies, and which copy BEGIN, COMMIT, ROLLBACK, SNAPSHOT and RESTORE retain, discard or install.
+4. Explain why restoring a database does not restore the logical clock or the named-snapshot registry and why restored expired entries are removed again.
+5. Trace the success/GET/TICK output and show that inner commit leaves the outer rollback available while named snapshots survive and can be restored again.
+
+## Selected source locations
+
+- `main.zig`: 4, 6, 7, 8, 9, 10, 16, 17, 18, 24, 25, 26, 34, 35, 36, 37, 38, 96, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 140, 144, 145, 156, 157, 158, 159, 160, 165, 166, 167, 168, 174, 175, 176, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 254, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 276, 277, 278, 279, 280, 281, 282, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 350, 351, 352, 353, 354, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 377, 378, 379, 380, 381, 382, 383, 397, 398, 399, 400, 401, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 490, 491, 492, 493, 494, 495, 496, 497, 502, 503, 504, 505, 506, 541, 542, 543, 821, 822, 823, 862, 863, 864, 865, 866, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 927, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 940, 946, 947, 952, 953, 958, 959, 960, 961, 962, 963, 964, 965, 966, 967, 968, 969, 971, 972, 973, 974, 975, 978, 979, 980, 981, 982, 983, 984, 985, 986, 987, 988, 989, 990, 998, 999
+
+## Evidence and language semantics
+
+The same bare-token scenario is used across languages: SET k v EX 5; BEGIN; BEGIN; SET keep inner; COMMIT; SNAPSHOT s; RESTORE s; TICK 6; ROLLBACK; GET k; RESTORE s; GET keep; GET k. It distinguishes an outer transaction copy, an inner commit, and a retained named snapshot. The clock starts at zero; the TTL deadline is five; at clock six restoring either saved database removes k. The outer rollback removes keep from the current database but the named snapshot s still supplies it. Zig slices carry pointers, so []const alone would not prove deep ownership. Store.copy duplicates the Entry array, restore copies entries into active storage, and put replaces whole entries. For this string trace, retained Text is read-only and points into input stored in the persistent arena; readLine allocates owned slices and the arena survives all commands. No traced path mutates the string bytes. The transaction and snapshot arrays are distinct from time; pop consumes only a transaction slice and named restore leaves Snapshot.entries registered. restore always purges using current time, with expiry <= time. Session dispatch and reply formatting preserve the observable trace.
+
+## Minimization and alternatives
+
+Bare arguments avoid the quoted/escaped-token branch. Only the successful command routes needed by the scenario are retained; unrelated data structures and commands are excluded. SET with EX was compared with SET plus EXPIRE: the chosen SET path already shows value creation and its absolute TTL and avoids a second command path. Copy implementations are included only where the language does not itself guarantee independence. Output primitives are retained because their formatting is observable. Restoring only the database field, while time and snapshot/transaction storage are distinct, establishes the unchanged clock and surviving named snapshots without selecting unrelated commands. Each retained declaration, branch, assignment and call supplies a required dependency; standalone closing delimiters and extra context are omitted when they add no fact. The final excerpt was reviewed independently against all common requirements.
+
+The excerpt contains 5113 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -7,14 +7,14 @@
 
 ## Selected source locations
 
-- `main.js`: 100, 101, 102, 103, 104, 105, 106
+- `main.js`: 21, 26, 79, 80, 84, 87, 89, 90, 92, 101, 102, 103, 104, 105, 106, 242, 249, 261, 264, 291, 292, 296
 
 ## Evidence and language semantics
 
-checkRequired obtains values with a default empty array. field.type.name identifies uint32 (not the broad integer kind), whose stored integer is bigint, so compare the first value with 0n. Keep required as the outer guard and short-circuit the absent check before indexing/accessing the first value. The edit is local to this binary required-check routine; generic storage presence and the separate text-literal seen-field validation must retain their existing behavior.
+checkRequired obtains values with a default empty array. field.type.name identifies uint32 (not the broad integer kind), whose stored integer is bigint, so compare the first value with 0n. Keep required as the outer guard and short-circuit the absent check before indexing/accessing the first value. The edit is local to this binary required-check routine; generic storage presence and the separate text-literal seen-field validation must retain their existing behavior. The integer type registry exposes uint32 as an integer kind with its original name. The selected conversion returns a bigint, and the convert-to-values-to-apply-to-replace handoff stores that primitive in the message values array. These representation lines support the 0n test; unrelated wire decoding remains unnecessary.
 
 ## Minimization and alternatives
 
-Selected lines expose the current predicate and the exact type/value access needed for the extension. Binary decoding loops, encoding, nested-message traversal bodies, error formatting helpers, and text parsing are not needed to identify this local edit. Changing the generic presence helper or treating every numeric zero as missing would be broader than requested. No implementation is changed.
+Selected lines expose the current predicate and the exact type/value access needed for the extension. Binary decoding loops, encoding, nested-message traversal bodies, error formatting helpers, and text parsing are not needed to identify this local edit. Changing the generic presence helper or treating every numeric zero as missing would be broader than requested. No implementation is changed. The presence predicate alone does not expose the integer type name or bigint storage representation. Only their construction/conversion and raw-value storage handoff are added; complete decoder routines are unnecessary.
 
-The excerpt contains 191 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 639 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -1,0 +1,22 @@
+# Task B selection — Java
+
+## Answer requirements shared across languages
+
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
+
+## Selected source locations
+
+- `Main.java`: 6, 7, 12, 18, 19, 20, 21, 30, 31, 32, 33, 34, 35, 45, 46, 47, 58, 59, 60, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 121, 122, 123, 133, 134, 135, 136, 137, 138, 154, 155, 156, 158, 159, 160, 161, 166, 167, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 641, 642, 643, 644, 645, 665, 666, 667, 668, 669, 688, 689, 690, 691, 692, 693, 694, 695, 698, 699, 706, 707, 708, 709, 721, 722, 723, 724, 725, 726, 727, 735, 736, 737, 738, 739, 740, 741, 742, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 755, 756, 757, 758, 759, 760
+
+## Evidence and language semantics
+
+Replace the existing delete-or-keep decision only for selected NOTE_ON, NOTE_OFF and POLY_PRESSURE events with note=max(0,min(127,old+n)), retaining the event in its original track slot and preserving tick, kind, channel and other fields. Keep the current optional-channel predicate and validation before mutation. Distinct events remain distinct even if they clamp to the same note; neither transformation nor later traversal should deduplicate them. All affected events count as transposed (including n=0 or a note already at the endpoint); retain the result format transposed K dropped 0, with no dropped-event detail lines. DECODE must render the new note at the retained tick/track/position. ENCODE must visit every retained event, emit its updated channel-message payload and derive each delta from the unchanged absolute ticks, including zero deltas for equal-time events. Existing running-status and NOTE_OFF ZERO handling remain in force and must operate on the preserved event sequence. Song and Event are reference objects and tracks/data are ordered Java lists. The transformation constructs a replacement list while mutating only each matching Event data element zero; retaining each element once establishes order and identity even at pitch collisions. Kind maps channel-status high nibbles8/9/10 to the three required names. eventText and noteName supply the decoded pitch; encode traverses lists, obtains deltas from long ticks, uses exact VLQ integers and emits the updated payload, with a temporary replacement payload for NOTE_OFF ZERO. The command validates the song before parsing/ranging long arguments; fail throws before transformation. The byte/chunk and emit helpers show downstream encoded output boundaries.
+
+## Minimization and alternatives
+
+Reviewed the final excerpt separately against the shared validation, transformation, result and downstream representation requirements. Full HEX/TEXT parsing, note pairing, timing maps, quantization, velocity, merge/split and statistics were considered and omitted: the song is already valid and only the pitch field changes. Selected the target predicate, mutation/rebuild and drop reporting, argument checks, ordered DECODE traversal and note text conversion, and ENCODE loop/pitch payload/delta/VLQ boundaries. Custom helpers are followed where their behavior determines these facts; ordinary indexing, collections and integer semantics cover the remaining operations. No changed implementation, build or execution is supplied.
+
+The excerpt contains 2840 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -1,0 +1,23 @@
+# Task B selection — Java
+
+## Answer requirements shared across languages
+
+1. Trace bare command tokenization, command dispatch and relevant arity/numeric checks in a valid SET-with-TTL, BEGIN, nested BEGIN/COMMIT, SNAPSHOT/RESTORE, TICK, outer ROLLBACK, GET scenario.
+2. Explain that an expiry is an absolute deadline derived from the current logical clock, and that expiry at or before the current clock removes the key.
+3. Explain current database ownership, independent transaction and named-snapshot copies, and which copy BEGIN, COMMIT, ROLLBACK, SNAPSHOT and RESTORE retain, discard or install.
+4. Explain why restoring a database does not restore the logical clock or the named-snapshot registry and why restored expired entries are removed again.
+5. Trace the success/GET/TICK output and show that inner commit leaves the outer rollback available while named snapshots survive and can be restored again.
+
+## Selected source locations
+
+- `Main.java`: 37, 38, 39, 47, 60, 63, 64, 65, 66, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 106, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 231, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 255, 256, 257, 258, 263, 264, 265, 266, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 295, 296, 297, 298, 299, 300, 334, 540, 566, 567, 568, 569, 570, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 632, 633, 634, 639, 640, 641, 645, 646, 647, 648, 649, 650, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668
+
+## Evidence and language semantics
+
+The same bare-token scenario is used across languages: SET k v EX 5; BEGIN; BEGIN; SET keep inner; COMMIT; SNAPSHOT s; RESTORE s; TICK 6; ROLLBACK; GET k; RESTORE s; GET keep; GET k. It distinguishes an outer transaction copy, an inner commit, and a retained named snapshot. The clock starts at zero; the TTL deadline is five; at clock six restoring either saved database removes k. The outer rollback removes keep from the current database but the named snapshot s still supplies it. Java TreeMap copies only the map, so the selected immutable TextValue and Entry records plus String/Integer payloads are necessary to justify independence for this scenario. SET constructs replacement Entry objects; purge only removes entries from the current map. ArrayDeque addLast/removeLast implements the nested save stack; COMMIT drops the inner copy and keeps current writes. Named RESTORE copies its TreeMap without deleting the named save. time is a separate zero-initialized field and is advanced only by TICK in this trace. The expiry-removal predicate and output methods establish why restoring k at time six still yields nil.
+
+## Minimization and alternatives
+
+Bare arguments avoid the quoted/escaped-token branch. Only the successful command routes needed by the scenario are retained; unrelated data structures and commands are excluded. SET with EX was compared with SET plus EXPIRE: the chosen SET path already shows value creation and its absolute TTL and avoids a second command path. Copy implementations are included only where the language does not itself guarantee independence. Output primitives are retained because their formatting is observable. Restoring only the database field, while time and snapshot/transaction storage are distinct, establishes the unchanged clock and surviving named snapshots without selecting unrelated commands. Each retained declaration, branch, assignment and call supplies a required dependency; standalone closing delimiters and extra context are omitted when they add no fact. The final excerpt was reviewed independently against all common requirements.
+
+The excerpt contains 3392 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

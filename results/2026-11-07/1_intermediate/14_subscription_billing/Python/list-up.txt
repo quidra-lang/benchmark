@@ -1,0 +1,77 @@
+    def fee(self, seats):
+        return self.price * seats if self.per_seat else self.price
+    def usage_charge(self, units):
+        for index, (upper, unit_price, flat_fee) in enumerate(self.tiers):
+            last = index == len(self.tiers) - 1
+            if self.mode == "VOLUME":
+                if last or upper is None or units <= upper:
+                    return units * unit_price + flat_fee
+    def emit(self, *parts, indent=0):
+        self.output.append(" " * indent + " ".join(str(part) for part in parts))
+    def subscription(self, text, allowed=None):
+        number = int(text)
+        if not 1 <= number <= len(self.subscriptions):
+            raise CommandError(f"unknown sub {text}")
+        subscription = self.subscriptions[number - 1]
+        if allowed is not None and subscription.state not in allowed:
+            raise CommandError(f"invalid state {text} {subscription.state}")
+        return subscription
+    def period_item(self, plan, seats, start):
+        description = f"charge {plan.name} seats {seats} {start}-{start + plan.length}"
+        return description, plan.fee(seats)
+    def opening_items(self, subscription, start):
+        plan = subscription.plan
+        items = [self.period_item(plan, subscription.seats, start)]
+        if plan.setup:
+            items.append((f"setup {plan.name}", plan.setup))
+        return items
+    def usage_items(self, subscription, close=False):
+        if subscription.plan.mode is None or subscription.usage == 0:
+            return []
+        units = subscription.usage
+        item = f"usage {subscription.plan.name} {units} units", subscription.plan.usage_charge(units)
+        if close:
+            subscription.usage = 0
+        return [item]
+    def coupon_usable(self, subscription, subtotal):
+        return subtotal > 0 and subscription.coupon is not None and (subscription.remaining is None or subscription.remaining > 0)
+
+    def invoice_totals(self, subscription, items):
+        subtotal = sum(amount for _, amount in items)
+        discount = 0
+        if self.coupon_usable(subscription, subtotal):
+            coupon = subscription.coupon
+            discount = subtotal * coupon.value // 10000 if coupon.kind == "PERCENT" else min(subtotal, coupon.value)
+        tax = (subtotal - discount) * self.tax_rates.get(subscription.customer.region, 0) // 10000
+        total = subtotal - discount + tax
+        credit = min(subscription.customer.balance, total)
+        return subtotal, discount, tax, total, credit, total - credit
+    def emit_items(self, items):
+        for description, amount in items:
+            self.emit(description, money(amount), indent=2)
+
+    def emit_totals(self, totals):
+        subtotal, discount, tax, total = totals[:4]
+        self.emit("subtotal", money(subtotal), "discount", money(discount), "tax", money(tax), "total", money(total), indent=2)
+    def cmd_preview(self, text):
+        subscription = self.subscription(text, ("TRIALING", "ACTIVE", "PAST_DUE", "UNPAID"))
+        day = subscription.trial_end if subscription.state == "TRIALING" else subscription.end
+        if subscription.cancel_end:
+            kind = "final"
+            items = [] if subscription.state == "TRIALING" else self.usage_items(subscription)
+        elif subscription.state == "TRIALING":
+            kind = "first"
+            items = self.opening_items(subscription, day)
+        else:
+            kind = "renewal"
+            plan, seats = subscription.pending if subscription.pending is not None else (subscription.plan, subscription.seats)
+            items = self.usage_items(subscription)
+            items.append(self.period_item(plan, seats, day))
+        self.emit("PREVIEW", "sub", subscription.number, "day", day, kind)
+        if not items:
+            self.emit("(none)", indent=2)
+            return
+        self.emit_items(items)
+        totals = self.invoice_totals(subscription, items)
+        self.emit_totals(totals)
+        self.emit("credit", money(totals[4]), "due", money(totals[5]), indent=2)

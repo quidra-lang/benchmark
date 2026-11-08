@@ -1,0 +1,210 @@
+const Backslash := "\"
+string uppercase(string text)
+    result := ""
+    for: position < #text
+        character := text[position]
+        match "abcdefghijklmnopqrstuvwxyz".find(character)
+            nat index
+                result += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index]
+            none
+                result += character
+    return result
+bool one_of(string choices, string sought)
+    for word := choices.split(" ")[]
+        if word == sought
+            return true
+    return false
+string quoted(string | none item)
+    match item
+        none
+            return "(nil)"
+        string text
+            string result := DQ
+            for: position < #text
+                character := text[position]
+                if character == DQ or character == Backslash
+                    result += Backslash
+                result += character
+            return result + DQ
+
+string integer_reply(int number)
+    return "(integer) {number}"
+string[] | none split_line(string line)
+    string[] words := []
+    position := 0
+    while position < int(#line)
+        if line[position] == " "
+            position += 1
+            continue
+        if line[position] != DQ
+            start := position
+            while position < int(#line) and line[position] != " "
+                position += 1
+            words = words.append(line[start:<position])
+            continue
+    return words
+int | none parse_integer(string text)
+    if text == "0"
+        return 0
+    start := if text.starts_with("-") then 1 else 0
+    digits := int(#text) - start
+    if not (1 <= digits <= 9)
+        return none
+    if not "123456789".contains(text[start])
+        return none
+    for: start <= position < int(#text)
+        if not "0123456789".contains(text[position])
+            return none
+    return int(text)
+
+int | error integer(string text)
+    match parse_integer(text)
+        int value
+            return value
+        none
+            return error(NotInteger)
+enum Value
+    Text(string)
+bool empty_value(const Value content)
+    match content
+        Value.Text
+            return false
+class Entry(Value content, int | none expiry := none)
+class Store()
+    database := map<string, Entry>()
+    map<string, Entry>[] stack := []
+    snapshots := map<string, map<string, Entry>>()
+    clock := 0
+
+V | error required<K, V>(const map<K, V> values, K key)
+    match values.get(key)
+        V item
+            return item
+Value read_value(const Store source, string key, Value fallback)
+    match source.database.get(key)
+        Entry record
+            return record.content
+        none
+            return fallback
+
+string | error text_value(const Store source, string key)
+    match read_value(source, key, Value.Text(""))
+        Value.Text(text)
+            return text
+void replace_value(Store &source, string key, Value content, int | none expiry := none)
+    if empty_value(content)
+        .source.database.remove(key)
+    else
+        .source.database.set(key, Entry(content, expiry))
+int purge(Store &source)
+    removed := 0
+    for key := source.database.keys()[]
+        Entry record := required(source.database, key)
+        match record.expiry
+            int deadline
+                if deadline <= source.clock
+                    .source.database.remove(key)
+                    removed += 1
+            none
+                void
+    return removed
+class Arity(int minimum, int maximum, parity := -1)
+    bool accepts(int count)
+        return count >= minimum and (maximum < 0 or count <= maximum) and (parity < 0 or count % 2 == parity)
+
+Arity | none command_arity(string command)
+    if one_of("TIME DBSIZE FLUSH INFO BEGIN COMMIT ROLLBACK", command)
+        return Arity(0, 0)
+    if one_of("GET INCR DECR STRLEN LLEN HGETALL HLEN HKEYS HVALS SMEMBERS SCARD ZCARD TYPE KEYS TTL PERSIST TICK SNAPSHOT RESTORE", command)
+        return Arity(1, 1)
+    if one_of("SET LPUSH RPUSH HDEL SADD SREM ZREM SINTERSTORE SUNIONSTORE SDIFFSTORE", command)
+        return Arity(2, -1)
+string | error set_text(Store &source, const string[] arguments)
+    key := arguments[0]
+    distinct<string> options
+    seconds_text := ""
+    index := 2
+    while index < int(#arguments)
+        option := uppercase(arguments[index])
+        index += 1
+        if not one_of("NX XX EX KEEPTTL GET", option) or options.has(option)
+            return error("ERR syntax error")
+        .options.add(option)
+        if option == "EX"
+            if index == int(#arguments)
+                return error("ERR syntax error")
+            seconds_text = arguments[index]
+            index += 1
+    if (options.has("NX") and options.has("XX")) or (options.has("EX") and options.has("KEEPTTL"))
+        return error("ERR syntax error")
+    int | none expiry := none
+    if options.has("EX")
+        seconds := try integer(seconds_text)
+        if seconds <= 0
+            return error("ERR invalid expire time in 'set' command")
+        expiry = source.clock + seconds
+    string | none old_text := none
+    bool exists := source.database.has(key)
+    blocked := (options.has("NX") and exists) or (options.has("XX") and not exists)
+    if not blocked
+        replace_value(&source, key, Value.Text(arguments[1]), expiry)
+    return if blocked then "(nil)" else "OK"
+string | error string_command(Store &source, string command, const string[] arguments)
+    key := arguments[0]
+    if command == "SET"
+        return try set_text(&source, arguments)
+    text := try text_value(source, key)
+    if command == "STRLEN"
+        return integer_reply(int(#text))
+    return if source.database.has(key) then quoted(text) else "(nil)"
+string | error key_command(Store &source, string command, const string[] arguments)
+    if command == "TICK"
+        ticks := try integer(arguments[0])
+        if ticks <= 0
+            return error(Positive)
+        source.clock += ticks
+        return integer_reply(purge(&source))
+string | error control_command(Store &source, string command, const string[] arguments)
+    if command == "BEGIN"
+        source.stack = source.stack.append(source.database)
+    elif command == "COMMIT" or command == "ROLLBACK"
+        if #source.stack == 0
+            return error("ERR no transaction")
+        top := #source.stack - 1
+        if command == "ROLLBACK"
+            source.database = source.stack[top]
+            purge(&source)
+        source.stack = source.stack[0:<top]
+    elif command == "SNAPSHOT"
+        .source.snapshots.set(arguments[0], source.database)
+    else
+        match source.snapshots.get(arguments[0])
+            map<string, Entry> saved
+                source.database = saved
+                purge(&source)
+            none
+                return error("ERR no such snapshot")
+    return "OK"
+string | error execute(Store &source, string command, const string[] arguments)
+    if one_of("SET GET MSET MGET INCR DECR INCRBY DECRBY APPEND STRLEN GETRANGE", command)
+        return try string_command(&source, command, arguments)
+    if one_of("BEGIN COMMIT ROLLBACK SNAPSHOT RESTORE", command)
+        return try control_command(&source, command, arguments)
+    return try key_command(&source, command, arguments)
+database_store := Store()
+int command_count
+scan(&command_count)
+for: command_index < command_count
+    string line
+    scan(&line)
+    match split_line(line)
+        string[] words
+            command := uppercase(words[0])
+            match command_arity(command)
+                Arity format
+                    if not format.accepts(int(#words) - 1)
+                        println("(error) ERR wrong number of arguments for '" + lowercase(command) + "' command")
+                    else
+                        match execute(&database_store, command, words[1:])
+                            string output
+                                println(output)

@@ -1,0 +1,154 @@
+struct MidiError: Error { var message: String }
+func fail(_ message: String) throws -> Never {
+    throw MidiError(message: message)
+}
+func inside(_ value: Int, _ low: Int, _ high: Int) -> Bool {
+    value >= low && value <= high
+}
+let channelTypes = ["NOTE_OFF", "NOTE_ON", "POLY_PRESSURE", "CONTROL", "PROGRAM", "CHANNEL_PRESSURE", "PITCH_BEND"]
+let pitchNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+func pitch(_ number: Int) -> String {
+    pitchNames[number % 12] + String(number / 12 - 1)
+}
+func bytes(_ value: Int, _ count: Int) -> [Int] {
+    (0..<count).map { (value >> (8 * (count - 1 - $0))) & 255 }
+}
+func hex(_ value: Int, _ width: Int) -> String {
+    String(format: "%0*X", width, value)
+struct Event {
+    var tick: Int
+    var status: Int
+    var meta: Int = -1
+    var data: [Int] = []
+    var channel: Bool {
+        status < 240
+    }
+    var ch: Int {
+        (status & 15) + 1
+    }
+    var code: Int {
+        status >> 4
+    }
+    var type: String {
+        if channel {
+            return channelTypes[code - 8]
+        }
+    var fields: String {
+        if channel {
+            let value: String
+            switch code {
+            case 8...10:
+                value = "\(pitch(data[0])) \(data[1])"
+            }
+            return "\(ch) \(value)"
+        }
+    func line(_ track: Int) -> String {
+        "\(tick) \(track) \(type)" + (fields.isEmpty ? "" : " " + fields)
+    }
+struct Song {
+    var format: Int
+    var division: Int
+    var tracks: [[Event]]
+func variable(_ number: Int) -> [Int] {
+    var n = number, data = [n & 127]
+    n >>= 7
+    while n > 0 {
+        data.insert((n & 127) | 128, at: 0)
+        n >>= 7
+    }
+    return data
+}
+func encode(_ song: Song, running: Bool, zeroOff: Bool) {
+    var all = Array("MThd".utf8)
+        .map(Int.init) + bytes(6, 4) + bytes(song.format, 2) + bytes(song.tracks.count, 2) + bytes(
+            song.division,
+            2
+        )
+    for track in song.tracks {
+        var data: [Int] = [], previous = 0, last = -1
+        for e in track {
+            data += variable(e.tick - previous)
+            previous = e.tick
+            if e.channel {
+                let rewrite = zeroOff && e.code == 8
+                let status = rewrite ? 0x90 + e.ch - 1 : e.status
+                if !running || status != last {
+                    data.append(status)
+                }
+                data += rewrite ? [e.data[0], 0] : e.data
+                last = status
+            } else {
+                last = -1
+            }
+        }
+        all += Array("MTrk".utf8).map(Int.init) + bytes(data.count, 4) + data
+    }
+    for i in stride(from: 0, to: all.count, by: 16) {
+        print(hex(i, 4) + ": " + all[i..<min(i + 16, all.count)].map { hex(
+            $0,
+            2
+        ) }.joined(separator: " "))
+    }
+    print("\(all.count) bytes")
+}
+final class Codec {
+    var songs: [String: Song] = [:]
+    var running = true, zeroOff = false
+    func execute(_ a: [String]) throws {
+        let cmd = a[0]
+        let known = [
+            "DECODE",
+            "ENCODE",
+            "TRANSPOSE",
+        ]
+        if !known.contains(cmd) {
+            try fail("unknown command")
+        }
+        guard var song = songs[a[1]] else {
+            try fail("no song \(a[1])")
+        }
+        let first = a.count > 2 ? Int(a[2]) ?? 0 : 0, second = a.count > 3 ? Int(a[3]) ?? 0 : 0,
+            third = a.count > 4 ? Int(a[4]) ?? 0 : 0
+        var bad = false
+        switch cmd {
+        case "TRANSPOSE":
+            bad = !inside(first, -127, 127) || a.count == 4 && !inside(second, 1, 16)
+        }
+        if bad {
+            try fail("bad argument")
+        }
+        switch cmd {
+        case "DECODE":
+            print("HEADER \(song.format) \(song.tracks.count) \(song.division)")
+            for tr in song.tracks.indices {
+                for e in song.tracks[tr] {
+                    print(e.line(tr))
+                }
+            }
+        case "ENCODE":
+            encode(song, running: running, zeroOff: zeroOff)
+        case "TRANSPOSE":
+            var kept = 0, dropped: [String] = []
+            for tr in song.tracks.indices {
+                var track: [Event] = []
+                for var e in song.tracks[tr] {
+                    if e.channel && inside(e.code, 8, 10) && (a.count == 3 || e.ch == second) {
+                        let note = e.data[0] + first
+                        if !inside(note, 0, 127) {
+                            dropped.append("dropped \(e.tick) \(tr) \(e.type) \(e.ch) \(pitch(e.data[0]))")
+                            continue
+                        }
+                        e.data[0] = note
+                        kept += 1
+                    }
+                    track.append(e)
+                }
+                song.tracks[tr] = track
+            }
+            print("transposed \(kept) dropped \(dropped.count)")
+            for line in dropped {
+                print(line)
+            }
+        }
+        songs[a[1]] = song
+    }

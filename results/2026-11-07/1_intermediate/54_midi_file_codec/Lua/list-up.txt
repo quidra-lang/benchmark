@@ -1,0 +1,185 @@
+local channels = {
+    "NOTE_OFF",
+    "NOTE_ON",
+    "POLY_PRESSURE",
+    "CONTROL",
+    "PROGRAM",
+    "CHANNEL_PRESSURE",
+    "PITCH_BEND"
+}
+local notes, noteNumbers = {}, {}
+local pitches = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+for p = 0, 127 do
+    notes[p] = pitches[p % 12 + 1] .. (p // 12 - 1)
+    noteNumbers[notes[p]] = p
+end
+local function copy(v)
+    if type(v) ~= "table" then
+        return v
+    end
+    local r = {}
+    for k, x in pairs(v) do
+        r[k] = copy(x)
+    end
+    return r
+end
+local function words(s)
+    local r = {}
+    for x in (s or ""):gmatch("%S+") do
+        r[#r + 1] = x
+    end
+    return r
+end
+local function append(a, b)
+    for _, x in ipairs(b) do
+        a[#a + 1] = x
+    end
+end
+local function big(n, count)
+    local r = {}
+    for i = count, 1, -1 do
+        r[i] = n % 256
+        n = n // 256
+    end
+    return r
+end
+local function vlq(n)
+    local r = {n % 128}
+    n = n // 128
+    while n > 0 do
+        table.insert(r, 1, n % 128 + 128)
+        n = n // 128
+    end
+    return r
+end
+local function bytes(s)
+    local r = {}
+    for i = 1, #s do
+        r[i] = s:byte(i)
+    end
+    return r
+end
+local function eventType(e)
+    if e.s < 240 then
+        return channels[(e.s >> 4) - 7]
+    end
+local function eventFields(e)
+    local d, s = e.d, e.s
+    if s < 240 then
+        local ch, kind = (s & 15) + 1, s >> 4
+        if kind <= 10 then
+            return {ch, notes[d[1]], d[2]}
+        end
+local function eventLine(e, tr)
+    local a = {e.t, tr, eventType(e)}
+    append(a, eventFields(e))
+    return table.concat(a, " ")
+end
+local function range(s, a, b)
+    local n = tonumber(s)
+    return n and n >= a and n <= b
+end
+local function encode(song, running, noteoff)
+    local result = bytes("MThd")
+    append(result, big(6, 4))
+    append(result, big(song.f, 2))
+    append(result, big(#song.tracks, 2))
+    append(result, big(song.div, 2))
+    for _, tr in ipairs(song.tracks) do
+        local data, last, status = {}, 0, nil
+        for _, e in ipairs(tr) do
+            append(data, vlq(e.t - last))
+            last = e.t
+            local s, d = e.s, copy(e.d)
+            if noteoff == "ZERO" and s >> 4 == 8 then
+                s = s + 16
+                d[2] = 0
+            end
+            if s < 240 then
+                if not running or status ~= s then
+                    data[#data + 1] = s
+                end
+                append(data, d)
+                status = s
+            else
+                status = nil
+            end
+        end
+        append(result, bytes("MTrk"))
+        append(result, big(#data, 4))
+        append(result, data)
+    end
+    for i = 1, #result, 16 do
+        local a = {}
+        for j = i, math.min(i + 15, #result) do
+            a[#a + 1] = string.format("%02X", result[j])
+        end
+        print(string.format("%04X: ", i - 1) .. table.concat(a, " "))
+    end
+    print(#result .. " bytes")
+end
+local songs, running, noteoff = {}, true, "KEEP"
+local known = {}
+for _, c in ipairs(
+    words(
+        "HEX TEXT DECODE ENCODE TIMING NOTES STATS ROLL TRANSPOSE QUANTIZE VELOCITY TEMPO FILTER MERGE SPLIT COPY LIST RUNNING NOTEOFF"
+    )
+) do
+    known[c] = true
+end
+local function requireThat(valid, message)
+    if not valid then
+        error(message, 0)
+    end
+end
+local function run(line)
+    local a = words(line)
+    local cmd = table.remove(a, 1)
+    local name = a[1]
+    requireThat(known[cmd], "unknown command")
+    if cmd ~= "LIST" and cmd ~= "RUNNING" and cmd ~= "NOTEOFF" then
+        requireThat(songs[name], "no song " .. name)
+    end
+    local song = songs[name]
+    elseif cmd == "DECODE" then
+        print("HEADER " .. song.f .. " " .. #song.tracks .. " " .. song.div)
+        for i, tr in ipairs(song.tracks) do
+            for _, e in ipairs(tr) do
+                print(eventLine(e, i - 1))
+            end
+        end
+    elseif cmd == "ENCODE" then
+        encode(song, running, noteoff)
+    elseif cmd == "TRANSPOSE" then
+        requireThat(range(a[2], -127, 127) and (not a[3] or range(a[3], 1, 16)), "bad argument")
+        local amount, ch, kept, dropped = tonumber(a[2]), tonumber(a[3]), 0, {}
+        for i, tr in ipairs(song.tracks) do
+            local new = {}
+            for _, e in ipairs(tr) do
+                local kind = e.s >> 4
+                if kind >= 8 and kind <= 10 and (not ch or (e.s & 15) + 1 == ch) then
+                    local p = e.d[1] + amount
+                    if p < 0 or p > 127 then
+                        dropped[#dropped + 1] =
+                            "dropped " ..
+                            e.t ..
+                                " " ..
+                                    i - 1 ..
+                                        " " ..
+                                            eventType(e) ..
+                                                " " .. (e.s & 15) + 1 .. " " .. notes[e.d[1]]
+                    else
+                        e.d[1] = p
+                        kept = kept + 1
+                        new[#new + 1] = e
+                    end
+                else
+                    new[#new + 1] = e
+                end
+            end
+            song.tracks[i] = new
+        end
+        print("transposed " .. kept .. " dropped " .. #dropped)
+        for _, s in ipairs(dropped) do
+            print(s)
+        end

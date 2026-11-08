@@ -7,14 +7,14 @@
 
 ## Selected source locations
 
-- `main.py`: 258, 329, 330, 332, 333
+- `main.py`: 256, 258, 329, 330, 332, 333
 
 ## Evidence and language semantics
 
-DEFINE is dispatched to define. Its parsed color replaces self.registered[name]. Python dict assignment to an existing key preserves insertion order.
+DEFINE is dispatched to define. Its parsed color replaces self.registered[name]. Python dict assignment to an existing key preserves insertion order. The dict initializer is retained so insertion-order semantics are grounded in the selected container construction.
 
 ## Minimization and alternatives
 
 The handler mapping binds DEFINE to this method; unrelated handler entries share the complete mapping line. No color parsing or LIST internals are needed for dict replacement.
 
-The excerpt contains 92 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 103 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

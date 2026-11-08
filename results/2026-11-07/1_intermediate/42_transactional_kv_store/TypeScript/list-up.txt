@@ -1,0 +1,111 @@
+type StoredEntry = Value & { expiry: number | null };
+type Database = Map<string, StoredEntry>;
+type Reply = string[];
+const integerNotation = /^(?:0|-?[1-9][0-9]{0,8})$/;
+function number(value: string, message: string = messages.notInteger): number {
+    if (!integerNotation.test(value)) fail(message);
+    return Number(value);
+const status = (value: string): Reply => [value];
+const integer = (value: number): Reply => [`(integer) ${value}`];
+const string = (value: string | null): Reply => [value === null ? '(nil)' : JSON.stringify(value)];
+function splitArguments(line: string): string[] | null {
+    const argumentsList: string[] = [];
+    let position = 0;
+    while (position < line.length) {
+        if (line[position] === ' ') { ++position; continue; }
+        if (line[position] !== '"') {
+            const start = position;
+            while (position < line.length && line[position] !== ' ') ++position;
+            argumentsList.push(line.slice(start, position));
+            continue;
+        }
+    return argumentsList;
+const commands = new Map<string, CommandSpec>();
+function register(group: Group, names: string, minimum: number, maximum = minimum, parity: 0 | 1 | null = null): void {
+    for (const name of names.split(' ')) commands.set(name, { group, minimum, maximum, parity });
+}
+register('strings', 'SET', 2, Infinity);
+register('strings', 'GET INCR DECR STRLEN', 1);
+register('keys', 'TYPE KEYS TTL PERSIST TICK', 1);
+register('control', 'BEGIN COMMIT ROLLBACK', 0);
+register('control', 'SNAPSHOT RESTORE', 1);
+    private database: Database = new Map();
+    private time = 0;
+    private stack: Database[] = [];
+    private snapshots = new Map<string, Database>();
+    private data(key: string, type: ValueKind, fallback: ValueTypes[ValueKind] | null): ValueTypes[ValueKind] | null {
+        const entry = this.database.get(key);
+        if (entry !== undefined && entry.type !== type) fail(messages.wrongType);
+        return entry === undefined ? fallback : entry.value;
+    private write(key: string, value: Value, expiry?: number | null): void {
+        const empty = value.type !== 'string' && (value.type === 'list' ? value.value.length : value.value.size) === 0;
+        if (empty) this.database.delete(key);
+        else this.database.set(key, { ...value, expiry: expiry === undefined ? (this.database.get(key)?.expiry ?? null) : expiry });
+    private purge(): number {
+        let removed = 0;
+        for (const [key, entry] of this.database) if (entry.expiry !== null && entry.expiry <= this.time) {
+            this.database.delete(key); ++removed;
+        }
+        return removed;
+    command(line: string): Reply {
+        const words = splitArguments(line);
+        if (words === null) return status('Invalid argument(s)');
+        const verb = words[0].toUpperCase(), args = words.slice(1), specification = commands.get(verb);
+            const { minimum, maximum, parity, group } = specification;
+            if (args.length < minimum || args.length > maximum || (parity !== null && args.length % 2 !== parity)) {
+                fail(`ERR wrong number of arguments for '${verb.toLowerCase()}' command`);
+            }
+            return this[group](verb, args);
+    private strings(verb: string, args: readonly string[]): Reply {
+        const key = args[0];
+        switch (verb) {
+        case 'SET': {
+            const options = new Map<string, string>();
+            for (let index = 2; index < args.length; ++index) {
+                const option = args[index].toUpperCase();
+                if (!['NX', 'XX', 'EX', 'KEEPTTL', 'GET'].includes(option) || options.has(option)) fail(messages.syntax);
+                if (option === 'EX') {
+                    if (++index === args.length) fail(messages.syntax);
+                    options.set(option, args[index]);
+                } else options.set(option, '');
+            }
+            if ((options.has('NX') && options.has('XX')) || (options.has('EX') && options.has('KEEPTTL'))) fail(messages.syntax);
+            let expiry: number | null = null;
+            if (options.has('EX')) {
+                const seconds = number(options.get('EX')!);
+                if (seconds <= 0) fail("ERR invalid expire time in 'set' command");
+                expiry = this.time + seconds;
+            }
+            const previous = this.database.get(key);
+            const changed = !(options.has('NX') && previous !== undefined) && !(options.has('XX') && previous === undefined);
+            if (options.has('KEEPTTL') && previous !== undefined) expiry = previous.expiry;
+            if (changed) this.write(key, { type: 'string', value: args[1] }, expiry);
+            return options.has('GET') ? string(oldValue) : changed ? status('OK') : string(null);
+        }
+        case 'GET': return string(this.data(key, 'string', null));
+    private keys(verb: string, args: readonly string[]): Reply {
+        const key = args[0];
+        case 'TICK': {
+            const ticks = number(key);
+            if (ticks <= 0) fail(messages.positive);
+            this.time += ticks;
+            return integer(this.purge());
+    private control(verb: string, args: readonly string[]): Reply {
+        switch (verb) {
+        case 'BEGIN': this.stack.push(structuredClone(this.database)); break;
+        case 'COMMIT': case 'ROLLBACK':
+            if (this.stack.length === 0) fail('ERR no transaction');
+            if (verb === 'ROLLBACK') { this.database = this.stack.pop()!; this.purge(); }
+            else this.stack.pop();
+            break;
+        case 'SNAPSHOT': this.snapshots.set(args[0], structuredClone(this.database)); break;
+        case 'RESTORE': {
+            const snapshot = this.snapshots.get(args[0]);
+            if (snapshot === undefined) fail('ERR no such snapshot');
+            this.database = structuredClone(snapshot); this.purge();
+            break;
+        }
+        }
+        return status('OK');
+const lines = readFileSync(0, 'utf8').split(/\r?\n/), store = new Store();
+for (let index = 1; index <= Number(lines[0]); ++index) process.stdout.write(store.command(lines[index]).join('\n') + '\n');

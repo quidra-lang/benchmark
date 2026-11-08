@@ -1,0 +1,266 @@
+typedef enum { STRING, LIST, HASH, SET, ZSET } Type;
+typedef struct {
+    char *key;
+    Type type;
+    int expiry;
+    union { char *string; List list; Collection members; } value;
+} Record;
+typedef struct { Record *items[100]; int count; } Database;
+typedef struct { char *name; Database *database; } Snapshot;
+static Database *database, *stack[20];
+static Snapshot snapshots[20];
+static int current_time, depth, snapshot_count;
+static void *allocate(size_t size) {
+    void *result = malloc(size);
+    if (!result) exit(EXIT_FAILURE);
+    return result;
+}
+static char *copy_string(const char *text) {
+    char *result = allocate(strlen(text) + 1);
+    return strcpy(result, text);
+static bool equal_case(const char *a, const char *b) {
+    while (*a && *b) {
+        int x = *a++, y = *b++;
+        if (x >= 'a' && x <= 'z') x -= 'a' - 'A';
+        if (y >= 'a' && y <= 'z') y -= 'a' - 'A';
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+static bool split_line(const char *line, char *buffer, char **args, int *count) {
+    int input = 0, output = 0;
+    *count = 0;
+    while (line[input]) {
+        while (line[input] == ' ') ++input;
+        if (!line[input]) break;
+        args[(*count)++] = buffer + output;
+        if (line[input] == '"') {
+        } else {
+            while (line[input] && line[input] != ' ') buffer[output++] = line[input++];
+        }
+        buffer[output++] = '\0';
+    }
+    return true;
+}
+static bool parse_integer(const char *text, int *value) {
+    if (!strcmp(text, "0")) { *value = 0; return true; }
+    bool negative = *text == '-';
+    if (negative) ++text;
+    size_t length = strlen(text);
+    if (length < 1 || length > 9 || *text < '1' || *text > '9') return false;
+    int result = 0;
+    for (; *text; ++text) {
+        if (*text < '0' || *text > '9') return false;
+        result = result * 10 + *text - '0';
+    }
+    *value = negative ? -result : result;
+    return true;
+}
+static int integer(const char *text) {
+    int value;
+    if (!parse_integer(text, &value)) fail("%s", not_integer);
+    return value;
+}
+static void quoted(const char *text) {
+    if (!text) { fputs("(nil)", stdout); return; }
+    putchar('"');
+    for (; *text; ++text) {
+        if (*text == '"' || *text == '\\') putchar('\\');
+        putchar(*text);
+    }
+    putchar('"');
+}
+static void reply_string(const char *text) { quoted(text); putchar('\n'); }
+static void reply_integer(int value) { printf("(integer) %d\n", value); }
+static Record *find(const Database *db, const char *key) {
+    for (int i = 0; i < db->count; ++i) if (!strcmp(db->items[i]->key, key)) return db->items[i];
+    return NULL;
+}
+static Record *checked(const char *key, Type type) {
+    Record *record = find(database, key);
+    if (record && record->type != type) fail("%s", wrong_type);
+    return record;
+}
+static Record *new_record(const char *key, Type type) {
+    Record *record = allocate(sizeof(*record));
+    *record = (Record){ .key = copy_string(key), .type = type, .expiry = -1 };
+    if (type == STRING) record->value.string = copy_string("");
+    return record;
+static void free_record(Record *record) {
+    free(record->key);
+    if (record->type == STRING) free(record->value.string);
+    free(record);
+static bool delete_key(Database *db, const char *key) {
+    for (int i = 0; i < db->count; ++i) if (!strcmp(db->items[i]->key, key)) {
+        free_record(db->items[i]);
+        memmove(db->items + i, db->items + i + 1, (size_t)(--db->count - i) * sizeof(*db->items));
+        return true;
+    }
+    return false;
+}
+static void replace_record(Record *record) {
+    delete_key(database, record->key);
+    database->items[database->count++] = record;
+}
+static void write_string(Record *record, const char *text) {
+    char *copy = copy_string(text);
+    free(record->value.string);
+    record->value.string = copy;
+}
+static void replace_string(const char *key, const char *text, int expiry) {
+    Record *record = new_record(key, STRING);
+    write_string(record, text);
+    record->expiry = expiry;
+    replace_record(record);
+}
+static Record *copy_record(const Record *source) {
+    Record *record = allocate(sizeof(*record));
+    *record = *source;
+    record->key = copy_string(source->key);
+    if (source->type == STRING) record->value.string = copy_string(source->value.string);
+    return record;
+static Database *copy_database(const Database *source) {
+    Database *copy = allocate(sizeof(*copy));
+    copy->count = source->count;
+    for (int i = 0; i < source->count; ++i) copy->items[i] = copy_record(source->items[i]);
+    return copy;
+}
+static void free_database(Database *db) {
+    for (int i = 0; i < db->count; ++i) free_record(db->items[i]);
+    free(db);
+}
+static int expire_keys(void) {
+    int removed = 0;
+    for (int i = database->count - 1; i >= 0; --i) {
+        Record *record = database->items[i];
+        if (record->expiry >= 0 && record->expiry <= current_time) {
+            delete_key(database, record->key);
+            ++removed;
+        }
+    }
+    return removed;
+typedef enum {
+    C_SET, C_GET, C_MSET, C_MGET, C_INCR, C_DECR, C_INCRBY, C_DECRBY, C_APPEND, C_STRLEN, C_GETRANGE,
+    C_LPUSH, C_RPUSH, C_LPOP, C_RPOP, C_LRANGE, C_LLEN, C_LINDEX, C_LSET, C_LREM, C_LTRIM, C_LINSERT,
+    C_HSET, C_HGET, C_HDEL, C_HGETALL, C_HLEN, C_HEXISTS, C_HKEYS, C_HVALS, C_HINCRBY,
+    C_SADD, C_SREM, C_SISMEMBER, C_SMEMBERS, C_SCARD, C_SINTER, C_SUNION, C_SDIFF,
+    C_SINTERSTORE, C_SUNIONSTORE, C_SDIFFSTORE,
+    C_ZADD, C_ZSCORE, C_ZINCRBY, C_ZREM, C_ZCARD, C_ZRANK, C_ZRANGE, C_ZRANGEBYSCORE,
+    C_DEL, C_EXISTS, C_TYPE, C_RENAME, C_RENAMENX, C_KEYS, C_EXPIRE, C_TTL, C_PERSIST, C_TICK,
+    C_TIME, C_DBSIZE, C_FLUSH, C_INFO, C_BEGIN, C_COMMIT, C_ROLLBACK, C_SNAPSHOT, C_RESTORE, COMMAND_COUNT
+} Command;
+typedef struct { const char *name; int minimum, maximum, parity; } Format;
+static const Format formats[COMMAND_COUNT] = {
+    {"SET",2,100,-1}, {"GET",1,1,-1}, {"MSET",2,100,0}, {"MGET",1,100,-1},
+    {"INCR",1,1,-1}, {"DECR",1,1,-1}, {"INCRBY",2,2,-1}, {"DECRBY",2,2,-1},
+    {"APPEND",2,2,-1}, {"STRLEN",1,1,-1}, {"GETRANGE",3,3,-1},
+    {"LPUSH",2,100,-1}, {"RPUSH",2,100,-1}, {"LPOP",1,2,-1}, {"RPOP",1,2,-1},
+    {"LRANGE",3,3,-1}, {"LLEN",1,1,-1}, {"LINDEX",2,2,-1}, {"LSET",3,3,-1},
+    {"LREM",3,3,-1}, {"LTRIM",3,3,-1}, {"LINSERT",4,4,-1},
+    {"HSET",3,100,1}, {"HGET",2,2,-1}, {"HDEL",2,100,-1}, {"HGETALL",1,1,-1},
+    {"HLEN",1,1,-1}, {"HEXISTS",2,2,-1}, {"HKEYS",1,1,-1}, {"HVALS",1,1,-1}, {"HINCRBY",3,3,-1},
+    {"SADD",2,100,-1}, {"SREM",2,100,-1}, {"SISMEMBER",2,2,-1}, {"SMEMBERS",1,1,-1},
+    {"SCARD",1,1,-1}, {"SINTER",1,100,-1}, {"SUNION",1,100,-1}, {"SDIFF",1,100,-1},
+    {"SINTERSTORE",2,100,-1}, {"SUNIONSTORE",2,100,-1}, {"SDIFFSTORE",2,100,-1},
+    {"ZADD",3,100,1}, {"ZSCORE",2,2,-1}, {"ZINCRBY",3,3,-1}, {"ZREM",2,100,-1},
+    {"ZCARD",1,1,-1}, {"ZRANK",2,2,-1}, {"ZRANGE",3,4,-1}, {"ZRANGEBYSCORE",3,4,-1},
+    {"DEL",1,100,-1}, {"EXISTS",1,100,-1}, {"TYPE",1,1,-1}, {"RENAME",2,2,-1},
+    {"RENAMENX",2,2,-1}, {"KEYS",1,1,-1}, {"EXPIRE",2,3,-1}, {"TTL",1,1,-1},
+    {"PERSIST",1,1,-1}, {"TICK",1,1,-1}, {"TIME",0,0,-1}, {"DBSIZE",0,0,-1},
+    {"FLUSH",0,0,-1}, {"INFO",0,0,-1}, {"BEGIN",0,0,-1}, {"COMMIT",0,0,-1},
+    {"ROLLBACK",0,0,-1}, {"SNAPSHOT",1,1,-1}, {"RESTORE",1,1,-1}
+};
+static void execute(Command command, int count, char **args) {
+    switch (command) {
+    case C_SET: {
+        enum { NX = 1, XX = 2, EX = 4, KEEP = 8, GET = 16 };
+        int options = 0, seconds = 0;
+        const char *seconds_text = NULL;
+        for (int i = 2; i < count; ++i) {
+            int option = equal_case(args[i], "NX") ? NX : equal_case(args[i], "XX") ? XX :
+                equal_case(args[i], "EX") ? EX : equal_case(args[i], "KEEPTTL") ? KEEP : equal_case(args[i], "GET") ? GET : 0;
+            if (!option || (options & option)) fail("ERR syntax error");
+            options |= option;
+            if (option == EX) {
+                if (++i == count) fail("ERR syntax error");
+                seconds_text = args[i];
+            }
+        }
+        if (options & EX) {
+            seconds = integer(seconds_text);
+            if (seconds <= 0) fail("ERR invalid expire time in 'set' command");
+        }
+        Record *old = options & GET ? checked(args[0], STRING) : find(database, args[0]);
+        bool change = !((options & NX) && old) && !((options & XX) && !old);
+        char *previous = (options & GET) && old ? copy_string(old->value.string) : NULL;
+        if (change) {
+            int expiry = options & EX ? current_time + seconds : ((options & KEEP) && old ? old->expiry : -1);
+            replace_string(args[0], args[1], expiry);
+        }
+        if (options & GET) reply_string(previous);
+        else if (change) puts("OK");
+        break;
+    }
+    case C_GET: case C_STRLEN: {
+        Record *record = checked(args[0], STRING);
+        if (command == C_GET) reply_string(record ? record->value.string : NULL);
+        break;
+    case C_TICK: {
+        int ticks = integer(args[0]);
+        if (ticks <= 0) fail("%s", positive);
+        current_time += ticks;
+        reply_integer(expire_keys());
+        break;
+    case C_BEGIN:
+        stack[depth++] = copy_database(database);
+        puts("OK");
+        break;
+    case C_COMMIT: case C_ROLLBACK:
+        if (!depth) fail("ERR no transaction");
+        if (command == C_COMMIT) free_database(stack[--depth]);
+        else {
+            free_database(database);
+            database = stack[--depth];
+            expire_keys();
+        }
+        puts("OK");
+        break;
+    case C_SNAPSHOT: case C_RESTORE: {
+        int index = 0;
+        while (index < snapshot_count && strcmp(snapshots[index].name, args[0])) ++index;
+        if (command == C_RESTORE) {
+            if (index == snapshot_count) fail("ERR no such snapshot");
+            Database *restored = copy_database(snapshots[index].database);
+            free_database(database);
+            database = restored;
+            expire_keys();
+        } else {
+            Database *saved = copy_database(database);
+            if (index == snapshot_count) {
+                snapshots[index].name = copy_string(args[0]);
+                ++snapshot_count;
+            } else free_database(snapshots[index].database);
+            snapshots[index].database = saved;
+        }
+        puts("OK");
+        break;
+static void process_line(const char *line) {
+    char buffer[202], *args[101];
+    int count;
+    if (!split_line(line, buffer, args, &count)) { puts("Invalid argument(s)"); return; }
+    int command = 0;
+    while (command < COMMAND_COUNT && !equal_case(args[0], formats[command].name)) ++command;
+    if (command == COMMAND_COUNT) fail("ERR unknown command '%s'", args[0]);
+    const Format *format = &formats[command];
+    --count;
+    if (count < format->minimum || count > format->maximum || (format->parity >= 0 && count % 2 != format->parity)) {
+    execute((Command)command, count, args + 1);
+int main(void) {
+    char line[205];
+    if (!fgets(line, sizeof(line), stdin)) return 0;
+    int commands = atoi(line);
+    database = allocate(sizeof(*database));
+    database->count = 0;
+    for (int i = 0; i < commands && fgets(line, sizeof(line), stdin); ++i) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (setjmp(command_error) == 0) process_line(line);

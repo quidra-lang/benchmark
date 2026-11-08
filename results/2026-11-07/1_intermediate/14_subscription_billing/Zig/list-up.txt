@@ -1,0 +1,68 @@
+    fn fee(p: *const Plan, seats: i64) i64 {
+        return p.price * (if (p.per_seat) seats else 1);
+    }
+    fn usageCharge(p: *const Plan, units: i64) i64 {
+        for (p.tiers.items, 0..) |t, i| {
+            const upper = if (i + 1 == p.tiers.items.len) units else t.limit.?;
+            if (p.mode.? == .VOLUME) {
+                if (units <= upper) return units * t.unit + t.flat;
+const Totals = struct { subtotal: i64 = 0, discount: i64 = 0, tax: i64 = 0, total: i64 = 0, credit: i64 = 0, due: i64 = 0 };
+    fn requireState(self: *Billing, s: *Subscription, states: []const State) Error!void {
+        for (states) |state| if (s.state == state) return;
+        return self.fail("invalid state {d} {s}", .{ s.id, @tagName(s.state) });
+    }
+    fn item(self: *Billing, items: *std.ArrayList(Item), value: i64, comptime fmt: []const u8, args: anytype) Error!void {
+        try items.append(self.gpa, .{ .description = try std.fmt.allocPrint(self.gpa, fmt, args), .amount = value });
+    }
+    fn charge(self: *Billing, items: *std.ArrayList(Item), p: *Plan, seats: i64, start: i64) Error!void {
+        try self.item(items, p.fee(seats), "charge {s} seats {d} {d}-{d}", .{ p.name, seats, start, start + p.cycle.days() });
+    }
+    fn opening(self: *Billing, s: *Subscription, start: i64) Error!std.ArrayList(Item) {
+        var items: std.ArrayList(Item) = .empty;
+        try self.charge(&items, s.plan, s.seats, start);
+        if (s.plan.setup > 0) try self.item(&items, s.plan.setup, "setup {s}", .{s.plan.name});
+        return items;
+    }
+    fn usageItem(self: *Billing, items: *std.ArrayList(Item), s: *Subscription, close: bool) Error!void {
+        if (s.plan.mode == null or s.usage == 0) return;
+        try self.item(items, s.plan.usageCharge(s.usage), "usage {s} {d} units", .{ s.plan.name, s.usage });
+        if (close) s.usage = 0;
+    }
+    fn totals(self: *Billing, s: *Subscription, items: []const Item) Totals {
+        var t: Totals = .{};
+        for (items) |line| t.subtotal += line.amount;
+        if (s.coupon) |c| {
+            if ((s.left == null or s.left.? > 0) and t.subtotal > 0) {
+                t.discount = if (c.percent) @divTrunc(t.subtotal * c.value, 10000) else @min(c.value, t.subtotal);
+            }
+        }
+        t.tax = @divTrunc((t.subtotal - t.discount) * (self.taxes.get(s.customer.region) orelse 0), 10000);
+        t.total = t.subtotal - t.discount + t.tax;
+        t.credit = @min(s.customer.balance, t.total);
+        t.due = t.total - t.credit;
+        return t;
+    }
+    fn printItems(self: *Billing, items: []const Item, t: Totals) Error!void {
+        for (items) |line| try self.out.print("  {s} {s}\n", .{ line.description, try self.money(line.amount) });
+        try self.out.print("  subtotal {s} discount {s} tax {s} total {s}\n", .{ try self.money(t.subtotal), try self.money(t.discount), try self.money(t.tax), try self.money(t.total) });
+    }
+    fn preview(self: *Billing, s: *Subscription) Error!void {
+        try self.requireState(s, &.{ .TRIALING, .ACTIVE, .PAST_DUE, .UNPAID });
+        const day = if (s.state == .TRIALING) s.trial_end else s.end;
+        const kind: Kind = if (s.cancel_end) .final else if (s.state == .TRIALING) .first else .renewal;
+        var items: std.ArrayList(Item) = .empty;
+        if (kind == .first) {
+            items = try self.opening(s, day);
+        } else if (s.state != .TRIALING) {
+            try self.usageItem(&items, s, false);
+            if (kind == .renewal) {
+                const selection = s.pending orelse Selection{ .plan = s.plan, .seats = s.seats };
+                try self.charge(&items, selection.plan, selection.seats, day);
+            }
+        }
+        try self.out.print("PREVIEW sub {d} day {d} {s}\n", .{ s.id, day, @tagName(kind) });
+        if (items.items.len == 0) return self.out.writeAll("  (none)\n");
+        const t = self.totals(s, items.items);
+        try self.printItems(items.items, t);
+        try self.out.print("  credit {s} due {s}\n", .{ try self.money(t.credit), try self.money(t.due) });
+    }

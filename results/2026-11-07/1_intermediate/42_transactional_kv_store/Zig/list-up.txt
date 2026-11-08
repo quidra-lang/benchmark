@@ -1,0 +1,251 @@
+const Text = []const u8;
+const Kind = enum { string, list, hash, set, zset };
+const Field = struct { name: Text, value: Text };
+const Score = struct { name: Text, score: i64 };
+const Value = union(Kind) {
+    string: Text,
+    fn empty(value: Value) bool {
+        return switch (value) {
+            .string => false,
+    fn retain(value: Value, gpa: Allocator) Allocator.Error!Value {
+        return switch (value) {
+            .string => value,
+const Entry = struct { key: Text, value: Value, expiry: ?i64 = null };
+const Snapshot = struct { name: Text, entries: []const Entry };
+const Verb = enum {
+    SET,
+    GET,
+    TICK,
+    BEGIN,
+    COMMIT,
+    ROLLBACK,
+    SNAPSHOT,
+    RESTORE,
+};
+const Group = enum { text, list, hash, set, zset, key, control };
+const Format = struct { group: Group, minimum: usize, maximum: ?usize = null, parity: ?usize = null };
+fn commandFormat(verb: Verb) Format {
+    return switch (verb) {
+        .SET => .{ .group = .text, .minimum = 2 },
+        .GET, .INCR, .DECR, .STRLEN => .{ .group = .text, .minimum = 1, .maximum = 1 },
+        .TYPE, .KEYS, .TTL, .PERSIST, .TICK => .{ .group = .key, .minimum = 1, .maximum = 1 },
+        .BEGIN, .COMMIT, .ROLLBACK => .{ .group = .control, .minimum = 0, .maximum = 0 },
+        .SNAPSHOT, .RESTORE => .{ .group = .control, .minimum = 1, .maximum = 1 },
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn upper(c: u8) u8 {
+    return if (c >= 'a' and c <= 'z') c - 'a' + 'A' else c;
+fn sameCase(a: Text, b: Text) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (upper(x) != upper(y)) return false;
+    return true;
+fn fieldIndex(comptime T: type, items: []const T, name: Text) ?usize {
+    for (items, 0..) |item, i| if (equal(item.name, name)) return i;
+    return null;
+fn line(out: *Writer, comptime fmt: Text, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+}
+const Quoted = struct {
+    text: Text,
+    pub fn format(value: Quoted, out: *Writer) Writer.Error!void {
+        try out.writeByte('"');
+        for (value.text) |c| {
+            if (c == '"' or c == '\\') try out.writeByte('\\');
+            try out.writeByte(c);
+        }
+        try out.writeByte('"');
+fn splitArguments(gpa: Allocator, source: Text) Allocator.Error!?[]const Text {
+    var words: std.ArrayList(Text) = .empty;
+    var position: usize = 0;
+    while (position < source.len) {
+        if (source[position] == ' ') {
+            position += 1;
+            continue;
+        }
+        if (source[position] != '"') {
+            const start = position;
+            while (position < source.len and source[position] != ' ') : (position += 1) {}
+            try words.append(gpa, source[start..position]);
+            continue;
+        }
+    return try words.toOwnedSlice(gpa);
+const Store = struct {
+    storage: Allocator,
+    entries: std.ArrayList(Entry) = .empty,
+    time: i64 = 0,
+    transactions: std.ArrayList([]const Entry) = .empty,
+    snapshots: std.ArrayList(Snapshot) = .empty,
+
+    fn index(store: *const Store, key: Text) ?usize {
+        for (store.entries.items, 0..) |entry, i| if (equal(entry.key, key)) return i;
+        return null;
+    }
+    fn get(store: *const Store, key: Text) ?Entry {
+        return if (store.index(key)) |i| store.entries.items[i] else null;
+    fn put(store: *Store, key: Text, value: Value, expiry: ?i64) Allocator.Error!void {
+        if (value.empty()) {
+            _ = store.remove(key);
+            return;
+        }
+        const entry: Entry = .{ .key = key, .value = try value.retain(store.storage), .expiry = expiry };
+        if (store.index(key)) |i| store.entries.items[i] = entry else try store.entries.append(store.storage, entry);
+    fn purge(store: *Store) usize {
+        var i: usize = 0;
+        var removed: usize = 0;
+        while (i < store.entries.items.len) {
+            const expired = if (store.entries.items[i].expiry) |expiry| expiry <= store.time else false;
+            if (expired) {
+                _ = store.entries.orderedRemove(i);
+                removed += 1;
+            } else i += 1;
+        }
+        return removed;
+    }
+    fn copy(store: *const Store) Allocator.Error![]const Entry {
+        return store.storage.dupe(Entry, store.entries.items);
+    }
+    fn restore(store: *Store, entries: []const Entry) Allocator.Error!void {
+        store.entries.clearRetainingCapacity();
+        try store.entries.appendSlice(store.storage, entries);
+        _ = store.purge();
+const Session = struct {
+    store: *Store,
+    gpa: Allocator,
+    out: *Writer,
+    problem: Text = "",
+    fn number(session: *Session, source: Text, message: Text) Error!i64 {
+        if (equal(source, "0")) return 0;
+        const start: usize = if (source.len != 0 and source[0] == '-') 1 else 0;
+        const digits = source.len - start;
+        if (digits < 1 or digits > 9 or source[start] < '1' or source[start] > '9') return session.fail(message);
+        var value: i64 = 0;
+        for (source[start..]) |c| {
+            if (c < '0' or c > '9') return session.fail(message);
+            value = value * 10 + c - '0';
+        }
+        return if (start == 0) value else -value;
+    fn getValue(session: *Session, key: Text, kind: Kind) Error!?Value {
+        const entry = session.store.get(key) orelse return null;
+        if (std.meta.activeTag(entry.value) != kind) return session.fail(wrong_type);
+        return entry.value;
+    }
+    fn readText(session: *Session, key: Text) Error!Text {
+        return if (try session.getValue(key, .string)) |value| value.string else "";
+    fn integerReply(session: *Session, value: anytype) Writer.Error!void {
+        try line(session.out, "(integer) {d}", .{value});
+    }
+    fn textReply(session: *Session, value: ?Text) Writer.Error!void {
+        if (value) |content| try line(session.out, "{f}", .{Quoted{ .text = content }}) else try line(session.out, "(nil)", .{});
+    fn textCommand(session: *Session, verb: Verb, args: []const Text) Error!void {
+        const store = session.store;
+        const key = args[0];
+        switch (verb) {
+            .SET => {
+                var options: [5]bool = @splat(false);
+                const names = [_]Text{ "NX", "XX", "EX", "KEEPTTL", "GET" };
+                var seconds_word: ?Text = null;
+                var i: usize = 2;
+                while (i < args.len) : (i += 1) {
+                    var selected: ?usize = null;
+                    for (names, 0..) |name, j| if (sameCase(args[i], name)) {
+                        selected = j;
+                        break;
+                    };
+                    const option = selected orelse return session.fail(syntax_error);
+                    if (options[option]) return session.fail(syntax_error);
+                    options[option] = true;
+                    if (option == 2) {
+                        i += 1;
+                        if (i == args.len) return session.fail(syntax_error);
+                        seconds_word = args[i];
+                    }
+                }
+                var expiry: ?i64 = null;
+                if (seconds_word) |word| {
+                    const seconds = try session.number(word, not_integer);
+                    if (seconds <= 0) return session.fail("ERR invalid expire time in 'set' command");
+                    expiry = store.time + seconds;
+                }
+                const entry = store.get(key);
+                var old: ?Text = null;
+                if (options[3] and entry != null) expiry = entry.?.expiry;
+                const changed = !(options[0] and entry != null) and !(options[1] and entry == null);
+                if (changed) try store.put(key, .{ .string = args[1] }, expiry);
+                if (options[4]) return session.textReply(old);
+                if (changed) return line(session.out, "OK", .{});
+            else => {
+                const value = try session.readText(key);
+                if (verb == .GET) return session.textReply(if (store.get(key) != null) value else null);
+    fn keyCommand(session: *Session, verb: Verb, args: []const Text) Error!void {
+        const store = session.store;
+        switch (verb) {
+            .TICK => {
+                const ticks = try session.number(args[0], not_integer);
+                if (ticks <= 0) return session.fail(positive);
+                store.time += ticks;
+                return session.integerReply(store.purge());
+    fn controlCommand(session: *Session, verb: Verb, args: []const Text) Error!void {
+        const store = session.store;
+        switch (verb) {
+            .BEGIN => try store.transactions.append(store.storage, try store.copy()),
+            .COMMIT, .ROLLBACK => {
+                const saved = store.transactions.pop() orelse return session.fail("ERR no transaction");
+                if (verb == .ROLLBACK) try store.restore(saved);
+            },
+            .SNAPSHOT => {
+                const saved = try store.copy();
+                if (fieldIndex(Snapshot, store.snapshots.items, args[0])) |i| store.snapshots.items[i].entries = saved else try store.snapshots.append(store.storage, .{ .name = args[0], .entries = saved });
+            },
+            .RESTORE => {
+                const i = fieldIndex(Snapshot, store.snapshots.items, args[0]) orelse return session.fail("ERR no such snapshot");
+                try store.restore(store.snapshots.items[i].entries);
+            },
+        try line(session.out, "OK", .{});
+    fn execute(session: *Session, source: Text) Error!void {
+        const words = (try splitArguments(session.store.storage, source)) orelse return line(session.out, "Invalid argument(s)", .{});
+        var buffer: [200]u8 = undefined;
+        for (words[0], 0..) |c, i| buffer[i] = upper(c);
+        const verb = std.meta.stringToEnum(Verb, buffer[0..words[0].len]) orelse
+            return session.fail(try std.fmt.allocPrint(session.gpa, "ERR unknown command '{s}'", .{words[0]}));
+        const specification = commandFormat(verb);
+        const args = words[1..];
+        const wrong_count = args.len < specification.minimum or
+            (if (specification.maximum) |maximum| args.len > maximum else false) or
+            (if (specification.parity) |parity| args.len % 2 != parity else false);
+        switch (specification.group) {
+            .text => try session.textCommand(verb, args),
+            .key => try session.keyCommand(verb, args),
+            .control => try session.controlCommand(verb, args),
+fn readLine(reader: *std.Io.Reader, gpa: Allocator) !?Text {
+    var buffer: Writer.Allocating = .init(gpa);
+    defer buffer.deinit();
+    _ = reader.streamDelimiterEnding(&buffer.writer, '\n') catch |err| switch (err) {
+        error.EndOfStream => {
+            if (buffer.written().len == 0) return null;
+            return try buffer.toOwnedSlice();
+        },
+        else => return err,
+    };
+    reader.toss(1);
+    return try buffer.toOwnedSlice();
+pub fn main(init: std.process.Init) !void {
+    var storage: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer storage.deinit();
+    const persistent = storage.allocator();
+    var store: Store = .{ .storage = persistent };
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const first = std.mem.trim(u8, (try readLine(&input.interface, persistent)).?, "\r");
+    const count = try std.fmt.parseInt(usize, first, 10);
+    for (0..count) |_| {
+        const source = std.mem.trim(u8, (try readLine(&input.interface, persistent)).?, "\r");
+        var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+        defer arena.deinit();
+        const gpa = arena.allocator();
+        var response: Writer.Allocating = .init(gpa);
+        defer response.deinit();
+        var session: Session = .{ .store = &store, .gpa = gpa, .out = &response.writer };
+        session.execute(source) catch |err| switch (err) {
+        try output.interface.writeAll(response.written());
+        try output.interface.flush();

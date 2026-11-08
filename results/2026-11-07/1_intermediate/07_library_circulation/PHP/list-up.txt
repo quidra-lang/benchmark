@@ -1,0 +1,85 @@
+function get_member(string $id): object
+    global $members;
+    if (!isset($members[$id])) fail('unknown member');
+    return $members[$id];
+function get_book(string $text): object
+    global $books;
+    $id = isbn($text);
+    if (!isset($books[$id])) fail('unknown book');
+    return $books[$id];
+function balance(object $m): int { return array_sum(array_column($m->items,'unpaid')); }
+function open_day(int $date): int
+    global $closed;
+    while (isset($closed[$date])) ++$date;
+    return $date;
+function late_fine(object $c): array
+    global $day,$members;
+    $m = $members[$c->member];
+    $late = max(0,$day-$c->due);
+    return [$late,min($late*RULES[$m->type][2],RULES[$m->type][3])];
+function charge(object $m,string $kind,string $id,int $amount): void
+    global $day,$counts;
+    if ($amount===0) return;
+    $m->items[] = (object)['day'=>$day,'kind'=>$kind,'isbn'=>$id,'amount'=>$amount,'unpaid'=>$amount];
+    $counts[$kind] += $amount;
+function release_copy(object $b,object $c,array &$out): void
+    global $day,$members;
+    if ($b->queue===[]) {
+        $c->state = 'AVAILABLE';
+        return;
+    $id = array_shift($b->queue);
+    $c->state = 'HOLD';
+    $c->member = $id;
+    $c->expiry = open_day($day+3);
+    $members[$id]->holds[$b->id] = $c;
+    $out[] = "HOLD $b->id copy $c->number $id until $c->expiry";
+function end_loan(object $b,object $c,string $result): array
+    global $day,$members;
+    $m = $members[$c->member];
+    [$late,$fine] = late_fine($c);
+    unset($m->loans[$b->id]);
+    charge($m,'FINE',$b->id,$fine);
+    $m->history[] = "$result $b->id copy $c->number from $c->start to $day late $late fine " . money($fine);
+    return [$m,$late,$fine];
+function execute(string $line): array
+    global $day,$closed,$books,$bookOrder,$members,$memberOrder,$counts;
+    $t = explode(' ',$line);
+    $cmd = $t[0];
+    $out = [];
+    if ($cmd==='DAY') {
+        $target = (int)$t[1];
+        if ($target <= $day) fail('invalid day');
+        $out[] = "DAY $target";
+        while ($day < $target) {
+            $next = $target+1;
+            foreach ($members as $m) {
+                foreach ($m->loans as $c) $next = min($next,$c->due+365);
+                foreach ($m->holds as $c) $next = min($next,$c->expiry+1);
+            if ($next > $target) {
+                $day = $target;
+                break;
+            $day = $next;
+            $expired = [];
+            foreach ($bookOrder as $id) {
+                foreach ($books[$id]->copies as $c) {
+                    if ($c->state==='HOLD' && $c->expiry < $day) $expired[] = $c;
+            foreach ($expired as $c) {
+                $b = $books[$c->isbn];
+                $m = $members[$c->member];
+                $fee = RULES[$m->type][5];
+                charge($m,'FEE',$b->id,$fee);
+                unset($m->holds[$b->id]);
+                $out[] = "EXPIRED $b->id copy $c->number $m->id fee " . money($fee);
+                release_copy($b,$c,$out);
+    } elseif (in_array($cmd,['BORROW','RETURN','RENEW','RESERVE','CANCEL','LOST'],true)) {
+        $m = get_member($t[1]);
+        $b = get_book($t[2]);
+        $id = $b->id;
+        $loan = $m->loans[$id] ?? null;
+        } elseif (in_array($cmd,['RETURN','RENEW','LOST'],true)) {
+            if ($loan===null) fail('not borrowed');
+            if ($cmd==='RETURN') {
+                [$member,$late,$fine] = end_loan($b,$loan,'RETURNED');
+                ++$counts['returned'];
+                $out[] = "RETURN $m->id $id copy $loan->number late $late fine " . money($fine) . ' balance ' . money(balance($m));
+                release_copy($b,$loan,$out);

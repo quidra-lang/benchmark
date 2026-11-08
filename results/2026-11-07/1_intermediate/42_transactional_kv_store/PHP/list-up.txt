@@ -1,0 +1,148 @@
+enum Kind: string
+{
+    case Text = 'string';
+enum Group { case Text; case Sequence; case Hash; case Members; case Scores; case Key; case Control; }
+final readonly class Value
+{
+    public function __construct(public Kind $kind, public string|array $data) {}
+}
+final readonly class Entry
+{
+    public function __construct(public Value $value, public ?int $expiry = null) {}
+}
+final readonly class CommandSpec
+{
+    public function __construct(public Group $group, public int $minimum, public int $maximum = -1, public int $parity = -1) {}
+function quoteText(string $value): string { return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"'; }
+function integerReply(int $value): array { return ['(integer) ' . $value]; }
+function textReply(?string $value): array { return [$value === null ? '(nil)' : quoteText($value)]; }
+function parseNumber(string $word, string $error = NOT_INTEGER): int
+{
+    if ($word === '0') return 0;
+    $start = str_starts_with($word, '-') ? 1 : 0;
+    $length = strlen($word) - $start;
+    if ($length < 1 || $length > 9 || $word[$start] < '1' || $word[$start] > '9') throw new CommandError($error);
+    for ($i = $start; $i < strlen($word); $i++)
+        if ($word[$i] < '0' || $word[$i] > '9') throw new CommandError($error);
+    return (int)$word;
+function splitArguments(string $line): ?array
+{
+    $words = [];
+    $position = 0;
+    $length = strlen($line);
+    while ($position < $length) {
+        if ($line[$position] === ' ') { $position++; continue; }
+        if ($line[$position] !== '"') {
+            $start = $position;
+            while ($position < $length && $line[$position] !== ' ') $position++;
+            $words[] = substr($line, $start, $position - $start);
+            continue;
+        }
+    return $words;
+function commandSpecs(): array
+{
+    $specs = [];
+    $add = function (Group $group, string $names, int $minimum, int $maximum = -1, int $parity = -1) use (&$specs): void {
+        foreach (explode(' ', $names) as $name) $specs[$name] = new CommandSpec($group, $minimum, $maximum, $parity);
+    };
+    $add(Group::Text, 'SET', 2);
+    $add(Group::Text, 'GET INCR DECR STRLEN', 1, 1);
+    $add(Group::Key, 'TYPE KEYS TTL PERSIST TICK', 1, 1);
+    $add(Group::Control, 'TIME DBSIZE FLUSH INFO BEGIN COMMIT ROLLBACK', 0, 0);
+    $add(Group::Control, 'SNAPSHOT RESTORE', 1, 1);
+    return $specs;
+final class Store
+{
+    private array $database = [];
+    private array $transactions = [];
+    private array $snapshots = [];
+    private int $time = 0;
+
+    private function entry(string $key): ?Entry { return $this->database[':' . $key] ?? null; }
+    private function value(string $key, Kind $kind): ?Value
+    {
+        $entry = $this->entry($key);
+        if ($entry !== null && $entry->value->kind !== $kind) throw new CommandError(WRONG_TYPE);
+        return $entry?->value;
+    }
+    private function put(string $key, Value $value, ?int $expiry = null): void
+    {
+        $this->database[':' . $key] = new Entry($value, $expiry);
+    }
+    private function purge(): int
+    {
+        $removed = 0;
+        foreach ($this->database as $key => $entry)
+            if ($entry->expiry !== null && $entry->expiry <= $this->time) { unset($this->database[$key]); $removed++; }
+        return $removed;
+    }
+    public function execute(array $words, array $specs): array
+    {
+        $command = strtoupper($words[0]);
+        $spec = $specs[$command] ?? null;
+        if ($spec === null) throw new CommandError("ERR unknown command '" . $words[0] . "'");
+        $args = array_slice($words, 1);
+        $count = count($args);
+        if ($count < $spec->minimum || ($spec->maximum >= 0 && $count > $spec->maximum)
+            || ($spec->parity >= 0 && $count % 2 !== $spec->parity))
+            throw new CommandError("ERR wrong number of arguments for '" . strtolower($command) . "' command");
+        return match ($spec->group) {
+            Group::Text => $this->textCommand($command, $args),
+            Group::Key => $this->keyCommand($command, $args),
+            Group::Control => $this->controlCommand($command, $args),
+    private function textCommand(string $command, array $args): array
+    {
+        $key = $args[0];
+        if ($command === 'SET') {
+            $options = [];
+            $secondsWord = null;
+            for ($i = 2; $i < count($args); $i++) {
+                $option = strtoupper($args[$i]);
+                if (!in_array($option, ['NX', 'XX', 'EX', 'KEEPTTL', 'GET'], true) || isset($options[$option])) throw new CommandError(BAD_SYNTAX);
+                $options[$option] = true;
+                if ($option === 'EX') {
+                    if (++$i === count($args)) throw new CommandError(BAD_SYNTAX);
+                    $secondsWord = $args[$i];
+                }
+            }
+            $seconds = $secondsWord === null ? null : parseNumber($secondsWord);
+            if ($seconds !== null && $seconds <= 0) throw new CommandError("ERR invalid expire time in 'set' command");
+            $old = $this->entry($key);
+            $previous = isset($options['GET']) ? $this->value($key, Kind::Text)?->data : null;
+            $changed = !(isset($options['NX']) && $old !== null) && !(isset($options['XX']) && $old === null);
+            if ($changed) {
+                $expiry = $seconds !== null ? $this->time + $seconds : (isset($options['KEEPTTL']) ? $old?->expiry : null);
+                $this->put($key, new Value(Kind::Text, $args[1]), $expiry);
+            }
+            return isset($options['GET']) ? textReply($previous) : ($changed ? ['OK'] : textReply(null));
+        $old = $this->value($key, Kind::Text);
+        if ($command === 'GET') return textReply($old?->data);
+    private function keyCommand(string $command, array $args): array
+        if ($command === 'TICK') {
+            $amount = parseNumber($args[0]);
+            if ($amount <= 0) throw new CommandError(POSITIVE);
+            $this->time += $amount;
+            return integerReply($this->purge());
+    private function controlCommand(string $command, array $args): array
+        if ($command === 'BEGIN') { $this->transactions[] = $this->database; return ['OK']; }
+        if ($command === 'COMMIT' || $command === 'ROLLBACK') {
+            if ($this->transactions === []) throw new CommandError('ERR no transaction');
+            $saved = array_pop($this->transactions);
+            if ($command === 'ROLLBACK') { $this->database = $saved; $this->purge(); }
+            return ['OK'];
+        }
+        $name = ':' . $args[0];
+        if ($command === 'SNAPSHOT') { $this->snapshots[$name] = $this->database; return ['OK']; }
+        if (!isset($this->snapshots[$name])) throw new CommandError('ERR no such snapshot');
+        $this->database = $this->snapshots[$name];
+        $this->purge();
+        return ['OK'];
+$store = new Store();
+$specs = commandSpecs();
+$commandCount = (int)fgets(STDIN);
+for ($i = 0; $i < $commandCount; $i++) {
+    $line = rtrim(fgets(STDIN), "\r\n");
+    $words = splitArguments($line);
+    try {
+        $output = $words === null ? ['Invalid argument(s)'] : $store->execute($words, $specs);
+    foreach ($output as $row) echo $row, "\n";

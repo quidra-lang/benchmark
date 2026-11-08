@@ -1,0 +1,199 @@
+TOKEN_PATTERN <- "[A-Za-z]+"
+WORD_PATTERN <- "^[A-Za-z]{1,30}$"
+command_error <- function(message) {
+  stop(errorCondition(message, class = "command_error"))
+stemming_steps <- function(word) {
+  changes <- character(0)
+  if (nchar(word) > 2) {
+  list(stem = word, changes = changes)
+stem_cache <- new.env()
+porter_stem <- function(word) {
+  stem <- stem_cache[[word]]
+  if (is.null(stem)) {
+    stem <- stemming_steps(word)$stem
+    stem_cache[[word]] <- stem
+  }
+  stem
+word_argument <- function(text) {
+  if (!grepl(WORD_PATTERN, text)) {
+    command_error(paste("BAD WORD", text))
+  }
+  tolower(text)
+split_arguments <- function(name, rest) {
+  if (name == "SEARCH") {
+    return(rest)
+  }
+  if (name == "APPEND") {
+    space <- regexpr(" ", rest, fixed = TRUE)
+    if (space < 0) {
+      return(rest)
+    }
+    return(c(substr(rest, 1, space - 1), substring(rest, space + 1)))
+  }
+  strsplit(rest, " ", fixed = TRUE)[[1]]
+empty_tokens <- function() {
+  data.frame(
+    document = integer(0), text = character(0), form = character(0),
+    stem = character(0), line = integer(0), position = integer(0),
+    start = integer(0)
+  )
+}
+
+new_document <- function(number) {
+  document <- new.env()
+  document$number <- number
+  document$lines <- character(0)
+  document$tokens <- empty_tokens()
+  document
+}
+
+add_line <- function(document, text) {
+  document$lines <- c(document$lines, text)
+  matches <- gregexpr(TOKEN_PATTERN, text)
+  words <- regmatches(text, matches)[[1]]
+  forms <- tolower(words)
+  added <- data.frame(
+    document = rep(document$number, length(words)),
+    text = words,
+    form = forms,
+    stem = vapply(forms, porter_stem, character(1), USE.NAMES = FALSE),
+    line = rep(length(document$lines), length(words)),
+    position = nrow(document$tokens) + seq_along(words),
+    start = as.integer(matches[[1]])[seq_along(words)]
+  )
+  document$tokens <- rbind(document$tokens, added)
+  added
+}
+
+reference <- function(tokens) {
+  sprintf("%d:%d:%d", tokens$document, tokens$line, tokens$position)
+emit <- function(...) {
+  writeLines(paste(c(...), collapse = " "))
+}
+
+new_engine <- function(stopwords) {
+  engine <- new.env()
+  engine$stopwords <- stopwords
+  engine$documents <- list()
+  engine
+}
+
+add_document <- function(engine, number) {
+  document <- new_document(number)
+  engine$documents[[as.character(number)]] <- document
+  document
+ordered_documents <- function(engine) {
+  documents <- engine$documents
+  documents[order(as.integer(names(documents)))]
+}
+
+is_indexed <- function(engine, tokens) {
+  !(tokens$form %in% engine$stopwords)
+}
+
+indexed_tokens <- function(engine, document) {
+  tokens <- document$tokens
+  tokens[is_indexed(engine, tokens), ]
+all_tokens <- function(engine) {
+  token_tables <- lapply(ordered_documents(engine), function(document) document$tokens)
+  do.call(rbind, c(list(empty_tokens()), unname(token_tables)))
+}
+
+occurrence_table <- function(engine) {
+  tokens <- all_tokens(engine)
+  tokens[is_indexed(engine, tokens), ]
+form_count <- function(engine, form) {
+  sum(all_tokens(engine)$form == form)
+}
+
+phrase_starts <- function(engine, tokens, targets) {
+  count <- nrow(tokens) - length(targets) + 1
+  if (count < 1) {
+    return(integer(0))
+  }
+  starts <- seq_len(count)
+  matched <- rep(TRUE, count)
+  indexed <- is_indexed(engine, tokens)
+  for (offset in seq_along(targets)) {
+    if (targets[offset] != "?") {
+      rows <- starts + offset - 1
+      matched <- matched & indexed[rows] & tokens$stem[rows] == targets[offset]
+    }
+  }
+  starts[matched]
+phrase <- function(engine, arguments) {
+  words <- vapply(arguments, word_argument, character(1), USE.NAMES = FALSE)
+  if (all(words %in% engine$stopwords)) {
+    command_error("STOPWORDS ONLY")
+  }
+  targets <- vapply(
+    words, \(word) if (word %in% engine$stopwords) "?" else porter_stem(word),
+    character(1),
+    USE.NAMES = FALSE
+  )
+  matches <- character(0)
+  for (document in ordered_documents(engine)) {
+    tokens <- document$tokens
+    matches <- c(matches, reference(tokens[phrase_starts(engine, tokens, targets), ]))
+  }
+  emit(
+    sprintf("PHRASE \"%s\"", paste(targets, collapse = " ")),
+    paste0("matches=", length(matches)), matches
+  )
+stop_word <- function(engine, arguments) {
+  word <- word_argument(arguments[1])
+  if (word %in% engine$stopwords) {
+    command_error(paste("ALREADY STOPWORD", word))
+  }
+  engine$stopwords <- c(engine$stopwords, word)
+  emit("STOP", word, paste0("unindexed=", form_count(engine, word)))
+}
+
+unstop_word <- function(engine, arguments) {
+  word <- word_argument(arguments[1])
+  if (!(word %in% engine$stopwords)) {
+    command_error(paste("NOT STOPWORD", word))
+  }
+  engine$stopwords <- setdiff(engine$stopwords, word)
+  emit("UNSTOP", word, paste0("indexed=", form_count(engine, word)))
+COMMANDS <- list(
+  PHRASE = list(minimum = 2, maximum = 10, handler = phrase),
+  STOP = list(minimum = 1, maximum = 1, handler = stop_word),
+  UNSTOP = list(minimum = 1, maximum = 1, handler = unstop_word),
+execute <- function(engine, line) {
+  space <- regexpr(" ", line, fixed = TRUE)
+  name <- if (space > 0) substr(line, 1, space - 1) else line
+  tryCatch(
+    {
+      command <- COMMANDS[[name]]
+      if (is.null(command)) {
+        command_error(paste("UNKNOWN COMMAND", name))
+      }
+      arguments <- character(0)
+      if (space > 0) {
+        arguments <- split_arguments(name, substring(line, space + 1))
+      }
+      if (length(arguments) < command$minimum || length(arguments) > command$maximum) {
+        command_error(paste("BAD ARGUMENTS", name))
+      }
+      command$handler(engine, arguments)
+    },
+    command_error = function(error) emit("ERROR", conditionMessage(error))
+main <- function() {
+  lines <- readLines(file("stdin"), warn = FALSE)
+  engine <- new_engine(strsplit(lines[1], " ", fixed = TRUE)[[1]][-1])
+  index <- 2
+  while (startsWith(lines[index], "DOC ")) {
+    document <- add_document(engine, as.integer(substring(lines[index], 5)))
+    index <- index + 1
+    while (lines[index] != "ENDDOC") {
+      add_line(document, lines[index])
+      index <- index + 1
+    }
+    index <- index + 1
+  }
+  for (line in lines[index:length(lines)]) {
+    if (line == "END") {
+      break
+    }
+    execute(engine, line)

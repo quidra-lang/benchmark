@@ -1,0 +1,174 @@
+type Event struct {
+	Tick         int64
+	Status, Meta int
+	Data         []byte
+}
+
+type Song struct {
+	Format   int
+	Division int64
+	Tracks   [][]*Event
+}
+var channelNames = []string{"NOTE_OFF", "NOTE_ON", "POLY_PRESSURE", "CONTROL", "PROGRAM", "CHANNEL_PRESSURE", "PITCH_BEND"}
+func output(s string) {
+	fmt.Fprintln(writer, s)
+}
+
+func integer(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
+func decimal(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+func noteName(n int) string {
+	return []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}[n%12] + strconv.Itoa(n/12-1)
+}
+func bytesBE(value int64, size int) []byte {
+	data := make([]byte, size)
+	for i := size - 1; i >= 0; i-- {
+		data[i] = byte(value % 256)
+		value /= 256
+	}
+	return data
+}
+
+func (e *Event) channel() int {
+	return e.Status%16 + 1
+}
+
+func (e *Event) kind() string {
+	if e.Status < 240 {
+		return channelNames[e.Status/16-8]
+	}
+func eventLine(e *Event, track int) string {
+	fields := []string{decimal(e.Tick), strconv.Itoa(track), e.kind()}
+	data := e.Data
+	if e.Status < 240 {
+		fields = append(fields, strconv.Itoa(e.channel()))
+		switch e.Status / 16 {
+		case 8, 9, 10:
+			fields = append(fields, noteName(int(data[0])), strconv.Itoa(int(data[1])))
+		}
+	}
+	return strings.Join(fields, " ")
+func vlq(value int64) []byte {
+	data := []byte{byte(value % 128)}
+	for value /= 128; value > 0; value /= 128 {
+		data = append([]byte{byte(value%128) | 128}, data...)
+	}
+	return data
+}
+
+func (s *Song) encode(running, zero bool) []byte {
+	result := []byte("MThd")
+	result = append(result, bytesBE(6, 4)...)
+	result = append(result, bytesBE(int64(s.Format), 2)...)
+	result = append(result, bytesBE(int64(len(s.Tracks)), 2)...)
+	result = append(result, bytesBE(s.Division, 2)...)
+	for _, track := range s.Tracks {
+		data := []byte{}
+		last := int64(0)
+		status := 0
+		for _, e := range track {
+			data = append(data, vlq(e.Tick-last)...)
+			last = e.Tick
+			st := e.Status
+			body := e.Data
+			if zero && st/16 == 8 {
+				st += 16
+				body = []byte{e.Data[0], 0}
+			}
+			if st < 240 {
+				if !running || status != st {
+					data = append(data, byte(st))
+				}
+				data = append(data, body...)
+				status = st
+			} else {
+				status = 0
+			}
+		}
+		result = append(result, []byte("MTrk")...)
+		result = append(result, bytesBE(int64(len(data)), 4)...)
+		result = append(result, data...)
+	}
+	return result
+}
+func execute(words []string, songs map[string]*Song, running, zero *bool) {
+	cmd := words[0]
+	a := words[1:]
+	commands := " DECODE ENCODE TIMING NOTES STATS ROLL TRANSPOSE QUANTIZE VELOCITY TEMPO FILTER MERGE SPLIT COPY LIST RUNNING NOTEOFF "
+	if !strings.Contains(commands, " "+cmd+" ") {
+		output("error: unknown command")
+		return
+	}
+	song, exists := songs[a[0]]
+	if !exists {
+		output("error: no song " + a[0])
+		return
+	}
+	args := []int64{}
+	if cmd != "COPY" {
+		for _, word := range a[1:] {
+			args = append(args, integer(word))
+		}
+	}
+	valid := true
+	between := func(x, lo, hi int64) bool {
+		return x >= lo && x <= hi
+	}
+	switch cmd {
+	case "TRANSPOSE":
+		valid = between(args[0], -127, 127)
+		if len(args) > 1 {
+			valid = valid && between(args[1], 1, 16)
+		}
+	}
+	if !valid {
+		output("error: bad argument")
+		return
+	}
+	switch cmd {
+	case "DECODE":
+		output(fmt.Sprintf("HEADER %d %d %d", song.Format, len(song.Tracks), song.Division))
+		for t, track := range song.Tracks {
+			for _, e := range track {
+				output(eventLine(e, t))
+			}
+		}
+	case "ENCODE":
+		data := song.encode(*running, *zero)
+		for i := 0; i < len(data); i += 16 {
+			values := []string{}
+			for _, b := range data[i:min(i+16, len(data))] {
+				values = append(values, fmt.Sprintf("%02X", b))
+			}
+			output(fmt.Sprintf("%04X: %s", i, strings.Join(values, " ")))
+		}
+		output(fmt.Sprintf("%d bytes", len(data)))
+	case "TRANSPOSE":
+		kept, dropped := 0, []string{}
+		for t, track := range song.Tracks {
+			row := []*Event{}
+			for _, e := range track {
+				target := e.Status < 176 && (len(args) == 1 || int64(e.channel()) == args[1])
+				if target {
+					pitch := int64(e.Data[0]) + args[0]
+					if pitch < 0 || pitch > 127 {
+						dropped = append(dropped, fmt.Sprintf("dropped %d %d %s %d %s", e.Tick, t, e.kind(), e.channel(), noteName(int(e.Data[0]))))
+						continue
+					}
+					e.Data[0] = byte(pitch)
+					kept++
+				}
+				row = append(row, e)
+			}
+			song.Tracks[t] = row
+		}
+		output(fmt.Sprintf("transposed %d dropped %d", kept, len(dropped)))
+		for _, line := range dropped {
+			output(line)
+		}

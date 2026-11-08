@@ -1,0 +1,246 @@
+type textValue string
+func (v textValue) empty() bool    { return false }
+func (v textValue) clone() value   { return v }
+type expiration struct {
+	at  int
+	set bool
+}
+type entry struct {
+	value  value
+	expiry expiration
+}
+type database map[string]entry
+
+func cloneDatabase(source database) database {
+	copy := make(database, len(source))
+	for key, item := range source {
+		copy[key] = entry{item.value.clone(), item.expiry}
+	}
+	return copy
+}
+func readValue[T value](db database, key string, empty T) (T, error) {
+	item, exists := db[key]
+	if !exists {
+		return empty, nil
+	}
+	typed, ok := item.value.(T)
+	if !ok {
+		return empty, errWrongType
+	}
+	return typed.clone().(T), nil
+func parseInteger(text string) (int, bool) {
+	if text == "0" {
+		return 0, true
+	}
+	start := 0
+	if strings.HasPrefix(text, "-") {
+		start = 1
+	}
+	if len(text)-start < 1 || len(text)-start > 9 || text[start] < '1' || text[start] > '9' {
+		return 0, false
+	}
+	number := 0
+	for i := start; i < len(text); i++ {
+		if text[i] < '0' || text[i] > '9' {
+			return 0, false
+		}
+		number = number*10 + int(text[i]-'0')
+	}
+	if start == 1 {
+		number = -number
+	}
+	return number, true
+}
+func integer(text string) (int, error) {
+	number, ok := parseInteger(text)
+	if !ok {
+		return 0, errNotInt
+	}
+	return number, nil
+func splitLine(line string) ([]string, bool) {
+	var words []string
+	for position := 0; position < len(line); {
+		if line[position] == ' ' {
+			position++
+			continue
+		}
+		if line[position] != '"' {
+			start := position
+			for position < len(line) && line[position] != ' ' {
+				position++
+			}
+			words = append(words, line[start:position])
+			continue
+		}
+	return words, true
+const nilReply = "(nil)"
+func integerReply(number int) string { return fmt.Sprintf("(integer) %d", number) }
+func textReply(text string) string   { return strconv.Quote(text) }
+var commands = buildCommands()
+func buildCommands() map[string]commandSpec {
+	result := make(map[string]commandSpec)
+	add := func(group group, names string, minimum, maximum, parity int) {
+		for _, name := range strings.Fields(names) {
+			result[name] = commandSpec{group, minimum, maximum, parity}
+		}
+	}
+	add(textGroup, "SET", 2, -1, -1)
+	add(textGroup, "GET INCR DECR STRLEN", 1, 1, -1)
+	add(keyGroup, "TYPE KEYS TTL PERSIST TICK", 1, 1, -1)
+	add(controlGroup, "BEGIN COMMIT ROLLBACK", 0, 0, -1)
+	add(controlGroup, "SNAPSHOT RESTORE", 1, 1, -1)
+	return result
+type store struct {
+	database  database
+	time      int
+	stack     []database
+	snapshots map[string]database
+}
+
+func (s *store) replace(key string, data value, expiry expiration) {
+	if data.empty() {
+		delete(s.database, key)
+	} else {
+		s.database[key] = entry{data, expiry}
+	}
+}
+func (s *store) purge() int {
+	removed := 0
+	for key, item := range s.database {
+		if item.expiry.set && item.expiry.at <= s.time {
+			delete(s.database, key)
+			removed++
+		}
+	}
+	return removed
+}
+func (s *store) textCommand(command string, a []string) (string, error) {
+	key := a[0]
+	if command == "SET" {
+		options := make(map[string]bool)
+		secondsText := ""
+		for i := 2; i < len(a); i++ {
+			option := strings.ToUpper(a[i])
+			if !slices.Contains([]string{"NX", "XX", "EX", "KEEPTTL", "GET"}, option) || options[option] {
+				return "", errSyntax
+			}
+			options[option] = true
+			if option == "EX" {
+				i++
+				if i == len(a) {
+					return "", errSyntax
+				}
+				secondsText = a[i]
+			}
+		}
+		if (options["NX"] && options["XX"]) || (options["EX"] && options["KEEPTTL"]) {
+			return "", errSyntax
+		}
+		expiry := expiration{}
+		if options["EX"] {
+			seconds, err := integer(secondsText)
+			if err != nil {
+				return "", err
+			}
+			if seconds <= 0 {
+				return "", errors.New("ERR invalid expire time in 'set' command")
+			}
+			expiry = expiration{s.time + seconds, true}
+		}
+		old, exists := s.database[key]
+		previous := nilReply
+		changed := !(options["NX"] && exists) && !(options["XX"] && !exists)
+		if changed {
+			s.replace(key, textValue(a[1]), expiry)
+		}
+		if options["GET"] {
+			return previous, nil
+		}
+		if changed {
+			return "OK", nil
+		}
+		return nilReply, nil
+	text, err := readValue(s.database, key, textValue(""))
+	if err != nil {
+		return "", err
+	}
+	if command == "GET" {
+		if _, exists := s.database[key]; !exists {
+			return nilReply, nil
+		}
+		return textReply(string(text)), nil
+	}
+func (s *store) keyCommand(command string, a []string) (string, error) {
+	case "TICK":
+		ticks, err := integer(a[0])
+		if err != nil {
+			return "", err
+		}
+		if ticks <= 0 {
+			return "", errPositive
+		}
+		s.time += ticks
+		return integerReply(s.purge()), nil
+func (s *store) controlCommand(command string, a []string) (string, error) {
+	switch command {
+	case "BEGIN":
+		s.stack = append(s.stack, cloneDatabase(s.database))
+	case "COMMIT", "ROLLBACK":
+		if len(s.stack) == 0 {
+			return "", errors.New("ERR no transaction")
+		}
+		last := len(s.stack) - 1
+		saved := s.stack[last]
+		s.stack[last] = nil
+		s.stack = s.stack[:last]
+		if command == "ROLLBACK" {
+			s.database = saved
+			s.purge()
+		}
+	case "SNAPSHOT":
+		s.snapshots[a[0]] = cloneDatabase(s.database)
+	case "RESTORE":
+		saved, exists := s.snapshots[a[0]]
+		if !exists {
+			return "", errors.New("ERR no such snapshot")
+		}
+		s.database = cloneDatabase(saved)
+		s.purge()
+	}
+	return "OK", nil
+func (s *store) execute(line string) (string, error) {
+	words, valid := splitLine(line)
+	if !valid {
+		return "Invalid argument(s)", nil
+	}
+	command := strings.ToUpper(words[0])
+	spec, known := commands[command]
+	if !known {
+		return "", fmt.Errorf("ERR unknown command '%s'", words[0])
+	}
+	a := words[1:]
+	if len(a) < spec.minimum || (spec.maximum >= 0 && len(a) > spec.maximum) || (spec.parity >= 0 && len(a)%2 != spec.parity) {
+		return "", fmt.Errorf("ERR wrong number of arguments for '%s' command", strings.ToLower(command))
+	}
+	switch spec.group {
+	case textGroup:
+		return s.textCommand(command, a)
+	case keyGroup:
+		return s.keyCommand(command, a)
+	default:
+		return s.controlCommand(command, a)
+func main() {
+	input := bufio.NewScanner(os.Stdin)
+	if !input.Scan() {
+		return
+	}
+	count, _ := strconv.Atoi(input.Text())
+	s := store{database: make(database), snapshots: make(map[string]database)}
+	output := bufio.NewWriter(os.Stdout)
+	defer output.Flush()
+	for i := 0; i < count && input.Scan(); i++ {
+		reply, err := s.execute(input.Text())
+		if err != nil {
+			fmt.Fprintln(output, "(error) "+err.Error())
+		} else {
+			fmt.Fprintln(output, reply)

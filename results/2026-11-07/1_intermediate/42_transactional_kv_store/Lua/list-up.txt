@@ -1,0 +1,128 @@
+local function copy(values)
+    local result = {}
+    for key, value in pairs(values) do result[key] = value end
+    return result
+local function upper(text)
+    return (text:gsub("[a-z]", function(c) return string.char(c:byte() - 32) end))
+local function quote(text) return '"' .. text:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
+local function integer_reply(value) return { "(integer) " .. value } end
+local function text_reply(value) return { value == nil and "(nil)" or quote(value) } end
+local function number(word, message)
+    if word == "0" then return 0 end
+    local first = word:sub(1, 1) == "-" and 2 or 1
+    local digits = #word - first + 1
+    if digits < 1 or digits > 9 or word:byte(first) < 49 or word:byte(first) > 57 then fail(message or NOT_INTEGER) end
+    for i = first, #word do
+        local byte = word:byte(i)
+        if byte < 48 or byte > 57 then fail(message or NOT_INTEGER) end
+    end
+    return tonumber(word, 10)
+local function slice(values, first, last)
+    local result = {}
+    for i = first, last do result[#result + 1] = values[i] end
+    return result
+end
+local function split_arguments(line)
+    local words, position = {}, 1
+    while position <= #line do
+        if line:sub(position, position) == " " then
+            position = position + 1
+        elseif line:sub(position, position) ~= '"' then
+            local first = position
+            while position <= #line and line:sub(position, position) ~= " " do position = position + 1 end
+            words[#words + 1] = line:sub(first, position - 1)
+    return words
+local specifications = {}
+local function add(group, names, minimum, maximum, parity)
+    for name in names:gmatch("%S+") do specifications[name] = { group = group, minimum = minimum, maximum = maximum, parity = parity } end
+end
+add("text_command", "SET", 2)
+add("text_command", "GET INCR DECR STRLEN", 1, 1)
+add("key_command", "TYPE KEYS TTL PERSIST TICK", 1, 1)
+add("control_command", "TIME DBSIZE FLUSH INFO BEGIN COMMIT ROLLBACK", 0, 0)
+add("control_command", "SNAPSHOT RESTORE", 1, 1)
+
+local Store = {}
+Store.__index = Store
+function Store.new() return setmetatable({ database = {}, transactions = {}, snapshots = {}, time = 0 }, Store) end
+function Store:value(key, kind)
+    local entry = self.database[key]
+    if entry and entry.kind ~= kind then fail(WRONG_TYPE) end
+    return entry
+end
+function Store:put(key, kind, data, expiry) self.database[key] = { kind = kind, data = data, expiry = expiry } end
+function Store:purge()
+    local removed = 0
+    for key, entry in pairs(self.database) do
+        if entry.expiry and entry.expiry <= self.time then self.database[key] = nil; removed = removed + 1 end
+    end
+    return removed
+end
+function Store:execute(words)
+    local command = upper(words[1])
+    local spec = specifications[command]
+    if not spec then fail("ERR unknown command '" .. words[1] .. "'") end
+    local args = slice(words, 2, #words)
+    if #args < spec.minimum or (spec.maximum and #args > spec.maximum) or (spec.parity and #args % 2 ~= spec.parity) then
+        fail("ERR wrong number of arguments for '" .. lower(command) .. "' command")
+    end
+    return self[spec.group](self, command, args)
+function Store:text_command(command, args)
+    local key = args[1]
+    if command == "SET" then
+        local options, seconds_word, i = {}, nil, 3
+        while i <= #args do
+            local option = upper(args[i])
+            if not ({ NX = true, XX = true, EX = true, KEEPTTL = true, GET = true })[option] or options[option] then fail(BAD_SYNTAX) end
+            options[option] = true
+            if option == "EX" then
+                i = i + 1
+                if i > #args then fail(BAD_SYNTAX) end
+                seconds_word = args[i]
+            end
+            i = i + 1
+        end
+        local seconds = seconds_word and number(seconds_word)
+        if seconds and seconds <= 0 then fail("ERR invalid expire time in 'set' command") end
+        local old, previous = self.database[key], nil
+        local changed = not (options.NX and old) and not (options.XX and not old)
+        if changed then
+            local expiry
+            if seconds then expiry = self.time + seconds elseif options.KEEPTTL and old then expiry = old.expiry end
+            self:put(key, "string", args[2], expiry)
+        end
+        if options.GET then return text_reply(previous) end
+        return changed and { "OK" } or text_reply(nil)
+    local old = self:value(key, "string")
+    if command == "GET" then return text_reply(old and old.data) end
+function Store:key_command(command, args)
+    if command == "TICK" then
+        local amount = number(args[1])
+        if amount <= 0 then fail(POSITIVE) end
+        self.time = self.time + amount
+        return integer_reply(self:purge())
+function Store:control_command(command, args)
+    if command == "BEGIN" then self.transactions[#self.transactions + 1] = copy(self.database); return { "OK" } end
+    if command == "COMMIT" or command == "ROLLBACK" then
+        if #self.transactions == 0 then fail("ERR no transaction") end
+        local saved = table.remove(self.transactions)
+        if command == "ROLLBACK" then self.database = copy(saved); self:purge() end
+        return { "OK" }
+    end
+    local name = args[1]
+    if command == "SNAPSHOT" then self.snapshots[name] = copy(self.database); return { "OK" } end
+    if not self.snapshots[name] then fail("ERR no such snapshot") end
+    self.database = copy(self.snapshots[name])
+    self:purge()
+    return { "OK" }
+local store = Store.new()
+local command_count = tonumber(io.read("*l"), 10)
+for _ = 1, command_count do
+    local line = io.read("*l"):gsub("\r$", "")
+    local words = split_arguments(line)
+    local output
+    if not words then output = { "Invalid argument(s)" }
+    else
+        local ok, result = pcall(function() return store:execute(words) end)
+        output = ok and result or { "(error) " .. result.message }
+    for _, row in ipairs(output) do io.write(row, "\n") end

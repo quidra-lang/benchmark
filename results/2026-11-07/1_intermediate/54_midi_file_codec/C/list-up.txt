@@ -1,0 +1,191 @@
+typedef int64_t Integer;
+typedef struct {
+    Integer tick;
+    int status, meta;
+    unsigned char *data;
+    size_t length;
+} Event;
+typedef struct {
+    Event *events;
+    size_t count, capacity;
+} Track;
+typedef struct Song {
+    char name[17];
+    int format, division;
+    Track *tracks;
+    size_t count;
+    struct Song *next;
+} Song;
+typedef struct {
+    unsigned char *data;
+    size_t count, capacity;
+} Buffer;
+static Song *songs;
+static int running = 1, zero_off;
+static jmp_buf failure;
+static char error_message[256];
+static const char *channel_types[] = {"NOTE_OFF", "NOTE_ON",          "POLY_PRESSURE", "CONTROL",
+                                      "PROGRAM",  "CHANNEL_PRESSURE", "PITCH_BEND"};
+static const char *pitches[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+static void fail(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(error_message, sizeof(error_message), format, args);
+    va_end(args);
+    longjmp(failure, 1);
+}
+static int range(Integer x, Integer low, Integer high) {
+    return low <= x && x <= high;
+}
+static int channel(Event e) {
+    return e.status < 240;
+}
+static int ch(Event e) {
+    return (e.status & 15) + 1;
+}
+static const char *type(Event e) {
+    if (channel(e))
+        return channel_types[(e.status >> 4) - 8];
+static void pitch_name(int pitch, char *out) {
+    sprintf(out, "%s%d", pitches[pitch % 12], pitch / 12 - 1);
+}
+static void append(Track *t, Event e) {
+    t->events[t->count++] = e;
+}
+static Song *find_song(const char *name) {
+    for (Song *s = songs; s; s = s->next)
+        if (!strcmp(s->name, name))
+            return s;
+    return NULL;
+}
+static void print_event(Event e, int track) {
+    printf("%lld %d %s", (long long)e.tick, track, type(e));
+    if (channel(e)) {
+        int code = e.status >> 4;
+        printf(" %d ", ch(e));
+        if (range(code, 8, 10)) {
+            char name[8];
+            pitch_name(e.data[0], name);
+            printf("%s %d", name, e.data[1]);
+    putchar('\n');
+}
+static void byte(Buffer *b, int value) {
+    b->data[b->count++] = (unsigned char)value;
+}
+static void big(Buffer *b, Integer value, int n) {
+    for (int i = n - 1; i >= 0; --i)
+        byte(b, (int)(value >> (8 * i)) & 255);
+}
+static void bytes(Buffer *b, const unsigned char *data, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        byte(b, data[i]);
+}
+static void var(Buffer *b, Integer value) {
+    unsigned char data[10];
+    int n = 0;
+    data[n++] = value & 127;
+    while ((value >>= 7) > 0)
+        data[n++] = (value & 127) | 128;
+    while (n)
+        byte(b, data[--n]);
+}
+static void encode(Song *s) {
+    Buffer all = {0};
+    bytes(&all, (unsigned char *)"MThd", 4);
+    big(&all, 6, 4);
+    big(&all, s->format, 2);
+    big(&all, (Integer)s->count, 2);
+    big(&all, s->division, 2);
+    for (size_t tr = 0; tr < s->count; ++tr) {
+        Buffer data = {0};
+        Integer previous = 0;
+        int last = -1;
+        for (size_t i = 0; i < s->tracks[tr].count; ++i) {
+            Event e = s->tracks[tr].events[i];
+            var(&data, e.tick - previous);
+            previous = e.tick;
+            if (channel(e)) {
+                int status = e.status, rewrite = zero_off && e.status >> 4 == 8;
+                if (rewrite)
+                    status = 0x90 + ch(e) - 1;
+                if (!running || status != last)
+                    byte(&data, status);
+                byte(&data, e.data[0]);
+                if (e.length > 1)
+                    byte(&data, rewrite ? 0 : e.data[1]);
+                last = status;
+            } else {
+                last = -1;
+            }
+        }
+        bytes(&all, (unsigned char *)"MTrk", 4);
+        big(&all, (Integer)data.count, 4);
+        bytes(&all, data.data, data.count);
+    }
+    for (size_t i = 0; i < all.count; i += 16) {
+        printf("%04zX:", i);
+        for (size_t j = i; j < all.count && j < i + 16; ++j)
+            printf(" %02X", all.data[j]);
+        putchar('\n');
+    }
+    printf("%zu bytes\n", all.count);
+}
+static void execute(char **a, int argc) {
+    const char *cmd = a[0];
+    const char *known[] = {"DECODE",    "ENCODE",   "TIMING",   "NOTES",   "STATS",  "ROLL",
+                           "TRANSPOSE", "QUANTIZE", "VELOCITY", "TEMPO",   "FILTER", "MERGE",
+                           "SPLIT",     "COPY",     "LIST",     "RUNNING", "NOTEOFF"};
+    int found = 0;
+    for (size_t i = 0; i < sizeof(known) / sizeof(*known); ++i)
+        if (!strcmp(cmd, known[i]))
+            found = 1;
+    if (!found)
+        fail("unknown command");
+    Song *s = find_song(a[1]);
+    if (!s)
+        fail("no song %s", a[1]);
+    Integer first = argc > 2 ? strtoll(a[2], NULL, 10) : 0,
+            second = argc > 3 ? strtoll(a[3], NULL, 10) : 0,
+            third = argc > 4 ? strtoll(a[4], NULL, 10) : 0;
+    if (!strcmp(cmd, "TRANSPOSE") &&
+        (!range(first, -127, 127) || (argc == 4 && !range(second, 1, 16))))
+        fail("bad argument");
+    if (!strcmp(cmd, "DECODE")) {
+        printf("HEADER %d %zu %d\n", s->format, s->count, s->division);
+        for (size_t tr = 0; tr < s->count; ++tr)
+            for (size_t i = 0; i < s->tracks[tr].count; ++i)
+                print_event(s->tracks[tr].events[i], (int)tr);
+    } else if (!strcmp(cmd, "ENCODE"))
+        encode(s);
+    } else if (!strcmp(cmd, "TRANSPOSE")) {
+        size_t kept = 0, dropped = 0;
+        Track removed = {0};
+        int *removed_tracks = malloc(event_count(s) * sizeof(int));
+        for (size_t tr = 0; tr < s->count; ++tr) {
+            Track *t = &s->tracks[tr];
+            size_t write = 0;
+            for (size_t i = 0; i < t->count; ++i) {
+                Event e = t->events[i];
+                if (channel(e) && range(e.status >> 4, 8, 10) && (argc == 3 || ch(e) == second)) {
+                    Integer value = e.data[0] + first;
+                    if (!range(value, 0, 127)) {
+                        removed_tracks[dropped++] = (int)tr;
+                        append(&removed, e);
+                        continue;
+                    }
+                    e.data[0] = (unsigned char)value;
+                    ++kept;
+                }
+                t->events[write++] = e;
+            }
+            t->count = write;
+        }
+        printf("transposed %zu dropped %zu\n", kept, dropped);
+        for (size_t i = 0; i < dropped; ++i) {
+            Event e = removed.events[i];
+            char pitch[8];
+            pitch_name(e.data[0], pitch);
+            printf("dropped %lld %d %s %d %s\n", (long long)e.tick, removed_tracks[i], type(e),
+                   ch(e), pitch);
+            free(e.data);
+        }

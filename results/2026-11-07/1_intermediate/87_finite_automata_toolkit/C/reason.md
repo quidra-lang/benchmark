@@ -1,0 +1,22 @@
+# Task B selection — C
+
+## Answer requirements shared across languages
+
+1. Preserve COUNT command arity/reference validation and nonnegative length parsing, then identify the exact accepted count for length n and current integer output.
+2. Explain the set/subset transition recurrence and epsilon-closed initial state so each distinct length-n string contributes once, not once per accepting path.
+3. Use the source alphabet size for the exact denominator |Sigma|^n, with the empty word having denominator one and acceptance determined by the initial epsilon closure.
+4. Describe scaled integer floor conversion floor(10000*C/D), overflow/precision safeguards and exactly two fractional digits followed by %, including 1/3 = 33.33%.
+
+## Selected source locations
+
+- `main.c`: 10, 17, 19, 23, 26, 27, 28, 49, 50, 51, 66, 73, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 194, 195, 196, 197, 198, 200, 203, 204, 205, 206, 217, 218, 219, 220, 221, 222, 223, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 313, 314, 315, 316, 317, 318, 319, 320, 321, 341, 342, 343, 344, 345, 346, 347, 348, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 934, 936, 940, 963, 964, 965, 987, 988, 989, 998, 1076, 1077
+
+## Evidence and language semantics
+
+Keep the accepted count C and alphabet symbols unchanged. Build D=|Sigma|^n with exact integer multiplication starting at one; epsilon is not an alphabet symbol. Replace only the current count text with Q=floor(10000*C/D), rendered as (Q div 100), a decimal point, a zero-padded two-digit (Q mod 100), and %. This yields 33.33% for C=1,D=3. At n=0, D=1 and the epsilon-closed initial state yields C=0 or1, hence 0.00% or100.00%. Under the existing input bound D<=10^15, direct C*10000 can reach10^19 and must not use a signed64 intermediate or floating arithmetic. A portable exact alternative uses initial Q=C div D and remainder C mod D, then four decimal long-division steps (Q=10*Q+(10*r div D); r=10*r mod D); each remainder product stays below10^16, within64-bit integers. Arbitrary-precision integers can instead use the direct scaled expression. C represents subsets as four uint64_t words, with explicit membership, insertion, union, intersection and equality helpers. The extra transition column is epsilon, closure uses newly inserted states and determinize interns equal bitsets. The zero-initializing allocator establishes generated DFA start zero and empty state/transition counters. count_words uses long long and zero arrays, seeds the start and sums accepted totals after exactly length symbol steps. The role string checks two arguments and resolves unknown references before atoi; the nonnegative decimal form is guaranteed by Task A. Use repeated integer multiplication for the denominator and the bounded long-long remainder method for scaling; standard C has no arbitrary-precision integer, and a wider compiler extension is unnecessary. Format the integer parts with a two-digit fractional field followed by a literal percent sign.
+
+## Minimization and alternatives
+
+The modification belongs in the COUNT output path, retaining its exact counting helper and shared automaton/argument checks. The excerpt independently establishes the counting recurrence, subset/epsilon semantics, alphabet access and replacement output point. Full automaton construction, regex parsing, enumeration, minimization, table printing and unrelated command branches were considered and excluded. Only helper statements necessary to understand subset identity, closure, accepted totals and input dispatch remain; ordinary set/map/integer semantics provide the rest. The proposed arithmetic is described in the rationale, not added to the verbatim source excerpt. No implementation or program execution is performed.
+
+The excerpt contains 2472 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

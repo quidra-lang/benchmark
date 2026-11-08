@@ -1,0 +1,157 @@
+private val channelKinds =
+    listOf(
+        "NOTE_OFF",
+        "NOTE_ON",
+        "POLY_PRESSURE",
+        "CONTROL",
+        "PROGRAM",
+        "CHANNEL_PRESSURE",
+        "PITCH_BEND",
+    )
+private val pitches = listOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+private class Event(var tick: Long, val code: Int, var data: MutableList<Int>) {
+    fun channel() = code in 128..239
+    fun ch() = (code and 15) + 1
+    fun kind(): String {
+        if (channel()) return channelKinds[(code shr 4) - 8]
+private class Song(
+    var format: Int,
+    val division: Int,
+    var tracks: MutableList<MutableList<Event>>,
+) {
+private fun fail(message: String): Nothing = throw Failure(message)
+private val output = StringBuilder()
+
+private fun emit(line: String) {
+    output.append(line).append('\n')
+}
+
+private val songs = TreeMap<String, Song>()
+private var running = true
+private var zeroOff = false
+
+private fun noteName(p: Int) = pitches[p % 12] + (p / 12 - 1)
+private fun hex(n: Int, width: Int) = n.toString(16).uppercase().padStart(width, '0')
+private fun bytes(value: Long, size: Int) =
+    (size - 1 downTo 0).map { ((value shr (it * 8)) and 255).toInt() }.toMutableList()
+private fun eventText(e: Event, track: Int): String {
+    val head = "${e.tick} $track ${e.kind()}"
+    val d = e.data
+    if (e.channel()) {
+        val fields =
+            when (e.code shr 4) {
+                8,
+                9,
+                10 -> "${noteName(d[0])} ${d[1]}"
+            }
+        return "$head ${e.ch()} $fields"
+    }
+private fun vlq(number: Long): List<Int> {
+    var n = number
+    val result = mutableListOf((n and 127).toInt())
+    n = n shr 7
+    while (n > 0) {
+        result.add(0, (n and 127).toInt() or 128)
+        n = n shr 7
+    }
+    return result
+}
+
+private fun encode(s: Song) {
+    val result = mutableListOf<Int>()
+    fun chunk(target: MutableList<Int>, id: String, data: List<Int>) {
+        target.addAll(id.map { it.code })
+        target.addAll(bytes(data.size.toLong(), 4))
+        target.addAll(data)
+    }
+    chunk(
+        result,
+        "MThd",
+        bytes(s.format.toLong(), 2) +
+            bytes(s.tracks.size.toLong(), 2) +
+            bytes(s.division.toLong(), 2),
+    )
+    for (track in s.tracks) {
+        val data = mutableListOf<Int>()
+        var last = 0L
+        var previous = -1
+        for (e in track) {
+            data.addAll(vlq(e.tick - last))
+            last = e.tick
+            if (e.channel()) {
+                var code = e.code
+                var payload: List<Int> = e.data
+                if (zeroOff && (code shr 4) == 8) {
+                    code += 16
+                    payload = listOf(e.data[0], 0)
+                }
+                if (!running || previous != code) data.add(code)
+                data.addAll(payload)
+                previous = code
+            } else {
+                previous = -1
+            }
+        }
+        chunk(result, "MTrk", data)
+    }
+    for (i in result.indices step 16) emit(
+        "${hex(i, 4)}: ${result.subList(i, minOf(i + 16, result.size)).joinToString(" ") { hex(it, 2) }}",
+    )
+    emit("${result.size} bytes")
+}
+private fun execute(w: List<String>, read: () -> String) {
+    val c = w[0]
+    if (
+        c !in
+            listOf(
+                "DECODE",
+                "ENCODE",
+                "TRANSPOSE",
+            )
+    )
+        fail("unknown command")
+    val s = songs[w[1]] ?: fail("no song ${w[1]}")
+    var a = 0L
+    var b = 0L
+    if (c in listOf("TRANSPOSE", "QUANTIZE", "VELOCITY", "TEMPO", "ROLL")) {
+        a = w[2].toLong()
+        if (w.size > 3) b = w[3].toLong()
+        val valid =
+            when (c) {
+                "TRANSPOSE" -> a in -127L..127L && (w.size == 3 || b in 1L..16L)
+            }
+        if (!valid) fail("bad argument")
+    }
+    when (c) {
+        "DECODE" -> {
+            emit("HEADER ${s.format} ${s.tracks.size} ${s.division}")
+            s.tracks.forEachIndexed { t, events -> events.forEach { emit(eventText(it, t)) } }
+        }
+        "ENCODE" -> encode(s)
+        "TRANSPOSE" -> {
+            var kept = 0
+            val removed = mutableListOf<String>()
+            s.tracks.forEachIndexed { t, track ->
+                val iterator = track.iterator()
+                while (iterator.hasNext()) {
+                    val e = iterator.next()
+                    if (
+                        e.channel() && (e.code shr 4) <= 10 && (w.size == 3 || e.ch().toLong() == b)
+                    ) {
+                        val original = e.data[0]
+                        val pitch = original + a
+                        if (pitch !in 0L..127L) {
+                            removed.add(
+                                "dropped ${e.tick} $t ${e.kind()} ${e.ch()} ${noteName(original)}",
+                            )
+                            iterator.remove()
+                        } else {
+                            e.data[0] = pitch.toInt()
+                            kept++
+                        }
+                    }
+                }
+            }
+            emit("transposed $kept dropped ${removed.size}")
+            removed.forEach { emit(it) }
+        }

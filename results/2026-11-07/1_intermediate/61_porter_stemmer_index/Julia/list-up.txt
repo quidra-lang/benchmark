@@ -1,0 +1,147 @@
+const TOKEN_PATTERN = r"[A-Za-z]+"
+const WORD_PATTERN = r"^[A-Za-z]{1,30}$"
+struct CommandError <: Exception
+    message::String
+end
+function stemming_steps(word)
+    changes = Pair{String,String}[]
+    if length(word) > 2
+    return word, changes
+const STEM_CACHE = Dict{String,String}()
+porter_stem(word) = get!(() -> first(stemming_steps(word)), STEM_CACHE, word)
+function word_argument(text)
+    occursin(WORD_PATTERN, text) || throw(CommandError("BAD WORD $text"))
+    return lowercase(text)
+function split_arguments(name, rest)
+    name == "SEARCH" && return [rest]
+    name == "APPEND" && return split(rest, ' '; limit=2)
+    return split(rest, ' ')
+struct Token
+    text::String
+    form::String
+    stem::String
+    line::Int
+    position::Int
+    start::Int
+end
+
+struct Document
+    number::Int
+    lines::Vector{String}
+    tokens::Vector{Token}
+end
+
+Document(number) = Document(number, String[], Token[])
+
+function add_line!(document, text)
+    push!(document.lines, text)
+    added = Token[]
+    for found in eachmatch(TOKEN_PATTERN, text)
+        form = lowercase(found.match)
+        token = Token(found.match, form, porter_stem(form), length(document.lines),
+                      length(document.tokens) + 1, found.offset)
+        push!(document.tokens, token)
+        push!(added, token)
+    end
+    return added
+reference(document, token) = "$(document.number):$(token.line):$(token.position)"
+struct SearchEngine
+    stopwords::Set{String}
+    documents::Dict{Int,Document}
+    output::IOBuffer
+end
+
+SearchEngine(stopwords) = SearchEngine(stopwords, Dict{Int,Document}(), IOBuffer())
+
+emit(engine, parts...) = println(engine.output, join(parts, " "))
+
+add_document!(engine, number) = engine.documents[number] = Document(number)
+
+function ordered_documents(engine)
+    return [engine.documents[number] for number in sort!(collect(keys(engine.documents)))]
+end
+
+is_indexed(engine, token) = token.form ∉ engine.stopwords
+
+indexed_tokens(engine, document) = filter(token -> is_indexed(engine, token), document.tokens)
+function occurrence_map(engine)
+    occurrences = Dict{String,Vector{Tuple{Document,Token}}}()
+    for document in ordered_documents(engine), token in indexed_tokens(engine, document)
+        push!(get!(Vector{Tuple{Document,Token}}, occurrences, token.stem), (document, token))
+    end
+    return occurrences
+function form_count(engine, form)
+    return sum(
+        count(token -> token.form == form, document.tokens)
+        for document in values(engine.documents);
+        init=0,
+    )
+end
+
+function token_matches(engine, token, target)
+    return target == "?" || (is_indexed(engine, token) && token.stem == target)
+function phrase(engine, arguments)
+    words = map(word_argument, arguments)
+    all(word -> word in engine.stopwords, words) && throw(CommandError("STOPWORDS ONLY"))
+    targets = [word in engine.stopwords ? "?" : porter_stem(word) for word in words]
+    matches = String[]
+    for document in ordered_documents(engine)
+        tokens = document.tokens
+        for start in 1:length(tokens)-length(targets)+1
+            if all(token_matches(engine, tokens[start+offset-1], target)
+                   for (offset, target) in enumerate(targets))
+                push!(matches, reference(document, tokens[start]))
+            end
+        end
+    end
+    emit(engine, "PHRASE \"$(join(targets, " "))\"", "matches=$(length(matches))", matches...)
+function stop_word!(engine, arguments)
+    word = word_argument(arguments[1])
+    word in engine.stopwords && throw(CommandError("ALREADY STOPWORD $word"))
+    push!(engine.stopwords, word)
+    emit(engine, "STOP", word, "unindexed=$(form_count(engine, word))")
+end
+
+function unstop_word!(engine, arguments)
+    word = word_argument(arguments[1])
+    word in engine.stopwords || throw(CommandError("NOT STOPWORD $word"))
+    delete!(engine.stopwords, word)
+    emit(engine, "UNSTOP", word, "indexed=$(form_count(engine, word))")
+struct Command
+    arity::UnitRange{Int}
+    handler::Function
+end
+const COMMANDS = Dict(
+    "PHRASE" => Command(2:10, phrase),
+    "STOP" => Command(1:1, stop_word!),
+    "UNSTOP" => Command(1:1, unstop_word!),
+function execute!(engine, line)
+    space = findfirst(' ', line)
+    name = isnothing(space) ? line : line[1:space-1]
+    try
+        haskey(COMMANDS, name) || throw(CommandError("UNKNOWN COMMAND $name"))
+        command = COMMANDS[name]
+        arguments = isnothing(space) ? String[] : split_arguments(name, line[space+1:end])
+        length(arguments) in command.arity || throw(CommandError("BAD ARGUMENTS $name"))
+        command.handler(engine, arguments)
+    catch exception
+        exception isa CommandError || rethrow()
+        emit(engine, "ERROR", exception.message)
+function main()
+    lines = readlines(stdin)
+    engine = SearchEngine(Set{String}(split(lines[1])[2:end]))
+    index = 2
+    while startswith(lines[index], "DOC ")
+        document = add_document!(engine, parse(Int, lines[index][5:end]))
+        index += 1
+        while lines[index] != "ENDDOC"
+            add_line!(document, lines[index])
+            index += 1
+        end
+        index += 1
+    end
+    for line in lines[index:end]
+        line == "END" && break
+        execute!(engine, line)
+    end
+    print(String(take!(engine.output)))

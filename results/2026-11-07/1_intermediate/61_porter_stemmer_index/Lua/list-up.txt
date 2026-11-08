@@ -1,0 +1,241 @@
+local function fail(message)
+  error({ message = message }, 0)
+end
+
+local function starts_with(word, prefix)
+  return word:sub(1, #prefix) == prefix
+local function sorted_keys(set)
+  local keys = {}
+  for key in pairs(set) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  return keys
+local function split_words(text)
+  local parts = {}
+  for part in (text .. " "):gmatch("(.-) ") do
+    parts[#parts + 1] = part
+  end
+  return parts
+local function stemming_steps(word)
+  local changes = {}
+  if #word > 2 then
+  return word, changes
+local stem_cache = {}
+local function porter_stem(word)
+  local stem = stem_cache[word]
+  if stem == nil then
+    stem = stemming_steps(word)
+    stem_cache[word] = stem
+  end
+  return stem
+local function is_word(text)
+  return #text >= 1 and #text <= 30 and not text:find("[^A-Za-z]")
+end
+
+local function word_argument(text)
+  if not is_word(text) then
+    fail("BAD WORD " .. text)
+  end
+  return text:lower()
+local function split_arguments(name, rest)
+  if name == "SEARCH" then
+    return { rest }
+  end
+  if name == "APPEND" then
+    local first, second = rest:match("^(.-) (.*)$")
+    if first == nil then
+      return { rest }
+    end
+    return { first, second }
+  end
+  return split_words(rest)
+local Document = {}
+Document.__index = Document
+
+function Document.new(number)
+  return setmetatable({ number = number, lines = {}, tokens = {} }, Document)
+end
+
+function Document:add_line(text)
+  self.lines[#self.lines + 1] = text
+  local added = {}
+  for start, word in text:gmatch("()([A-Za-z]+)") do
+    local token = {
+      text = word,
+      form = word:lower(),
+      line = #self.lines,
+      position = #self.tokens + 1,
+      start = start,
+    }
+    self.tokens[#self.tokens + 1] = token
+    added[#added + 1] = token
+  end
+  return added
+function Document:reference(token)
+  return self.number .. ":" .. token.line .. ":" .. token.position
+local SearchEngine = {}
+SearchEngine.__index = SearchEngine
+
+function SearchEngine.new(stopwords)
+  return setmetatable({ stopwords = stopwords, documents = {}, output = {} }, SearchEngine)
+end
+
+function SearchEngine:emit(...)
+  self.output[#self.output + 1] = table.concat({ ... }, " ")
+end
+
+function SearchEngine:add_document(number)
+  local document = Document.new(number)
+  self.documents[number] = document
+  return document
+end
+
+function SearchEngine:ordered_documents()
+  local documents = {}
+  for index, number in ipairs(sorted_keys(self.documents)) do
+    documents[index] = self.documents[number]
+  end
+  return documents
+end
+
+function SearchEngine:is_indexed(token)
+  return not self.stopwords[token.form]
+end
+
+function SearchEngine:indexed_tokens(document)
+  local tokens = {}
+  for _, token in ipairs(document.tokens) do
+    if self:is_indexed(token) then
+      tokens[#tokens + 1] = token
+    end
+  end
+  return tokens
+function SearchEngine:occurrence_map()
+  local occurrences = {}
+  for _, document in ipairs(self:ordered_documents()) do
+    for _, token in ipairs(self:indexed_tokens(document)) do
+      local stem = porter_stem(token.form)
+      occurrences[stem] = occurrences[stem] or {}
+      table.insert(occurrences[stem], { document = document, token = token })
+    end
+  end
+  return occurrences
+function SearchEngine:form_count(form)
+  local count = 0
+  for _, document in pairs(self.documents) do
+    for _, token in ipairs(document.tokens) do
+      if token.form == form then
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
+function SearchEngine:token_matches(token, target)
+  return target == "?" or (self:is_indexed(token) and porter_stem(token.form) == target)
+function SearchEngine:phrase(arguments)
+  local words = {}
+  for index, argument in ipairs(arguments) do
+    words[index] = word_argument(argument)
+  end
+  local targets = {}
+  local only_stopwords = true
+  for index, word in ipairs(words) do
+    if self.stopwords[word] then
+      targets[index] = "?"
+    else
+      targets[index] = porter_stem(word)
+      only_stopwords = false
+    end
+  end
+  if only_stopwords then
+    fail("STOPWORDS ONLY")
+  end
+  local matches = {}
+  for _, document in ipairs(self:ordered_documents()) do
+    local tokens = document.tokens
+    for start = 1, #tokens - #targets + 1 do
+      local matched = true
+      for offset, target in ipairs(targets) do
+        if not self:token_matches(tokens[start + offset - 1], target) then
+          matched = false
+          break
+        end
+      end
+      if matched then
+        matches[#matches + 1] = document:reference(tokens[start])
+      end
+    end
+  end
+  local phrase_text = table.concat(targets, " ")
+  self:emit('PHRASE "' .. phrase_text .. '"', "matches=" .. #matches, table.unpack(matches))
+function SearchEngine:stop(arguments)
+  local word = word_argument(arguments[1])
+  if self.stopwords[word] then
+    fail("ALREADY STOPWORD " .. word)
+  end
+  self.stopwords[word] = true
+  self:emit("STOP", word, "unindexed=" .. self:form_count(word))
+end
+
+function SearchEngine:unstop(arguments)
+  local word = word_argument(arguments[1])
+  if not self.stopwords[word] then
+    fail("NOT STOPWORD " .. word)
+  end
+  self.stopwords[word] = nil
+  self:emit("UNSTOP", word, "indexed=" .. self:form_count(word))
+local HANDLERS = {
+  PHRASE = { 2, 10, SearchEngine.phrase },
+  STOP = { 1, 1, SearchEngine.stop },
+  UNSTOP = { 1, 1, SearchEngine.unstop },
+function SearchEngine:execute(line)
+  local name, rest = line:match("^(.-) (.*)$")
+  if name == nil then
+    name = line
+  end
+  local ok, problem = pcall(function()
+    local handler = HANDLERS[name]
+    if handler == nil then
+      fail("UNKNOWN COMMAND " .. name)
+    end
+    local minimum, maximum, run = table.unpack(handler)
+    local arguments = rest and split_arguments(name, rest) or {}
+    if #arguments < minimum or #arguments > maximum then
+      fail("BAD ARGUMENTS " .. name)
+    end
+    run(self, arguments)
+  end)
+  if not ok then
+    if type(problem) ~= "table" then
+      error(problem, 0)
+    end
+    self:emit("ERROR", problem.message)
+local function main()
+  local lines = {}
+  for line in io.lines() do
+    lines[#lines + 1] = line
+  end
+  local stopwords = {}
+  local header = split_words(lines[1])
+  for index = 2, #header do
+    stopwords[header[index]] = true
+  end
+  local engine = SearchEngine.new(stopwords)
+  local index = 2
+  while starts_with(lines[index], "DOC ") do
+    local document = engine:add_document(tonumber(lines[index]:sub(5)))
+    index = index + 1
+    while lines[index] ~= "ENDDOC" do
+      document:add_line(lines[index])
+      index = index + 1
+    end
+    index = index + 1
+  end
+  while lines[index] ~= nil and lines[index] ~= "END" do
+    engine:execute(lines[index])
+    index = index + 1
+  end
+  io.write(table.concat(engine.output, "\n"), "\n")

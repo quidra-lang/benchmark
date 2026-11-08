@@ -7,7 +7,7 @@
 
 ## Selected source locations
 
-- `main.py`: 24, 126, 141, 154, 164
+- `main.py`: 23, 126, 141, 154, 164
 
 ## Evidence and language semantics
 
@@ -17,4 +17,4 @@ Edge.flow is initialized to integer zero; the list comprehension copies those nu
 
 The initialization plus one real subtraction is sufficient. The full decomposition algorithm, path search, bottleneck calculation and output add no aliasing evidence. Where necessary the fresh allocation/value container or helper argument connection is retained; a binding alone would omit the requested write evidence.
 
-The excerpt contains 75 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 84 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

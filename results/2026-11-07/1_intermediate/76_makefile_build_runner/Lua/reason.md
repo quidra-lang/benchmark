@@ -7,14 +7,14 @@
 
 ## Selected source locations
 
-- `main.lua`: 759, 821, 822, 823, 824, 825, 930
+- `main.lua`: 757, 759, 821, 822, 823, 824, 825, 930
 
 ## Evidence and language semantics
 
-The dry-run branch creates saved={} and explicitly copies each scalar time from self.files. touch writes only self.files[name]; shared mutable file-entry objects are not used.
+The dry-run branch creates saved={} and explicitly copies each scalar time from self.files. touch writes only self.files[name]; shared mutable file-entry objects are not used. The helper header connects the selected trial invocation with the shown file-time write.
 
 ## Minimization and alternatives
 
-The saved-table binding/copy, one trial write and its build-time call are enough; omit dependency recursion, command execution and restore logic. Where the save is a custom copy loop its allocation and element copy must both be retained; relying on the saved variable name alone would not establish independence. Deep copying immutable scalar timestamps would add no information.
+The saved-table binding/copy, one trial write and its build-time call are enough; omit dependency recursion, command execution and restore logic. Where the save is a custom copy loop its allocation and element copy must both be retained; relying on the saved variable name alone would not establish independence. Deep copying immutable scalar timestamps would add no information. A method call without its writing helper header does not identify which body supplies the trial write. Where needed, retain the container declaration or construction path so the copy semantics are supported by the excerpt; a bare assignment of an untyped container could instead retain a reference. Unrelated build rules remain omitted.
 
-The excerpt contains 86 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 95 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

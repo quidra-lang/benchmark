@@ -1,0 +1,188 @@
+using Tick = std::int64_t;
+using Bytes = std::vector<unsigned char>;
+enum class Kind {
+    NoteOff,
+    NoteOn,
+    PolyPressure,
+    Control,
+    Program,
+    ChannelPressure,
+    PitchBend,
+const std::array<std::string, 25> typeNames = {
+    "NOTE_OFF",     "NOTE_ON",          "POLY_PRESSURE", "CONTROL",
+    "PROGRAM",      "CHANNEL_PRESSURE", "PITCH_BEND",    "SYSEX",
+    "SYSEX_ESCAPE", "SEQUENCE_NUMBER",  "TEXT_EVENT",    "COPYRIGHT",
+    "TRACK_NAME",   "INSTRUMENT_NAME",  "LYRIC",         "MARKER",
+    "CUE_POINT",    "CHANNEL_PREFIX",   "END_OF_TRACK",  "TEMPO",
+    "SMPTE_OFFSET", "TIME_SIGNATURE",   "KEY_SIGNATURE", "SEQUENCER_SPECIFIC",
+    "META"};
+const std::array<std::string, 12> pitchNames = {"C",  "C#", "D",  "D#", "E",  "F",
+                                                "F#", "G",  "G#", "A",  "A#", "B"};
+struct Event {
+    Tick tick = 0;
+    Kind kind = Kind::End;
+    int channel = 0;
+    std::vector<int> fields;
+    Bytes data;
+};
+struct Song {
+    int format = 0;
+    int division = 0;
+    std::vector<std::vector<Event>> tracks;
+bool channelEvent(Kind kind) {
+    return kind <= Kind::PitchBend;
+}
+bool inRange(Tick value, Tick low, Tick high) {
+    return low <= value && value <= high;
+}
+
+std::string pitchName(int pitch) {
+    return pitchNames[pitch % 12] + std::to_string(pitch / 12 - 1);
+}
+std::string hex(Tick value, int width) {
+    std::ostringstream out;
+    out << std::uppercase << std::hex << std::setfill('0') << std::setw(width) << value;
+    return out.str();
+}
+
+std::vector<std::string> words(const std::string &line) {
+    std::istringstream input(line);
+    std::vector<std::string> result;
+    for (std::string word; input >> word;)
+        result.push_back(word);
+    return result;
+}
+[[noreturn]] void fail(const std::string &reason) {
+    throw std::runtime_error(reason);
+}
+std::string eventText(const Event &event, std::size_t track) {
+    std::ostringstream out;
+    out << event.tick << ' ' << track << ' ' << typeNames[static_cast<int>(event.kind)];
+    if (channelEvent(event.kind)) {
+        out << ' ' << event.channel;
+        for (std::size_t i = 0; i < event.fields.size(); ++i) {
+            if (i == 0 && event.kind <= Kind::PolyPressure)
+                out << ' ' << pitchName(event.fields[i]);
+            else
+                out << ' ' << event.fields[i];
+        }
+    return out.str();
+}
+void appendBig(Bytes &bytes, std::uint64_t value, int count) {
+    for (int i = count - 1; i >= 0; --i)
+        bytes.push_back(static_cast<unsigned char>((value >> (8 * i)) & 255));
+}
+
+void appendVariable(Bytes &bytes, Tick value) {
+    Bytes groups{static_cast<unsigned char>(value & 127)};
+    while ((value >>= 7) != 0)
+        groups.push_back(static_cast<unsigned char>((value & 127) | 128));
+    bytes.insert(bytes.end(), groups.rbegin(), groups.rend());
+}
+Bytes encode(const Song &song, bool runningEnabled, bool zeroOff) {
+    Bytes result{'M', 'T', 'h', 'd'};
+    appendBig(result, 6, 4);
+    appendBig(result, song.format, 2);
+    appendBig(result, song.tracks.size(), 2);
+    appendBig(result, song.division, 2);
+    for (const std::vector<Event> &track : song.tracks) {
+        Bytes data;
+        Tick previous = 0;
+        int running = -1;
+        for (const Event &event : track) {
+            appendVariable(data, event.tick - previous);
+            previous = event.tick;
+            if (channelEvent(event.kind)) {
+                int group = static_cast<int>(event.kind) + 8;
+                std::vector<int> fields = event.fields;
+                if (event.kind == Kind::NoteOff && zeroOff) {
+                    group = 9;
+                    fields[1] = 0;
+                }
+                const int status = group * 16 + event.channel - 1;
+                if (!runningEnabled || running != status)
+                    data.push_back(static_cast<unsigned char>(status));
+                running = status;
+                } else {
+                    for (int field : fields)
+                        data.push_back(static_cast<unsigned char>(field));
+                }
+            } else {
+                running = -1;
+            }
+        }
+        result.insert(result.end(), {'M', 'T', 'r', 'k'});
+        appendBig(result, data.size(), 4);
+        result.insert(result.end(), data.begin(), data.end());
+    }
+    return result;
+}
+void transpose(Song &song, int shift, int channel) {
+    std::vector<std::string> dropped;
+    int kept = 0;
+    for (std::size_t t = 0; t < song.tracks.size(); ++t) {
+        std::vector<Event> track;
+        for (Event event : song.tracks[t]) {
+            if (event.kind <= Kind::PolyPressure && (channel == 0 || event.channel == channel)) {
+                const int pitch = event.fields[0] + shift;
+                if (!inRange(pitch, 0, 127)) {
+                    dropped.push_back(
+                        "dropped " + std::to_string(event.tick) + ' ' + std::to_string(t) + ' ' +
+                        typeNames[static_cast<int>(event.kind)] + ' ' +
+                        std::to_string(event.channel) + ' ' + pitchName(event.fields[0]));
+                    continue;
+                }
+                event.fields[0] = pitch;
+                ++kept;
+            }
+            track.push_back(std::move(event));
+        }
+        song.tracks[t] = std::move(track);
+    }
+    std::cout << "transposed " << kept << " dropped " << dropped.size() << '\n';
+    for (const std::string &line : dropped)
+        std::cout << line << '\n';
+}
+    const int commands = std::stoi(line);
+    std::map<std::string, Song> songs;
+    bool running = true, zeroOff = false;
+    const std::vector<std::string> known = {"HEX",      "TEXT",  "DECODE",  "ENCODE",    "TIMING",
+                                            "NOTES",    "STATS", "ROLL",    "TRANSPOSE", "QUANTIZE",
+                                            "VELOCITY", "TEMPO", "FILTER",  "MERGE",     "SPLIT",
+                                            "COPY",     "LIST",  "RUNNING", "NOTEOFF"};
+    for (int command = 0; command < commands && std::getline(std::cin, line); ++command) {
+        const std::vector<std::string> args = words(line);
+        try {
+            const std::string &op = args[0];
+            if (std::find(known.begin(), known.end(), op) == known.end())
+                fail("unknown command");
+            const auto found = songs.find(args[1]);
+            if (found == songs.end())
+                fail("no song " + args[1]);
+            Song &song = found->second;
+            const auto argument = [&args](std::size_t index, Tick low, Tick high) {
+                const Tick value = std::stoll(args[index]);
+                if (!inRange(value, low, high))
+                    fail("bad argument");
+                return value;
+            };
+            if (op == "DECODE") {
+                std::cout << "HEADER " << song.format << ' ' << song.tracks.size() << ' '
+                          << song.division << '\n';
+                for (std::size_t t = 0; t < song.tracks.size(); ++t) {
+                    for (const Event &event : song.tracks[t])
+                        std::cout << eventText(event, t) << '\n';
+                }
+            } else if (op == "ENCODE") {
+                const Bytes bytes = encode(song, running, zeroOff);
+                for (std::size_t i = 0; i < bytes.size(); i += 16) {
+                    std::cout << hex(i, 4) << ':';
+                    for (std::size_t j = i; j < std::min(i + 16, bytes.size()); ++j)
+                        std::cout << ' ' << hex(bytes[j], 2);
+                    std::cout << '\n';
+                }
+                std::cout << bytes.size() << " bytes\n";
+            } else if (op == "TRANSPOSE") {
+                const int shift = static_cast<int>(argument(2, -127, 127));
+                const int channel = args.size() == 4 ? static_cast<int>(argument(3, 1, 16)) : 0;
+                transpose(song, shift, channel);

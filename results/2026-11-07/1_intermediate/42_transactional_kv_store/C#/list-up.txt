@@ -1,0 +1,139 @@
+    public virtual bool Empty => false;
+sealed record TextValue(string Text) : Value
+    public override Value Copy() => this;
+sealed record Entry(Value Value, int? Expiry);
+    public static string Quote(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    public static List<string> Status(string text) => [text];
+    public static List<string> Integer(int value) => [$"(integer) {value}"];
+    public static List<string> Text(string? value) => [value is null ? "(nil)" : Quote(value)];
+    public static int Number(string text, string error = NotInteger)
+    {
+        if (text == "0") return 0;
+        int start = text.StartsWith('-') ? 1 : 0;
+        int digits = text.Length - start;
+        if (digits is < 1 or > 9 || text[start] is < '1' or > '9') throw new CommandError(error);
+        int value = 0;
+        for (int i = start; i < text.Length; i++)
+        {
+            if (text[i] is < '0' or > '9') throw new CommandError(error);
+            value = value * 10 + text[i] - '0';
+        }
+        return start == 0 ? value : -value;
+    public static List<string>? Split(string line)
+        var words = new List<string>();
+        int position = 0;
+        while (position < line.Length)
+        {
+            if (line[position] == ' ') { position++; continue; }
+            if (line[position] != '"')
+            {
+                int start = position;
+                while (position < line.Length && line[position] != ' ') position++;
+                words.Add(line[start..position]);
+                continue;
+        return words;
+    public static readonly Dictionary<string, CommandSpec> Commands = BuildCommands();
+    static Dictionary<string, CommandSpec> BuildCommands()
+    {
+        var result = new Dictionary<string, CommandSpec>(StringComparer.Ordinal);
+        void Add(Group group, string names, int minimum, int maximum = -1, int parity = -1)
+        {
+            foreach (string name in names.Split(' ')) result.Add(name, new(group, minimum, maximum, parity));
+        Add(Group.Text, "SET", 2);
+        Add(Group.Text, "GET INCR DECR STRLEN", 1, 1);
+        Add(Group.Key, "TYPE KEYS TTL PERSIST TICK", 1, 1);
+        Add(Group.Control, "BEGIN COMMIT ROLLBACK", 0, 0);
+        Add(Group.Control, "SNAPSHOT RESTORE", 1, 1);
+        return result;
+    Dictionary<string, Entry> database = new(StringComparer.Ordinal);
+    readonly Stack<Dictionary<string, Entry>> transactions = new();
+    readonly Dictionary<string, Dictionary<string, Entry>> snapshots = new(StringComparer.Ordinal);
+    int time;
+
+    static Dictionary<string, Entry> Copy(Dictionary<string, Entry> source) =>
+        source.ToDictionary(pair => pair.Key, pair => new Entry(pair.Value.Value.Copy(), pair.Value.Expiry), StringComparer.Ordinal);
+    T Read<T>(string key, T empty) where T : Value
+        if (!database.TryGetValue(key, out var entry)) return empty;
+        if (entry.Value is not T value) throw new CommandError(Syntax.WrongType);
+        return (T)value.Copy();
+    void Replace(string key, Value value, int? expiry = null)
+        if (value.Empty) database.Remove(key);
+        else database[key] = new(value, expiry);
+    int Purge()
+        string[] expired = database.Where(pair => pair.Value.Expiry is int expiry && expiry <= time).Select(pair => pair.Key).ToArray();
+        foreach (string key in expired) database.Remove(key);
+        return expired.Length;
+    List<string> TextCommand(string command, string[] args)
+        string key = args[0];
+        if (command == "SET")
+        {
+            var options = new HashSet<string>(StringComparer.Ordinal);
+            string? secondsWord = null;
+            for (int i = 2; i < args.Length; i++)
+            {
+                string option = args[i].ToUpperInvariant();
+                if (option is not ("NX" or "XX" or "EX" or "KEEPTTL" or "GET") || !options.Add(option))
+                    throw new CommandError(Syntax.BadSyntax);
+                if (option == "EX")
+                {
+                    if (++i == args.Length) throw new CommandError(Syntax.BadSyntax);
+                    secondsWord = args[i];
+            if (options.Contains("NX") && options.Contains("XX") || options.Contains("EX") && options.Contains("KEEPTTL"))
+                throw new CommandError(Syntax.BadSyntax);
+            int? expiry = null;
+            if (secondsWord is not null)
+            {
+                int seconds = Syntax.Number(secondsWord);
+                if (seconds <= 0) throw new CommandError("ERR invalid expire time in 'set' command");
+                expiry = time + seconds;
+            }
+            bool exists = database.TryGetValue(key, out var entry);
+            string? old = null;
+            bool changed = !(options.Contains("NX") && exists) && !(options.Contains("XX") && !exists);
+            if (changed) Replace(key, new TextValue(args[1]), expiry);
+            return options.Contains("GET") ? Replies.Text(old) : changed ? Replies.Status("OK") : Replies.Text(null);
+        }
+        string current = Read(key, new TextValue("")).Text;
+        if (command == "GET") return Replies.Text(database.ContainsKey(key) ? current : null);
+    List<string> KeyCommand(string command, string[] args)
+        if (command == "TICK")
+        {
+            int ticks = Syntax.Number(args[0]);
+            if (ticks <= 0) throw new CommandError(Syntax.Positive);
+            time += ticks;
+            return Replies.Integer(Purge());
+    List<string> ControlCommand(string command, string[] args)
+        if (command == "BEGIN") { transactions.Push(Copy(database)); return Replies.Status("OK"); }
+        if (command is "COMMIT" or "ROLLBACK")
+        {
+            if (transactions.Count == 0) throw new CommandError("ERR no transaction");
+            var saved = transactions.Pop();
+            if (command == "ROLLBACK") { database = saved; Purge(); }
+            return Replies.Status("OK");
+        }
+        if (command == "SNAPSHOT") { snapshots[args[0]] = Copy(database); return Replies.Status("OK"); }
+        if (!snapshots.TryGetValue(args[0], out var snapshot)) throw new CommandError("ERR no such snapshot");
+        database = Copy(snapshot);
+        Purge();
+        return Replies.Status("OK");
+    public List<string> Execute(string line)
+        var words = Syntax.Split(line);
+        if (words is null) return Replies.Status("Invalid argument(s)");
+        string command = words[0].ToUpperInvariant();
+        if (!Syntax.Commands.TryGetValue(command, out var spec)) throw new CommandError($"ERR unknown command '{words[0]}'");
+        string[] args = words.Skip(1).ToArray();
+        if (args.Length < spec.Minimum || spec.Maximum >= 0 && args.Length > spec.Maximum ||
+            spec.Parity >= 0 && args.Length % 2 != spec.Parity)
+            throw new CommandError($"ERR wrong number of arguments for '{command.ToLowerInvariant()}' command");
+        return spec.Group switch
+        {
+            Group.Text => TextCommand(command, args),
+            Group.Key => KeyCommand(command, args),
+            _ => ControlCommand(command, args)
+        };
+        int count = int.Parse(Console.ReadLine()!);
+        var store = new Store();
+        for (int i = 0; i < count; i++)
+        {
+            string line = Console.ReadLine()!;
+            try { foreach (string output in store.Execute(line)) Console.WriteLine(output); }
