@@ -1,0 +1,138 @@
+import 'dart:io';
+const tocMarker = '\u0000toc\u0000';
+String escapeHtml(String text) => text.replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+String stripTags(String text) => text.replaceAll(RegExp(r'<[^>]*>'), '');
+enum BlockKind { heading, paragraph, code, quote, alert, list, table, rule, toc }
+class Block {
+  final BlockKind kind;
+  final String text, language;
+  final int level, start;
+  final List<Block> blocks;
+  const Block(this.kind, {this.text = '', this.language = '', this.level = 0,
+    this.start = 1, this.ordered = false, this.lines = const [], this.header = const [],
+    this.alignments = const [], this.blocks = const [], this.items = const [], this.rows = const []});
+}
+Block? atxHeading(String line) {
+  final match = RegExp(r'^(#{1,6})(?: |$)').firstMatch(line);
+  if (match == null) return null;
+  final level = match[1]!.length;
+  var text = line.substring(level).trim();
+  final trimmed = text.replaceFirst(RegExp(r'#+$'), '');
+  if (trimmed.isEmpty || trimmed.endsWith(' ')) text = trimmed.trim();
+  return Block(BlockKind.heading, level: level, text: text);
+}
+class BlockParser {
+  final references = <String, Reference>{};
+  final footnotes = <String, String>{};
+  List<Block> parse(List<String> lines) {
+    final blocks = <Block>[];
+    var at = 0;
+    while (at < lines.length) {
+      final line = lines[at];
+      if (line.isEmpty) { at++; continue; }
+      if (!line.startsWith(' ')) {
+        final heading = atxHeading(line);
+        if (heading != null) { blocks.add(heading); at++; continue; }
+        if (line.startsWith('>')) {
+          final content = <String>[];
+          while (at < lines.length && lines[at].startsWith('>')) {
+            content.add(lines[at++].substring(1).replaceFirst(RegExp(r'^ '), ''));
+          }
+          final alert = RegExp(r'^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$').firstMatch(content[0]);
+          blocks.add(alert == null ? Block(BlockKind.quote, blocks: parse(content))
+              : Block(BlockKind.alert, text: alert[1]!, blocks: parse(content.sublist(1))));
+          continue;
+        }
+      final text = <String>[line.replaceFirst(RegExp(r'^ +'), '')];
+      var level = 0;
+      at++;
+      while (at < lines.length && lines[at].isNotEmpty) {
+      }
+      final combined = text.join('\n');
+      blocks.add(level != 0 ? Block(BlockKind.heading, level: level, text: combined)
+          : combined == '[TOC]' ? const Block(BlockKind.toc) : Block(BlockKind.paragraph, text: combined));
+    }
+    return blocks;
+  }
+class Piece {
+  final String html, char;
+  const Piece.text(this.html) : char = '', length = 0, canOpen = false, canClose = false;
+}
+String emphasis(List<Piece> pieces, int start, int end) {
+  final html = StringBuffer();
+  for (var at = start; at < end; at++) {
+    final piece = pieces[at];
+    if (piece.char.isEmpty) { html.write(piece.html); continue; }
+  }
+  return html.toString();
+}
+class TocEntry {
+  final int level;
+  final String id, label;
+  final children = <TocEntry>[];
+  TocEntry(this.level, this.id, this.label);
+}
+class Renderer {
+  final usedIds = <String>{};
+  final headings = <TocEntry>[];
+  final numberedNotes = <String, NumberedNote>{};
+  Renderer(this.references, this.footnotes);
+  String inline(String text, {bool links = true, bool notes = true}) {
+    final pieces = <Piece>[];
+    var at = 0;
+    while (at < text.length) {
+      final char = text[at], following = charAt(text, at + 1);
+      pieces.add(Piece.text(escapeHtml(char))); at++;
+    }
+    return emphasis(pieces, 0, pieces.length);
+  }
+  String renderBlocks(List<Block> blocks) => blocks.map((block) => render(block) + '\n').join();
+  String render(Block block) {
+    switch (block.kind) {
+      case BlockKind.heading: return heading(block.level, block.text);
+      case BlockKind.toc: return tocMarker;
+      case BlockKind.quote: return '<blockquote>\n${renderBlocks(block.blocks)}</blockquote>';
+  String heading(int level, String text) {
+    final start = text.lastIndexOf(' {#');
+    String id;
+    if (text.endsWith('}') && start != -1 && !text.substring(start + 3, text.length - 1).contains('\n') && RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(text.substring(start + 3, text.length - 1))) {
+      id = text.substring(start + 3, text.length - 1);
+      text = text.substring(0, start).replaceFirst(RegExp(r' +$'), '');
+    } else {
+      var base = text.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_ \n-]'), '').replaceAll(RegExp(r'[ \n]'), '-');
+      if (base.isEmpty) base = 'heading';
+      id = base;
+      for (var suffix = 1; usedIds.contains(id); suffix++) { id = '$base-$suffix'; }
+    }
+    usedIds.add(id);
+    final html = inline(text);
+    headings.add(TocEntry(level, id, stripTags(html)));
+    return '<h$level id="$id">$html</h$level>';
+  }
+  String tocList(List<TocEntry> entries) => '<ul>\n' + entries.map((entry) => '<li><a href="#${entry.id}">${entry.label}</a>'
+      + (entry.children.isEmpty ? '' : '\n${tocList(entry.children)}\n') + '</li>\n').join() + '</ul>';
+  String tableOfContents() {
+    final roots = <TocEntry>[], parents = <TocEntry>[];
+    for (final heading in headings) {
+      while (parents.isNotEmpty && parents.last.level >= heading.level) { parents.removeLast(); }
+      (parents.isEmpty ? roots : parents.last.children).add(heading);
+      parents.add(heading);
+    }
+    return '<nav class="toc">\n${tocList(roots)}\n</nav>';
+  }
+  String document(List<Block> blocks) {
+    final html = renderBlocks(blocks), toc = tableOfContents();
+    return html.replaceAll(tocMarker, toc) + (numberedNotes.isEmpty ? '' : footnoteList());
+  }
+void main() {
+  final lines = <String>[];
+  while (true) {
+    final line = stdin.readLineSync();
+    if (line == null || line == '@@END@@') break;
+    lines.add(line);
+  }
+  final parser = BlockParser();
+  final blocks = parser.parse(lines);
+  stdout.write(Renderer(parser.references, parser.footnotes).document(blocks));
+}

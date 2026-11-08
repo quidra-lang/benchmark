@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.ts`: 25, 26, 27, 28, 53, 54, 55, 56, 57, 58, 59, 60, 125, 126, 127, 128, 129, 130, 152, 153, 155, 156, 157, 158, 159, 160, 161, 199, 200, 201, 202, 209, 210, 211, 212, 213, 241, 242, 243, 244, 245, 261, 262, 263, 274, 275, 316, 317, 318, 319, 320, 372, 373, 374, 375, 376, 377, 378, 379, 382, 387, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 442, 443, 444, 445, 448, 449, 450, 451, 452, 453, 454, 455, 472, 473, 474, 478, 479, 480, 481
+- `main.ts`: 1, 25, 26, 27, 28, 53, 54, 55, 56, 57, 58, 59, 60, 92, 125, 126, 127, 128, 129, 130, 152, 153, 155, 156, 157, 158, 159, 160, 161, 199, 200, 201, 202, 209, 210, 211, 212, 213, 241, 242, 243, 244, 245, 261, 262, 263, 265, 271, 274, 275, 276, 316, 317, 318, 319, 320, 372, 373, 374, 375, 376, 377, 378, 379, 382, 387, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 442, 443, 444, 445, 446, 448, 449, 450, 451, 452, 453, 454, 455, 472, 473, 474, 478, 479, 480, 481
 
 ## Evidence and language semantics
 
@@ -18,4 +18,4 @@ Use the document [TOC], a blank line, # Parent {#foo}, a blank line, > ## Foo, t
 
 The smallest illustrative input uses ordinary alphabetic heading text and an explicit ID before the colliding automatic heading; unrelated inline/link/emphasis cases are not required. Kept the literal-character inline path and its string-piece assembly, rather than assuming the custom inline helper preserves text. Included quote recursion so the nested heading is evidenced both as a nested block and as a TOC child. Full parser, full inline renderer, list/table/footnote handlers, unused empty-TOC handling, and other heading syntaxes would add tokens without supporting an additional requirement. Selecting only heading allocation is smaller but loses forward TOC replacement and raw-versus-rendered provenance. A non-nested example would permit fewer lines but would fail the common requirements. Reviewed the selected excerpt independently against this concrete trace and removed unrelated branches and structural-only lines.
 
-The excerpt contains 2284 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 2380 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

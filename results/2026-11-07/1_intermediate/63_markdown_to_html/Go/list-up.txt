@@ -1,0 +1,220 @@
+const tocMarker = "\x00toc\x00"
+var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+func escape(text string) string {
+	return htmlEscaper.Replace(text)
+}
+func trim(text string) string {
+	return strings.Trim(text, " ")
+}
+func stripTags(text string) string {
+	var out strings.Builder
+	for len(text) > 0 {
+		start := strings.IndexByte(text, '<')
+		if start < 0 {
+			out.WriteString(text)
+			break
+		}
+		end := strings.IndexByte(text[start:], '>')
+		if end < 0 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:start])
+		text = text[start+end+1:]
+	}
+	return out.String()
+}
+type block struct {
+	kind, text string
+	number     int
+	children   []*block
+}
+func atxHeading(line string) *block {
+	n := 0
+	for n < len(line) && line[n] == '#' {
+		n++
+	}
+	if n < 1 || n > 6 || n < len(line) && line[n] != ' ' {
+		return nil
+	}
+	text := trim(line[n:])
+	stripped := strings.TrimRight(text, "#")
+	if stripped == "" || strings.HasSuffix(stripped, " ") {
+		text = trim(stripped)
+	}
+	return &block{kind: "heading", text: text, number: n}
+}
+func (p *parser) parse(lines []string) []*block {
+	var blocks []*block
+	for at := 0; at < len(lines); {
+		line := lines[at]
+		if line == "" {
+			at++
+			continue
+		}
+		if line[0] != ' ' {
+			if heading := atxHeading(line); heading != nil {
+				blocks = append(blocks, heading)
+				at++
+				continue
+			}
+			if line[0] == '>' {
+				var content []string
+				for at < len(lines) && strings.HasPrefix(lines[at], ">") {
+					row := lines[at][1:]
+					if strings.HasPrefix(row, " ") {
+						row = row[1:]
+					}
+					content = append(content, row)
+					at++
+				}
+				b := &block{kind: "quote"}
+				b.children = p.parse(content)
+				blocks = append(blocks, b)
+				continue
+			}
+		text := []string{strings.TrimLeft(line, " ")}
+		at++
+		level := 0
+		for at < len(lines) && lines[at] != "" {
+		}
+		b := &block{kind: "paragraph", text: strings.Join(text, "\n"), number: level}
+		if level != 0 {
+			b.kind = "heading"
+		} else if b.text == "[TOC]" {
+			b.kind = "toc"
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+type piece struct {
+	html        string
+	delimiter   byte
+}
+func emphasis(pieces []piece) string {
+	var out strings.Builder
+	for at := 0; at < len(pieces); at++ {
+		p := pieces[at]
+		if p.delimiter == 0 {
+			out.WriteString(p.html)
+			continue
+		}
+	}
+	return out.String()
+}
+type headingEntry struct {
+	level     int
+	id, label string
+	children  []*headingEntry
+}
+type renderer struct {
+	usedIDs         map[string]bool
+	headings        []*headingEntry
+}
+func (r *renderer) inline(text string, links, notes bool) string {
+	var pieces []piece
+	for at := 0; at < len(text); {
+		pieces = append(pieces, piece{html: escape(text[at : at+1])})
+		at++
+	}
+	return emphasis(pieces)
+}
+func (r *renderer) blocks(blocks []*block) string {
+	var out strings.Builder
+	for _, b := range blocks {
+		out.WriteString(r.render(b))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+func (r *renderer) heading(level int, text string) string {
+	id := ""
+	start := strings.LastIndex(text, " {#")
+	if strings.HasSuffix(text, "}") && start >= 0 && labelPattern.MatchString(text[start+3:len(text)-1]) {
+		id = text[start+3 : len(text)-1]
+		text = strings.TrimRight(text[:start], " ")
+	}
+	if id == "" {
+		var slug strings.Builder
+		for _, c := range strings.ToLower(text) {
+			if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+				slug.WriteRune(c)
+			} else if c == ' ' || c == '\n' {
+				slug.WriteByte('-')
+			}
+		}
+		base := slug.String()
+		if base == "" {
+			base = "heading"
+		}
+		id = base
+		for suffix := 1; r.usedIDs[id]; suffix++ {
+			id = base + "-" + strconv.Itoa(suffix)
+		}
+	}
+	r.usedIDs[id] = true
+	html := r.inline(text, true, true)
+	r.headings = append(r.headings, &headingEntry{level: level, id: id, label: stripTags(html)})
+	n := strconv.Itoa(level)
+	return `<h` + n + ` id="` + id + `">` + html + `</h` + n + `>`
+}
+func (r *renderer) render(b *block) string {
+	switch b.kind {
+	case "heading":
+		return r.heading(b.number, b.text)
+	case "quote":
+		return "<blockquote>\n" + r.blocks(b.children) + "</blockquote>"
+	case "toc":
+		return tocMarker
+	}
+}
+func tocList(entries []*headingEntry) string {
+	var out strings.Builder
+	out.WriteString("<ul>\n")
+	for _, h := range entries {
+		out.WriteString(`<li><a href="#` + h.id + `">` + h.label + `</a>`)
+		if len(h.children) > 0 {
+			out.WriteByte('\n')
+			out.WriteString(tocList(h.children))
+			out.WriteByte('\n')
+		}
+		out.WriteString("</li>\n")
+	}
+	out.WriteString("</ul>")
+	return out.String()
+}
+func (r *renderer) toc() string {
+	var roots, parents []*headingEntry
+	for _, h := range r.headings {
+		for len(parents) > 0 && parents[len(parents)-1].level >= h.level {
+			parents = parents[:len(parents)-1]
+		}
+		if len(parents) == 0 {
+			roots = append(roots, h)
+		} else {
+			parent := parents[len(parents)-1]
+			parent.children = append(parent.children, h)
+		}
+		parents = append(parents, h)
+	}
+	return "<nav class=\"toc\">\n" + tocList(roots) + "\n</nav>"
+}
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "@@END@@" {
+			break
+		}
+		lines = append(lines, line)
+	}
+	p := &parser{references: make(map[string]reference), footnotes: make(map[string]string)}
+	blocks := p.parse(lines)
+	r := &renderer{references: p.references, footnotes: p.footnotes, usedIDs: make(map[string]bool), footnoteNumbers: make(map[string]int)}
+	html := r.blocks(blocks)
+	html = strings.ReplaceAll(html, tocMarker, r.toc())
+	fmt.Print(html)
+}
