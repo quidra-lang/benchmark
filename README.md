@@ -45,10 +45,17 @@ When the user asks you to "start the benchmark," follow the steps below.
 
 Do not add, edit, or delete any files other than those explicitly specified in this README.
 
+The shared token viewer consists of `metric/tokenizer.py`, `metric/build_viewer.py`,
+`metric/viewer.html`, `metric/viewer.js`, `metric/viewer.css`, `metric/views.json`,
+`metric/test_viewer.py`, and `metric/test_viewer.cjs`. These files and this README
+may be updated when maintaining the viewer. Generated task data is stored as
+`taskA.json` and `taskB.json` in each language directory; individual task HTML
+files must not be retained in benchmark results.
+
 ## 1. Preparation and language selection
 
 1. Clone this repository, or pull its latest changes if it is already available locally. Work on the `develop` branch.
-2. Under `results/`, find the most recent directory named `YYYY-MM-DD`. Copy that directory and name the copy using today's date (`results/YYYY-MM-DD`). Work only in the new directory. If today's directory already exists, continue there without overwriting it.
+2. Use the benchmark date explicitly requested by the user when one is specified, including when resuming an existing run. Otherwise use today's date. Under `results/`, continue in that date's `YYYY-MM-DD` directory if it exists, without overwriting it. If it does not exist, copy the most recent earlier date directory and work in the new copy.
 3. Read `version.csv` in the working directory to identify the language versions used in the previous benchmark.
 4. Check the latest stable release of each language against reliable, preferably official, sources. For Quidra, use the current `develop` branch of `quidra-lang/quidra` instead of a stable release.
 5. Compare each current version with the version in `version.csv`. Identify languages whose relevant syntax has changed. For Quidra, check changes to `develop` even if its version number has not changed.
@@ -56,7 +63,7 @@ Do not add, edit, or delete any files other than those explicitly specified in t
    - Each language with relevant syntax changes, and its previous and current versions.
    - Which languages you recommend benchmarking again, and why.
    - Any languages you recommend skipping because the syntax changes are too minor to affect the benchmark meaningfully.
-7. Ask the user to select the languages to update in this run. Update the corresponding entries in `version.csv` only for the approved languages, then proceed.
+7. Ask the user to select the languages to update in this run unless the current run already has an approved selection. When resuming, preserve the approved languages and versions unless the user requests a change. Update the corresponding entries in `version.csv` only for the approved languages, then proceed.
 
 Do not update an unapproved language merely because a newer version exists.
 
@@ -221,17 +228,19 @@ For each language/topic updated in Step 2.4, use `metric/tokenizer.py` to recalc
 - `taskA`: tokens in the complete Task A source code for that topic.
 - `taskB`: tokens in that topic's `list-up.txt` file.
 
-Save the token-colored HTML views as **`taskA.html`** and **`taskB.html`** alongside the corresponding language's source files. Run the following commands from the repository root, replacing the example directory and source filename with the actual paths:
+Save the token-view data as **`taskA.json`** and **`taskB.json`** alongside the corresponding language's source files. Run the following commands from the repository root, replacing the example directory and source filename with the actual paths:
 
 ```sh
 LANG_DIR="results/YYYY-MM-DD/difficulty/topic/language"
-python3 metric/tokenizer.py --html "$LANG_DIR/taskA.html" "$LANG_DIR/source.ext"
-python3 metric/tokenizer.py --html "$LANG_DIR/taskB.html" "$LANG_DIR/list-up.txt"
+python3 metric/tokenizer.py --json "$LANG_DIR/taskA.json" "$LANG_DIR/source.ext"
+python3 metric/tokenizer.py --json "$LANG_DIR/taskB.json" "$LANG_DIR/list-up.txt"
 ```
 
-For a Task A program consisting of multiple source files, pass all of its files to the same command and **sum the per-file token counts** printed to standard output. The HTML file will show all supplied files. `--html` sets the output path; if omitted, the default remains `token.html` in the current working directory.
+For a Task A program consisting of multiple source files, pass all of its files to the same command and **sum the per-file token counts** printed to standard output. The viewer shows all supplied files in argument order. `--json` sets the output path; if omitted, the default is `token.json` in the current working directory. Python uses the same tokenizer for counts and saved boundaries; viewing never re-tokenizes the source or executes Python.
 
-Write both totals to the `tokens.csv` file in the corresponding topic directory, using this format:
+Do not save individual `taskA.html` or `taskB.html` files in benchmark results. All task views use the shared viewer. An explicit `--html PATH` export remains available for an occasional self-contained file that can be opened directly without a web server.
+
+Write both totals to the `tokens.csv` file in the corresponding **language directory** (`$LANG_DIR/tokens.csv`), using this format:
 
 ```csv
 taskA,27492
@@ -239,6 +248,41 @@ taskB,3749
 ```
 
 Repeat this for every affected language/topic.
+
+After adding or removing task JSON files, rebuild the shared selection index:
+
+```sh
+python3 metric/build_viewer.py
+```
+
+#### View token-colored code
+
+The shared `metric/viewer.html` loads the small `metric/views.json` selection index,
+then fetches only the selected task's JSON. The JSON stores normalized source text
+and token lengths instead of repeating HTML tags. Line numbers, token colors, blank
+lines, and separate source-file blocks are reconstructed by `metric/viewer.js`.
+No external JavaScript libraries, Python runtime, or application backend are needed
+in the browser.
+
+Serve the repository root with any static web server, for example:
+
+```sh
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+
+Open [the shared viewer](http://localhost:8000/metric/viewer.html) and select a date,
+difficulty, topic, language, and task. The address updates to a shareable link for
+the selected view. For a standalone data file, use
+`http://localhost:8000/metric/viewer.html?view=token.json`, where `view` is a path
+relative to the repository root. The same files can be served by GitHub Pages or
+another static host; keep `metric/` and `results/` at their existing relative paths.
+Opening `viewer.html` with a `file://` URL does not permit automatic JSON fetches.
+
+Run tooling regression tests with
+`python3 -m unittest discover -s metric -p 'test_*.py'`.
+For browser integration tests, install the development-only `playwright` Node
+package and its Chromium browser, then run `node metric/test_viewer.cjs`.
+An existing Chromium executable can be selected with `CHROMIUM_PATH`.
 
 ## 3. Aggregate results
 

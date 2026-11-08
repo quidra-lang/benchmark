@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tokenize source files and render a minimal line-numbered HTML view.
+"""Tokenize source files and write compact data for the shared static viewer.
 
-Usage: python3 tokenizer.py [--html PATH] FILE [FILE ...]
-Writes a single integer per input to stdout and creates token.html in the
-current directory by default. Use --html to choose a different output path.
+Usage: python3 tokenizer.py [--json PATH | --html PATH] FILE [FILE ...]
+Writes a single integer per input to stdout and creates token.json in the
+current directory by default. --html explicitly exports standalone HTML.
 The lexical rules are independent of file extension. The attached loop
 declaration keyword for: counts as one token, like the operator :=.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from html import escape
+import json
 from pathlib import Path
 import re
 import sys
@@ -488,13 +489,30 @@ def render_html(programs: list[list[Token]]) -> str:
     )
 
 
+def render_data(programs: list[list[Token]]) -> str:
+    """Store normalized source and Unicode code-point token lengths once."""
+    return json.dumps({
+        "version": 1,
+        "programs": [
+            {"source": "".join(tok.text for tok in tokens),
+             "lengths": [len(tok.text) for tok in tokens]}
+            for tokens in programs
+        ],
+    }, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Count source tokens and create a minimal HTML view."
+        description="Count source tokens and write data for metric/viewer.html."
     )
-    parser.add_argument(
-        "--html", default="token.html", metavar="PATH",
-        help="HTML output file (default: token.html)",
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
+        "--json", metavar="PATH",
+        help="compact token data output file (default: token.json)",
+    )
+    output.add_argument(
+        "--html", metavar="PATH",
+        help="optional standalone HTML export instead of compact JSON",
     )
     parser.add_argument(
         "files", nargs="*", metavar="FILE",
@@ -510,7 +528,9 @@ def main(argv: list[str] | None = None) -> int:
         for item in inputs:
             source = sys.stdin.read() if item == "-" else Path(item).read_text(encoding="utf-8-sig")
             all_tokens.append(tokenize(source))
-        Path(args.html).write_text(render_html(all_tokens), encoding="utf-8")
+        path = Path(args.html or args.json or "token.json")
+        content = render_html(all_tokens) if args.html else render_data(all_tokens)
+        path.write_text(content, encoding="utf-8")
     except (OSError, UnicodeError) as error:
         parser.exit(2, f"error: {error}\n")
 
