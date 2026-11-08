@@ -1,0 +1,235 @@
+import { readFileSync } from 'node:fs';
+const verbDefinitions = [
+    ['close', 'close shut'], ['unlock', 'unlock'], ['lock', 'lock'], ['use', 'use apply'], ['light', 'light ignite'],
+    ['extinguish', 'extinguish douse snuff'], ['wait', 'wait z'], ['score', 'score'], ['save', 'save'],
+] as const;
+type Verb = typeof verbDefinitions[number][0];
+type NoObjectVerb = 'look' | 'inventory' | 'wait' | 'score' | 'save' | 'restore' | 'verbose' | 'brief';
+type ItemVerb = 'examine' | 'open' | 'close' | 'light' | 'extinguish';
+type Phrase = readonly string[];
+type Command =
+    | { readonly verb: NoObjectVerb }
+    | { readonly verb: ItemVerb | 'drop'; readonly target: Phrase }
+    | { readonly verb: 'put' | 'use'; readonly first: Phrase; readonly second: Phrase }
+const verbs = new Map<string, Verb>(verbDefinitions.flatMap(([verb, aliases]) => aliases.split(' ').map(word => [word, verb] as const)));
+const noObjects: ReadonlySet<Verb> = new Set(['look', 'inventory', 'wait', 'score', 'save', 'restore', 'verbose', 'brief']);
+const actions: ReadonlySet<Verb> = new Set(['go', 'take', 'drop', 'put', 'open', 'close', 'unlock', 'lock', 'use', 'light', 'extinguish', 'wait']);
+const hasNoObjects = (verb: Verb): verb is NoObjectVerb => noObjects.has(verb);
+const normalize = (line: string): string[] => line.toLowerCase().split(/ +/).filter(word => !['the', 'a', 'an'].includes(word));
+type Place = Readonly<{ kind: 'room' | 'inside'; id: string } | { kind: 'player' | 'nowhere' }>;
+const floor = (id: string): Place => ({ kind: 'room', id });
+const inside = (id: string): Place => ({ kind: 'inside', id });
+const player: Place = { kind: 'player' };
+const nowhere: Place = { kind: 'nowhere' };
+const samePlace = (a: Place, b: Place): boolean => a.kind === b.kind && (!('id' in a) || ('id' in b && a.id === b.id));
+const placeKey = (place: Place): string => `${place.kind}:${'id' in place ? place.id : ''}`;
+interface Room { readonly name: string; readonly dark: boolean; readonly description: string[] }
+interface Item {
+    readonly id: string; readonly name: string; readonly weight: number; readonly points: number;
+    readonly light: boolean; readonly capacity: number | null; readonly key: string | null; readonly fixed: boolean;
+    readonly nouns: Set<string>; readonly words: ReadonlySet<string>; readonly details: string[];
+interface ItemState { place: Place; container: 'open' | 'closed' | 'locked'; lit: boolean; fuel: number }
+interface GameState {
+    room: string;
+    readonly items: Map<string, ItemState>;
+    readonly flags: Set<string>;
+    bonus: number; moves: number; darkness: number; ended: 'none' | 'won' | 'dead';
+interface Condition { readonly flag: string; readonly on: boolean }
+type Effect = Readonly<
+    { kind: 'message'; text: string } | { kind: 'open'; room: string; direction: Direction; destination: string } |
+    { kind: 'move'; item: string; place: Place } | { kind: 'flag'; flag: string; on: boolean } | { kind: 'points'; amount: number }
+>;
+type Trigger = Readonly<{ kind: 'use'; first: string; second: string } | { kind: 'enter'; room: string }>;
+interface Rule { readonly trigger: Trigger; readonly condition: Condition | null; readonly effect: Effect }
+interface RuleResult { readonly rows: string[]; readonly executed: number }
+interface Score { readonly stored: number; readonly treasures: number; readonly points: number; readonly total: number }
+class Failure extends Error {
+    readonly lines: readonly string[];
+    constructor(lines: string | readonly string[]) { super(); this.lines = typeof lines === 'string' ? [lines] : lines.slice(); }
+function fail(lines: string | readonly string[]): never { throw new Failure(lines); }
+function readItem(words: readonly string[]): { item: Item; state: ItemState } {
+    const id = words[1], weight = Number(words[3]);
+    let points = 0, light = false, capacity: number | null = null, key: string | null = null, fixed = false, index = 4;
+    const state: ItemState = {
+        place: words[2] === 'PLAYER' ? player : words[2] === 'NOWHERE' ? nowhere : floor(words[2]),
+        container: 'open', lit: false, fuel: 0,
+    if (words[index] === 'TREASURE') { points = Number(words[index + 1]); index += 2; }
+    if (words[index] === 'LIGHT') { light = true; state.fuel = Number(words[index + 1]); index += 2; }
+    return { item: { id, weight, points, light, capacity, key, fixed, name: words.slice(index).join(' '),
+        nouns: new Set([id]), words: new Set(words.slice(index)), details: [] }, state };
+function readRule(words: readonly string[], index: number, trigger: Trigger): Rule {
+    let condition: Condition | null = null;
+    if (words[index] === 'IF' || words[index] === 'UNLESS') {
+        condition = { flag: words[index + 1], on: words[index] === 'IF' }; index += 2;
+    const args = words.slice(index + 1);
+    let effect: Effect;
+    switch (words[index]) {
+        case 'MESSAGE': effect = { kind: 'message', text: args.join(' ') }; break;
+        case 'ADD': effect = { kind: 'move', item: args[0], place: floor(args[1]) }; break;
+    return { trigger, condition, effect };
+class Adventure {
+    private readonly rooms = new Map<string, Room>();
+    private readonly items = new Map<string, Item>();
+    private readonly rules: Rule[] = [];
+    private readonly ids: readonly string[];
+    private readonly vocabulary: ReadonlySet<string>;
+    private trophy = '';
+    private it: string | null = null;
+    state: GameState = { room: '', items: new Map(), exits: new Map(), flags: new Set(), bonus: 0,
+        moves: 0, visited: new Set(), darkness: 0, ended: 'none' };
+    constructor(lines: readonly string[]) {
+        for (const line of lines) this.define(line.split(' '));
+        this.ids = [...this.items.keys()].sort();
+        this.vocabulary = new Set([...this.items.values()].flatMap(item => [...item.nouns, ...item.words]));
+    private item(id: string): Item { return this.items.get(id)!; }
+    private itemState(id: string): ItemState { return this.state.items.get(id)!; }
+    private define(words: readonly string[]): void {
+        const [kind, id] = words;
+        switch (kind) {
+            case 'ROOM': {
+                const dark = words[2] === 'DARK';
+                this.rooms.set(id, { dark, name: words.slice(dark ? 3 : 2).join(' '), description: [] }); break;
+            case 'ITEM': {
+                const { item, state } = readItem(words);
+                this.items.set(id, item); this.state.items.set(id, state); break;
+            case 'RULE': this.rules.push(readRule(words, 3, { kind: 'use', first: id, second: words[2] })); break;
+            case 'TROPHY': this.trophy = id; break;
+            case 'START': this.state.room = id; break;
+    private children(): Map<string, string[]> {
+        const result = new Map<string, string[]>();
+        for (const id of this.ids) {
+            const key = placeKey(this.itemState(id).place);
+            let children = result.get(key);
+            if (children === undefined) { children = []; result.set(key, children); }
+            children.push(id);
+        return result;
+    private isOpen(id: string): boolean { return this.item(id).capacity !== null && this.itemState(id).container === 'open'; }
+    private reachable(place: Place): Set<string> {
+        const result = new Set<string>(), children = this.children();
+        const visit = (place: Place): void => {
+            for (const id of children.get(placeKey(place)) ?? []) {
+                result.add(id);
+                if (this.isOpen(id)) visit(inside(id));
+        visit(place);
+        return result;
+    private carried(): Set<string> { return this.reachable(player); }
+    private roomItems(): Set<string> { return this.reachable(floor(this.state.room)); }
+    private isLit(): boolean {
+        return !this.rooms.get(this.state.room)!.dark || [...this.carried(), ...this.roomItems()].some(id => this.itemState(id).lit);
+    private visible(): Set<string> { return this.isLit() ? new Set([...this.carried(), ...this.roomItems()]) : this.carried(); }
+    score(): Score {
+        let stored = 0, treasures = 0, points = 0;
+        for (const id of this.ids) if (this.item(id).points > 0) {
+            ++treasures;
+            let place = this.itemState(id).place;
+            while (place.kind === 'inside') place = this.itemState(place.id).place;
+            if (samePlace(place, floor(this.trophy))) { ++stored; points += this.item(id).points; }
+        return { stored, treasures, points, total: points + this.state.bonus };
+    private resolve(phrase: Phrase): string {
+        const visible = this.visible();
+        for (const word of phrase) if (!this.vocabulary.has(word)) fail(`I don't know the word "${word}".`);
+        const matches = this.ids.filter(id => visible.has(id) && this.item(id).nouns.has(phrase[phrase.length - 1]) &&
+            phrase.slice(0, -1).every(word => this.item(id).words.has(word)));
+        if (!matches.length) fail("You can't see any such thing.");
+        if (matches.length > 1) fail(`Which do you mean: ${matches.map(id => this.item(id).name).join(', ')}?`);
+        this.it = matches[0];
+        return matches[0];
+    private runRules(trigger: Trigger): RuleResult {
+        const rows: string[] = [];
+        let executed = 0;
+        for (const rule of this.rules) {
+            const target = rule.trigger;
+            if (trigger.kind === 'enter') {
+            } else if (target.kind !== 'use' || target.first !== trigger.first || target.second !== trigger.second) continue;
+            if (rule.condition !== null && this.state.flags.has(rule.condition.flag) !== rule.condition.on) continue;
+            ++executed;
+            const effect = rule.effect;
+            switch (effect.kind) {
+                case 'message': rows.push(effect.text); break;
+                case 'move': this.itemState(effect.item).place = effect.place; break;
+        return { rows, executed };
+    private itemAction(verb: ItemVerb, target: Phrase): string[] {
+        const id = this.resolve(target), item = this.item(id), state = this.itemState(id);
+        switch (verb) {
+            case 'light':
+                if (!item.light) fail(`You can't light the ${item.name}.`);
+                if (state.lit) fail(`The ${item.name} is already lit.`);
+                if (state.fuel === 0) fail(`The ${item.name} has no fuel.`);
+                state.lit = true; return [`The ${item.name} is now lit.`];
+    private execute(command: Exclude<Command, { verb: 'go' }>): string[] {
+        switch (command.verb) {
+            case 'score': {
+                const score = this.score();
+                return [`You have scored ${score.total} points (treasure ${score.points}, bonus ${this.state.bonus}) in ${this.state.moves} moves.`,
+                    `Treasures stored: ${score.stored} of ${score.treasures}.`];
+            case 'use': {
+                const first = this.resolve(command.first), second = this.resolve(command.second);
+                if (!this.carried().has(first)) fail(`You aren't carrying the ${this.item(first).name}.`);
+                const result = this.runRules({ kind: 'use', first, second });
+                if (result.executed === 0) fail('Nothing happens.');
+                return result.rows.length ? result.rows : ['Done.'];
+            case 'examine': case 'open': case 'close': case 'light': case 'extinguish': return this.itemAction(command.verb, command.target);
+    private endTurn(baseline: boolean): string[] {
+        const rows: string[] = [];
+        ++this.state.moves;
+        const nearby = new Set([...this.carried(), ...this.roomItems()]);
+        for (const id of this.ids) {
+            const state = this.itemState(id);
+            if (state.lit && --state.fuel === 0) {
+                state.lit = false;
+                if (nearby.has(id)) rows.push(`The ${this.item(id).name} goes out.`);
+        const lit = this.isLit();
+        if (baseline && !lit) rows.push('It is now pitch dark.');
+        else if (!baseline && lit) rows.push(...this.describe());
+        this.state.darkness = lit ? 0 : this.state.darkness + 1;
+        if (this.state.darkness === 2) rows.push('You hear something moving in the dark.');
+        if (this.state.darkness === 3) this.state.ended = 'dead';
+        const score = this.score();
+        if (this.state.ended === 'none' && score.treasures > 0 && score.stored === score.treasures) this.state.ended = 'won';
+        if (this.state.ended !== 'none') {
+            rows.push(this.state.ended === 'dead' ? '*** You have died ***' : '*** You have won ***');
+            rows.push(`You scored ${score.total} points in ${this.state.moves} moves.`);
+        return rows;
+    private parse(line: string): Command {
+        let words = normalize(line);
+        if (!words.length) fail('I beg your pardon?');
+        let verb = verbs.get(words[0]), rest = words.slice(1);
+        if (verb === undefined) fail(`I don't know the verb "${words[0]}".`);
+        if (this.state.ended !== 'none' && verb !== 'restore') fail('The game is over.');
+        if (hasNoObjects(verb)) {
+            if (rest.length) fail("I don't understand that.");
+            return { verb };
+        if (!rest.length) fail(verb === 'go' ? 'Which way do you want to go?' : `What do you want to ${verb}?`);
+        let first = rest, second: string[] | null = null;
+        const prepositions = verb === 'put' ? ['in', 'into'] : verb === 'use' ? ['on', 'with'] :
+            verb === 'lock' || verb === 'unlock' ? ['with'] : verb === 'take' ? ['from'] : [];
+        const index = rest.findIndex(word => prepositions.includes(word));
+        if (index >= 0) {
+            if (index === 0 || index === rest.length - 1) fail("I don't understand that.");
+            first = rest.slice(0, index); second = rest.slice(index + 1);
+        if (verb === 'put' || verb === 'use') {
+            if (second === null) fail("I don't understand that.");
+            return { verb, first, second };
+        return { verb, target: first };
+    private interpret(line: string): string[] {
+        const command = this.parse(line);
+        let baseline = this.isLit(), rows: string[];
+        if (command.verb === 'go') {
+        } else rows = this.execute(command);
+        if (actions.has(command.verb)) rows.push(...this.endTurn(baseline));
+        return rows;
+    command(line: string): readonly string[] {
+        try {
+            this.previous = line;
+            return this.interpret(line);
+        } catch (error) {
+            if (!(error instanceof Failure)) throw error;
+            return error.lines;
+const input = readFileSync(0, 'utf8').trimEnd().split(/\r?\n/), begin = input.indexOf('BEGIN');
+const adventure = new Adventure(input.slice(0, begin));
+const write = (rows: readonly string[]): void => { process.stdout.write(rows.join('\n') + '\n'); };
+for (const line of input.slice(begin + 1)) {
+    if (line === 'QUIT') {
+        write([`Final score: ${adventure.score().total} points in ${adventure.state.moves} moves.`]);
+        break;
+    write(['> ' + line, ...adventure.command(line)]);

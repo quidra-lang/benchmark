@@ -1,0 +1,210 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, BufWriter, Read, Write};
+type Reply<T> = Result<T, String>;
+fn fail<T>(message: impl Into<String>) -> Reply<T> { Err(message.into()) }
+fn words(line: &str) -> Vec<String> {
+    line.split_ascii_whitespace().map(str::to_ascii_lowercase)
+        .filter(|word| !matches!(word.as_str(), "the" | "a" | "an")).collect()
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place { Nowhere, Floor(usize), Player, Inside(usize) }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerState { Open, Closed, Locked }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EndStatus { Won, Dead }
+struct State {
+    room: usize,
+    places: Vec<Place>,
+    containers: Vec<ContainerState>,
+    fuel: Vec<i32>,
+    lit: Vec<bool>,
+    flags: BTreeSet<String>,
+    bonus: i32,
+    moves: i32,
+    darkness: i32,
+    ended: Option<EndStatus>,
+impl State {
+    fn new(rooms: usize, items: usize) -> Self {
+        Self { room: 0, places: vec![Place::Nowhere; items], containers: vec![ContainerState::Open; items],
+            fuel: vec![0; items], lit: vec![false; items], exits: vec![[None; 6]; rooms], flags: BTreeSet::new(),
+            visited: vec![false; rooms], bonus: 0, moves: 0, darkness: 0, ended: None }
+#[derive(Default)]
+struct Room { name: String, dark: bool, description: Vec<String> }
+#[derive(Default)]
+struct Item {
+    name: String, nouns: BTreeSet<String>, name_words: BTreeSet<String>, details: Vec<String>,
+    weight: i32, treasure: Option<i32>, light: bool, capacity: Option<i32>, key: Option<usize>, fixed: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trigger { Enter(usize), Use(usize, usize) }
+enum Effect { Message(String), Open(usize, usize, usize), Move(usize, Place), Flag(String, bool), Points(i32) }
+struct Rule { trigger: Trigger, condition: Option<(String, bool)>, effect: Effect }
+fn read_rule(input: &[String], mut at: usize, trigger: Trigger, rooms: &BTreeMap<String, usize>, items: &BTreeMap<String, usize>) -> Rule {
+    let condition = if matches!(input[at].as_str(), "IF" | "UNLESS") {
+        let condition = Some((input[at + 1].clone(), input[at] == "IF")); at += 2; condition
+    } else { None };
+    let effect = match input[at].as_str() {
+        "MESSAGE" => Effect::Message(input[at + 1..].join(" ")),
+        "ADD" => Effect::Move(items[&input[at + 1]], Place::Floor(rooms[&input[at + 2]])),
+    Rule { trigger, condition, effect }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verb { Go, Look, Examine, Take, Drop, Put, Inventory, Open, Close, Unlock, Lock, Use, Light, Extinguish, Wait, Score, Save, Restore, Verbose, Brief }
+impl Verb {
+    fn parse(word: &str) -> Option<Self> {
+        Some(match word {
+            "unlock" => Self::Unlock, "lock" => Self::Lock, "use" | "apply" => Self::Use,
+            "light" | "ignite" => Self::Light, "extinguish" | "douse" | "snuff" => Self::Extinguish,
+            "wait" | "z" => Self::Wait, "score" => Self::Score, "save" => Self::Save,
+            _ => return None,
+        })
+    fn name(self) -> &'static str {
+        match self {
+            Self::Go => "go", Self::Look => "look", Self::Examine => "examine", Self::Take => "take", Self::Drop => "drop",
+            Self::Put => "put", Self::Inventory => "inventory", Self::Open => "open", Self::Close => "close", Self::Unlock => "unlock",
+            Self::Lock => "lock", Self::Use => "use", Self::Light => "light", Self::Extinguish => "extinguish", Self::Wait => "wait",
+            Self::Score => "score", Self::Save => "save", Self::Restore => "restore", Self::Verbose => "verbose", Self::Brief => "brief",
+    fn no_arguments(self) -> bool {
+        matches!(self, Self::Look | Self::Inventory | Self::Wait | Self::Score | Self::Save | Self::Restore | Self::Verbose | Self::Brief)
+    fn action(self) -> bool {
+        matches!(self, Self::Go | Self::Take | Self::Drop | Self::Put | Self::Open | Self::Close | Self::Unlock | Self::Lock | Self::Use | Self::Light | Self::Extinguish | Self::Wait)
+struct Adventure {
+    rooms: Vec<Room>, items: Vec<Item>, rules: Vec<Rule>, vocabulary: BTreeSet<String>,
+    trophy: usize, max_weight: i32, state: State, saved: Option<State>, pronoun: Option<usize>,
+    previous: Option<String>, verbose: bool, output: Vec<String>,
+impl Adventure {
+    fn new(definitions: &[Vec<String>]) -> Self {
+        let room_names: Vec<String> = definitions.iter().filter(|line| line[0] == "ROOM").map(|line| line[1].clone()).collect();
+        let mut item_names: Vec<String> = definitions.iter().filter(|line| line[0] == "ITEM").map(|line| line[1].clone()).collect();
+        item_names.sort();
+        let room_ids: BTreeMap<String, usize> = room_names.iter().enumerate().map(|(i, name)| (name.clone(), i)).collect();
+        let item_ids: BTreeMap<String, usize> = item_names.iter().enumerate().map(|(i, name)| (name.clone(), i)).collect();
+        let mut rooms: Vec<Room> = room_names.iter().map(|_| Room::default()).collect();
+        let mut items: Vec<Item> = item_names.iter().map(|id| Item { nouns: BTreeSet::from([id.clone()]), ..Item::default() }).collect();
+        let mut state = State::new(rooms.len(), items.len());
+        let mut rules = Vec::new();
+        let (mut trophy, mut max_weight) = (0, 0);
+        for w in definitions {
+            match w[0].as_str() {
+                "ROOM" => {
+                    let room = &mut rooms[room_ids[&w[1]]]; room.dark = w[2] == "DARK";
+                    let at = if room.dark { 3 } else { 2 }; room.name = w[at..].join(" ");
+                "ITEM" => {
+                    let x = item_ids[&w[1]];
+                    state.places[x] = match w[2].as_str() { "PLAYER" => Place::Player, "NOWHERE" => Place::Nowhere, _ => Place::Floor(room_ids[&w[2]]) };
+                    let item = &mut items[x]; item.weight = w[3].parse().unwrap(); let mut at = 4;
+                    if w[at] == "TREASURE" { item.treasure = Some(w[at + 1].parse().unwrap()); at += 2; }
+                    if w[at] == "LIGHT" { item.light = true; state.fuel[x] = w[at + 1].parse().unwrap(); at += 2; }
+                    item.name = w[at..].join(" "); item.name_words.extend(w[at..].iter().cloned());
+                "RULE" => rules.push(read_rule(w, 3, Trigger::Use(item_ids[&w[1]], item_ids[&w[2]]), &room_ids, &item_ids)),
+                "TROPHY" => trophy = room_ids[&w[1]], "START" => state.room = room_ids[&w[1]],
+        let vocabulary = items.iter().flat_map(|item| item.nouns.iter().chain(item.name_words.iter())).cloned().collect();
+        Self { rooms, items, rules, vocabulary, trophy, max_weight, state, saved: None, pronoun: None, previous: None, verbose: false, output: Vec::new() }
+    fn say(&mut self, text: impl Into<String>) { self.output.push(text.into()); }
+    fn floor(&self) -> Place { Place::Floor(self.state.room) }
+    fn reachable(&self, item: usize, root: Place) -> bool {
+        let mut place = self.state.places[item];
+        while let Place::Inside(container) = place {
+            if self.state.containers[container] != ContainerState::Open { return false; }
+            place = self.state.places[container];
+        place == root
+    fn carried(&self, item: usize) -> bool { self.reachable(item, Place::Player) }
+    fn room_item(&self, item: usize) -> bool { self.reachable(item, self.floor()) }
+    fn is_lit(&self) -> bool {
+        !self.rooms[self.state.room].dark || (0..self.items.len()).any(|i| self.state.lit[i] && (self.carried(i) || self.room_item(i)))
+    fn stored(&self, item: usize) -> bool {
+        let mut place = self.state.places[item];
+        while let Place::Inside(container) = place { place = self.state.places[container]; }
+        place == Place::Floor(self.trophy)
+    fn treasures(&self) -> (i32, usize, usize) {
+        let (mut points, mut stored, mut total) = (0, 0, 0);
+        for (i, item) in self.items.iter().enumerate() {
+            if let Some(value) = item.treasure { total += 1; if self.stored(i) { stored += 1; points += value; } }
+        (points, stored, total)
+    fn score(&self) -> i32 { self.treasures().0 + self.state.bonus }
+    fn resolve(&mut self, phrase: &[String]) -> Reply<usize> {
+        let lit = self.is_lit();
+        for word in phrase { if !self.vocabulary.contains(word) { return fail(format!("I don't know the word \"{word}\".")); } }
+        let matches: Vec<usize> = (0..self.items.len()).filter(|&i| (self.carried(i) || lit && self.room_item(i)) &&
+            self.items[i].nouns.contains(phrase.last().unwrap()) && phrase[..phrase.len() - 1].iter().all(|word| self.items[i].name_words.contains(word))).collect();
+        if matches.is_empty() { return fail("You can't see any such thing."); }
+        if matches.len() > 1 { return fail(format!("Which do you mean: {}?", matches.iter().map(|&i| self.items[i].name.as_str()).collect::<Vec<_>>().join(", "))); }
+        self.pronoun = Some(matches[0]); Ok(matches[0])
+    fn run_rules(&mut self, trigger: Trigger) -> (usize, bool) {
+        let (mut executed, mut message) = (0, false);
+        for rule in &self.rules {
+            if rule.trigger != trigger || rule.condition.as_ref().is_some_and(|(flag, expected)| self.state.flags.contains(flag) != *expected) { continue; }
+            executed += 1;
+            match &rule.effect {
+                Effect::Message(text) => { self.output.push(text.clone()); message = true; }
+                Effect::Move(item, place) => self.state.places[*item] = *place,
+        (executed, message)
+    fn turn(&mut self, baseline: bool) {
+        self.state.moves += 1;
+        let nearby: Vec<bool> = (0..self.items.len()).map(|i| self.carried(i) || self.room_item(i)).collect();
+        for (i, nearby) in nearby.into_iter().enumerate() {
+            if self.state.lit[i] {
+                self.state.fuel[i] -= 1;
+                if self.state.fuel[i] == 0 { self.state.lit[i] = false; if nearby { self.say(format!("The {} goes out.", self.items[i].name)); } }
+        let lit = self.is_lit();
+        if baseline && !lit { self.say("It is now pitch dark."); } else if !baseline && lit { self.describe(true); }
+        self.state.darkness = if lit { 0 } else { self.state.darkness + 1 };
+        if self.state.darkness == 2 { self.say("You hear something moving in the dark."); }
+        if self.state.darkness == 3 { self.state.ended = Some(EndStatus::Dead); }
+        let (points, stored, total) = self.treasures();
+        if self.state.ended.is_none() && total > 0 && stored == total { self.state.ended = Some(EndStatus::Won); }
+        if let Some(ended) = self.state.ended {
+            self.say(if ended == EndStatus::Dead { "*** You have died ***" } else { "*** You have won ***" });
+            self.say(format!("You scored {} points in {} moves.", points + self.state.bonus, self.state.moves));
+    fn execute(&mut self, verb: Verb, first: &[String], second: &[String], d: Option<usize>, baseline: &mut bool) -> Reply<bool> {
+        match verb {
+            Verb::Use => {
+                let a = self.resolve(first)?; let b = self.resolve(second)?;
+                if !self.carried(a) { return fail(format!("You aren't carrying the {}.", self.items[a].name)); }
+                let (executed, message) = self.run_rules(Trigger::Use(a, b));
+                if executed == 0 { return fail("Nothing happens."); }
+                if !message { self.say("Done."); }
+            Verb::Light | Verb::Extinguish => {
+                let item = self.resolve(first)?; let lighting = verb == Verb::Light;
+                if !self.items[item].light { return fail(format!("You can't {} the {}.", verb.name(), self.items[item].name)); }
+                if self.state.lit[item] == lighting { return fail(format!("The {} is {}.", self.items[item].name, if lighting { "already lit" } else { "not lit" })); }
+                if lighting && self.state.fuel[item] == 0 { return fail(format!("The {} has no fuel.", self.items[item].name)); }
+                self.state.lit[item] = lighting; self.say(format!("The {} is now {}.", self.items[item].name, if lighting { "lit" } else { "out" }));
+            Verb::Score => {
+                let (points, stored, total) = self.treasures();
+                self.say(format!("You have scored {} points (treasure {points}, bonus {}) in {} moves.", points + self.state.bonus, self.state.bonus, self.state.moves));
+                self.say(format!("Treasures stored: {stored} of {total}."));
+        Ok(true)
+    fn interpret(&mut self, mut input: Vec<String>) -> Reply<()> {
+        if input.is_empty() { return fail("I beg your pardon?"); }
+        let mut verb = Verb::parse(&input[0]).ok_or_else(|| format!("I don't know the verb \"{}\".", input[0]))?;
+        if self.state.ended.is_some() && verb != Verb::Restore { return fail("The game is over."); }
+        let mut first = &input[1..]; let mut second = &input[0..0]; let mut d = None;
+        if verb.no_arguments() {
+            if !first.is_empty() { return fail("I don't understand that."); }
+        } else {
+            if first.is_empty() { return fail(if verb == Verb::Go { "Which way do you want to go?".to_owned() } else { format!("What do you want to {}?", verb.name()) }); }
+                let split = first.iter().position(|word| match verb {
+                    Verb::Put => matches!(word.as_str(), "in" | "into"), Verb::Use => matches!(word.as_str(), "on" | "with"),
+                });
+                if let Some(at) = split {
+                    if at == 0 || at + 1 == first.len() { return fail("I don't understand that."); }
+                    second = &first[at + 1..]; first = &first[..at];
+                } else if matches!(verb, Verb::Put | Verb::Use) { return fail("I don't understand that."); }
+        let mut baseline = self.is_lit();
+        if self.execute(verb, first, second, d, &mut baseline)? && verb.action() { self.turn(baseline); }
+        Ok(())
+    fn dispatch_line(&mut self, line: &str) -> Reply<()> {
+        let mut input = words(line);
+        self.interpret(input)
+    fn process(&mut self, line: &str) -> Vec<String> {
+        self.output = vec![format!("> {line}")];
+        if let Err(reason) = self.dispatch_line(line) { self.say(reason); }
+        std::mem::take(&mut self.output)
+fn main() {
+    let mut input = String::new(); io::stdin().read_to_string(&mut input).unwrap();
+    let mut lines = input.lines();
+    let definitions: Vec<Vec<String>> = lines.by_ref().take_while(|line| *line != "BEGIN")
+        .map(|line| line.split(' ').map(str::to_owned).collect()).collect();
+    let mut game = Adventure::new(&definitions);
+    let stdout = io::stdout(); let mut output = BufWriter::new(stdout.lock());
+    for line in lines.take_while(|line| *line != "QUIT") {
+        for row in game.process(line) { writeln!(output, "{row}").unwrap(); }
+    writeln!(output, "Final score: {} points in {} moves.", game.score(), game.state.moves).unwrap();

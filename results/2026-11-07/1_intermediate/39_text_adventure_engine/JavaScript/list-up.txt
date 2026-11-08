@@ -1,0 +1,179 @@
+const fs = require('node:fs');
+const verbs = new Map([
+    ['close', 'close shut'], ['unlock', 'unlock'], ['lock', 'lock'], ['use', 'use apply'], ['light', 'light ignite'],
+    ['extinguish', 'extinguish douse snuff'], ['wait', 'wait z'], ['score', 'score'], ['save', 'save'],
+].flatMap(([verb, synonyms]) => synonyms.split(' ').map(word => [word, verb])));
+const noObjects = new Set(['look', 'inventory', 'wait', 'score', 'save', 'restore', 'verbose', 'brief']);
+const actions = new Set(['go', 'take', 'drop', 'put', 'open', 'close', 'unlock', 'lock', 'use', 'light', 'extinguish', 'wait']);
+const normalize = line => line.toLowerCase().split(/ +/).filter(word => !['the', 'a', 'an'].includes(word));
+const floor = id => ({ kind: 'room', id });
+const inside = id => ({ kind: 'inside', id });
+const player = () => ({ kind: 'player' });
+const nowhere = () => ({ kind: 'nowhere' });
+const samePlace = (first, second) => first.kind === second.kind && first.id === second.id;
+const placeKey = place => `${place.kind}:${place.id ?? ''}`;
+class Failure extends Error {
+    constructor(lines) { super(); this.lines = Array.isArray(lines) ? lines : [lines]; }
+const fail = lines => { throw new Failure(lines); };
+class Adventure {
+    constructor(lines) {
+        this.rooms = new Map(); this.items = new Map(); this.rules = []; this.enterRules = [];
+        this.state = { room: null, items: new Map(), exits: new Map(), flags: new Set(), bonus: 0, moves: 0,
+            visited: new Set(), darkness: 0, ended: 'none' };
+        this.it = null; this.previous = null; this.verbose = false; this.saved = null;
+        for (const line of lines) this.define(line);
+        this.ids = [...this.items.keys()].sort();
+        this.vocabulary = new Set([...this.items.values()].flatMap(item => [...item.nouns, ...item.words]));
+    define(line) {
+        const words = line.split(' '), [kind, id] = words;
+        switch (kind) {
+            case 'ROOM': {
+                const dark = words[2] === 'DARK';
+                this.rooms.set(id, { dark, name: words.slice(dark ? 3 : 2).join(' '), description: [] });
+                break;
+            case 'ITEM': {
+                const item = { id, weight: Number(words[3]), points: 0, light: false, capacity: null, key: null,
+                    fixed: false, nouns: new Set([id]), details: [] };
+                const state = { place: words[2] === 'PLAYER' ? player() : words[2] === 'NOWHERE' ? nowhere() : floor(words[2]),
+                    container: 'open', lit: false, fuel: 0 };
+                let index = 4;
+                if (words[index] === 'TREASURE') { item.points = Number(words[index + 1]); index += 2; }
+                if (words[index] === 'LIGHT') { item.light = true; state.fuel = Number(words[index + 1]); index += 2; }
+                item.name = words.slice(index).join(' '); item.words = new Set(words.slice(index));
+                this.items.set(id, item); this.state.items.set(id, state);
+            case 'RULE': case 'ENTER': {
+                let index = kind === 'RULE' ? 3 : 2, condition = null;
+                if (words[index] === 'IF' || words[index] === 'UNLESS') {
+                    condition = { flag: words[index + 1], on: words[index] === 'IF' }; index += 2;
+                const rule = { first: id, second: kind === 'RULE' ? words[2] : null, condition, effect: words.slice(index) };
+                (kind === 'RULE' ? this.rules : this.enterRules).push(rule);
+                break;
+            case 'TROPHY': this.trophy = id; break;
+            case 'START': this.state.room = id; break;
+    children() {
+        const result = new Map();
+        for (const id of this.ids) {
+            const key = placeKey(this.state.items.get(id).place);
+            if (!result.has(key)) result.set(key, []);
+            result.get(key).push(id);
+        return result;
+    isOpen(id) { return this.items.get(id).capacity !== null && this.state.items.get(id).container === 'open'; }
+    reachable(place) {
+        const result = new Set(), children = this.children();
+        const visit = place => {
+            for (const id of children.get(placeKey(place)) ?? []) {
+                result.add(id);
+                if (this.isOpen(id)) visit(inside(id));
+        visit(place);
+        return result;
+    carried() { return this.reachable(player()); }
+    roomItems() { return this.reachable(floor(this.state.room)); }
+    isLit() {
+        return !this.rooms.get(this.state.room).dark || [...this.carried(), ...this.roomItems()].some(id => this.state.items.get(id).lit);
+    visible() { return this.isLit() ? new Set([...this.carried(), ...this.roomItems()]) : this.carried(); }
+    score() {
+        let stored = 0, treasures = 0, points = 0;
+        for (const id of this.ids) if (this.items.get(id).points > 0) {
+            ++treasures;
+            let place = this.state.items.get(id).place;
+            while (place.kind === 'inside') place = this.state.items.get(place.id).place;
+            if (samePlace(place, floor(this.trophy))) { ++stored; points += this.items.get(id).points; }
+        return { stored, treasures, points, total: points + this.state.bonus };
+    resolve(phrase) {
+        const visible = this.visible();
+        for (const word of phrase) if (!this.vocabulary.has(word)) fail(`I don't know the word "${word}".`);
+        const matches = this.ids.filter(id => visible.has(id) && this.items.get(id).nouns.has(phrase.at(-1)) &&
+            phrase.slice(0, -1).every(word => this.items.get(id).words.has(word)));
+        if (!matches.length) fail("You can't see any such thing.");
+        if (matches.length > 1) fail(`Which do you mean: ${matches.map(id => this.items.get(id).name).join(', ')}?`);
+        this.it = matches[0];
+        return matches[0];
+    runRules(rules) {
+        const rows = [];
+        let executed = 0;
+        for (const rule of rules) {
+            if (rule.condition && this.state.flags.has(rule.condition.flag) !== rule.condition.on) continue;
+            ++executed;
+            const [effect, first, second, third] = rule.effect;
+            switch (effect) {
+                case 'MESSAGE': rows.push(rule.effect.slice(1).join(' ')); break;
+                case 'ADD': this.state.items.get(first).place = floor(second); break;
+        return { rows, executed };
+    execute(verb, first, second) {
+        switch (verb) {
+            case 'score': {
+                const score = this.score();
+                return [`You have scored ${score.total} points (treasure ${score.points}, bonus ${this.state.bonus}) in ${this.state.moves} moves.`,
+                    `Treasures stored: ${score.stored} of ${score.treasures}.`];
+            case 'use': {
+                const id = this.resolve(first), target = this.resolve(second);
+                if (!this.carried().has(id)) fail(`You aren't carrying the ${this.items.get(id).name}.`);
+                const result = this.runRules(this.rules.filter(rule => rule.first === id && rule.second === target));
+                if (!result.executed) fail('Nothing happens.');
+                return result.rows.length ? result.rows : ['Done.'];
+        const id = this.resolve(first), item = this.items.get(id), state = this.state.items.get(id);
+        switch (verb) {
+            case 'light':
+                if (!item.light) fail(`You can't light the ${item.name}.`);
+                if (state.lit) fail(`The ${item.name} is already lit.`);
+                if (state.fuel === 0) fail(`The ${item.name} has no fuel.`);
+                state.lit = true;
+                return [`The ${item.name} is now lit.`];
+    endTurn(baseline) {
+        const rows = [], nearby = new Set([...this.carried(), ...this.roomItems()]);
+        ++this.state.moves;
+        for (const id of this.ids) {
+            const state = this.state.items.get(id);
+            if (state.lit && --state.fuel === 0) {
+                state.lit = false;
+                if (nearby.has(id)) rows.push(`The ${this.items.get(id).name} goes out.`);
+        const lit = this.isLit();
+        if (baseline && !lit) rows.push('It is now pitch dark.');
+        else if (!baseline && lit) rows.push(...this.describe());
+        this.state.darkness = lit ? 0 : this.state.darkness + 1;
+        if (this.state.darkness === 2) rows.push('You hear something moving in the dark.');
+        if (this.state.darkness === 3) this.state.ended = 'dead';
+        const score = this.score();
+        if (this.state.ended === 'none' && score.treasures > 0 && score.stored === score.treasures) this.state.ended = 'won';
+        if (this.state.ended !== 'none') {
+            rows.push(this.state.ended === 'dead' ? '*** You have died ***' : '*** You have won ***');
+            rows.push(`You scored ${score.total} points in ${this.state.moves} moves.`);
+        return rows;
+    interpret(line) {
+        let words = normalize(line);
+        if (!words.length) fail('I beg your pardon?');
+        let verb = verbs.get(words[0]), rest = words.slice(1);
+        if (verb === undefined) fail(`I don't know the verb "${words[0]}".`);
+        if (this.state.ended !== 'none' && verb !== 'restore') fail('The game is over.');
+        let first = rest, second = null;
+        if (noObjects.has(verb)) {
+            if (rest.length) fail("I don't understand that.");
+        } else {
+            if (!rest.length) fail(verb === 'go' ? 'Which way do you want to go?' : `What do you want to ${verb}?`);
+                let prepositions = [];
+                else if (verb === 'use') prepositions = ['on', 'with'];
+                if (prepositions.length) {
+                    const index = rest.findIndex(word => prepositions.includes(word));
+                    if (index <= 0 || index === rest.length - 1) fail("I don't understand that.");
+                    first = rest.slice(0, index); second = rest.slice(index + 1);
+        let baseline = this.isLit(), rows;
+        if (verb === 'go') {
+        } else rows = this.execute(verb, first, second);
+        if (actions.has(verb)) rows.push(...this.endTurn(baseline));
+        return rows;
+    command(line) {
+        try {
+            const words = normalize(line);
+            this.previous = line;
+            return this.interpret(line);
+        } catch (error) {
+            if (!(error instanceof Failure)) throw error;
+            return error.lines;
+const input = fs.readFileSync(0, 'utf8').trimEnd().split(/\r?\n/), start = input.indexOf('BEGIN');
+const adventure = new Adventure(input.slice(0, start));
+const write = rows => process.stdout.write(rows.join('\n') + '\n');
+for (const line of input.slice(start + 1)) {
+    if (line === 'QUIT') {
+        write([`Final score: ${adventure.score().total} points in ${adventure.state.moves} moves.`]);
+        break;
+    write(['> ' + line, ...adventure.command(line)]);
