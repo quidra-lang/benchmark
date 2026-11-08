@@ -1,0 +1,461 @@
+private class Problem(val reason: String) : RuntimeException(reason)
+private fun ip(word: String): Long {
+    val fields = word.split('.')
+    if (fields.size != 4) throw Problem("bad address $word")
+    var address = 0L
+    for (field in fields) {
+        if (
+            field.length !in 1..3 ||
+                (field.length > 1 && field[0] == '0') ||
+                field.any { it !in '0'..'9' } ||
+                field.toInt() > 255
+        )
+            throw Problem("bad address $word")
+        address = address * 256 + field.toInt()
+    }
+    return address
+}
+private fun address(a: Long) = "${a shr 24}.${(a shr 16) and 255}.${(a shr 8) and 255}.${a and 255}"
+private fun mask(length: Int) =
+    if (length == 0) 0L else (0xffffffffL shl (32 - length)) and 0xffffffffL
+private data class Prefix(val network: Long, val length: Int) {
+    fun contains(a: Long) = (a and mask(length)) == (network and mask(length))
+    fun notation() = "${address(network)}/$length"
+private fun prefix(word: String, hostBits: Boolean = true): Prefix {
+    val fields = word.split('/')
+    if (fields.size != 2) throw Problem("bad prefix $word")
+    val a =
+        try {
+            ip(fields[0])
+        } catch (_: Problem) {
+            throw Problem("bad prefix $word")
+        }
+    val s = fields[1]
+    if (
+        s.length !in 1..2 ||
+            (s.length == 2 && s[0] == '0') ||
+            s.any { it !in '0'..'9' } ||
+            s.toInt() > 32
+    )
+        throw Problem("bad prefix $word")
+    val length = s.toInt()
+    if (hostBits && (a and (0xffffffffL xor mask(length))) != 0L)
+        throw Problem("host bits set in $word")
+    return Prefix(a, length)
+}
+private data class Ports(val low: Int, val high: Int, val any: Boolean) {
+    fun contains(n: Int) = n in low..high
+private fun ports(word: String): Ports {
+    if (word == "ANY") return Ports(0, 65535, true)
+    val values = word.split('-').map(String::toInt)
+    val a = values.first()
+    val b = values.last()
+    if (a > 65535 || b > 65535 || a > b) throw Problem("bad port range $word")
+    return Ports(a, b, false)
+}
+private data class Interface(
+    val name: String,
+    val address: Long,
+    val length: Int,
+    var up: Boolean = true,
+    var outside: Boolean = false,
+    var pool: Int? = null,
+    var rpf: String = "off",
+    var rx: Int = 0,
+    var tx: Int = 0,
+    var drop: Int = 0,
+    val defaults: IntArray = IntArray(2),
+)
+private data class Route(
+    val kind: String,
+    val dest: Prefix,
+    val iface: Int,
+    val hop: Long?,
+    val metric: Int,
+    var hits: Int = 0,
+)
+private data class Rule(
+    val iface: Int,
+    val dir: Int,
+    val seq: Int,
+    val action: String,
+    val proto: String,
+    val src: Prefix,
+    val sports: Ports,
+    val dst: Prefix,
+    val dports: Ports,
+    val established: Boolean,
+    var hits: Int = 0,
+)
+private data class Forward(
+    val iface: Int,
+    val proto: String,
+    val port: Int,
+    val inside: Long,
+    val inport: Int,
+)
+private data class Pat(
+    val iface: Int,
+    val proto: String,
+    val inside: Long,
+    val inport: Int,
+    val port: Int,
+    var used: Int,
+)
+private data class PacketTuple(
+    val proto: String,
+    val src: Long,
+    val sport: Int,
+    val dst: Long,
+    val dport: Int,
+) {
+    fun notation() = "${address(src)}:$sport > ${address(dst)}:$dport"
+}
+private data class Connection(
+    val number: Int,
+    val orig: PacketTuple,
+    val reply: PacketTuple,
+    val input: Int,
+    val output: Int,
+    var used: Int,
+    var state: String = if (orig.proto == "TCP") "SYN_SENT" else "UNREPLIED",
+    val packets: IntArray = IntArray(2),
+private val reasons =
+    listOf("down", "martian", "rpf", "invalid", "acl_in", "ttl", "noroute", "acl_out", "exhausted")
+private class Router {
+    val ifaces = mutableListOf<Interface>()
+    val routes = mutableListOf<Route>()
+    val rules = mutableListOf<Rule>()
+    val statics = mutableListOf<Pair<Long, Long>>()
+    val forwards = mutableListOf<Forward>()
+    val pats = mutableListOf<Pat>()
+    val conns = mutableListOf<Connection>()
+    var clock = 0
+    var packetNumber = 0
+    var connectionNumber = 0
+    var forwarded = 0
+    var local = 0
+    val drops = IntArray(9)
+    var errors = 0
+    fun iface(name: String): Int =
+        ifaces.indexOfFirst { it.name == name }.takeIf { it >= 0 }
+            ?: throw Problem("no interface $name")
+    fun localAddress(a: Long): Int? = ifaces.indexOfFirst { it.address == a }.takeIf { it >= 0 }
+    fun select(a: Long): Int? {
+        var selected: Int? = null
+        for ((i, r) in routes.withIndex()) {
+            if (!ifaces[r.iface].up || !r.dest.contains(a)) continue
+            val old = selected?.let { routes[it] }
+            if (
+                old == null ||
+                    r.dest.length > old.dest.length ||
+                    (r.dest.length == old.dest.length && r.metric < old.metric)
+            )
+                selected = i
+        }
+        return selected
+    }
+    fun routeText(r: Route) =
+        "${r.kind} ${r.dest.notation()}${r.hop?.let { " via ${address(it)}" } ?: ""} dev ${ifaces[r.iface].name} metric ${r.metric}"
+    fun acl(i: Int, d: Int, tuple: PacketTuple, existing: Boolean): String? {
+        val list = rules.filter { it.iface == i && it.dir == d }.sortedBy { it.seq }
+        if (list.isEmpty()) return null
+        val name = ifaces[i].name
+        val dir = if (d == 0) "in" else "out"
+        for (r in list) {
+            if (
+                (r.proto != "ANY" && r.proto != tuple.proto) ||
+                    !r.src.contains(tuple.src) ||
+                    !r.dst.contains(tuple.dst) ||
+                    (r.established && !existing)
+            )
+                continue
+            if (
+                r.proto in listOf("TCP", "UDP") &&
+                    (!r.sports.contains(tuple.sport) || !r.dports.contains(tuple.dport))
+            )
+                continue
+            r.hits++
+            return when (r.action) {
+                "PERMIT" -> null
+                "DENY" -> "DROP acl $name $dir ${r.seq}"
+                else ->
+                    "REJECT acl $name $dir ${r.seq} ${if (tuple.proto == "TCP") "tcp-reset" else "icmp-prohibited"}"
+            }
+        }
+        ifaces[i].defaults[d]++
+        return "DROP acl $name $dir default"
+    }
+    fun packet(input: Int, flags: String, orig: PacketTuple, ttl: Int): Pair<String, Int> {
+        if (!ifaces[input].up) return "DROP down" to 0
+        fun martian(a: Long) = a shr 24 == 0L || a shr 24 == 127L || a >= 0xe0000000L
+        if (martian(orig.src) || martian(orig.dst) || localAddress(orig.src) != null)
+            return "DROP martian" to 1
+        var found: Connection? = null
+        var side = 0
+        for (c in conns) {
+            if (c.orig == orig) {
+                found = c
+                side = 0
+                break
+            }
+            if (c.reply == orig) {
+                found = c
+                side = 1
+                break
+        acl(input, 0, orig, found != null)?.let {
+            return it to 4
+        }
+        var dst = orig.dst
+        var dport = orig.dport
+        var used: Pat? = null
+        if (ifaces[input].outside) {
+            val static = statics.firstOrNull { it.second == dst }
+            if (static != null) dst = static.first
+            else if (dst == ifaces[input].address) {
+                val f = forwards.firstOrNull {
+                    it.iface == input && it.proto == orig.proto && it.port == dport
+                }
+                if (f != null) {
+                    dst = f.inside
+                    dport = f.inport
+                } else {
+                    val p = pats.firstOrNull {
+                        it.iface == input && it.proto == orig.proto && it.port == dport
+                    }
+                    if (p != null) {
+                        dst = p.inside
+                        dport = p.inport
+                        used = p
+                    }
+                }
+            }
+        }
+        localAddress(dst)?.let {
+            return "LOCAL ${ifaces[it].name}" to -2
+        }
+        if (ttl == 1) return "DROP ttl" to 5
+        val r = select(dst) ?: return "DROP noroute" to 6
+        val output = routes[r].iface
+        acl(output, 1, orig.copy(dst = dst, dport = dport), found != null)?.let {
+            return it to 7
+        }
+        var src = orig.src
+        var sport = orig.sport
+        if (!ifaces[input].outside && ifaces[output].outside) {
+            val static = statics.firstOrNull { it.first == src }
+            val forward = forwards.firstOrNull {
+                it.iface == output &&
+                    it.proto == orig.proto &&
+                    it.inside == src &&
+                    it.inport == sport
+            }
+            if (static != null) src = static.second
+            else if (forward != null) {
+                src = ifaces[output].address
+                sport = forward.port
+            } else {
+                val count = ifaces[output].pool
+                if (count != null) {
+                    var mapping = pats.firstOrNull {
+                        it.iface == output &&
+                            it.proto == orig.proto &&
+                            it.inside == src &&
+                            it.inport == sport
+                    }
+                    if (mapping == null) {
+                        val port =
+                            (20000 until 20000 + count).firstOrNull { p ->
+                                pats.none { it.iface == output && it.port == p } &&
+                                    forwards.none { it.iface == output && it.port == p }
+                            } ?: return "DROP exhausted" to 8
+                        mapping = Pat(output, orig.proto, src, sport, port, clock)
+                        pats.add(mapping)
+                    }
+                    used = mapping
+                    src = ifaces[output].address
+                    sport = mapping.port
+                }
+            }
+        }
+        used?.used = clock
+        val direction: String
+        val c: Connection
+        if (found != null) {
+            c = found
+            direction = if (side == 0) "orig" else "reply"
+        } else {
+            connectionNumber++
+            c =
+                Connection(
+                    connectionNumber,
+                    orig,
+                    PacketTuple(orig.proto, dst, dport, src, sport),
+                    input,
+                    output,
+                    clock,
+                )
+            conns.add(c)
+            side = 0
+            direction = "new"
+        }
+        c.packets[side]++
+        c.used = clock
+        if (orig.proto != "TCP") {
+            if (side == 1) c.state = "REPLIED"
+        ifaces[output].tx++
+        routes[r].hits++
+        val hop = routes[r].hop?.let { "via ${address(it)}" } ?: "direct"
+        var verdict = "FORWARD ${ifaces[output].name} $hop ttl=${ttl-1}"
+        if (dst != orig.dst || dport != orig.dport) verdict += " dnat=${address(dst)}:$dport"
+        if (src != orig.src || sport != orig.sport) verdict += " snat=${address(src)}:$sport"
+        return "$verdict conn=${c.number} $direction" to -1
+    fun command(w: List<String>): List<String> {
+        fun n(i: Int) = w[i].toInt()
+        fun d(s: String) = if (s == "IN") 0 else 1
+        fun require(condition: Boolean, reason: String) {
+            if (!condition) throw Problem(reason)
+        }
+        val text =
+            when (w[0]) {
+                "IFACE" -> {
+                    require(ifaces.none { it.name == w[1] }, "duplicate interface ${w[1]}")
+                    val p = prefix(w[2], false)
+                    require(p.length in 8..30, "bad prefix ${w[2]}")
+                    val host = p.network and (0xffffffffL xor mask(p.length))
+                    require(
+                        host != 0L && host != (0xffffffffL xor mask(p.length)),
+                        "bad host address ${w[2]}",
+                    )
+                    ifaces
+                        .firstOrNull {
+                            (it.address and mask(minOf(it.length, p.length))) ==
+                                (p.network and mask(minOf(it.length, p.length)))
+                        }
+                        ?.let { throw Problem("subnet overlaps ${it.name}") }
+                    val i = ifaces.size
+                    val dest = Prefix(p.network and mask(p.length), p.length)
+                    ifaces.add(Interface(w[1], p.network, p.length))
+                    routes.add(Route("C", dest, i, null, 0))
+                    "ok iface ${w[1]} ${w[2]} network ${dest.notation()}"
+                "ROUTE" -> {
+                    val dest = prefix(w[1])
+                    var hop: Long? = null
+                    var output = 0
+                    if (w[2] == "VIA") hop = ip(w[3]) else output = iface(w[3])
+                    require(n(4) in 1..255, "bad metric ${w[4]}")
+                    val nextHop = hop
+                    require(
+                        routes.none {
+                            it.kind == "S" && it.dest == dest && it.iface == output && it.hop == hop
+                        },
+                        "duplicate route ${w[1]}",
+                    )
+                    val r = Route("S", dest, output, hop, n(4))
+                    routes.add(r)
+                    "ok route ${routeText(r)}"
+                "ACL" -> {
+                    val i = iface(w[1])
+                    val dir = d(w[2])
+                    require(n(3) in 1..9999, "bad sequence ${w[3]}")
+                    val src = if (w[6] == "ANY") Prefix(0, 0) else prefix(w[6])
+                    val sports = ports(w[7])
+                    val dst = if (w[8] == "ANY") Prefix(0, 0) else prefix(w[8])
+                    val dports = ports(w[9])
+                    require(
+                        w[5] !in listOf("ICMP", "ANY") || (sports.any && dports.any),
+                        "ports not allowed for ${w[5]}",
+                    )
+                    require(
+                        rules.none { it.iface == i && it.dir == dir && it.seq == n(3) },
+                        "duplicate sequence ${w[3]}",
+                    )
+                    rules.add(
+                        Rule(i, dir, n(3), w[4], w[5], src, sports, dst, dports, w.size == 11),
+                    )
+                    "ok acl ${w[1]} ${w[2].lowercase()} ${w[3]}"
+                "NAT" ->
+                    when (w[1]) {
+                        "PAT" -> {
+                            val i = iface(w[2])
+                            require(n(3) in 1..1000, "bad pool size ${w[3]}")
+                            require(ifaces[i].pool == null, "pat already on ${w[2]}")
+                            ifaces[i].pool = n(3)
+                            ifaces[i].outside = true
+                            "ok nat pat ${w[2]} ${address(ifaces[i].address)} 20000-${20000+n(3)-1}"
+                        }
+                        else -> {
+                            val i = iface(w[2])
+                            require(n(4) in 1..65535, "bad port ${w[4]}")
+                            val inside = ip(w[5])
+                            require(n(6) in 1..65535, "bad port ${w[6]}")
+                            require(ifaces[i].outside, "interface ${w[2]} not outside")
+                            require(localAddress(inside) == null, "address ${w[5]} is local")
+                            require(
+                                forwards.none {
+                                    it.iface == i && it.proto == w[3] && it.port == n(4)
+                                },
+                                "duplicate forward ${w[2]} ${w[3]} ${w[4]}",
+                            )
+                            forwards.add(Forward(i, w[3], n(4), inside, n(6)))
+                            "ok nat forward ${w[2]} ${w[3]} ${w[4]} ${w[5]}:${w[6]}"
+                "PACKET" -> {
+                    val i = iface(w[1])
+                    require(w[2] == "TCP" || w[3] == "-", "flags not allowed for ${w[2]}")
+                    val src = ip(w[4])
+                    require(n(5) in 0..65535, "bad port ${w[5]}")
+                    val dst = ip(w[6])
+                    require(n(7) in 0..65535, "bad port ${w[7]}")
+                    require(n(8) in 1..255, "bad ttl ${w[8]}")
+                    packetNumber++
+                    ifaces[i].rx++
+                    val (verdict, reason) =
+                        packet(i, w[3], PacketTuple(w[2], src, n(5), dst, n(7)), n(8))
+                    when (reason) {
+                        -1 -> forwarded++
+                        -2 -> local++
+                        else -> {
+                            drops[reason]++
+                            ifaces[i].drop++
+                        }
+                    }
+                    "#$packetNumber ${w[2]} ${w[3]} ${w[4]}:${w[5]} > ${w[6]}:${w[7]} $verdict"
+                }
+                "SHOW" -> return show(w[1])
+                    }
+            }
+        return listOf(text)
+    fun show(what: String): List<String> {
+        val names = ifaces.indices.sortedBy { ifaces[it].name }
+        val lines = mutableListOf<String>()
+        when (what) {
+            }
+            "CONNS" -> {
+                lines.add("show conns count=${conns.size}")
+                for (c in conns) lines.add(
+                    "conn ${c.number} ${c.orig.proto} ${c.orig.notation()} reply ${c.reply.notation()} in=${ifaces[c.input].name} out=${ifaces[c.output].name} state=${c.state} pkts=${c.packets[0]}/${c.packets[1]} idle=${clock-c.used}",
+                )
+            }
+            else -> {
+                val dropped = drops.sum()
+                lines.add(
+                    "show counters packets=${forwarded+local+dropped} forwarded=$forwarded local=$local dropped=$dropped errors=$errors",
+                )
+                lines.add(
+                    "drops " + reasons.indices.joinToString(" ") { "${reasons[it]}=${drops[it]}" },
+                )
+                for (i in names) {
+                    val f = ifaces[i]
+                    lines.add("iface ${f.name} rx=${f.rx} tx=${f.tx} drop=${f.drop}")
+                }
+            }
+        }
+        return lines
+fun main() {
+    val router = Router()
+    repeat(readLine()!!.toInt()) {
+        try {
+            router.command(readLine()!!.split(' ')).forEach(::println)
+        } catch (p: Problem) {
+            router.errors++
+            println("error: ${p.reason}")

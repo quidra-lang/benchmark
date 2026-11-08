@@ -1,0 +1,201 @@
+local courses,players,events,event_order = {},{},{},{}
+local function fail(message) error(message,0) end
+local function half_up(a,b) return (2*a+b)//(2*b) end
+local function half_away(a,b) return (a < 0 and -1 or 1)*((2*math.abs(a)+b)//(2*b)) end
+local function decimal(v) return (math.abs(v)//10) .. '.' .. (math.abs(v)%10) end
+local function index_text(v) return v == nil and 'none' or (v < 0 and '+' or '') .. decimal(v) end
+local function signed_text(v) return (v < 0 and '-' or '') .. decimal(v) end
+local function sum(values,first,last)
+    local total = 0
+    for i = first or 1,last or #values do total = total+values[i] end
+    return total
+local function slice(values,first,last)
+    return {table.unpack(values,first,last or #values)}
+local function get_player(id)
+    if not players[id] then fail('unknown player') end
+    return players[id]
+end
+local function get_course(id)
+    if not courses[id] then fail('unknown course') end
+    return courses[id]
+end
+local function tee_check(course,tee)
+    local c = get_course(course)
+    if not c.tees[tee] then fail('unknown tee') end
+    return c,c.tees[tee]
+end
+local function course_handicap(index,c,tee) return half_up(index*tee[2]+113*(tee[1]-10*sum(c.pars)),1130) end
+local function allocate(handicap,si)
+    local q,r = math.abs(handicap)//18,math.abs(handicap)%18
+    local out = {}
+    for h,rank in ipairs(si) do
+        if handicap >= 0 then out[h] = q+(rank <= r and 1 or 0)
+        else out[h] = -q-(rank >= 19-r and 1 or 0) end
+    end
+    return out
+end
+local function low_index(p,day)
+    local best
+    for _,record in ipairs(p.records) do
+        if record[1] >= day-365 and record[1] < day then
+            if not best or record[2] < best[2] or (record[2] == best[2] and record[1] < best[1]) then best = record end
+        end
+    end
+    return best
+end
+local function counting_rule(n)
+    if n < 3 then return 0,0 end
+    if n == 3 then return 1,-20 end
+    if n == 4 then return 1,-10 end
+    if n == 5 then return 1,0 end
+    if n == 6 then return 2,-10 end
+    if n <= 8 then return 2,0 end
+    if n <= 11 then return 3,0 end
+    if n <= 14 then return 4,0 end
+    if n <= 16 then return 5,0 end
+    if n <= 18 then return 6,0 end
+    return n == 19 and 7 or 8,0
+end
+local function eligible(p)
+    local result,reduction = {},0
+    for i = #p.rounds,math.max(1,#p.rounds-19),-1 do
+        local r = p.rounds[i]
+        reduction = reduction+r.exceptional
+        table.insert(result,1,{number=i,round=r,adjusted=r.diff-reduction})
+    end
+    return result
+end
+local function counting(items)
+    local k = counting_rule(#items)
+    local ordered = slice(items,1)
+    table.sort(ordered,function(a,b)
+        if a.adjusted ~= b.adjusted then return a.adjusted < b.adjusted end
+        return a.number > b.number
+    end)
+    return slice(ordered,1,k)
+end
+local function update_index(p,day)
+    local items = eligible(p)
+    local k,adjustment = counting_rule(#items)
+    if k == 0 then
+        p.calculation = nil
+        return
+    end
+    local total = 0
+    for _,item in ipairs(counting(items)) do total = total+item.adjusted end
+    local average = half_away(total,k)
+    local value = average+adjustment
+    local low = low_index(p,day)
+    local soft,hard,maximum = false,false,false
+    if low then
+        local l = low[2]
+        if value-l > 30 then
+            local new = l+30+(value-l-30)//2
+            soft,value = new ~= value,new
+        end
+        if value-l > 50 then value,hard = l+50,true end
+    end
+    if value > 540 then value,maximum = 540,true end
+    p.index = value
+    p.calculation = {k=k,average=average,adjustment=adjustment,low=low and low[2] or nil,hard=hard,soft=soft,maximum=maximum}
+local function execute(line)
+    local t,out = {},{}
+    for token in line:gmatch('%S+') do t[#t+1] = token end
+    local cmd = t[1]
+    local function emit(text) out[#out+1] = text end
+    if cmd == 'COURSE' then
+        if courses[t[2]] then fail('duplicate course') end
+        local pars,si,seen = {},{},{}
+        local valid = true
+        for h = 1,18 do
+            pars[h],si[h] = tonumber(t[h+2]),tonumber(t[h+20])
+            if pars[h] < 3 or pars[h] > 5 or si[h] < 1 or si[h] > 18 or seen[si[h]] then valid = false end
+            seen[si[h]] = true
+        end
+        if not valid then fail('invalid course') end
+        courses[t[2]] = {id=t[2],pars=pars,si=si,tees={}}
+    elseif cmd == 'TEE' then
+        local c = get_course(t[2])
+        if c.tees[t[3]] then fail('duplicate tee') end
+        local rating,slope = tonumber(t[4]),tonumber(t[5])
+        if rating < 500 or rating > 900 or slope < 55 or slope > 155 then fail('invalid tee') end
+        c.tees[t[3]] = {rating,slope}
+    elseif cmd == 'PLAYER' then
+        if players[t[2]] then fail('duplicate player') end
+        local index = t[4] and tonumber(t[4]) or nil
+        if index and (index < -100 or index > 540) then fail('invalid index') end
+        players[t[2]] = {id=t[2],name=t[3],index=index,rounds={},records={},calculation=nil}
+    elseif cmd == 'ROUND' then
+        local p = get_player(t[2])
+        local c,tee = tee_check(t[3],t[4])
+        local day = tonumber(t[5])
+        if #p.rounds > 0 and day < p.rounds[#p.rounds].day then fail('invalid day') end
+        local scores,missing = slice(t,6),0
+        for _,score in ipairs(scores) do
+            if score == '-' then missing = missing+1 end
+        end
+        if missing >= 5 then fail('too few holes') end
+        local hcp = p.index and course_handicap(p.index,c,tee) or nil
+        local strokes = allocate(hcp or 0,c.si)
+        local adjusted = {}
+        for h,score in ipairs(scores) do
+            local limit = c.pars[h]+(p.index and 2+strokes[h] or 5)
+            if score == 'X' then adjusted[h] = limit
+            elseif score == '-' then adjusted[h] = c.pars[h]+strokes[h]
+            else adjusted[h] = math.min(tonumber(score),limit) end
+        end
+        local ags = sum(adjusted)
+        local diff = half_away(113*(10*ags-tee[1]),tee[2])
+        local exceptional = 0
+        if p.index and p.index-diff >= 70 then exceptional = p.index-diff >= 100 and 20 or 10 end
+        local r = {day=day,course=c.id,tee=t[4],scores=scores,handicap=hcp,adjusted=adjusted,ags=ags,diff=diff,exceptional=exceptional,
+            before_index=p.index,before_records=#p.records,before_calculation=p.calculation}
+        p.rounds[#p.rounds+1] = r
+        update_index(p,day)
+        if p.index ~= nil then p.records[#p.records+1] = {day,p.index} end
+        local extra = exceptional == 0 and '' or ' exceptional ' .. signed_text(-exceptional)
+        emit('round ' .. p.id .. ' ' .. #p.rounds .. ': ags ' .. ags .. ' diff ' .. signed_text(diff) .. extra .. ' index ' .. index_text(p.index))
+    elseif cmd == 'REMOVE' then
+        local p = get_player(t[2])
+        if #p.rounds == 0 then fail('no rounds') end
+        local number = #p.rounds
+        local r = table.remove(p.rounds)
+        p.index,p.calculation = r.before_index,r.before_calculation
+        while #p.records > r.before_records do table.remove(p.records) end
+        emit('removed ' .. p.id .. ' ' .. number .. ': index ' .. index_text(p.index))
+    elseif cmd == 'INDEX' or cmd == 'HISTORY' or cmd == 'LOWINDEX' or cmd == 'COURSEHCP' or cmd == 'CARD' or cmd == 'STATS' then
+        local p = get_player(t[2])
+        if cmd == 'INDEX' then
+            local text = 'index ' .. p.id .. ': ' .. index_text(p.index) .. ' rounds ' .. #p.rounds
+            local calc = p.calculation
+            if calc then
+                text = text .. ' lowest ' .. calc.k .. ' average ' .. signed_text(calc.average) .. ' adjustment ' .. signed_text(calc.adjustment)
+                if calc.low ~= nil then text = text .. ' low ' .. index_text(calc.low) end
+                if calc.hard then text = text .. ' hard cap' elseif calc.soft then text = text .. ' soft cap' end
+                if calc.maximum then text = text .. ' maximum' end
+            end
+            emit(text)
+        elseif cmd == 'HISTORY' then
+            emit('history ' .. p.id .. ': rounds ' .. #p.rounds)
+            local items = eligible(p)
+            local counted = {}
+            for _,item in ipairs(counting(items)) do counted[item.number] = true end
+            for _,item in ipairs(items) do
+                local r = item.round
+                local text = item.number .. ' day ' .. r.day .. ' ' .. r.course .. ' ' .. r.tee .. ' ags ' .. r.ags .. ' diff ' .. signed_text(r.diff)
+                if item.adjusted ~= r.diff then text = text .. ' adjusted ' .. signed_text(item.adjusted) end
+                if counted[item.number] then text = text .. ' *' end
+                emit(text)
+            end
+        elseif cmd == 'LOWINDEX' then
+            local low = low_index(p,tonumber(t[3]))
+            local text = low and index_text(low[2]) .. ' day ' .. low[1] or 'none'
+            emit('lowindex ' .. p.id .. ' ' .. t[3] .. ': ' .. text)
+    return out
+local n = tonumber(io.read('*l'))
+for _ = 1,n do
+    local ok,out = pcall(execute,io.read('*l'))
+    if ok then
+        for _,line in ipairs(out) do io.write(line,'\n') end
+    else
+        io.write('ERROR ',out,'\n')
