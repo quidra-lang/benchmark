@@ -9,7 +9,7 @@
 
 ## Selected source locations
 
-- `Main.java`: 21, 22, 23, 24, 25, 26, 27, 28, 47, 51, 53, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 211, 213, 225, 226, 227, 228, 229, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 295, 296, 297, 298, 299, 465, 466, 467, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 490, 491, 492, 493, 494, 497, 498, 510, 511, 512, 513, 514, 515
+- `Main.java`: 21, 22, 23, 24, 26, 27, 28, 47, 51, 53, 59, 60, 61, 62, 64, 65, 66, 67, 68, 69, 70, 71, 72, 211, 213, 225, 226, 227, 228, 229, 277, 278, 279, 280, 281, 282, 283, 284, 285, 287, 288, 289, 295, 296, 297, 298, 299, 465, 466, 467, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 490, 491, 492, 493, 494, 497, 498, 510, 511, 512, 513, 514, 515
 
 ## Evidence and language semantics
 
@@ -17,6 +17,6 @@ TreeMap values provide name order; Spacing then sorts by gap, first name and sec
 
 ## Minimization and alternatives
 
-The excerpt retains the geometry and spacing predicate, ordered layer/pair inputs, both consumers, the spacing-rule storage path, and the state/history evidence needed by the question. Other geometric reports, enclosure/width-rule computations and rectangle editing algorithms are unrelated and omitted. Selecting only the comparison would omit evidence for the second entry point and preservation requirements. Replacing a shared helper instead of independently changing command branches is the smaller change; standard collection sorting, numeric and formatting semantics require no library source.
+The excerpt retains the geometry and spacing predicate, ordered layer/pair inputs, both consumers, the spacing-rule storage path, and the state/history evidence needed by the question. Other geometric reports, enclosure/width-rule computations and rectangle editing algorithms are unrelated and omitted. Selecting only the comparison would omit evidence for the second entry point and preservation requirements. Replacing a shared helper instead of independently changing command branches is the smaller change; standard collection sorting, numeric and formatting semantics require no library source. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 1838 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1835 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

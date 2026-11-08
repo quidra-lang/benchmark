@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.cpp`: 18, 20, 209, 210, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225, 229, 387, 388, 389, 390, 391, 398, 569, 570, 571, 572, 573, 574, 575, 576, 577, 593, 594, 595
+- `main.cpp`: 18, 20, 209, 210, 212, 213, 214, 215, 216, 217, 219, 220, 221, 222, 223, 225, 229, 387, 388, 389, 390, 391, 398, 569, 570, 571, 572, 573, 574, 575, 576, 577, 593, 594, 595
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ The selected representation predicates and sign manipulation identify +0 as patt
 
 ## Minimization and alternatives
 
-Reviewed both command dispatch and the neighbor helper. Kept only representation/NaN predicates, the ordering branch, the two neighbor paths and their flag default. Arithmetic rounding, operand text parsing, unrelated ULP handling, formatting implementations, format registry and I/O cannot change the requested pattern-level trace and are omitted. Using only the zero-equality conditional is smaller but loses the distinct total keys; using only the neighbor helper loses NaN interception and flags. A TABLE dump or full decoder would cost more than the sign/field predicates. Structural closing lines and unused branches are omitted where their information is already established by the selected headers/conditions.
+Reviewed both command dispatch and the neighbor helper. Kept only representation/NaN predicates, the ordering branch, the two neighbor paths and their flag default. Arithmetic rounding, operand text parsing, unrelated ULP handling, formatting implementations, format registry and I/O cannot change the requested pattern-level trace and are omitted. Using only the zero-equality conditional is smaller but loses the distinct total keys; using only the neighbor helper loses NaN interception and flags. A TABLE dump or full decoder would cost more than the sign/field predicates. Structural closing lines and unused branches are omitted where their information is already established by the selected headers/conditions. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 1108 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1107 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

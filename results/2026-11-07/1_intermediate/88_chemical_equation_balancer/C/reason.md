@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.c`: 30, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 679, 681, 682, 683, 684, 685, 686, 687, 688, 689
+- `main.c`: 30, 109, 110, 111, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 679, 681, 682, 683, 684, 685, 686, 687, 688, 689
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ The selected PARSE path passes the formula argument through the existing parser/
 
 ## Minimization and alternatives
 
-The command branch, top-level validation/construction result, Hill order and formatter are distinct dependencies. Recursive group parsing, element weights, mass calculations and equation solving do not affect the proposed output-list traversal and are omitted. Keeping the parser boundary is sufficient to identify preserved validation; no change to its recursive helpers is proposed. Reversing the shared ordering helper or the composition would also reverse the summary and other commands, so that alternative is rejected. Reversing only the already-created pair sequence is an equivalent small alternative when available; reversing its local element traversal avoids touching shared state. Unrelated mass variables are omitted unless they share a complete selected line.
+The command branch, top-level validation/construction result, Hill order and formatter are distinct dependencies. Recursive group parsing, element weights, mass calculations and equation solving do not affect the proposed output-list traversal and are omitted. Keeping the parser boundary is sufficient to identify preserved validation; no change to its recursive helpers is proposed. Reversing the shared ordering helper or the composition would also reverse the summary and other commands, so that alternative is rejected. Reversing only the already-created pair sequence is an equivalent small alternative when available; reversing its local element traversal avoids touching shared state. Unrelated mass variables are omitted unless they share a complete selected line. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 1223 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1222 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

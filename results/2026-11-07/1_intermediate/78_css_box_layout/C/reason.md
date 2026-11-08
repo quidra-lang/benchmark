@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.c`: 325, 326, 327, 328, 329, 330, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 728, 729, 730, 772, 814, 815, 907, 908, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 999
+- `main.c`: 325, 326, 327, 329, 330, 341, 342, 343, 345, 346, 347, 349, 350, 351, 353, 354, 728, 729, 730, 772, 814, 815, 907, 908, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 999
 
 ## Evidence and language semantics
 
@@ -20,6 +20,6 @@ C pointer dereferencing preserves the link between layout storage and HIT. cx/cy
 
 The comparison and output branches cannot be removed without losing required boundary/order/path evidence. The content formulas and dimension storage cannot be replaced by Task A prose. Rendering, style parsing, unrelated command dispatch and detailed unchanged layout solvers are excluded because this is a connection between retained geometry and HIT, not a request to calculate a particular layout. A call-only selection was rejected because custom geometry helpers have no language-guaranteed meaning. The final excerpt was reviewed alone against all three shared requirements.
 
-Using the existing cx/cy helpers is smaller than selecting every edge-declaration and layout branch. The selected frame bodies distinguish the old bw/bh extents from content dimensions; replacing them with the content fields does not require layout changes.
+Using the existing cx/cy helpers is smaller than selecting every edge-declaration and layout branch. The selected frame bodies distinguish the old bw/bh extents from content dimensions; replacing them with the content fields does not require layout changes. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 983 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 979 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

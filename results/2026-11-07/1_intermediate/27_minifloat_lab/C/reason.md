@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.c`: 11, 13, 24, 64, 65, 66, 67, 71, 72, 73, 74, 75, 76, 77, 78, 79, 81, 83, 84, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 552, 553, 554, 555, 556, 557, 558, 559, 560, 585, 586, 587, 588, 592, 593, 594
+- `main.c`: 11, 13, 24, 64, 65, 66, 67, 71, 72, 73, 74, 75, 76, 77, 78, 79, 81, 83, 84, 481, 482, 483, 485, 487, 488, 489, 490, 491, 552, 553, 554, 555, 556, 557, 558, 559, 560, 585, 586, 587, 588, 592, 593, 594
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ The selected representation predicates and sign manipulation identify +0 as patt
 
 ## Minimization and alternatives
 
-Reviewed both command dispatch and the neighbor helper. Kept only representation/NaN predicates, the ordering branch, the two neighbor paths and their flag default. Arithmetic rounding, operand text parsing, unrelated ULP handling, formatting implementations, format registry and I/O cannot change the requested pattern-level trace and are omitted. Using only the zero-equality conditional is smaller but loses the distinct total keys; using only the neighbor helper loses NaN interception and flags. A TABLE dump or full decoder would cost more than the sign/field predicates. Structural closing lines and unused branches are omitted where their information is already established by the selected headers/conditions.
+Reviewed both command dispatch and the neighbor helper. Kept only representation/NaN predicates, the ordering branch, the two neighbor paths and their flag default. Arithmetic rounding, operand text parsing, unrelated ULP handling, formatting implementations, format registry and I/O cannot change the requested pattern-level trace and are omitted. Using only the zero-equality conditional is smaller but loses the distinct total keys; using only the neighbor helper loses NaN interception and flags. A TABLE dump or full decoder would cost more than the sign/field predicates. Structural closing lines and unused branches are omitted where their information is already established by the selected headers/conditions. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 1262 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1260 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `Main.java`: 5, 22, 23, 24, 65, 66, 67, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 145, 146, 147, 421, 422, 423, 424, 425, 431, 432, 433, 434, 440, 443, 444, 445, 446, 447, 448, 459, 477, 478, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604
+- `Main.java`: 5, 22, 23, 24, 65, 66, 67, 121, 122, 123, 124, 125, 127, 128, 129, 130, 131, 145, 146, 147, 421, 422, 423, 424, 425, 431, 432, 433, 434, 440, 443, 444, 445, 446, 447, 448, 459, 477, 478, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ FACES iteration preserves URFDLB; axis supplies opposite-face groups. The two ex
 
 ## Minimization and alternatives
 
-The excerpt contains validated count/seed input,candidate axis/order,current exclusions,both draws,amount mapping,existing move application and observable notation/state outputs. Permutation-table construction,search,simplification,undo and full move grammar are unchanged and not required to locate this generator-only change. The whole simulator would be much larger; the candidate predicate alone would omit the required deterministic draw and application trace.
+The excerpt contains validated count/seed input,candidate axis/order,current exclusions,both draws,amount mapping,existing move application and observable notation/state outputs. Permutation-table construction,search,simplification,undo and full move grammar are unchanged and not required to locate this generator-only change. The whole simulator would be much larger; the candidate predicate alone would omit the required deterministic draw and application trace. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 1397 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1396 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

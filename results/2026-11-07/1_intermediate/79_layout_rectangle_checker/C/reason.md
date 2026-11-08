@@ -9,7 +9,7 @@
 
 ## Selected source locations
 
-- `main.c`: 65, 77, 78, 79, 80, 81, 82, 83, 110, 111, 112, 113, 114, 115, 116, 138, 139, 140, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 485, 486, 487, 488, 495, 496, 497, 498, 742, 743, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 758, 760, 761, 777, 778, 779, 780, 781
+- `main.c`: 65, 77, 78, 79, 81, 82, 83, 110, 111, 112, 114, 115, 116, 138, 139, 140, 172, 173, 174, 175, 177, 178, 179, 180, 181, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 414, 415, 416, 417, 418, 419, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 432, 433, 434, 455, 456, 457, 458, 459, 460, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 485, 486, 487, 488, 495, 496, 497, 498, 742, 743, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 758, 760, 761, 777, 778, 779, 780, 781
 
 ## Evidence and language semantics
 
@@ -17,6 +17,6 @@ The rectangle insertion sort and its strcmp comparator provide name order. spaci
 
 ## Minimization and alternatives
 
-The excerpt retains the geometry and spacing predicate, ordered layer/pair inputs, both consumers, the spacing-rule storage path, and the state/history evidence needed by the question. Other geometric reports, enclosure/width-rule computations and rectangle editing algorithms are unrelated and omitted. Selecting only the comparison would omit evidence for the second entry point and preservation requirements. Replacing a shared helper instead of independently changing command branches is the smaller change; standard collection sorting, numeric and formatting semantics require no library source.
+The excerpt retains the geometry and spacing predicate, ordered layer/pair inputs, both consumers, the spacing-rule storage path, and the state/history evidence needed by the question. Other geometric reports, enclosure/width-rule computations and rectangle editing algorithms are unrelated and omitted. Selecting only the comparison would omit evidence for the second entry point and preservation requirements. Replacing a shared helper instead of independently changing command branches is the smaller change; standard collection sorting, numeric and formatting semantics require no library source. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 2240 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 2234 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.c`: 29, 35, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 466, 467, 468, 469, 470, 471, 472, 749, 750, 751
+- `main.c`: 29, 35, 272, 273, 274, 275, 276, 277, 279, 280, 281, 282, 466, 467, 468, 469, 470, 471, 472, 749, 750, 751
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ STATUS passes classes[i] or statuses[i] with n to percentage. decimal truncates 
 
 ## Minimization and alternatives
 
-The excerpt starts at the STATUS count/selected-total boundary; record parsing, filtering implementation and unrelated query calculations are unnecessary. Both STATUS percentage call sites are needed; changing only one misses category or exact-code rows. The shared arithmetic/formatting implementation and zero-selection guard are needed, but all its other callers can be omitted because the proposed change is explicitly routed only from STATUS. No proposed modification is implemented.
+The excerpt starts at the STATUS count/selected-total boundary; record parsing, filtering implementation and unrelated query calculations are unnecessary. Both STATUS percentage call sites are needed; changing only one misses category or exact-code rows. The shared arithmetic/formatting implementation and zero-selection guard are needed, but all its other callers can be omitted because the proposed change is explicitly routed only from STATUS. No proposed modification is implemented. Whitespace-only lines outside source literals and explicit line continuations are omitted: they contribute tokens but no evidence for the answer. Literal content is preserved, and files with ambiguous quote or multiline-literal syntax are left unchanged by this step.
 
-The excerpt contains 614 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 613 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

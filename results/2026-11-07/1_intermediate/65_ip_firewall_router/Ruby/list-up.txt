@@ -1,5 +1,4 @@
 class RouterError < StandardError
-end
 class Router
   DROP_REASONS = %w[down martian rpf invalid acl_in ttl noroute acl_out exhausted].freeze
   def initialize
@@ -11,26 +10,16 @@ class Router
     @connections = []
     @clock = @packet_number = @connection_number = 0
     reset_counters
-  end
-
   def error(message)
     raise RouterError, message
-  end
-
   def address(word)
     error("bad address #{word}") unless word.match?(/\A(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}\z/) && word.split('.').all? { |part| part.to_i <= 255 }
     word.split('.').reduce(0) { |value, part| value * 256 + part.to_i }
-  end
-
   def ip(value)
     [24, 16, 8, 0].map { |shift| (value >> shift) & 255 }.join('.')
-  end
-
   def network(value, length)
     size = 2**(32 - length)
     value / size * size
-  end
-
   def prefix(word, hosts = false)
     pieces = word.split('/', -1)
     begin
@@ -43,32 +32,20 @@ class Router
     length = pieces[1].to_i
     error("host bits set in #{word}") if !hosts && value != network(value, length)
     [value, length]
-  end
-
   def contains?(prefix, value)
     network(prefix[0], prefix[1]) == network(value, prefix[1])
-  end
-
   def iface(name)
     error("no interface #{name}") unless @interfaces.key?(name)
     @interfaces[name]
-  end
-
   def local(value)
     @interfaces.find { |_name, item| item[:address] == value }&.first
-  end
-
   def route(value)
     @routes.each_with_index.select { |item, _| @interfaces[item[:dev]][:up] && contains?(item[:prefix], value) }
            .min_by { |item, index| [-item[:prefix][1], item[:metric], index] }&.first
-  end
-
   def route_text(item)
     text = "#{item[:type]} #{ip(item[:prefix][0])}/#{item[:prefix][1]}"
     text += " via #{ip(item[:hop])}" if item[:hop]
     text + " dev #{item[:dev]} metric #{item[:metric]}"
-  end
-
   def port_range(word)
     return [0, 65535, true] if word == 'ANY'
     numbers = word.split('-').map(&:to_i)
@@ -87,8 +64,6 @@ class Router
         (!item[:established] || established)
     end
     unless rule
-      pair[:default] += 1
-      return "DROP acl #{name} #{direction} default"
     end
     rule[:hits] += 1
     case rule[:action]
@@ -96,14 +71,13 @@ class Router
     when 'DENY' then "DROP acl #{name} #{direction} #{rule[:seq]}"
     else "REJECT acl #{name} #{direction} #{rule[:seq]} #{protocol == 'TCP' ? 'tcp-reset' : 'icmp-prohibited'}"
     end
-  end
-
   def packet(name, protocol, flags, source, sport, destination, dport, ttl)
     input = @interfaces[name]
     return ['DROP down', 'down'] unless input[:up]
     martian = [source, destination].any? { |value| contains?([0, 8], value) || contains?([127 * 2**24, 8], value) || contains?([224 * 2**24, 3], value) }
     return ['DROP martian', 'martian'] if martian || local(source)
     if input[:rpf] != 'off'
+    end
     tuple = [protocol, source, sport, destination, dport]
     pure_syn = protocol == 'TCP' && flags == 'S'
     connection = nil
@@ -115,7 +89,6 @@ class Router
         break
       end
     end
-    if connection && connection[:state] == 'CLOSED' && pure_syn
     return ['DROP invalid', 'invalid'] if protocol == 'TCP' && !connection && !pure_syn
     verdict = acl(name, 'in', protocol, source, sport, destination, dport, !connection.nil?)
     return [verdict, 'acl_in'] if verdict
@@ -128,8 +101,6 @@ class Router
       if static
         translated_destination = static[:inside]
       elsif forward
-        translated_destination = forward[:inside]
-        translated_dport = forward[:inport]
       elsif destination == input[:address]
         mapping = @pat.find { |item| item[:dev] == name && item[:proto] == protocol && item[:port] == dport }
         if mapping
@@ -155,8 +126,6 @@ class Router
       if static
         translated_source = static[:outside]
       elsif forward
-        translated_source = output[:address]
-        translated_sport = forward[:port]
       elsif output[:pool]
         mapping = @pat.find { |item| item[:dev] == output_name && item[:proto] == protocol && item[:inside] == source && item[:inport] == sport }
         unless mapping
@@ -182,7 +151,6 @@ class Router
     connection[:last] = @clock
     if protocol != 'TCP'
       connection[:state] = 'REPLIED' if direction == 'reply'
-    elsif flags.include?('R')
     end
     output[:tx] += 1
     selected[:hits] += 1
@@ -191,7 +159,6 @@ class Router
     text += " dnat=#{ip(translated_destination)}:#{translated_dport}" if [translated_destination, translated_dport] != [destination, dport]
     text += " snat=#{ip(translated_source)}:#{translated_sport}" if [translated_source, translated_sport] != [source, sport]
     [text + " conn=#{connection[:number]} #{direction}", 'forwarded']
-  end
   def reset_counters
     @counts = { 'forwarded' => 0, 'local' => 0, 'errors' => 0 }
     DROP_REASONS.each { |reason| @counts[reason] = 0 }
@@ -254,6 +221,14 @@ class Router
       puts "ok acl #{name} #{direction} #{sequence}"
     when 'NAT'
       case name
+      when 'STATIC'
+        inside = address(args[1])
+        outside = address(args[2])
+        [1, 2].each { |index| error("address #{args[index]} is local") if local(index == 1 ? inside : outside) }
+        error("duplicate static #{args[1]}") if @static.any? { |item| item[:inside] == inside }
+        error("duplicate static #{args[2]}") if @static.any? { |item| item[:outside] == outside }
+        @static << { inside: inside, outside: outside }
+        puts "ok nat static #{args[1]} #{args[2]}"
       when 'PAT'
         item = iface(args[1])
         count = args[2].to_i
@@ -262,18 +237,6 @@ class Router
         item[:pool] = count
         item[:role] = 'outside'
         puts "ok nat pat #{args[1]} #{ip(item[:address])} 20000-#{19999 + count}"
-      when 'FORWARD'
-        item = iface(args[1])
-        port = args[3].to_i
-        error("bad port #{args[3]}") unless port.between?(1, 65535)
-        inside = address(args[4])
-        inport = args[5].to_i
-        error("bad port #{args[5]}") unless inport.between?(1, 65535)
-        error("interface #{args[1]} not outside") unless item[:role] == 'outside'
-        error("address #{args[4]} is local") if local(inside)
-        error("duplicate forward #{args[1]} #{args[2]} #{args[3]}") if @forwards.any? { |rule| rule[:dev] == args[1] && rule[:proto] == args[2] && rule[:port] == port }
-        @forwards << { dev: args[1], proto: args[2], port: port, inside: inside, inport: inport }
-        puts "ok nat forward #{args[1]} #{args[2]} #{port} #{args[4]}:#{inport}"
       end
     when 'PACKET'
       item = iface(name)
@@ -296,8 +259,6 @@ class Router
     when 'SHOW'
       show(name)
     end
-  end
-
   def run
     count = STDIN.readline.to_i
     count.times do
@@ -308,5 +269,4 @@ class Router
         puts "error: #{exception.message}"
       end
     end
-  end
 Router.new.run
