@@ -1,0 +1,130 @@
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(s: Text) Int {
+    return std.fmt.parseInt(Int, s, 10) catch unreachable;
+}
+const Builder = struct {
+    gpa: Allocator,
+    bytes: std.ArrayList(u8) = .empty,
+    fn add(self: *Builder, text: Text) Allocator.Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
+    fn print(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
+        try self.add(try std.fmt.allocPrint(self.gpa, format, args));
+    }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Allocator.Error!void {
+        try self.print(format ++ "\n", args);
+    }
+};
+fn words(gpa: Allocator, text: Text) Allocator.Error![]Text {
+    var result: std.ArrayList(Text) = .empty;
+    var iterator = std.mem.tokenizeScalar(u8, text, ' ');
+    while (iterator.next()) |word| try result.append(gpa, word);
+    return result.items;
+}
+const Geometry = struct { x1: Int, y1: Int, x2: Int, y2: Int };
+const Rectangle = struct { name: Text, layer: Text, r: Geometry };
+const RelationKind = enum { overlap, edge, corner, separate };
+const Relation = struct { r: Geometry, ox: Int, oy: Int, gap: Int, kind: RelationKind, direction: Text = "" };
+fn compare(a: Geometry, b: Geometry) Relation {
+    const r: Geometry = .{ .x1 = @max(a.x1, b.x1), .y1 = @max(a.y1, b.y1), .x2 = @min(a.x2, b.x2), .y2 = @min(a.y2, b.y2) };
+    const ox = r.x2 - r.x1;
+    const oy = r.y2 - r.y1;
+    const kind: RelationKind = if (ox > 0 and oy > 0) .overlap else if (ox == 0 and oy == 0) .corner else if (ox >= 0 and oy >= 0) .edge else .separate;
+    return .{ .r = r, .ox = ox, .oy = oy, .gap = @max(0, @max(-ox, -oy)), .kind = kind, .direction = if (ox < 0 and oy < 0) "diagonal" else if (ox < 0) "x" else "y" };
+}
+fn rectangleLess(_: void, a: Rectangle, b: Rectangle) bool {
+    return std.mem.order(u8, a.name, b.name) == .lt;
+}
+const Violation = struct { a: Text, b: Text, gap: Int, direction: Text };
+fn violationLess(_: void, a: Violation, b: Violation) bool {
+    const first = std.mem.order(u8, a.a, b.a);
+    return a.gap < b.gap or a.gap == b.gap and (first == .lt or first == .eq and std.mem.order(u8, a.b, b.b) == .lt);
+}
+fn spacing(gpa: Allocator, list: []const Rectangle, s: Int) Allocator.Error![]Violation {
+    var result: std.ArrayList(Violation) = .empty;
+    for (list, 0..) |a, i| {
+        for (list[i + 1 ..]) |b| {
+            const r = compare(a.r, b.r);
+            if (r.kind == .corner or r.kind == .separate and r.gap < s) try result.append(gpa, .{ .a = a.name, .b = b.name, .gap = r.gap, .direction = if (r.kind == .corner) "corner" else r.direction });
+        }
+    }
+    std.mem.sort(Violation, result.items, {}, violationLess);
+    return result.items;
+}
+const RuleKind = enum { enclose, spacing, width };
+const Rule = struct { kind: RuleKind, inner: Text, outer: Text = "", value: Int };
+fn ruleLess(_: void, a: Rule, b: Rule) bool {
+    if (a.kind != b.kind) return @backingInt(a.kind) < @backingInt(b.kind);
+    const inner = std.mem.order(u8, a.inner, b.inner);
+    return inner == .lt or inner == .eq and std.mem.order(u8, a.outer, b.outer) == .lt;
+}
+const Snapshot = struct { rectangles: []const Rectangle, command: Text };
+const Checker = struct {
+    gpa: Allocator,
+    scratch: Allocator,
+    out: *Builder,
+    rectangles: std.StringHashMapUnmanaged(Rectangle) = .empty,
+    rules: std.StringHashMapUnmanaged(Rule) = .empty,
+    history: std.ArrayList(Snapshot) = .empty,
+    fn list(self: *Checker, layer: ?Text) Allocator.Error![]Rectangle {
+        var result: std.ArrayList(Rectangle) = .empty;
+        var iterator = self.rectangles.valueIterator();
+        while (iterator.next()) |item| if (layer == null or equal(item.layer, layer.?)) try result.append(self.scratch, item.*);
+        std.mem.sort(Rectangle, result.items, {}, rectangleLess);
+        return result.items;
+    }
+    fn require(self: *Checker, layer: Text) Error![]Rectangle {
+        const result = try self.list(layer);
+        if (result.len == 0) return self.fail("no rectangles on {s}", .{layer});
+        return result;
+    }
+    fn violationLines(self: *Checker, violations: []const Violation) Error!void {
+        for (violations) |v| try self.out.line("{s} {s} gap {d} {s}", .{ v.a, v.b, v.gap, v.direction });
+    }
+    fn command(self: *Checker, line: Text) Error!void {
+        const tokens = try words(self.scratch, line);
+        const commandName = tokens[0];
+        const args = tokens[1..];
+        if (equal(commandName, "RULE")) {
+            const kind: RuleKind = if (equal(args[0], "SPACING")) .spacing else if (equal(args[0], "WIDTH")) .width else .enclose;
+            const r: Rule = .{ .kind = kind, .inner = args[1], .outer = if (kind == .enclose) args[2] else "", .value = number(args[if (kind == .enclose) @as(usize, 3) else 2]) };
+            const key = try std.fmt.allocPrint(self.gpa, "{s}:{s}:{s}", .{ @tagName(kind), r.inner, r.outer });
+            try self.rules.put(self.gpa, key, r);
+            if (kind == .enclose) {
+                try self.out.line("rule enclose {s} {s} {d}", .{ r.inner, r.outer, r.value });
+            } else try self.out.line("rule {s} {s} {d}", .{ @tagName(kind), r.inner, r.value });
+            return;
+        }
+        if (equal(commandName, "CHECK")) {
+            try self.check();
+            return;
+        }
+        const layer = args[if (equal(commandName, "COVER")) @as(usize, 1) else 0];
+        const rectangles = try self.require(layer);
+        } else if (equal(commandName, "DRC")) {
+            const s = number(args[1]);
+            const violations = try spacing(self.scratch, rectangles, s);
+            try self.out.line("drc {s} spacing {d}: {d} violations", .{ layer, s, violations.len });
+            try self.violationLines(violations);
+    fn check(self: *Checker) Error!void {
+        if (self.rules.count() == 0) return self.fail("no rules", .{});
+        var rules: std.ArrayList(Rule) = .empty;
+        var iterator = self.rules.valueIterator();
+        while (iterator.next()) |r| try rules.append(self.scratch, r.*);
+        std.mem.sort(Rule, rules.items, {}, ruleLess);
+        var total: usize = 0;
+        for (rules.items) |r| {
+            const rectangles = try self.list(r.inner);
+            var lines: std.ArrayList(Text) = .empty;
+            switch (r.kind) {
+                .spacing => for (try spacing(self.scratch, rectangles, r.value)) |v| {
+                    try lines.append(self.scratch, try std.fmt.allocPrint(self.scratch, "{s} {s} gap {d} {s}", .{ v.a, v.b, v.gap, v.direction }));
+                },
+            } else try self.out.line("{s} {s} {d}: {d} violations", .{ @tagName(r.kind), r.inner, r.value, lines.items.len });
+            for (lines.items) |line| try self.out.line("{s}", .{line});
+            total += lines.items.len;
+        }
+        try self.out.line("check: {d} violations in {d} rules", .{ total, rules.items.len });
+    }

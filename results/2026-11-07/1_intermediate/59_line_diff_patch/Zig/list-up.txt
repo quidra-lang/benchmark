@@ -1,0 +1,85 @@
+fn parseNumber(text: []const u8) ?usize {
+    if (text.len < 1 or text.len > 4) return null;
+    for (text) |c| {
+        if (!std.ascii.isDigit(c)) return null;
+    }
+    return std.fmt.parseInt(usize, text, 10) catch null;
+}
+
+fn parseNumberPair(text: []const u8) ?NumberPair {
+    var parts = std.mem.splitScalar(u8, text, ',');
+    const first = parseNumber(parts.next().?) orelse return null;
+    const second_text = parts.next() orelse return .{ .first = first, .second = null };
+    if (parts.next() != null) return null;
+    return .{ .first = first, .second = parseNumber(second_text) orelse return null };
+}
+
+const HunkRange = struct { start: usize, count: usize };
+
+fn parseRange(text: []const u8, sign: u8) ?HunkRange {
+    if (text.len == 0 or text[0] != sign) return null;
+    const pair = parseNumberPair(text[1..]) orelse return null;
+    const count = pair.second orelse 1;
+    if (pair.first == 0 and count != 0) return null;
+    return .{ .start = pair.first, .count = count };
+}
+
+fn parseHunkHeader(
+    allocator: Allocator,
+    out: *std.Io.Writer,
+    line: []const u8,
+    line_number: usize,
+) Error!PatchHunk {
+    const parts = try splitWords(allocator, line);
+    if (parts.len == 4 and std.mem.eql(u8, parts[0], "@@") and std.mem.eql(u8, parts[3], "@@")) {
+        if (parseRange(parts[1], '-')) |old_range| {
+            if (parseRange(parts[2], '+')) |new_range| {
+                return .{
+                    .line_number = line_number,
+                    .old_start = old_range.start,
+                    .old_count = old_range.count,
+                    .new_start = new_range.start,
+                    .new_count = new_range.count,
+                };
+            }
+        }
+    }
+    return fail(out, "PATCH ERROR line {d}: bad hunk header", .{line_number});
+}
+
+fn parsePatch(allocator: Allocator, out: *std.Io.Writer, patch_lines: Lines) Error![]PatchHunk {
+    var index: usize = 0;
+    while (index < patch_lines.len and !std.mem.startsWith(u8, patch_lines[index], "@@")) {
+        index += 1;
+    }
+    if (index == patch_lines.len) return fail(out, "PATCH ERROR no hunks", .{});
+    var hunks: std.ArrayList(PatchHunk) = .empty;
+    while (index < patch_lines.len) {
+        var hunk = try parseHunkHeader(allocator, out, patch_lines[index], index + 1);
+        index += 1;
+        var body: std.ArrayList(BodyLine) = .empty;
+        var old_seen: usize = 0;
+        var new_seen: usize = 0;
+        while (old_seen < hunk.old_count or new_seen < hunk.new_count) {
+            if (index == patch_lines.len)
+                return fail(out, "PATCH ERROR line {d}: truncated hunk", .{hunk.line_number});
+            const line = patch_lines[index];
+            const kind = line[0];
+            const in_old = kind == ' ' or kind == '-';
+            const in_new = kind == ' ' or kind == '+';
+            const old_full = in_old and old_seen == hunk.old_count;
+            const new_full = in_new and new_seen == hunk.new_count;
+            if (line.len < 2 or !(in_old or in_new) or old_full or new_full)
+                return fail(out, "PATCH ERROR line {d}: bad hunk line", .{index + 1});
+            try body.append(allocator, .{ .kind = kind, .text = line[1..] });
+            if (in_old) old_seen += 1;
+            if (in_new) new_seen += 1;
+            index += 1;
+        }
+        hunk.body = body.items;
+        for (hunk.body) |line| {
+            if (line.kind != ' ') break;
+        } else return fail(out, "PATCH ERROR line {d}: no changes", .{hunk.line_number});
+        try hunks.append(allocator, hunk);
+    }
+    return hunks.items;
