@@ -1,0 +1,22 @@
+# Task B selection — R
+
+## Answer requirements shared across languages
+
+1. Trace a valid two-cue SRT scenario from block separation, index/timestamp/text parsing and storage to MERGE command dispatch, arity/numeric/range validation and its error output.
+2. Locate the strict gap comparison and explain changing only it to accept equality; retain dialogue exclusion, greedy wrapping at 42 columns and the at-most-two-line eligibility test.
+3. Trace the evolving retained-cue state: the first identity/start survive, end becomes the maximum, text is replaced by wrapped combined text, joins increment, rejected pairs remain separate, and subsequent comparisons use the evolving end.
+4. Explain the MERGE summary and a following PRINT/SRT export, including an equal-gap success example, a dialogue or over-two-line rejection and unchanged malformed-command behavior.
+
+## Selected source locations
+
+- `main.R`: 1, 8, 22, 32, 36, 38, 39, 40, 41, 42, 43, 44, 46, 51, 55, 57, 58, 59, 74, 75, 76, 77, 78, 81, 86, 87, 90, 91, 92, 93, 94, 97, 115, 116, 119, 120, 121, 122, 129, 130, 131, 146, 147, 148, 150, 158, 161, 162, 163, 164, 165, 166, 167, 168, 171, 245, 246, 303, 304, 340, 343, 344, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 449, 451, 452, 587, 590, 591, 592, 593, 594, 595, 596, 597, 598, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 621, 623, 624, 625, 628, 630, 631, 632, 633, 634, 635, 636, 643, 644, 646, 647, 648, 649, 651, 652
+
+## Evidence and language semantics
+
+A concrete trace uses SRT cues 7 (00:00:00,000 to 00:00:01,000, text alpha) and 8 (00:00:01,100 to 00:00:02,100, text beta), then MERGE 100 and PRINT. The current strict test rejects their 100 ms gap; changing that gap test alone to inclusive accepts it. The retained cue remains index 7/start 0 ms, has end 2100 ms and text alpha beta; summary is MERGE merged=1 cues=1, and PRINT emits index 7 and 00:00:00,000 --> 00:00:02,100 followed by alpha beta and a blank separator. A text beginning "- " or combined greedy wrapping requiring three lines leaves two cues and no join, rather than raising an error. A malformed/extra argument or a gap above 60000 follows the selected validation/error path before the merging mutation. The selected merge loop also shows that any next cue is compared against the last retained, already-extended cue. The schema and custom argument parsing establish MERGE as one 0:60000 argument, numeric syntax, exact arity and validation before modify. load_block returns named list fields and main stores loaded$cue into cues; their selected bodies establish index/start/stop/lines rather than assuming these field meanings from Task A. R value/copy-on-modify semantics mean result[[last]]$stop/lines changes retain all other fields. The selected modify return and main result$cues assignment are essential to connect the rebuilt list to a later inspect/PRINT. floor_div and number are custom output helpers, retained for millisecond formatting and plain index output. tryCatch produces ERROR and does not assign a changed cue list after validation failure.
+
+## Minimization and alternatives
+
+Compared a boundary-only excerpt with this end-to-end slice: the shorter candidate cannot establish loading, validation, text eligibility, state propagation or export. Conversely, including all command branches, markup conversion, validation reports, statistics, undo storage and other edit operations contributes no required fact. PRINT is the lowest-cost subsequent export because it needs no VTT/ASS conversion. Bare delimiters, cleanup-only operations and unrelated schema entries are omitted where their absence loses no fact; a combined source line is retained verbatim when it also contains irrelevant branches. Standard formatting/string/collection operations use documented semantics. The selected custom helpers are retained only where their body, rather than its name, establishes needed behavior. A final excerpt-only review removed empty lines and standalone closing delimiters that add no necessary information; control conditions, meaningful else/continue/break lines, field bindings and result propagation remain.
+
+The excerpt contains 2476 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

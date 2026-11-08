@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.dart`: 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 23, 25, 26, 28, 30, 136, 137, 138, 139, 143, 146, 148, 149, 152, 159, 160, 161, 162, 163, 165, 166, 167, 169, 172, 173, 360, 361, 362, 365, 367, 369, 370, 371, 372, 373, 374, 375, 616, 620
+- `main.dart`: 10, 11, 12, 14, 15, 16, 17, 18, 20, 23, 25, 26, 28, 30, 136, 137, 138, 139, 143, 146, 148, 149, 152, 159, 160, 161, 162, 163, 165, 166, 167, 169, 172, 173, 360, 361, 362, 365, 367, 369, 370, 371, 372, 373, 374, 375, 616, 620
 
 ## Evidence and language semantics
 
@@ -18,6 +18,6 @@ Dart list indices are zero based, fold traverses h in order, and the radix-2 par
 
 ## Minimization and alternatives
 
-An encoder-only excerpt would miss H-row order and cannot justify the single-bit syndrome contribution. A syndrome-only excerpt would not establish which message bit selects which generator row. Omitting the cyclic conversion would wrongly suggest that every ENCODE uses direct generator-row summation. Conversely Gaussian elimination, code enumeration, decoding, leader tables, command-wide validation and unrelated constructors do not determine this interaction and are excluded. The retained tiny arithmetic/conversion loops each supply a required initialization, iteration order, contribution or return; brace-only/blank lines and unused quotient updates are omitted. An alternative selection could inline the relevant helper body at its call sites, but complete-line copying forbids rewriting, and repeating the same definition would increase cost. For matrix codes the correctness of H as a parity-check matrix follows the README valid-program assumption; no extra proof of the nullspace implementation is needed to explain indexing.
+An encoder-only excerpt would miss H-row order and cannot justify the single-bit syndrome contribution. A syndrome-only excerpt would not establish which message bit selects which generator row. Omitting the cyclic conversion would wrongly suggest that every ENCODE uses direct generator-row summation. Conversely Gaussian elimination, code enumeration, decoding, leader tables, command-wide validation and unrelated constructors do not determine this interaction and are excluded. The retained tiny arithmetic/conversion loops each supply a required initialization, iteration order, contribution or return; brace-only/blank lines and unused quotient updates are omitted. An alternative selection could inline the relevant helper body at its call sites, but complete-line copying forbids rewriting, and repeating the same definition would increase cost. For matrix codes the correctness of H as a parity-check matrix follows the README valid-program assumption; no extra proof of the nullspace implementation is needed to explain indexing. Independently inherited against identical current source; excluded the unrelated yes formatter.
 
-The excerpt contains 1024 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 998 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -1,0 +1,22 @@
+# Task B selection — Dart
+
+## Answer requirements shared across languages
+
+1. Trace a valid two-cue SRT scenario from block separation, index/timestamp/text parsing and storage to MERGE command dispatch, arity/numeric/range validation and its error output.
+2. Locate the strict gap comparison and explain changing only it to accept equality; retain dialogue exclusion, greedy wrapping at 42 columns and the at-most-two-line eligibility test.
+3. Trace the evolving retained-cue state: the first identity/start survive, end becomes the maximum, text is replaced by wrapped combined text, joins increment, rejected pairs remain separate, and subsequent comparisons use the evolving end.
+4. Explain the MERGE summary and a following PRINT/SRT export, including an equal-gap success example, a dialogue or over-two-line rejection and unchanged malformed-command behavior.
+
+## Selected source locations
+
+- `main.dart`: 3, 4, 5, 8, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 40, 41, 42, 43, 51, 52, 53, 54, 58, 61, 62, 63, 64, 65, 66, 67, 68, 69, 72, 98, 99, 100, 101, 107, 109, 114, 122, 123, 124, 125, 126, 128, 129, 130, 131, 132, 138, 139, 140, 159, 160, 161, 162, 163, 164, 165, 166, 168, 169, 170, 171, 172, 173, 174, 176, 183, 186, 187, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 206, 207, 208, 209, 210, 217, 218, 219, 230, 231, 312, 313, 314, 315, 316, 317, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 461, 463, 464, 603, 608, 609, 610, 611, 612, 613, 614, 616, 617, 618, 619, 621, 622, 623, 624, 625, 626, 627, 628, 631
+
+## Evidence and language semantics
+
+A concrete trace uses SRT cues 7 (00:00:00,000 to 00:00:01,000, text alpha) and 8 (00:00:01,100 to 00:00:02,100, text beta), then MERGE 100 and PRINT. The current strict test rejects their 100 ms gap; changing that gap test alone to inclusive accepts it. The retained cue remains index 7/start 0 ms, has end 2100 ms and text alpha beta; summary is MERGE merged=1 cues=1, and PRINT emits index 7 and 00:00:00,000 --> 00:00:02,100 followed by alpha beta and a blank separator. A text beginning "- " or combined greedy wrapping requiring three lines leaves two cues and no join, rather than raising an error. A malformed/extra argument or a gap above 60000 follows the selected validation/error path before the merging mutation. The selected merge loop also shows that any next cue is compared against the last retained, already-extended cue. The selected typed cue fields, unsigned/timestamp parser and block loader establish original cue data and millisecond storage. Schema parsing establishes MERGE arity, 0..60000 validation and PRINT with no operands; errors propagate to the selected command-loop formatter before a merge mutation. Dart class Cue is reference-based; a is result.last, so assigning a.end/a.text directly updates the retained cue without changing index/start. Command.number casts the stored argument, and its selected body connects the parsed Object value to the gap comparison. The dialogue and greedy wrap bodies are necessary custom behavior. Standard formatting and collection APIs provide the remaining semantics.
+
+## Minimization and alternatives
+
+Compared a boundary-only excerpt with this end-to-end slice: the shorter candidate cannot establish loading, validation, text eligibility, state propagation or export. Conversely, including all command branches, markup conversion, validation reports, statistics, undo storage and other edit operations contributes no required fact. PRINT is the lowest-cost subsequent export because it needs no VTT/ASS conversion. Bare delimiters, cleanup-only operations and unrelated schema entries are omitted where their absence loses no fact; a combined source line is retained verbatim when it also contains irrelevant branches. Standard formatting/string/collection operations use documented semantics. The selected custom helpers are retained only where their body, rather than its name, establishes needed behavior. A final excerpt-only review removed empty lines and standalone closing delimiters that add no necessary information; control conditions, meaningful else/continue/break lines, field bindings and result propagation remain.
+
+The excerpt contains 2745 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

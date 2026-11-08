@@ -1,0 +1,141 @@
+from textwrap import wrap as wrap_text
+import re
+TIME_PATTERN = re.compile(r"([0-9]{2}):([0-9]{2}):([0-9]{2}),([0-9]{3})")
+SCHEMAS = {
+    "GAPS": ("gap",), "STATS": (), "PRINT": (), "TOVTT": (), "TOASS": (),
+    "MERGE": ("gap",), "SPLIT": ("width",),
+STRING_COMMANDS = {"SEARCH", "INSERT", "TEXT", "REPLACE"}
+def bad_arguments():
+    raise CommandError("bad arguments")
+def integer(text, minimum=0, maximum=999999999, signed=False):
+    pattern = r"-?[0-9]{1,9}" if signed else r"[0-9]{1,9}"
+    if re.fullmatch(pattern, text) is None:
+        bad_arguments()
+    value = int(text)
+    if not minimum <= value <= maximum:
+        bad_arguments()
+    return value
+def parse_time(text):
+    match = TIME_PATTERN.fullmatch(text)
+    if match is None:
+        bad_arguments()
+    hours, minutes, seconds, milliseconds = map(int, match.groups())
+    if minutes > 59 or seconds > 59:
+        bad_arguments()
+    return hours * 3600000 + minutes * 60000 + seconds * 1000 + milliseconds
+def argument(text, kind):
+    if kind in ("position", "factor", "gap", "minimum", "width"):
+        minimum, maximum = {
+            "position": (1, 999999999), "factor": (1, 100000),
+            "gap": (0, 60000), "minimum": (1, 60000), "width": (10, 80),
+        }[kind]
+        return integer(text, minimum, maximum)
+def srt_time(value, separator=","):
+    return (f"{value // 3600000:02d}:{value // 60000 % 60:02d}:"
+            f"{value // 1000 % 60:02d}{separator}{value % 1000:03d}")
+def words(lines):
+    return " ".join(lines).split()
+def wrap(sequence, width):
+    return wrap_text(" ".join(sequence), width, break_long_words=False, break_on_hyphens=False)
+class Cue:
+    def __init__(self, index, start, end, lines):
+        self.index = index
+        self.start = start
+        self.end = end
+        self.lines = lines
+    @property
+    def dialogue(self):
+        return any(line.startswith("- ") for line in self.lines)
+def load_cues(blocks):
+    cues = []
+    output = []
+    for number, block in enumerate(blocks, 1):
+        if re.fullmatch(r"[0-9]{1,6}", block[0]) is None:
+            output.append(f"BAD CUE {number}: index")
+            continue
+        try:
+            if len(block) < 2 or len(block[1]) != 29 or block[1][12:17] != " --> ":
+                bad_arguments()
+            start, end = parse_time(block[1][:12]), parse_time(block[1][17:])
+        except CommandError:
+            output.append(f"BAD CUE {number}: time")
+            continue
+        if len(block) < 3:
+            output.append(f"BAD CUE {number}: no text")
+            continue
+        cues.append(Cue(int(block[0]), start, end, block[2:]))
+    output.append(f"LOAD cues={len(cues)} bad={len(output)}")
+    return cues, output
+class SubtitleEditor:
+    def __init__(self, cues):
+        self.cues = cues
+        self.handlers = {
+            "PRINT": self.print_srt, "TOVTT": self.to_vtt, "TOASS": self.to_ass,
+            "SORT": self.sort, "RENUMBER": self.renumber, "MERGE": self.merge,
+    def parse(self, line):
+        command = line.split(" ", 1)[0]
+        if command not in SCHEMAS:
+            raise CommandError("unknown command")
+        schema = SCHEMAS[command]
+        if command in STRING_COMMANDS:
+            parts = line.split(" ", len(schema))
+        else:
+            parts = line.split(" ")
+        if len(parts) != len(schema) + 1:
+            bad_arguments()
+        values = [argument(text, kind) for text, kind in zip(parts[1:], schema)]
+        return command, values
+    def execute(self, line):
+        try:
+            command, values = self.parse(line)
+            output = self.handlers[command](*values)
+            return output
+        except CommandError as error:
+            return ["ERROR " + str(error)]
+    def print_srt(self):
+        output = []
+        for cue in self.cues:
+            output.extend([str(cue.index), f"{srt_time(cue.start)} --> {srt_time(cue.end)}"])
+            output.extend(cue.lines)
+            output.append("")
+        return output
+    def merge(self, gap):
+        merged = []
+        joins = 0
+        for cue in self.cues:
+            if merged:
+                previous = merged[-1]
+                if cue.start - previous.end < gap and not previous.dialogue and not cue.dialogue:
+                    lines = wrap(words(previous.lines + cue.lines), 42)
+                    if len(lines) <= 2:
+                        previous.end = max(previous.end, cue.end)
+                        previous.lines = lines
+                        joins += 1
+                        continue
+            merged.append(cue)
+        self.cues = merged
+        return [f"MERGE merged={joins} cues={len(self.cues)}"]
+def read_blocks(stream):
+    blocks = []
+    current = []
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line == "###":
+            break
+        if line:
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+def main():
+    cues, output = load_cues(read_blocks(sys.stdin))
+    for line in output:
+        print(line)
+    editor = SubtitleEditor(cues)
+    count = int(sys.stdin.readline())
+    for _ in range(count):
+        for line in editor.execute(sys.stdin.readline().rstrip("\n")):
+            print(line)

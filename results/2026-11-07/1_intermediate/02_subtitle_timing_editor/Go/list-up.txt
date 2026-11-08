@@ -1,0 +1,142 @@
+type cue struct {
+    index int64
+    start, end int64
+    text []string
+type editor struct {
+    cues []cue
+type arguments struct {
+    name string
+    raw []string
+    values []int64
+func fail(message string) { panic(message) }
+func unsigned(s string) (int64, bool) {
+    if len(s) < 1 || len(s) > 9 { return 0, false }
+    for i := range s {
+        if s[i] < '0' || s[i] > '9' { return 0, false }
+    n, _ := strconv.ParseInt(s, 10, 64)
+    return n, true
+func timeValue(s string) (int64, bool) {
+    if len(s) != 12 || s[2] != ':' || s[5] != ':' || s[8] != ',' { return 0, false }
+    for i := range s {
+        if i != 2 && i != 5 && i != 8 && (s[i] < '0' || s[i] > '9') { return 0, false }
+    h, _ := strconv.ParseInt(s[:2], 10, 64)
+    m, _ := strconv.ParseInt(s[3:5], 10, 64)
+    sec, _ := strconv.ParseInt(s[6:8], 10, 64)
+    ms, _ := strconv.ParseInt(s[9:], 10, 64)
+    return h*3600000+m*60000+sec*1000+ms, m <= 59 && sec <= 59
+func timeText(t int64, kind int) string {
+    mark := ","
+    if kind == 1 { mark = "." }
+    return fmt.Sprintf("%02d:%02d:%02d%s%03d", t/3600000, t/60000%60, t/1000%60, mark, t%1000)
+func dialogue(c cue) bool {
+    for _, line := range c.text {
+        if strings.HasPrefix(line, "- ") { return true }
+    return false
+func words(lines []string) []string { return strings.Fields(strings.Join(lines, " ")) }
+func wrap(lines []string, width int) []string {
+    var result []string
+    for _, w := range words(lines) {
+        if len(result) == 0 || len(result[len(result)-1])+1+len(w) > width {
+            result = append(result, w)
+        } else { result[len(result)-1] += " " + w }
+    return result
+func parseArguments(line string, count int) arguments {
+    schemas := map[string]string{
+        "PRINT":"", "TOVTT":"", "TOASS":"", "FRAMES":"F", "SHIFT":"I", "SHIFTFROM":"PI",
+        "SORT":"", "RENUMBER":"", "MERGE":"U", "SPLIT":"U", "INSERT":"PTTX", "DELETE":"P",
+    name, rest, hasSpace := strings.Cut(line, " ")
+    schema, known := schemas[name]
+    if !known { fail("unknown command") }
+    var raw []string
+    if hasSpace {
+        if strings.ContainsAny(schema, "SXR") { raw = strings.SplitN(rest, " ", len(schema)) } else { raw = strings.Split(rest, " ") }
+    if len(raw) != len(schema) { fail("bad arguments") }
+    a := arguments{name: name, raw: raw, values: make([]int64, len(raw)), denominator: 1}
+    for i, kind := range schema {
+        s := raw[i]
+        valid := true
+        var value int64
+        switch kind {
+        case 'P', 'U':
+            value, valid = unsigned(s)
+        if !valid { fail("bad arguments") }
+        a.values[i] = value
+    if name == "GAPS" || name == "FIXOVERLAP" || name == "MERGE" || name == "EXTEND" {
+        minimum := int64(0)
+        if name == "EXTEND" { minimum = 1 }
+        if a.values[0] < minimum || a.values[0] > 60000 { fail("bad arguments") }
+    return a
+func (e *editor) execute(line string) []string {
+    a := parseArguments(line, len(e.cues))
+    name, v := a.name, a.values
+    n := len(e.cues)
+    var output []string
+    switch name {
+    case "PRINT", "TOVTT":
+        for _, c := range e.cues {
+            text, code := c.text, 0
+            kind := 0
+            if len(text) == 0 { continue }
+            setting := ""
+            output = append(output, strconv.FormatInt(c.index, 10), timeText(c.start, kind)+" --> "+timeText(c.end, kind)+setting)
+            output = append(output, text...)
+            output = append(output, "")
+    case "MERGE":
+        var result []cue
+        merged := 0
+        for _, c := range e.cues {
+            if len(result) > 0 {
+                previous := &result[len(result)-1]
+                if c.start-previous.end < v[0] && !dialogue(*previous) && !dialogue(c) {
+                    lines := slices.Concat(previous.text, c.text)
+                    wrapped := wrap(lines, 42)
+                    if len(wrapped) <= 2 {
+                        previous.end = max(previous.end, c.end)
+                        previous.text = wrapped
+                        merged++
+                        continue
+            result = append(result, c)
+        e.cues = result
+        output = append(output, fmt.Sprintf("MERGE merged=%d cues=%d", merged, len(result)))
+    return output
+func commandResult(e *editor, line string) (output []string) {
+    defer func() {
+        if message := recover(); message != nil { output = []string{"ERROR "+message.(string)} }
+    }()
+    return e.execute(line)
+func loadBlock(block []string, position int, e *editor) string {
+    index, valid := unsigned(block[0])
+    if !valid || len(block[0]) > 6 { return fmt.Sprintf("BAD CUE %d: index", position) }
+    var start, end int64
+    valid = false
+    if len(block) >= 2 && len(block[1]) == 29 && block[1][12:17] == " --> " {
+        var ok bool
+        start, valid = timeValue(block[1][:12])
+        end, ok = timeValue(block[1][17:])
+        valid = valid && ok
+    if !valid { return fmt.Sprintf("BAD CUE %d: time", position) }
+    if len(block) < 3 { return fmt.Sprintf("BAD CUE %d: no text", position) }
+    e.cues = append(e.cues, cue{index, start, end, slices.Clone(block[2:])})
+    return ""
+    scanner := bufio.NewScanner(os.Stdin)
+    output := bufio.NewWriter(os.Stdout)
+    defer output.Flush()
+    e := editor{}
+    var block []string
+    blocks, bad := 0, 0
+    finish := func() {
+        if len(block) == 0 { return }
+        blocks++
+        if message := loadBlock(block, blocks, &e); message != "" {
+        block = nil
+    for scanner.Scan() {
+        line := scanner.Text()
+        if line == "###" {
+            finish()
+            break
+        if line == "" { finish() } else { block = append(block, line) }
+    fmt.Fprintf(output, "LOAD cues=%d bad=%d\n", len(e.cues), bad)
+    scanner.Scan()
+    count, _ := strconv.Atoi(scanner.Text())
+    for i := 0; i < count && scanner.Scan(); i++ {
+        for _, line := range commandResult(&e, scanner.Text()) { fmt.Fprintln(output, line) }
