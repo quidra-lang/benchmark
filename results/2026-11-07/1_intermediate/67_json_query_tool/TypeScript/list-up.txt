@@ -1,0 +1,219 @@
+import * as fs from 'node:fs';
+type Value = null | boolean | number | string | Value[] | Map<string, Value>;
+type Step = string | number;
+type Match = { value: Value; path: Step[]; order: number[] };
+type Selector = { kind: string; key?: string; index?: number; start?: number; end?: number; descendant: boolean };
+function isIdentifier(text: string): boolean {
+    return /^[A-Za-z_]/.test(text) && !/[^A-Za-z0-9_]/.test(text);
+const integerNotation = /^(?:0|-?[1-9][0-9]{0,8})$/;
+class JsonFailure extends Error {
+    constructor(public position: number, message: string) { super(message); }
+function quote(text: string, delimiter = '"'): string {
+    let result = delimiter;
+    const escapes: Record<string, string> = { '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+    for (const char of text) {
+        if (char === delimiter || char === '\\') result += '\\' + char;
+        else if (Object.hasOwn(escapes, char)) result += escapes[char];
+        else if (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) result += '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0');
+        else result += char;
+    return result + delimiter;
+function compact(value: Value): string {
+    return typeof value === 'string' ? quote(value) : String(value);
+function pretty(value: Value, indentation = ''): string {
+    const next = indentation + '  ';
+    if (value instanceof Map && value.size > 0) return '{\n' + [...value].map(([key, child]) => next + quote(key) + ': ' + pretty(child, next)).join(',\n') + '\n' + indentation + '}';
+    if (Array.isArray(value) && value.length > 0) return '[\n' + value.map(child => next + pretty(child, next)).join(',\n') + '\n' + indentation + ']';
+    return compact(value);
+function clone(value: Value): Value {
+    if (value instanceof Map) return new Map<string, Value>([...value].map(([key, child]) => [key, clone(child)]));
+    return Array.isArray(value) ? value.map(clone) : value;
+class JsonReader {
+    position = 0;
+    constructor(public text: string) {}
+    current(): string { return this.text[this.position] ?? ''; }
+    fail(reason: string, position = this.position): never { throw new JsonFailure(position, reason); }
+    whitespace(): void { while (this.current() === ' ' || this.current() === '\n') this.position++; }
+    string(delimiter = '"'): string {
+        this.position++;
+        let result = '';
+        while (true) {
+            const char = this.current();
+            if (char === '' || char === '\n') this.fail('unterminated string');
+            if (char === delimiter) { this.position++; return result; }
+            if (char !== '\\') { result += char; this.position++; continue; }
+    value(): Value {
+        this.whitespace();
+        const char = this.current();
+        if (/^[A-Za-z]$/.test(char)) {
+            const start = this.position;
+            while (/^[A-Za-z]$/.test(this.current())) this.position++;
+            const word = this.text.slice(start, this.position);
+            if (word === 'null') return null;
+        if (char === '{') {
+            this.position++; this.whitespace();
+            const object = new Map<string, Value>();
+            if (this.current() === '}') { this.position++; return object; }
+            while (true) {
+                this.whitespace();
+                if (this.current() !== '"') this.fail('expected key');
+                const key = this.string();
+                if (object.has(key)) this.fail('duplicate key ' + quote(key), start);
+                this.whitespace();
+                if (this.current() !== ':') this.fail("expected ':'");
+                this.position++; object.set(key, this.value()); this.whitespace();
+                if (this.current() === '}') { this.position++; return object; }
+                if (this.current() !== ',') this.fail("expected ',' or '}'");
+                this.position++; this.whitespace();
+        if (char === '[') {
+            this.position++; this.whitespace();
+            const array: Value[] = [];
+            if (this.current() === ']') { this.position++; return array; }
+            while (true) {
+                array.push(this.value()); this.whitespace();
+                if (this.current() === ']') { this.position++; return array; }
+                if (this.current() !== ',') this.fail("expected ',' or ']'");
+                this.position++; this.whitespace();
+    parse(): Value {
+        const value = this.value(); this.whitespace();
+        if (this.current() !== '') this.fail('trailing characters');
+        return value;
+function path(text: string, field = false): Selector[] {
+    try {
+        if (text[0] !== (field ? '@' : '$')) throw new Error();
+        const result: Selector[] = [];
+        let position = 1;
+        while (position < text.length) {
+            let descendant = false;
+            let bracket = false;
+            if (!field && text.startsWith('..', position)) { descendant = true; position += 2; bracket = text[position] === '['; }
+            else if (text[position] === '.') position++;
+            else if (text[position] === '[') bracket = true;
+            else throw new Error();
+            let selector: Selector;
+            if (bracket) {
+                position++;
+                if (text[position] === "'") {
+                } else {
+                    const end = text.indexOf(']', position);
+                    if (end < 0) throw new Error();
+                    const selection = text.slice(position, end); position = end + 1;
+                    if (integerNotation.test(selection)) selector = { kind: 'index', index: Number(selection), descendant };
+                    else if (!field && selection === '*') selector = { kind: 'all', descendant };
+            } else if (!field && text[position] === '*') { position++; selector = { kind: 'all', descendant }; }
+            else {
+                const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(position));
+                if (name === null) throw new Error();
+                position += name[0].length; selector = { kind: 'key', key: name[0], descendant };
+            result.push(selector);
+        return result;
+    } catch { throw new Error(field ? 'bad field' : 'bad path'); }
+function children(match: Match): Match[] {
+    if (match.value instanceof Map) return [...match.value].map(([key, value], index) => ({ value, path: [...match.path, key], order: [...match.order, index] }));
+    if (Array.isArray(match.value)) return match.value.map((value, index) => ({ value, path: [...match.path, index], order: [...match.order, index] }));
+    return [];
+function preorder(match: Match): Match[] {
+    const result: Match[] = [];
+    const pending = [match];
+    while (pending.length > 0) {
+        const next = pending.pop()!; result.push(next); pending.push(...children(next).reverse());
+    return result;
+function select(match: Match, selector: Selector): Match[] {
+    const all = children(match);
+    if (selector.kind === 'all') return all;
+    if (selector.kind === 'key') return match.value instanceof Map ? all.filter(child => child.path[child.path.length - 1] === selector.key) : [];
+function applySegment(matches: Match[], selector: Selector): Match[] {
+    return matches.flatMap(match => (selector.descendant ? preorder(match) : [match]).flatMap(value => select(value, selector)));
+function evaluate(document: Value, selectors: Selector[]): Match[] {
+    return selectors.reduce(applySegment, [{ value: document, path: [], order: [] }]);
+function location(steps: Step[]): string {
+    return '$' + steps.map(step => typeof step === 'number' ? `[${step}]` : isIdentifier(step) ? '.' + step : '[' + quote(step, "'") + ']').join('');
+function targets(matches: Match[]): Match[] {
+    const unique = new Map<string, Match>();
+    for (const match of matches) unique.set(JSON.stringify(match.path), match);
+    return [...unique.values()].sort((a, b) => {
+        for (let i = 0; i < Math.min(a.order.length, b.order.length); i++) if (a.order[i] !== b.order[i]) return b.order[i] - a.order[i];
+        return b.order.length - a.order.length;
+    });
+function getAt(document: Value, steps: Step[]): Value {
+    let value = document;
+    for (const step of steps) value = typeof step === 'string' ? (value as Map<string, Value>).get(step)! : (value as Value[])[step];
+    return value;
+function putAt(document: Value, steps: Step[], value: Value): Value {
+    if (steps.length === 0) return value;
+    const parent = getAt(document, steps.slice(0, -1));
+    const last = steps[steps.length - 1];
+    if (typeof last === 'string') (parent as Map<string, Value>).set(last, value);
+    else (parent as Value[])[last] = value;
+    return document;
+class QueryTool {
+    document: Value = null;
+    history: Value[] = [];
+    output: string[] = [];
+    load(lines: string[]): void {
+        const text = lines.join('\n');
+        try {
+            const document = new JsonReader(text).parse();
+            this.history.push(clone(this.document)); this.document = clone(document);
+            const all = preorder({ value: document, path: [], order: [] });
+            this.output.push(`LOADED nodes=${all.length} depth=${Math.max(...all.map(match => match.path.length + 1))}`);
+        } catch (error) {
+    execute(line: string): void {
+        const space = line.indexOf(' ');
+        const command = space < 0 ? line : line.slice(0, space);
+        const argument = space < 0 ? null : line.slice(space + 1);
+        const commands = new Set(['LOAD', 'GET', 'COMPACT', 'PRETTY', 'TYPE', 'LENGTH', 'KEYS', 'FLATTEN', 'COUNT', 'SUM', 'MIN', 'MAX', 'AVG', 'FILTER', 'SET', 'DELETE', 'INSERT', 'MERGE', 'SORT', 'RENAME', 'UNDO']);
+        if (!commands.has(command)) throw new Error(`unknown command '${command}'`);
+        let args = argument === null ? [] : argument.split(' ');
+        const optional = ['COMPACT', 'PRETTY', 'FLATTEN'].includes(command);
+        let shape = optional ? args.length <= 1 : command === 'UNDO' || command === 'LOAD' ? args.length === 0 : command === 'SET' || command === 'MERGE' || command === 'RENAME' ? args.length === 2 : command === 'INSERT' ? args.length === 3 : command === 'FILTER' ? args.length >= 3 && (args[2] === 'EXISTS' ? args.length === 3 : args.length === 4) : command === 'SORT' ? args.length >= 1 && args.length <= 3 && (args.length < 3 || args[1] !== 'DESC' && args[2] === 'DESC') : args.length === 1;
+        if (!shape) throw new Error('bad arguments');
+        if (command === 'UNDO') {
+            if (this.history.length === 0) throw new Error('nothing to undo');
+            this.document = clone(this.history.pop()!); this.output.push(`UNDO ${this.history.length}`); return;
+        const selectors = path(args[0] ?? '$');
+        let key = '';
+        if (command === 'FILTER') {
+        } else if (command === 'SORT') field = path(args.length > 1 && args[1] !== 'DESC' ? args[1] : '@', true);
+        else if (command === 'RENAME') {
+            try {
+                if (isIdentifier(args[1])) key = args[1];
+            } catch { throw new Error('bad key'); }
+        let matches = evaluate(this.document, selectors);
+        if (command === 'RENAME') {
+            const invalid = matches.find(match => typeof match.path[match.path.length - 1] !== 'string');
+            if (invalid !== undefined) throw new Error('not a member at ' + location(invalid.path));
+        if (['SET', 'DELETE', 'INSERT', 'MERGE', 'SORT', 'RENAME'].includes(command)) {
+            if (command === 'SET' && selectors.length > 0) {
+            const selected = targets(matches);
+            let document = clone(this.document);
+            for (const target of selected) {
+                if (command === 'SET') document = putAt(document, target.path, clone(value));
+                else if (command === 'DELETE') {
+                } else if (command === 'INSERT') {
+                } else if (command === 'MERGE') merge(getAt(document, target.path) as Map<string, Value>, value as Map<string, Value>);
+                else if (command === 'SORT') {
+                } else {
+                    const parentPath = target.path.slice(0, -1); const old = target.path[target.path.length - 1] as string;
+                    const object = getAt(document, parentPath) as Map<string, Value>;
+                    if (old !== key && object.has(key)) throw new Error('key exists at ' + location(target.path));
+                    document = putAt(document, parentPath, new Map<string, Value>([...object].map(([name, child]) => [name === old ? key : name, child])));
+            this.history.push(clone(this.document)); this.document = document;
+            this.output.push(`${command} ${selected.length}`); return;
+        if (matches.length === 0) { this.output.push('no match'); return; }
+        for (const match of matches) {
+            if (command === 'GET') this.output.push(location(match.path) + ' = ' + compact(match.value));
+            else if (command === 'COMPACT') this.output.push(compact(match.value));
+            else if (command === 'PRETTY') this.output.push(pretty(match.value));
+    run(lines: string[]): void {
+        let position = 0;
+        const block = (): string[] => { const body: string[] = []; while (lines[position] !== '%%') body.push(lines[position++]); position++; return body; };
+        this.load(block());
+        while (lines[position] !== 'END') {
+            const line = lines[position++];
+            if (line === 'LOAD') { this.load(block()); continue; }
+            try { this.execute(line); }
+            catch (error) {
+                this.output.push(error instanceof JsonFailure ? `PARSE ERROR col ${error.position + 1}: ${error.message}` : `ERROR ${(error as Error).message}`);
+const tool = new QueryTool();
+tool.run(fs.readFileSync(0, 'utf8').split('\n'));
+process.stdout.write(tool.output.join('\n') + '\n');

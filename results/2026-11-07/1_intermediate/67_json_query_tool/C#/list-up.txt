@@ -1,0 +1,283 @@
+using JsonObject = System.Collections.Generic.OrderedDictionary<string, object?>;
+class Program
+    const string Identifier = "[A-Za-z_][A-Za-z0-9_]*";
+    static readonly HashSet<string> Commands = ["GET", "COMPACT", "PRETTY", "TYPE", "LENGTH", "KEYS", "FLATTEN", "COUNT", "SUM", "MIN", "MAX", "AVG", "FILTER", "SET", "DELETE", "INSERT", "MERGE", "SORT", "RENAME", "UNDO"];
+    static object? document;
+    static readonly List<object?> History = [];
+    class Problem(string message) : Exception(message) { }
+    class ParseError(int position, string reason) : Exception(reason)
+        public int Position = position;
+    static bool Matches(string text, string pattern) => Regex.IsMatch(text, @"\A(?:" + pattern + @")\z");
+    static bool Letter(char c) => c is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+    static bool Digit(char c) => c is >= '0' and <= '9';
+    static string Quote(string text, char delimiter)
+        StringBuilder output = new();
+        output.Append(delimiter);
+        foreach (char c in text) if (c == delimiter || c == '\\') output.Append('\\').Append(c);
+        else output.Append(c switch { '\b' => "\\b", '\f' => "\\f", '\n' => "\\n", '\r' => "\\r", '\t' => "\\t", _ => c < 32 || c == 127 ? "\\u" + ((int)c).ToString("x4", CultureInfo.InvariantCulture) : c.ToString() });
+        return output.Append(delimiter).ToString();
+    class Parser(string text)
+        protected readonly string Text = text;
+        public int Position;
+        public char Peek => Position == Text.Length ? '\0' : Text[Position];
+        void Fail(string reason) => throw new ParseError(Position, reason);
+        void Whitespace()
+            while (Peek is ' ' or '\n') Position++;
+        void NeedCharacter()
+            if (Position == Text.Length) Fail("unexpected end of input");
+        public string String(char delimiter)
+            Position++;
+            StringBuilder output = new();
+            while (true)
+                if (Position == Text.Length || Peek == '\n') Fail("unterminated string");
+                char c = Peek;
+                if (c == delimiter)
+                    Position++;
+                    return output.ToString();
+                if (c != '\\')
+                    output.Append(c);
+                    Position++;
+                    continue;
+        object? Value()
+            Whitespace();
+            NeedCharacter();
+            char c = Peek;
+            if (c == '"') return String('"');
+            if (c == '{')
+                Position++;
+                Whitespace();
+                JsonObject map = new(StringComparer.Ordinal);
+                if (Peek == '}')
+                    Position++;
+                    return map;
+                while (true)
+                    Whitespace();
+                    NeedCharacter();
+                    if (Peek != '"') Fail("expected key");
+                    int start = Position;
+                    string key = String('"');
+                    if (map.ContainsKey(key)) throw new ParseError(start, "duplicate key " + Quote(key, '"'));
+                    Whitespace();
+                    NeedCharacter();
+                    if (Peek != ':') Fail("expected ':'");
+                    Position++;
+                    map.Add(key, Value());
+                    Whitespace();
+                    if (Peek == '}')
+                        Position++;
+                        return map;
+                    NeedCharacter();
+                    if (Peek != ',') Fail("expected ',' or '}'");
+                    Position++;
+                    Whitespace();
+                    if (Peek == '}') Fail("trailing comma");
+            if (c == '[')
+                Position++;
+                Whitespace();
+                List<object?> list = [];
+                if (Peek == ']')
+                    Position++;
+                    return list;
+                while (true)
+                    list.Add(Value());
+                    Whitespace();
+                    if (Peek == ']')
+                        Position++;
+                        return list;
+                    NeedCharacter();
+                    if (Peek != ',') Fail("expected ',' or ']'");
+                    Position++;
+                    Whitespace();
+                    if (Peek == ']') Fail("trailing comma");
+            if (c == '-' || Digit(c))
+            if (Letter(c))
+                int start = Position;
+                while (Letter(Peek)) Position++;
+                string word = Text[start..Position];
+                return word switch { "true" => true, "false" => false, "null" => null, _ => throw new ParseError(start, $"invalid literal '{word}'") };
+        public object? Whole()
+            object? value = Value();
+            Whitespace();
+            if (Position != Text.Length) Fail("trailing characters");
+            return value;
+    static object? Copy(object? value)
+        if (value is JsonObject map)
+            JsonObject result = new(StringComparer.Ordinal);
+            foreach (var entry in map) result.Add(entry.Key, Copy(entry.Value));
+            return result;
+        return value is List<object?> list ? list.Select(Copy).ToList() : value;
+    static string Compact(object? value) => value switch { null => "null", string text => Quote(text, '"'), bool b => b ? "true" : "false", int n => n.ToString(CultureInfo.InvariantCulture), JsonObject map => "{" + string.Join(",", map.Select(entry => Quote(entry.Key, '"') + ":" + Compact(entry.Value))) + "}", List<object?> list => "[" + string.Join(",", list.Select(Compact)) + "]", _ => throw new InvalidOperationException() };
+    static string Pretty(object? value, string indent)
+        if (value is JsonObject { Count: > 0 } || value is List<object?> { Count: > 0 })
+            string child = indent + "  ";
+            List<string> parts = [];
+            if (value is JsonObject map) foreach (var entry in map) parts.Add(child + Quote(entry.Key, '"') + ": " + Pretty(entry.Value, child));
+            else foreach (object? item in (List<object?>)value) parts.Add(child + Pretty(item, child));
+            return (value is JsonObject ? "{" : "[") + "\n" + string.Join(",\n", parts) + "\n" + indent + (value is JsonObject ? "}" : "]");
+        return Compact(value);
+    record Selector(char Kind, string? Key, int? First, int? Last, bool Descendant);
+    class PathReader(string text) : Parser(text)
+        string IdentifierName()
+            int start = Position;
+            if (!Letter(Peek) && Peek != '_') throw new Problem("");
+            Position++;
+            while (Letter(Peek) || Digit(Peek) || Peek == '_') Position++;
+            return Text[start..Position];
+        public List<Selector> Read(bool field)
+            if (Peek != (field ? '@' : '$')) throw new Problem("");
+            Position++;
+            List<Selector> selectors = [];
+            while (Position < Text.Length)
+                bool descendant = false;
+                if (Peek == '.')
+                    Position++;
+                    if (Peek == '.')
+                    if (Peek == '*')
+                    if (!(descendant && Peek == '['))
+                        selectors.Add(new('K', IdentifierName(), null, null, descendant));
+                        continue;
+                else if (Peek != '[') throw new Problem("");
+                if (Peek != '[') throw new Problem("");
+                Position++;
+                if (Peek == '\'')
+                int end = Text.IndexOf(']', Position);
+                if (end < 0) throw new Problem("");
+                string content = Text[Position..end];
+                Position = end + 1;
+                if (content == "*" && !field) selectors.Add(new('A', null, null, null, descendant));
+            return selectors;
+    static List<Selector> Path(string text, bool field)
+        try
+            return new PathReader(text).Read(field);
+        catch (Exception error) when (error is Problem or ParseError)
+            throw new Problem("ERROR bad " + (field ? "field" : "path"));
+    static string Key(string text)
+        if (Matches(text, Identifier)) return text;
+    record Step(object Key, int Position);
+    record Match(object? Value, List<Step> Location);
+    static Match Child(Match parent, object key, int position)
+        List<Step> location = [.. parent.Location, new(key, position)];
+        return new(key is string name ? ((JsonObject)parent.Value!)[name] : ((List<object?>)parent.Value!)[(int)key], location);
+    static List<Match> Children(Match parent)
+        List<Match> result = [];
+        if (parent.Value is JsonObject map)
+            int i = 0;
+            foreach (string key in map.Keys) result.Add(Child(parent, key, i++));
+        else if (parent.Value is List<object?> list) for (int i = 0; i < list.Count; i++) result.Add(Child(parent, i, i));
+        return result;
+    static List<Match> Select(Match match, Selector selector)
+        List<Match> result = [];
+        if (selector.Kind == 'K' && match.Value is JsonObject map && map.ContainsKey(selector.Key!)) result.Add(Child(match, selector.Key!, map.Keys.ToList().IndexOf(selector.Key!)));
+        else if (selector.Kind == 'A') result.AddRange(Children(match));
+        else if (match.Value is List<object?> list && selector.Kind is 'I' or 'S')
+        return result;
+    static List<Match> Apply(List<Match> matches, Selector selector)
+        List<Match> result = [];
+        foreach (Match match in matches)
+            List<Match> bases = [];
+            if (selector.Descendant) Preorder(match, bases);
+            else bases.Add(match);
+            foreach (Match basis in bases) result.AddRange(Select(basis, selector));
+        return result;
+    static List<Match> Evaluate(IEnumerable<Selector> selectors)
+        List<Match> matches = [new(document, [])];
+        foreach (Selector selector in selectors) matches = Apply(matches, selector);
+        return matches;
+    static string Location(List<Step> steps)
+        StringBuilder output = new("$");
+        foreach (Step step in steps) if (step.Key is string key) output.Append(Matches(key, Identifier) ? "." + key : "[" + Quote(key, '\'') + "]");
+        else output.Append('[').Append(step.Key).Append(']');
+        return output.ToString();
+    static object? At(object? root, IEnumerable<Step> steps)
+        object? value = root;
+        foreach (Step step in steps) value = step.Key is string key ? ((JsonObject)value!)[key] : ((List<object?>)value!)[(int)step.Key];
+        return value;
+    static int CompareLocations(Match left, Match right)
+        for (int i = 0; i < Math.Min(left.Location.Count, right.Location.Count); i++)
+            int order = left.Location[i].Position.CompareTo(right.Location[i].Position);
+            if (order != 0) return order;
+        return left.Location.Count.CompareTo(right.Location.Count);
+    static List<Match> Targets(List<Match> matches)
+        Dictionary<string, Match> unique = new(StringComparer.Ordinal);
+        foreach (Match match in matches) unique.TryAdd(Location(match.Location), match);
+        return unique.Values.OrderByDescending(match => match, Comparer<Match>.Create(CompareLocations)).ToList();
+    static void Require(bool condition, string message)
+        if (!condition) throw new Problem(message);
+    static List<string> Execute(string line)
+        int space = line.IndexOf(' ');
+        string command = space < 0 ? line : line[..space];
+        string? argument = space < 0 ? null : line[(space + 1)..];
+        Require(Commands.Contains(command), $"ERROR unknown command '{command}'");
+        int limit = command is "SET" or "MERGE" ? 2 : command == "INSERT" ? 3 : command == "FILTER" ? 4 : int.MaxValue;
+        string[] args = argument is null ? [] : argument.Split(' ', limit);
+        bool shape = command switch { "SET" or "MERGE" or "RENAME" => args.Length == 2, "INSERT" => args.Length == 3, "FILTER" => args.Length >= 3 && (args[2] == "EXISTS" ? args.Length == 3 : args.Length == 4), "COMPACT" or "PRETTY" or "FLATTEN" => args.Length <= 1, "UNDO" => args.Length == 0, "SORT" => args.Length is >= 1 and <= 3 && (args.Length < 3 || args[1] != "DESC" && args[2] == "DESC"), _ => args.Length == 1 };
+        Require(shape, "ERROR bad arguments");
+        if (command == "UNDO")
+            Require(History.Count > 0, "ERROR nothing to undo");
+            document = History[^1];
+            History.RemoveAt(History.Count - 1);
+            return [$"UNDO {History.Count}"];
+        var selectors = Path(args.Length == 0 ? "$" : args[0], false);
+        string? rename = null, op = null;
+        if (command == "FILTER")
+        else if (command == "RENAME") rename = Key(args[1]);
+        List<Match> matches = Evaluate(selectors);
+        if (command == "RENAME") foreach (Match match in matches) Require(match.Location.Count > 0 && match.Location[^1].Key is string, "ERROR not a member at " + Location(match.Location));
+        List<string> output = [];
+        if (command is "SET" or "DELETE" or "INSERT" or "MERGE" or "SORT" or "RENAME")
+            if (command == "SET" && selectors.Count > 0)
+            var targets = Targets(matches);
+            object? changed = Copy(document);
+            foreach (Match target in targets)
+                var place = target.Location;
+                if (command == "SET")
+                else if (command == "DELETE")
+                else if (command == "INSERT")
+                else if (command == "MERGE") Merge((JsonObject)current!, (JsonObject)value!);
+                else if (command == "SORT")
+                else
+                    var parent = (JsonObject)At(changed, place.Take(place.Count - 1))!;
+                    string old = (string)place[^1].Key;
+                    Require(old == rename || !parent.ContainsKey(rename!), "ERROR key exists at " + Location(place));
+                    var entries = parent.Select(entry => KeyValuePair.Create(entry.Key == old ? rename! : entry.Key, entry.Value)).ToList();
+                    parent.Clear();
+                    foreach (var entry in entries) parent.Add(entry.Key, entry.Value);
+            History.Add(Copy(document));
+            document = changed;
+            return [$"{command} {targets.Count}"];
+        if (command == "FILTER")
+        else foreach (Match match in matches)
+            object? item = match.Value;
+            switch (command)
+                case "PRETTY":
+                    output.Add(Pretty(item, ""));
+                    break;
+        return output.Count == 0 ? ["no match"] : output;
+    static (int Count, int Depth) Size(object? value)
+        int count = 1, depth = 1;
+        foreach (Match child in Children(new(value, [])))
+            var size = Size(child.Value);
+            count += size.Count;
+            depth = Math.Max(depth, size.Depth + 1);
+        return (count, depth);
+    static void Load(List<string> lines)
+        string text = string.Join("\n", lines);
+        try
+            object? value = new Parser(text).Whole();
+            History.Add(Copy(document));
+            document = value;
+            var size = Size(value);
+            Console.WriteLine($"LOADED nodes={size.Count} depth={size.Depth}");
+    static void Main()
+        List<string> body = [];
+        string line;
+        while ((line = Console.ReadLine()!) != "%%") body.Add(line);
+        Load(body);
+        while ((line = Console.ReadLine()!) != "END") if (line == "LOAD")
+            body = [];
+            while ((line = Console.ReadLine()!) != "%%") body.Add(line);
+            Load(body);
+        else try
+            Execute(line).ForEach(Console.WriteLine);
+        catch (Problem error)
+            Console.WriteLine(error.Message);
