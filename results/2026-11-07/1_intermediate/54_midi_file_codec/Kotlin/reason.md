@@ -2,15 +2,14 @@
 
 ## Answer requirements shared across languages
 
-1. Identify the existing TRANSPOSE target kinds (NOTE_ON, NOTE_OFF and POLY_PRESSURE), optional channel predicate, argument bounds and error precedence; retain those rules.
-2. Explain replacing out-of-range deletion with saturation of the signed pitch sum to 0..127 before storing it, retaining every event, its absolute tick, track position, other fields and the order of distinct events even when pitches coincide.
-3. Retain the TRANSPOSE result shape: count every targeted event as transposed, report dropped 0 and emit no dropped-event detail; preserve the existing error representation.
-4. Trace DECODE through the stored per-track event sequence and note formatting so that each retained event displays its clamped note separately.
-5. Trace ENCODE through the same sequence, its absolute-tick differences and variable-length encoding, and note payload emission; preserve existing running-status and NOTE_OFF encoding choices without merging equal-pitch events.
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
 
 ## Selected source locations
 
-- `main.kt`: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 38, 41, 43, 51, 52, 63, 93, 97, 98, 105, 128, 129, 130, 132, 133, 134, 135, 136, 137, 141, 451, 452, 453, 454, 455, 456, 457, 458, 459, 462, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 573, 583, 584, 585, 586, 587, 592, 603, 604, 605, 618, 619, 620, 621, 622, 623, 624, 626, 627, 628, 638, 639, 643, 648, 650, 652, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 839, 840
+- `main.kt`: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 38, 41, 43, 51, 52, 60, 63, 93, 97, 98, 105, 128, 129, 130, 132, 133, 134, 135, 136, 137, 141, 451, 452, 453, 454, 455, 456, 457, 458, 459, 462, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 573, 583, 584, 585, 586, 587, 592, 603, 604, 605, 618, 619, 620, 621, 622, 623, 624, 626, 627, 628, 638, 639, 643, 648, 650, 652, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 839, 840
 
 ## Evidence and language semantics
 
@@ -18,6 +17,6 @@ The requested change belongs in the event transformation, after target selection
 
 ## Minimization and alternatives
 
-Considered the smaller transformation-only excerpt: it cannot establish the downstream display, delta-time encoding or error precedence requested here. Conversely, parsing HEX/TEXT, note pairing, timing, quantization and all other editing features do not determine this change and are omitted. Only the relevant channel branches of event formatting/type helpers are retained; unrelated meta-message formatting and the hex-dump presentation are omitted. The VLQ helper is custom code, so its essential body is included rather than inferred from its name. Initializers and sequence writes needed to establish retention are retained; standalone closing delimiters and unrelated dispatch cases carry no additional answer fact. Complete source lines are preserved, so unavoidable adjacent syntax on the same physical line remains. Compared rewriting the containing track against deleting just iterator.remove: retaining the iterator and clamped assignment is the smaller affected site. Source for unrelated class copying/global sorting is unnecessary. The abbreviated command-list excerpt keeps the declaration, relevant command entries and rejection condition; omitted accepted names do not affect TRANSPOSE.
+A transformation-only excerpt cannot establish downstream display, delta-time encoding or required error precedence. HEX/TEXT construction, pairing, timing, quantization and other edits are omitted because the input song is already valid. The relevant event/list types, selected formatting branches, VLQ code, encoder traversal, command guards and persistent-state write are retained. Custom helper bodies appear only where they determine a required behavior; ordinary collection/ownership rules are stated in the evidence. Source declarations and branch guards needed to identify selected definitions are retained even when a smaller candidate omitted them. This final excerpt was independently read and checked against the same four requirements used for all languages; no implementation changes or program execution were performed.
 
-The excerpt contains 1792 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1799 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -8,7 +8,7 @@
 
 ## Selected source locations
 
-- `main.py`: 4, 5, 16, 17, 24, 25, 26, 27, 28, 29, 30, 31, 32, 42, 43, 44, 45, 46, 47, 48, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61, 62, 63, 65, 66, 68, 69, 76, 77, 78, 79, 80, 81, 82, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 111, 113, 201, 202, 203, 204, 205, 206, 207, 208, 210, 211, 212, 213, 214, 219, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 258, 259, 260, 261, 615, 616, 617, 618, 619, 620, 621, 622, 623, 628, 629, 630, 631, 632, 633
+- `main.py`: 4, 5, 16, 17, 24, 25, 26, 27, 28, 29, 30, 31, 32, 41, 42, 43, 44, 45, 46, 47, 48, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61, 62, 63, 65, 66, 68, 69, 76, 77, 78, 79, 80, 81, 82, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 111, 113, 201, 202, 203, 204, 205, 206, 207, 208, 210, 211, 212, 213, 214, 219, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 258, 259, 260, 261, 615, 616, 617, 618, 619, 620, 621, 622, 623, 628, 629, 630, 631, 632, 633
 
 ## Evidence and language semantics
 
@@ -16,6 +16,6 @@ The common witness is three commands: `ITEMS 10 6 6 5 5 4`, `KBOUNDED 2`, `KBOUN
 
 ## Minimization and alternatives
 
-A direct KBOUNDED witness satisfies the question with fewer tokens than TRACE: it needs bin assignment formatting but no Step-record construction or trace formatting. The selected KBOUNDED arm, closure block, constructors/put and direct output/dispatch together provide all data and control dependencies. Full pack/command bodies would add unreachable methods, RANDOM, reduction, bounds, exact search and 2D packing; these cannot execute in this witness. Method headers alone would omit inspection and tie behavior, while a closure-only excerpt would omit validation, placement, counters, assignments and later current-item state. The selection retains complete lines, including surrounding control delimiters when they distinguish branches; it omits trace-only bookkeeping and default/false formatting branches. Python list iteration preserves source order; Bin.
+The direct KBOUNDED witness avoids TRACE records and formatting. Every retained group supplies parsing/validation, first-fit inspections, closure and placement, counters/output, or the persistent-state boundary. Full routines would add other packing methods, random generation, bounds, reductions and 2D packing. A closure-only excerpt cannot establish inspections, assignment output or input preservation. An input-copy declaration alone is insufficient in reference-based languages, so the selected executed writes and scalar item representation are retained. Class/implementation and branch headers remain where needed to associate the selected calls with their definitions. The final excerpt was reviewed independently against all three common requirements; no target program was executed.
 
-The excerpt contains 1729 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 1734 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

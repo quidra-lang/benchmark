@@ -1,0 +1,272 @@
+static int timeValue(const std::string& text) {
+    return std::stoi(text.substr(0, 2)) * 60 + std::stoi(text.substr(3, 2));
+}
+[[noreturn]] static void fail(const std::string& message) {
+    throw std::runtime_error(message);
+}
+
+struct Station {
+    int zone;
+    std::string name;
+    int transfer = 0;
+    bool closed = false;
+};
+
+struct Direction {
+    std::vector<std::string> stops;
+    std::vector<int> offsets;
+};
+
+struct Line {
+    int first;
+    int last;
+    int headway;
+    std::vector<std::string> stops;
+    std::vector<int> cumulative;
+    int delay = 0;
+    bool suspended = false;
+
+    int trips() const {
+        return (last - first) / headway + 1;
+    }
+
+    bool contains(const std::string& station) const {
+        return std::find(stops.begin(), stops.end(), station) != stops.end();
+    }
+
+    Direction direction(int reverse) const {
+        if (reverse == 0) return {stops, cumulative};
+        Direction result;
+        for (std::size_t j = stops.size(); j-- > 0;) {
+            result.stops.push_back(stops[j]);
+            result.offsets.push_back(cumulative.back() - cumulative[j]);
+        }
+        return result;
+    }
+
+    int nextTrain(int ready, int offset) const {
+        int start = first + delay + offset;
+        int train = ready <= start ? 0 : (ready - start + headway - 1) / headway;
+        return train < trips() ? train : -1;
+    }
+
+    int at(int train, int offset) const {
+        return first + delay + train * headway + offset;
+    }
+};
+
+struct Leg {
+    char kind;
+    std::string line;
+    std::string terminal;
+    std::string from;
+    int departure;
+    std::string to;
+    int arrival;
+    int stops = 0;
+};
+
+using Journey = std::vector<Leg>;
+
+struct Label {
+    int arrival;
+    Journey journey;
+};
+
+using Labels = std::map<std::string, Label>;
+using Stations = std::set<std::string>;
+using Segment = std::pair<std::string, std::string>;
+
+static Segment segment(const std::string& a, const std::string& b) {
+    return a < b ? Segment{a, b} : Segment{b, a};
+}
+
+static bool improve(Labels& labels, const std::string& station, const Journey& journey, const Leg& leg) {
+    auto found = labels.find(station);
+    if (found != labels.end() && found->second.arrival <= leg.arrival) return false;
+    Journey next = journey;
+    next.push_back(leg);
+    labels[station] = {leg.arrival, std::move(next)};
+    return true;
+}
+class Network {
+    std::map<std::string, Station> stations;
+    std::map<std::string, Line> lines;
+    std::map<Segment, int> walks;
+    std::set<Segment> closedSegments;
+    int discount = 0;
+    int discountWindow = 0;
+    std::vector<int> prices;
+
+    const Station& requireStation(const std::string& name) const {
+        auto found = stations.find(name);
+        if (found == stations.end()) fail("unknown station " + name);
+        return found->second;
+    }
+    void requireOpen(const std::string& name) const {
+        if (stations.at(name).closed) fail("station " + name + " is closed");
+    }
+
+    void checkSearch(const std::string& origin, const std::string& destination) const {
+        requireStation(origin);
+        requireStation(destination);
+        if (origin == destination) fail("origin and destination are the same");
+        requireOpen(origin);
+        requireOpen(destination);
+    }
+
+    bool blocked(const std::string& a, const std::string& b) const {
+        return closedSegments.count(segment(a, b)) != 0;
+    }
+
+    std::map<std::string, int> neighbors(const std::string& station) const {
+        std::map<std::string, int> result;
+        for (const auto& [edge, duration] : walks) {
+            if (edge.first == station) result[edge.second] = duration;
+            else if (edge.second == station) result[edge.first] = duration;
+        }
+        return result;
+    }
+
+    Labels earliest(const std::string& origin, int departure) const {
+        Labels labels = {{origin, {departure, {}}}};
+        Stations settled;
+        while (true) {
+            std::string current;
+            int best = 0;
+            for (const auto& [name, label] : labels) {
+                if (!settled.count(name) && (current.empty() || label.arrival < best)) {
+                    current = name;
+                    best = label.arrival;
+                }
+            }
+            if (current.empty()) break;
+            settled.insert(current);
+            Label label = labels.at(current);
+            int ready = label.arrival + (current == origin ? 0 : stations.at(current).transfer);
+            for (const auto& [name, line] : lines) {
+                if (line.suspended || !line.contains(current)) continue;
+                for (int reverse = 0; reverse < 2; ++reverse) {
+                    Direction direction = line.direction(reverse);
+                    int board = static_cast<int>(std::find(direction.stops.begin(), direction.stops.end(), current) - direction.stops.begin());
+                    if (board + 1 == static_cast<int>(direction.stops.size())) continue;
+                    int train = line.nextTrain(ready, direction.offsets[board]);
+                    if (train < 0) continue;
+                    int boardTime = line.at(train, direction.offsets[board]);
+                    for (int j = board + 1; j < static_cast<int>(direction.stops.size()); ++j) {
+                        if (blocked(direction.stops[j - 1], direction.stops[j])) break;
+                        const std::string& target = direction.stops[j];
+                        if (stations.at(target).closed) continue;
+                        Leg ride = {'R', name, direction.stops.back(), current, boardTime,
+                                    target, line.at(train, direction.offsets[j]), j - board};
+                        improve(labels, target, label.journey, ride);
+                    }
+                }
+            }
+            for (const auto& [target, duration] : neighbors(current)) {
+                int arrival = label.arrival + duration;
+                if (!stations.at(target).closed && arrival <= 1440) {
+                    improve(labels, target, label.journey, {'W', "", "", current, label.arrival, target, arrival});
+                }
+            }
+        }
+        return labels;
+    }
+    void fare(const std::string& heading, const Journey& journey, bool child) const {
+        std::vector<std::string> tickets;
+        int total = 0;
+        int previousArrival = -1;
+        for (const Leg& leg : journey) {
+            if (leg.kind != 'R') continue;
+            const Line& line = lines.at(leg.line);
+            Direction direction = line.direction(leg.terminal == line.stops.back() ? 0 : 1);
+            auto first = std::find(direction.stops.begin(), direction.stops.end(), leg.from);
+            auto last = std::find(direction.stops.begin(), direction.stops.end(), leg.to);
+            std::set<int> zones;
+            for (auto at = first; at <= last; ++at) zones.insert(stations.at(*at).zone);
+            int price = prices[std::min(zones.size(), prices.size()) - 1];
+            if (child) price = (price + 19) / 20 * 10;
+            int cap = child ? (discount + 19) / 20 * 10 : discount;
+            int reduction = previousArrival >= 0 && leg.departure - previousArrival <= discountWindow ? std::min(cap, price) : 0;
+            int payment = price - reduction;
+            total += payment;
+            previousArrival = leg.arrival;
+            std::ostringstream ticket;
+            ticket << "TICKET " << leg.line << ' ' << leg.from << ' ' << leg.to << " zones " << zones.size()
+                   << " price " << price << " discount " << reduction << " pay " << payment;
+            tickets.push_back(ticket.str());
+        }
+        std::cout << heading << " rides " << tickets.size() << " total " << total << '\n';
+        for (const std::string& ticket : tickets) std::cout << ticket << '\n';
+    }
+    void searchCommand(const std::vector<std::string>& words) const {
+        const std::string& command = words[0];
+        const std::string& origin = words[1];
+        const std::string& destination = words[2];
+        checkSearch(origin, destination);
+        std::string heading = command + ' ' + origin + ' ' + destination;
+        int departure = timeValue(words[3]);
+        if (command == "FARE") {
+            if (words[4] != "ADULT" && words[4] != "CHILD") fail("unknown fare class " + words[4]);
+            if (prices.empty()) fail("no tariff");
+            heading += ' ' + words[3] + ' ' + words[4];
+        }
+        Labels labels = earliest(origin, departure);
+        auto target = labels.find(destination);
+        if (target == labels.end()) std::cout << heading << (command == "FARE" ? "" : " " + words[3]) << " unreachable\n";
+        else if (command == "FARE") fare(heading, target->second.journey, words[4] == "CHILD");
+public:
+    void execute(const std::string& text) {
+        std::istringstream input(text);
+        std::vector<std::string> words;
+        for (std::string word; input >> word;) words.push_back(word);
+        const std::string& command = words[0];
+        const std::string first = words.size() > 1 ? words[1] : "";
+        if (command == "STATION") {
+            if (stations.count(first)) fail("station " + first + " already exists");
+            stations.emplace(first, Station{std::stoi(words[2]), words[3]});
+        } else if (command == "LINE") {
+            if (lines.count(first)) fail("line " + first + " already exists");
+            Line line{timeValue(words[2]), timeValue(words[3]), std::stoi(words[4]), {}, {0}};
+            for (std::size_t i = 5; i < words.size(); i += 2) {
+                requireStation(words[i]);
+                line.stops.push_back(words[i]);
+                if (i > 5) line.cumulative.push_back(line.cumulative.back() + std::stoi(words[i - 1]));
+            }
+            Stations seen;
+            for (const std::string& stop : line.stops) {
+                if (!seen.insert(stop).second) fail("station " + stop + " appears twice on line " + first);
+            }
+            if (line.first > line.last) fail("line " + first + " first departure is after last departure");
+            if (line.last + line.cumulative.back() > 1440) fail("line " + first + " runs past 24:00");
+            lines.emplace(first, line);
+        } else if (command == "WALK") {
+            requireStation(first);
+            requireStation(words[2]);
+            if (first == words[2]) fail("walk from " + first + " to itself");
+            Segment edge = segment(first, words[2]);
+            walks[edge] = std::stoi(words[3]);
+        } else if (command == "TARIFF") {
+            std::vector<int> updated;
+            for (std::size_t i = 3; i < words.size(); ++i) updated.push_back(std::stoi(words[i]));
+            if (!std::is_sorted(updated.begin(), updated.end())) fail("tariff prices must not decrease");
+            discount = std::stoi(words[1]);
+            discountWindow = std::stoi(words[2]);
+            prices = updated;
+        } else if (command == "ROUTE" || command == "FEWEST" || command == "PARETO" || command == "FARE" ||
+                   command == "LASTTRAIN" || command == "ARRIVEBY" || command == "PROFILE") {
+            searchCommand(words);
+int main() {
+    int count;
+    std::cin >> count;
+    std::string line;
+    std::getline(std::cin, line);
+    Network network;
+    while (count-- > 0 && std::getline(std::cin, line)) {
+        try {
+            network.execute(line);
+        } catch (const std::runtime_error& error) {
+            std::cout << "ERROR " << error.what() << '\n';
+        }
+    }
+}

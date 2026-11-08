@@ -2,15 +2,14 @@
 
 ## Answer requirements shared across languages
 
-1. Identify the existing TRANSPOSE target kinds (NOTE_ON, NOTE_OFF and POLY_PRESSURE), optional channel predicate, argument bounds and error precedence; retain those rules.
-2. Explain replacing out-of-range deletion with saturation of the signed pitch sum to 0..127 before storing it, retaining every event, its absolute tick, track position, other fields and the order of distinct events even when pitches coincide.
-3. Retain the TRANSPOSE result shape: count every targeted event as transposed, report dropped 0 and emit no dropped-event detail; preserve the existing error representation.
-4. Trace DECODE through the stored per-track event sequence and note formatting so that each retained event displays its clamped note separately.
-5. Trace ENCODE through the same sequence, its absolute-tick differences and variable-length encoding, and note payload emission; preserve existing running-status and NOTE_OFF encoding choices without merging equal-pitch events.
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
 
 ## Selected source locations
 
-- `main.swift`: 3, 4, 5, 7, 8, 10, 22, 25, 26, 37, 38, 39, 40, 41, 42, 43, 45, 46, 48, 49, 63, 64, 65, 78, 82, 83, 84, 85, 86, 94, 122, 123, 136, 137, 138, 139, 547, 548, 549, 550, 551, 552, 554, 556, 557, 558, 559, 560, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 573, 574, 584, 586, 587, 588, 589, 590, 592, 640, 641, 642, 643, 644, 645, 646, 652, 664, 665, 691, 692, 694, 695, 696, 697, 698, 699, 714, 715, 720, 721, 722, 723, 724, 725, 728, 729, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 754, 755, 757, 759, 761, 762, 763, 908, 928, 930
+- `main.swift`: 3, 4, 5, 7, 8, 10, 22, 25, 26, 37, 38, 39, 40, 41, 42, 43, 45, 46, 48, 49, 63, 64, 65, 78, 82, 83, 84, 85, 86, 94, 122, 123, 136, 137, 138, 139, 547, 548, 549, 550, 551, 552, 554, 556, 557, 558, 559, 560, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 573, 574, 584, 586, 587, 588, 589, 590, 592, 640, 641, 642, 643, 644, 645, 646, 647, 652, 664, 665, 691, 692, 694, 695, 696, 697, 698, 699, 714, 715, 720, 721, 722, 723, 724, 725, 728, 729, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 754, 755, 757, 759, 761, 762, 763, 908, 928, 930
 
 ## Evidence and language semantics
 
@@ -18,6 +17,6 @@ The requested change belongs in the event transformation, after target selection
 
 ## Minimization and alternatives
 
-Considered the smaller transformation-only excerpt: it cannot establish the downstream display, delta-time encoding or error precedence requested here. Conversely, parsing HEX/TEXT, note pairing, timing, quantization and all other editing features do not determine this change and are omitted. Only the relevant channel branches of event formatting/type helpers are retained; unrelated meta-message formatting and the hex-dump presentation are omitted. The VLQ helper is custom code, so its essential body is included rather than inferred from its name. Initializers and sequence writes needed to establish retention are retained; standalone closing delimiters and unrelated dispatch cases carry no additional answer fact. Complete source lines are preserved, so unavoidable adjacent syntax on the same physical line remains.  Independently checked the final excerpt against all shared requirements, retaining transformation, display, encoder and error-order dependencies. Removed blank and purely structural closing lines; unchanged non-note codec branches are unnecessary.
+A transformation-only excerpt cannot establish downstream display, delta-time encoding or required error precedence. HEX/TEXT construction, pairing, timing, quantization and other edits are omitted because the input song is already valid. The relevant event/list types, selected formatting branches, VLQ code, encoder traversal, command guards and persistent-state write are retained. Custom helper bodies appear only where they determine a required behavior; ordinary collection/ownership rules are stated in the evidence. Source declarations and branch guards needed to identify selected definitions are retained even when a smaller candidate omitted them. This final excerpt was independently read and checked against the same four requirements used for all languages; no implementation changes or program execution were performed.
 
-The excerpt contains 2111 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
+The excerpt contains 2119 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

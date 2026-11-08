@@ -2,10 +2,9 @@
 
 ## Answer requirements shared across languages
 
-1. Trace a valid two-cue SRT scenario from block separation, index/timestamp/text parsing and storage to MERGE command dispatch, arity/numeric/range validation and its error output.
-2. Locate the strict gap comparison and explain changing only it to accept equality; retain dialogue exclusion, greedy wrapping at 42 columns and the at-most-two-line eligibility test.
-3. Trace the evolving retained-cue state: the first identity/start survive, end becomes the maximum, text is replaced by wrapped combined text, joins increment, rejected pairs remain separate, and subsequent comparisons use the evolving end.
-4. Explain the MERGE summary and a following PRINT/SRT export, including an equal-gap success example, a dialogue or over-two-line rejection and unchanged malformed-command behavior.
+1. Follow valid SRT blocks through timestamp conversion and cue storage, then validate MERGE integer/range/arity and dispatch; preserve existing command error behavior.
+2. Explain the equal-gap case and exact local strict-to-inclusive comparison change, with dialogue exclusion and greedy wrapping to at most two lines; evaluate each next cue against the evolving merged cue.
+3. Establish that a successful join retains the first identity/start, extends end by max, replaces text, counts joins, installs the rebuilt cue list, reports MERGE and exports the updated timings/text; explain a nearby dialogue or too-many-lines skip.
 
 ## Selected source locations
 
@@ -17,6 +16,6 @@ A concrete trace uses SRT cues 7 (00:00:00,000 to 00:00:01,000, text alpha) and 
 
 ## Minimization and alternatives
 
-Compared a boundary-only excerpt with this end-to-end slice: the shorter candidate cannot establish loading, validation, text eligibility, state propagation or export. Conversely, including all command branches, markup conversion, validation reports, statistics, undo storage and other edit operations contributes no required fact. PRINT is the lowest-cost subsequent export because it needs no VTT/ASS conversion. Bare delimiters, cleanup-only operations and unrelated schema entries are omitted where their absence loses no fact; a combined source line is retained verbatim when it also contains irrelevant branches. Standard formatting/string/collection operations use documented semantics. The selected custom helpers are retained only where their body, rather than its name, establishes needed behavior. A final excerpt-only review removed empty lines and standalone closing delimiters that add no necessary information; control conditions, meaningful else/continue/break lines, field bindings and result propagation remain.
+The selection is a path slice: physical block boundary/loader lines, timestamp conversion and stored cue fields, the MERGE/PRINT schema entries and relevant numeric validation, the dialogue/word-wrap definitions, the complete join decision and state/output effects, and the normal/error dispatch edges. Other command algorithms, other argument kinds, reporting and unrelated export formats are excluded. An expression-only set would miss evolving state, eligibility, export and error behavior; a whole loader/dispatcher/export implementation would include unrelated cases. Only complete original physical lines are copied, so a schema or condition shared with other commands remains indivisible. Structural-only blank/closing lines and memory-management lines with no bearing on the requested valid scenario are omitted. The example is derived statically; no program is run and no proposed change is implemented. Reconciled with 9efb28574 after byte-identical source verification: remove modification history/snapshot evidence because this task follows MERGE then PRINT and asks no UNDO; keep control guards and the retained-cue update. Added only needed field/error/custom split or output-helper witnesses. Remote additions for other exporters and removals that obscured the active branch were rejected.
 
 The excerpt contains 2476 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

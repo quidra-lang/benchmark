@@ -1,0 +1,346 @@
+local SETTING_NAMES = {
+    "CAPACITY", "INITIAL", "CHARGE", "DISCHARGE", "CEFF", "DEFF", "RESERVE", "COST",
+    "EXPORT", "FEEDIN", "FIXED", "DEMAND", "PVSCALE"
+}
+local SETTING_RANGES = {
+    CAPACITY = {1, 100000}, INITIAL = {0, 100}, CHARGE = {1, 20000},
+local TOTAL_FIELDS = {
+    "load", "pv", "charge", "discharge", "imported", "exported",
+    "curtailed", "drawn", "loss", "shortfall", "import_cost", "export_income"
+local function split(line)
+    local values = {}
+    for word in line:gmatch("%S+") do values[#values + 1] = word end
+    return values
+end
+
+local function copy(values)
+    local result = {}
+    for name, value in pairs(values) do result[name] = value end
+    return result
+end
+
+local function number(x) return tonumber(x) end
+local function floor(x, y) return x // y end
+local function ceiling(x, y) return (x + y - 1) // y end
+local function min(...) return math.min(...) end
+local function max(...) return math.max(...) end
+
+local function money(amount)
+    local absolute = math.abs(amount)
+    return (amount < 0 and "-" or "") .. tostring(absolute // 100)
+        .. "." .. string.format("%02d", absolute % 100)
+end
+
+local function percentage(numerator, denominator)
+    local value = denominator ~= 0 and floor(10000 * numerator, denominator) or 0
+    return tostring(value // 100) .. "." .. string.format("%02d", value % 100)
+local function row(values, widths)
+    local pieces = {}
+    for index, value in ipairs(values) do
+        pieces[index] = string.format("%" .. widths[index] .. "s", tostring(value))
+    end
+    return table.concat(pieces)
+local function fail(reason)
+    error({reason = reason}, 0)
+end
+
+local function require_count(args, expected)
+    if #args ~= expected then fail("wrong number of arguments") end
+end
+
+local function strategy_text(strategy)
+    return strategy.parameter == nil and strategy.name
+        or (strategy.name .. " " .. strategy.parameter)
+local function parse_strategies(args)
+    local strategies = {}
+    local index = 1
+    while index <= #args do
+        local name = args[index]
+        index = index + 1
+        if name == "SELF" or name == "EXPORTPEAK" then
+            strategies[#strategies + 1] = {name = name}
+        else
+    return strategies
+local function one_strategy(args)
+    local strategies = parse_strategies(args)
+    require_count(strategies, 1)
+    return strategies[1]
+local function read_period_hours(args)
+    local hours = {}
+    for i = 1, #args, 2 do
+        local start = number(args[i])
+        local finish = i + 2 <= #args and number(args[i + 2]) or 24
+        for hour = start, finish - 1 do hours[#hours + 1] = args[i + 1] end
+    end
+    return hours
+end
+
+local function read_input()
+    local function line() return split(io.read("*l")) end
+    local data = {}
+    local battery = line()
+    local grid = line()
+    local settings = {}
+    for i = 1, 8 do settings[SETTING_NAMES[i]] = number(battery[i + 1]) end
+    for i = 9, 12 do settings[SETTING_NAMES[i]] = number(grid[i - 7]) end
+    settings.PVSCALE = 100
+    data.initial_settings = settings
+
+    local period_count = number(line()[2])
+    data.period_names = {}
+    data.initial_prices = {}
+    for _ = 1, period_count do
+        local args = line()
+        local name = args[1]
+        data.period_names[#data.period_names + 1] = name
+        data.initial_prices[name] = number(args[2])
+    end
+    local weekday = line()
+    local weekend = line()
+    table.remove(weekday, 1)
+    table.remove(weekend, 1)
+    weekday = read_period_hours(weekday)
+    weekend = read_period_hours(weekend)
+
+    local profile_count = number(line()[2])
+    local profiles = {}
+    for _ = 1, profile_count do
+        local args = line()
+        local values = {}
+        for i = 3, #args do values[#values + 1] = number(args[i]) end
+        profiles[args[1] .. "/" .. args[2]] = values
+    end
+    data.day_count = number(line()[2])
+    data.loads = {}
+    data.base_pv = {}
+    for _ = 1, data.day_count do
+        local args = line()
+        local load_values = profiles["LOAD/" .. args[1]]
+        local pv_values = profiles["PV/" .. args[3]]
+        local load_percent, pv_percent = number(args[2]), number(args[4])
+        for hour = 1, 24 do
+            data.loads[#data.loads + 1] = floor(load_values[hour] * load_percent, 100)
+            data.base_pv[#data.base_pv + 1] = floor(pv_values[hour] * pv_percent, 100)
+        end
+    end
+    local holiday_tokens = line()
+    local holidays = {}
+    for i = 3, #holiday_tokens do holidays[number(holiday_tokens[i])] = true end
+    local overrides = number(line()[2])
+    for _ = 1, overrides do
+        local args = line()
+        local index = (number(args[1]) - 1) * 24 + number(args[2]) + 1
+        data.loads[index] = number(args[3])
+        data.base_pv[index] = number(args[4])
+    data.periods = {}
+    for day = 1, data.day_count do
+        local holiday = not not holidays[day]
+        local weekend_day = holiday or (day - 1) % 7 >= 5
+        local schedule = weekend_day and weekend or weekday
+        for hour = 1, 24 do data.periods[#data.periods + 1] = schedule[hour] end
+    end
+    return data
+local function hour_record(index, period, load, pv, soc, flows, drawn, shortfall, loss, price, feedin)
+    local record = {
+        index = index - 1, day = floor(index - 1, 24) + 1, hour = (index - 1) % 24,
+        period = period, load = load, pv = pv, soc = soc, flows = flows,
+        charge = flows[2] + flows[8], discharge = flows[5] + flows[6],
+        imported = flows[7] + flows[8], exported = flows[3] + flows[6],
+        curtailed = flows[4], drawn = drawn, shortfall = shortfall, loss = loss
+    }
+    record.import_cost = floor(record.imported * price, 100000)
+    record.export_income = floor(record.exported * feedin, 100000)
+    return record
+local function totals(records)
+    local result = {count = #records, flows = {}}
+    for _, field in ipairs(TOTAL_FIELDS) do result[field] = 0 end
+    for _, record in ipairs(records) do
+        for _, field in ipairs(TOTAL_FIELDS) do result[field] = result[field] + record[field] end
+    result.net_cost = result.import_cost - result.export_income
+    return result
+local function simulation_result(strategy, settings, prices, data, start_soc, reserve, records)
+    local result = {
+        strategy = strategy, settings = copy(settings), prices = copy(prices),
+        start_soc = start_soc, reserve = reserve, hours = records,
+        days = {}, daily = {}, by_period = {}
+    for _, period in ipairs(data.period_names) do
+        local subset = {}
+        for _, record in ipairs(records) do
+            if record.period == period then subset[#subset + 1] = record end
+        end
+        result.by_period[period] = totals(subset)
+    end
+    result.total = totals(records)
+    result.peak = 0
+    for _, record in ipairs(records) do result.peak = max(result.peak, record.imported) end
+    result.demand_charge = floor(result.peak * settings.DEMAND, 1000)
+    result.bill = result.total.net_cost + settings.FIXED + result.demand_charge
+    result.end_soc = records[#records].soc
+    return result
+local function simulate(data, strategy, settings, prices, outage)
+    local name, parameter = strategy.name, strategy.parameter
+    local capacity, ceff, deff = settings.CAPACITY, settings.CEFF, settings.DEFF
+    local reserve_percent = name == "BACKUP" and max(settings.RESERVE, parameter) or settings.RESERVE
+    local reserve = floor(capacity * reserve_percent, 100)
+    local start_soc = floor(capacity * settings.INITIAL, 100)
+    local soc = start_soc
+    local arbitrage = name == "EXPORTPEAK" and settings.FEEDIN > prices[cheapest]
+    local records = {}
+
+    local function discharge_target(deficit, period)
+        if name == "TOU" then return period == peak and deficit or 0 end
+        if name == "PEAKSHAVE" then return max(0, deficit - parameter) end
+        if arbitrage and period == cheapest and period ~= peak then return 0 end
+        return deficit
+    local function grid_charge(period, pv_charge, grid_load)
+        local target = nil
+        if name == "TOU" and period == cheapest and period ~= peak then
+        elseif name == "PEAKSHAVE" and period == cheapest then
+        elseif name == "BACKUP" and period == cheapest then
+        elseif arbitrage and period == cheapest and period ~= peak then
+        if target == nil then return 0 end
+    for index = 1, #data.loads do
+        local load = data.loads[index]
+        local pv = floor(data.base_pv[index] * settings.PVSCALE, 100)
+        local period = data.periods[index]
+        local direct = min(load, pv)
+        local surplus, deficit = pv - direct, load - direct
+        local pv_charge = min(surplus, settings.CHARGE, ceiling(100 * (capacity - soc), ceff))
+        soc = soc + floor(pv_charge * ceff, 100)
+        surplus = surplus - pv_charge
+        local is_outage = outage ~= nil and outage[1] <= index and index <= outage[2]
+        local target = is_outage and deficit or discharge_target(deficit, period)
+        local lower_bound = is_outage and 0 or reserve
+        local load_drawn = min(ceiling(100 * target, deff), settings.DISCHARGE, max(0, soc - lower_bound))
+        local load_discharge = floor(load_drawn * deff, 100)
+        soc = soc - load_drawn
+        deficit = deficit - load_discharge
+        local grid_load, shortfall, pv_export, curtailed, additional_charge
+        local export_drawn, battery_export = 0, 0
+        if is_outage then
+            grid_load, shortfall, pv_export, curtailed, additional_charge = 0, deficit, 0, surplus, 0
+        else
+            grid_load, shortfall = deficit, 0
+            pv_export = min(surplus, settings.EXPORT)
+            curtailed = surplus - pv_export
+            additional_charge = grid_charge(period, pv_charge, grid_load)
+            if arbitrage and period == peak and pv_charge == 0 then
+        local flows = {direct, pv_charge, pv_export, curtailed, load_discharge,
+            battery_export, grid_load, additional_charge}
+        records[#records + 1] = hour_record(index, period, load, pv, soc, flows,
+            load_drawn + export_drawn, shortfall, loss, prices[period], settings.FEEDIN)
+    end
+    return simulation_result(strategy, settings, prices, data, start_soc, reserve, records)
+local Desk = {}
+Desk.__index = Desk
+
+function Desk.new(data)
+    return setmetatable({
+        data = data, settings = copy(data.initial_settings),
+        prices = copy(data.initial_prices), current = nil
+    }, Desk)
+end
+
+function Desk:require_result()
+    if self.current == nil then fail("no run") end
+    return self.current
+end
+
+function Desk:checked_day(token)
+    local day = number(token)
+    if day < 1 or day > self.data.day_count then fail("invalid day") end
+    return day
+end
+
+function Desk:result_without_arguments(args)
+    require_count(args, 0)
+    return self:require_result()
+function Desk:simulate(strategy, settings, prices, outage)
+    return simulate(self.data, strategy, settings or self.settings, prices or self.prices, outage)
+function Desk:run(args)
+    local strategy = one_strategy(args)
+    local result = self:simulate(strategy)
+    self.current = result
+    local total = result.total
+    return {"RUN " .. strategy_text(strategy) .. " bill " .. money(result.bill)
+        .. " import " .. total.imported .. " export " .. total.exported
+        .. " soc " .. result.end_soc}
+end
+
+function Desk:set_value(args)
+    require_count(args, 2)
+    local item, token = args[1], args[2]
+    local bounds = SETTING_RANGES[item]
+    if bounds == nil then fail("unknown parameter " .. item) end
+    local value = number(token)
+    if value < bounds[1] or value > bounds[2] then fail("invalid value for " .. item) end
+    local previous = self.settings[item]
+    self.settings[item] = value
+    return {"SET " .. item .. " " .. previous .. " -> " .. value}
+function Desk:outage(args)
+    require_count(args, 3)
+    local day = self:checked_day(args[1])
+    local start_hour, end_hour = number(args[2]), number(args[3])
+    if start_hour < 0 or end_hour > 23 or start_hour > end_hour then fail("invalid hours") end
+    local current = self:require_result()
+    local first = (day - 1) * 24 + start_hour + 1
+    local last = (day - 1) * 24 + end_hour + 1
+    local result = self:simulate(current.strategy, current.settings, current.prices, {first, last})
+    local before = first > 1 and result.hours[first - 1].soc or result.start_soc
+    local output = {"OUTAGE day " .. day .. " hours " .. start_hour .. "-" .. end_hour
+        .. " strategy " .. strategy_text(result.strategy) .. " soc " .. before,
+        "hour   load     pv  disch    soc  short   curt"}
+    local records = {}
+    for i = first, last do
+        local record = result.hours[i]
+        records[#records + 1] = record
+        output[#output + 1] = row({record.hour, record.load, record.pv, record.discharge,
+            record.soc, record.shortfall, record.curtailed}, {4, 7, 7, 7, 7, 7, 7})
+    end
+    local total = totals(records)
+    local served = total.load > 0 and percentage(total.load - total.shortfall, total.load) or "100.00"
+    output[#output + 1] = "TOTAL load " .. total.load .. " unserved " .. total.shortfall
+        .. " served " .. served .. "% bill " .. money(result.bill)
+    return output
+function Desk:bill(args)
+    local result = self:result_without_arguments(args)
+    local output = {"BILL strategy " .. strategy_text(result.strategy)
+        .. " days " .. self.data.day_count}
+    for _, period in ipairs(self.data.period_names) do
+        local total = result.by_period[period]
+        output[#output + 1] = "IMPORT " .. period .. " " .. total.imported
+            .. " Wh " .. money(total.import_cost)
+    end
+    local total = result.total
+    output[#output + 1] = "EXPORT " .. total.exported .. " Wh " .. money(-total.export_income)
+    output[#output + 1] = "FIXED " .. money(result.settings.FIXED)
+    output[#output + 1] = "DEMAND " .. result.peak .. " Wh " .. money(result.demand_charge)
+    output[#output + 1] = "TOTAL " .. money(result.bill)
+    return output
+local HANDLERS = {
+    RUN = "run", SET = "set_value", PRICE = "price", RESET = "reset", CONFIG = "config",
+    OUTAGE = "outage", DIFF = "diff", HOURLY = "hourly", DAILY = "daily", BILL = "bill",
+function Desk:execute(tokens)
+    local command = tokens[1]
+    local handler = HANDLERS[command]
+    if handler == nil then return {"ERROR unknown command " .. command} end
+    local args = {}
+    for i = 2, #tokens do args[#args + 1] = tokens[i] end
+    local success, output = pcall(self[handler], self, args)
+    if success then return output end
+    if type(output) ~= "table" or output.reason == nil then error(output, 0) end
+    return {"ERROR " .. output.reason}
+end
+
+local data = read_input()
+local desk = Desk.new(data)
+local output = {}
+while true do
+    local line = io.read("*l")
+    if not line then break end
+    local tokens = split(line)
+    if tokens[1] == "END" then break end
+    local lines = desk:execute(tokens)
+    for _, result in ipairs(lines) do output[#output + 1] = result end
+end
+if #output > 0 then io.write(table.concat(output, "\n"), "\n") end

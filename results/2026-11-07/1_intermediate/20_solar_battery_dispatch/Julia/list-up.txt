@@ -1,0 +1,264 @@
+const SETTING_NAMES = split("CAPACITY INITIAL CHARGE DISCHARGE CEFF DEFF RESERVE COST EXPORT FEEDIN FIXED DEMAND PVSCALE")
+const SETTING_RANGES = Dict(zip(SETTING_NAMES, [(1, 100000), (0, 100), (1, 20000),
+    (1, 20000), (1, 100), (1, 100), (0, 100), (0, 100000), (0, 100000),
+    (0, 10000), (0, 100000), (0, 100000), (0, 300)]))
+const FLOW_NAMES = split("PV>LOAD PV>BATTERY PV>GRID PV>CURTAIL BATTERY>LOAD BATTERY>GRID GRID>LOAD GRID>BATTERY")
+const STRATEGY_RANGES = Dict("TOU" => (1, 100), "PEAKSHAVE" => (0, 100000), "BACKUP" => (0, 100))
+const REPORTS = Set(split("DAILY BILL SAVINGS BYPERIOD DAYTYPE PROFILE FLOWS SELFSUFF CYCLES USAGE HISTOGRAM"))
+struct CommandError <: Exception
+    message::String
+fail(message) = throw(CommandError(message))
+number(text) = parse(Int, text)
+money(value) = @sprintf("%s%d.%02d", value < 0 ? "-" : "", div(abs(value), 100), mod(abs(value), 100))
+percentage(a, b) = money(b == 0 ? 0 : div(10000 * a, b))
+row(values, widths) = println(join(lpad(string(value), width) for (value, width) in zip(values, widths)))
+struct Strategy
+    name::String
+    parameter::Int
+end
+notation(strategy) = strategy.name * (haskey(STRATEGY_RANGES, strategy.name) ? " $(strategy.parameter)" : "")
+struct InputHour
+    day::Int
+    hour::Int
+    period::Int
+    load::Int
+    pv::Int
+end
+
+struct Dataset
+    periods::Vector{String}
+    hours::Vector{InputHour}
+    daynames::Vector{String}
+    weekends::BitVector
+end
+
+struct HourRecord
+    day::Int
+    hour::Int
+    period::Int
+    load::Int
+    pv::Int
+    charge::Int
+    discharge::Int
+    drawn::Int
+    soc::Int
+    imported::Int
+    exported::Int
+    curtailed::Int
+    shortfall::Int
+    loss::Int
+    flows::NTuple{8, Int}
+    cost::Int
+    income::Int
+end
+
+struct Result
+    strategy::Strategy
+    settings::Dict{String, Int}
+    prices::Vector{Int}
+    records::Vector{HourRecord}
+    starting::Int
+    reserve::Int
+    peak::Int
+    demand::Int
+    bill::Int
+total(records, field) = sum((getfield(record, field) for record in records); init=0)
+netcost(records) = total(records, :cost) - total(records, :income)
+function read_data()
+    tokens() = split(readline())
+    battery = number.(tokens()[2:end])
+    grid = number.(tokens()[2:end])
+    settings = Dict{String, Int}(zip(SETTING_NAMES, vcat(battery, grid, 100)))
+    count = number(tokens()[2])
+    periods = String[]
+    prices = Int[]
+    for _ in 1:count
+        fields = tokens()
+        push!(periods, fields[1])
+        push!(prices, number(fields[2]))
+    end
+    period_index = Dict(name => i for (i, name) in enumerate(periods))
+    divisions = Vector{Int}[]
+    for _ in 1:2
+        fields = tokens()
+        hours = zeros(Int, 24)
+        for i in 2:2:length(fields)
+            first = number(fields[i])
+            last = i + 2 <= length(fields) ? number(fields[i + 2]) - 1 : 23
+            hours[first + 1:last + 1] .= period_index[fields[i + 1]]
+        end
+        push!(divisions, hours)
+    end
+    count = number(tokens()[2])
+    profiles = Dict{Tuple{String, String}, Vector{Int}}()
+    for _ in 1:count
+        fields = tokens()
+        profiles[(fields[1], fields[2])] = number.(fields[3:end])
+    end
+    days = number(tokens()[2])
+    loads = zeros(Int, 24, days)
+    generation = zeros(Int, 24, days)
+    for day in 1:days
+        fields = tokens()
+        loads[:, day] = div.(profiles[("LOAD", fields[1])] .* number(fields[2]), 100)
+        generation[:, day] = div.(profiles[("PV", fields[3])] .* number(fields[4]), 100)
+    end
+    holidays = Set(number.(tokens()[3:end]))
+    count = number(tokens()[2])
+    for _ in 1:count
+        day, hour, load, pv = number.(tokens())
+        loads[hour + 1, day] = load
+        generation[hour + 1, day] = pv
+    weekdays = split("MON TUE WED THU FRI SAT SUN")
+    daynames = [day in holidays ? "HOL" : String(weekdays[mod(day - 1, 7) + 1]) for day in 1:days]
+    weekends = BitVector([day in holidays || mod(day - 1, 7) >= 5 for day in 1:days])
+    hours = [InputHour(day, hour, divisions[weekends[day] ? 2 : 1][hour + 1],
+                       loads[hour + 1, day], generation[hour + 1, day])
+             for day in 1:days for hour in 0:23]
+    Dataset(periods, hours, daynames, weekends), settings, prices
+function simulate(data, strategy, settings, prices; outage=nothing)
+    capacity = settings["CAPACITY"]
+    ceff, deff = settings["CEFF"], settings["DEFF"]
+    reserve_pct = strategy.name == "BACKUP" ? max(settings["RESERVE"], strategy.parameter) : settings["RESERVE"]
+    reserve = div(capacity * reserve_pct, 100)
+    starting = soc = div(capacity * settings["INITIAL"], 100)
+    arbitrage = strategy.name == "EXPORTPEAK" && settings["FEEDIN"] > prices[low]
+    records = HourRecord[]
+    for input in data.hours
+        pv = div(input.pv * settings["PVSCALE"], 100)
+        direct = min(input.load, pv)
+        surplus, deficit = pv - direct, input.load - direct
+        x1 = min(surplus, settings["CHARGE"], cld(100 * (capacity - soc), ceff))
+        stored1 = div(x1 * ceff, 100)
+        soc += stored1
+        surplus -= x1
+        disconnected = outage !== nothing && input.day == outage[1] && outage[2] <= input.hour <= outage[3]
+        target = deficit
+        if !disconnected
+            if strategy.name == "TOU"
+            elseif strategy.name == "PEAKSHAVE"
+            elseif strategy.name == "EXPORTPEAK" && arbitrage && input.period == low && low != high
+        lower = disconnected ? 0 : reserve
+        y1 = min(cld(100 * target, deff), settings["DISCHARGE"], max(0, soc - lower))
+        d1 = div(y1 * deff, 100)
+        soc -= y1
+        deficit -= d1
+        x2 = y2 = d2 = stored2 = 0
+        if disconnected
+            grid = export_pv = 0
+            shortfall, curtailed = deficit, surplus
+        else
+            grid, shortfall = deficit, 0
+            export_pv = min(surplus, settings["EXPORT"])
+            curtailed = surplus - export_pv
+            charge_target = nothing
+            if strategy.name == "TOU" && input.period == low && low != high
+            elseif strategy.name == "PEAKSHAVE" && input.period == low
+            elseif strategy.name == "BACKUP" && input.period == low
+            elseif strategy.name == "EXPORTPEAK" && arbitrage && input.period == low && low != high
+            if charge_target !== nothing
+            if strategy.name == "EXPORTPEAK" && arbitrage && input.period == high && x1 == 0
+        imported, exported = grid + x2, export_pv + d2
+        loss = x1 - stored1 + x2 - stored2 + y1 - d1 + y2 - d2
+        flows = (direct, x1, export_pv, curtailed, d1, d2, grid, x2)
+        push!(records, HourRecord(input.day, input.hour, input.period, input.load, pv,
+            x1 + x2, d1 + d2, y1 + y2, soc, imported, exported, curtailed, shortfall,
+            loss, flows, div(imported * prices[input.period], 100000),
+            div(exported * settings["FEEDIN"], 100000)))
+    end
+    peak = maximum(record.imported for record in records)
+    demand = div(peak * settings["DEMAND"], 1000)
+    bill = netcost(records) + settings["FIXED"] + demand
+    Result(strategy, copy(settings), copy(prices), records, starting, reserve, peak, demand, bill)
+function strategies(tokens)
+    result = Strategy[]
+    i = 1
+    while i <= length(tokens)
+        name = tokens[i]
+        i += 1
+        parameter = 0
+        if haskey(STRATEGY_RANGES, name)
+        elseif name != "SELF" && name != "EXPORTPEAK"
+            fail("unknown strategy $name")
+        end
+        push!(result, Strategy(String(name), parameter))
+    end
+    result
+end
+
+function one_strategy(tokens)
+    choices = strategies(tokens)
+    length(choices) == 1 || fail("wrong number of arguments")
+    only(choices)
+arguments(args, count) = length(args) == count || fail("wrong number of arguments")
+function valid_day(text, data)
+    day = number(text)
+    1 <= day <= length(data.daynames) || fail("invalid day")
+    day
+end
+function parameter_range(name)
+    haskey(SETTING_RANGES, name) || fail("unknown parameter $name")
+    SETTING_RANGES[name]
+function bill(data, result)
+    println("BILL strategy $(notation(result.strategy)) days $(length(data.daynames))")
+    for (i, name) in enumerate(data.periods)
+        records = filter(r -> r.period == i, result.records)
+        println("IMPORT $name $(total(records, :imported)) Wh $(money(total(records, :cost)))")
+    end
+    println("EXPORT $(total(result.records, :exported)) Wh $(money(-total(result.records, :income)))")
+    println("FIXED $(money(result.settings["FIXED"]))")
+    println("DEMAND $(result.peak) Wh $(money(result.demand))")
+    println("TOTAL $(money(result.bill))")
+function report(command, data, result)
+    if command == "DAILY"
+    elseif command == "BILL"
+        bill(data, result)
+function outage_report(data, result, day, first, last_hour)
+    alternate = simulate(data, result.strategy, result.settings, result.prices; outage=(day, first, last_hour))
+    begin_index = (day - 1) * 24 + first + 1
+    before = begin_index == 1 ? alternate.starting : alternate.records[begin_index - 1].soc
+    println("OUTAGE day $day hours $first-$last_hour strategy $(notation(result.strategy)) soc $before")
+    println("hour   load     pv  disch    soc  short   curt")
+    records = @view alternate.records[begin_index:(day - 1) * 24 + last_hour + 1]
+    for r in records
+        row((r.hour, r.load, r.pv, r.discharge, r.soc, r.shortfall, r.curtailed), (4, 7, 7, 7, 7, 7, 7))
+    end
+    load, shortfall = total(records, :load), total(records, :shortfall)
+    served = load == 0 ? "100.00" : percentage(load - shortfall, load)
+    println("TOTAL load $load unserved $shortfall served $served% bill $(money(alternate.bill))")
+function main()
+    data, settings, prices = read_data()
+    result = nothing
+    for line in eachline()
+        fields = split(line)
+        command, args = fields[1], fields[2:end]
+        command == "END" && break
+        try
+            if command == "RUN"
+                strategy = one_strategy(args)
+                result = simulate(data, strategy, settings, prices)
+                println("RUN $(notation(strategy)) bill $(money(result.bill)) import $(total(result.records, :imported)) export $(total(result.records, :exported)) soc $(last(result.records).soc)")
+            elseif command == "SET"
+                arguments(args, 2)
+                item = args[1]
+                low, high = parameter_range(item)
+                value = number(args[2])
+                low <= value <= high || fail("invalid value for $item")
+                previous = settings[item]
+                settings[item] = value
+                println("SET $item $previous -> $value")
+            elseif command == "OUTAGE"
+                arguments(args, 3)
+                day = valid_day(args[1], data)
+                first, last_hour = number.(args[2:3])
+                0 <= first <= last_hour <= 23 || fail("invalid hours")
+                result !== nothing || fail("no run")
+                outage_report(data, result, day, first, last_hour)
+            elseif command in REPORTS
+                arguments(args, 0)
+                result !== nothing || fail("no run")
+                report(command, data, result)
+        catch error
+            error isa CommandError || rethrow()
+            println("ERROR ", error.message)
+main()

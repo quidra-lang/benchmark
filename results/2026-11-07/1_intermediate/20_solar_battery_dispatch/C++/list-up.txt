@@ -1,0 +1,405 @@
+using i64 = std::int64_t;
+using Settings = std::unordered_map<std::string, i64>;
+using Prices = std::vector<std::pair<std::string, i64>>;
+
+const std::vector<std::string> SETTING_NAMES = {
+    "CAPACITY", "INITIAL", "CHARGE", "DISCHARGE", "CEFF", "DEFF",
+    "RESERVE", "COST", "EXPORT", "FEEDIN", "FIXED", "DEMAND", "PVSCALE"
+const std::map<std::string, std::pair<i64, i64>> SETTING_RANGES = {
+    {"CAPACITY", {1, 100000}}, {"INITIAL", {0, 100}},
+struct CommandError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+std::vector<std::string> words(const std::string& line) {
+    std::istringstream input(line);
+    std::vector<std::string> result;
+    for (std::string token; input >> token;) result.push_back(token);
+    return result;
+}
+
+i64 number(const std::string& s) { return std::stoll(s); }
+std::string str(i64 n) { return std::to_string(n); }
+
+i64 value(const Settings& settings, const std::string& key) {
+    return settings.at(key);
+}
+i64 priceOf(const Prices& prices, const std::string& name) {
+    for (const auto& [key, price] : prices) if (key == name) return price;
+    throw std::logic_error("undefined tariff period");
+}
+
+std::string money(i64 amount) {
+    i64 cents = std::llabs(amount);
+    std::ostringstream out;
+    if (amount < 0) out << '-';
+    out << cents / 100 << '.' << std::setw(2) << std::setfill('0') << cents % 100;
+    return out.str();
+}
+std::string percentage(i64 numerator, i64 denominator) {
+    i64 percent = denominator ? (10000 * numerator / denominator) : 0;
+    std::ostringstream out;
+    out << percent / 100 << '.' << std::setw(2) << std::setfill('0') << percent % 100;
+    return out.str();
+}
+i64 ceiling(i64 numerator, i64 denominator) {
+    return (numerator + denominator - 1) / denominator;
+}
+std::string padded(const std::string& field, int width) {
+    return field.size() < static_cast<std::size_t>(width)
+        ? std::string(width - field.size(), ' ') + field : field;
+}
+std::string tableRow(const std::vector<std::string>& values,
+                     const std::vector<int>& widths) {
+    std::string line;
+    for (std::size_t i = 0; i < values.size(); ++i) line += padded(values[i], widths[i]);
+    return line;
+struct Strategy {
+    std::string name;
+    std::optional<i64> parameter;
+};
+std::string strategyText(const Strategy& strategy) {
+    return strategy.name + (strategy.parameter ? " " + str(*strategy.parameter) : "");
+}
+void requireCount(const std::vector<std::string>& values, std::size_t expected) {
+    if (values.size() != expected) throw CommandError("wrong number of arguments");
+}
+std::vector<Strategy> readStrategies(const std::vector<std::string>& tokens) {
+    std::vector<Strategy> result;
+    for (std::size_t i = 0; i < tokens.size();) {
+        std::string name = tokens[i++];
+        if (name == "SELF" || name == "EXPORTPEAK") {
+            result.push_back({name, std::nullopt});
+            continue;
+    return result;
+Strategy oneStrategy(const std::vector<std::string>& tokens) {
+    auto result = readStrategies(tokens);
+    if (result.size() != 1) throw CommandError("wrong number of arguments");
+    return result.front();
+struct InputData {
+    Settings initialSettings;
+    Prices initialPrices;
+    int dayCount = 0;
+    std::vector<i64> loads, basePV;
+    std::vector<std::string> dayNames, periods;
+    std::vector<std::string> commands;
+    static std::vector<std::string> readPeriodHours(const std::vector<std::string>& tokens) {
+        std::vector<std::string> hours;
+        for (std::size_t i = 0; i < tokens.size(); i += 2) {
+            i64 start = number(tokens[i]);
+            i64 end = i + 2 < tokens.size() ? number(tokens[i + 2]) : 24;
+            for (i64 h = start; h < end; ++h) hours.push_back(tokens[i + 1]);
+        }
+        return hours;
+    explicit InputData(std::istream& stream) {
+        auto read = [&]() {
+            std::string line;
+            std::getline(stream, line);
+            return words(line);
+        };
+        auto battery = read();
+        auto grid = read();
+        std::vector<i64> settings;
+        for (std::size_t i = 1; i < battery.size(); ++i) settings.push_back(number(battery[i]));
+        for (std::size_t i = 1; i < grid.size(); ++i) settings.push_back(number(grid[i]));
+        settings.push_back(100);
+        for (std::size_t i = 0; i < SETTING_NAMES.size(); ++i)
+            initialSettings[SETTING_NAMES[i]] = settings[i];
+
+        int periodCount = static_cast<int>(number(read()[1]));
+        for (int i = 0; i < periodCount; ++i) {
+            auto row = read();
+            initialPrices.emplace_back(row[0], number(row[1]));
+        }
+        auto wdTokens = read();
+        auto weTokens = read();
+        auto weekday = readPeriodHours({wdTokens.begin() + 1, wdTokens.end()});
+        auto weekend = readPeriodHours({weTokens.begin() + 1, weTokens.end()});
+
+        int profileCount = static_cast<int>(number(read()[1]));
+        std::unordered_map<std::string, std::vector<i64>> profiles;
+        for (int i = 0; i < profileCount; ++i) {
+            auto row = read();
+            std::vector<i64> numbers;
+            for (std::size_t j = 2; j < row.size(); ++j) numbers.push_back(number(row[j]));
+            profiles.emplace(row[0] + "/" + row[1], std::move(numbers));
+        }
+        dayCount = static_cast<int>(number(read()[1]));
+        for (int day = 0; day < dayCount; ++day) {
+            auto row = read();
+            const auto& load = profiles.at("LOAD/" + row[0]);
+            const auto& pv = profiles.at("PV/" + row[2]);
+            for (i64 item : load) loads.push_back(item * number(row[1]) / 100);
+            for (i64 item : pv) basePV.push_back(item * number(row[3]) / 100);
+        }
+        auto holidayLine = read();
+        std::unordered_set<int> holidays;
+        for (std::size_t i = 2; i < holidayLine.size(); ++i)
+            holidays.insert(static_cast<int>(number(holidayLine[i])));
+        int overrideCount = static_cast<int>(number(read()[1]));
+        for (int i = 0; i < overrideCount; ++i) {
+            auto row = read();
+            auto index = static_cast<std::size_t>((number(row[0]) - 1) * 24 + number(row[1]));
+            loads[index] = number(row[2]);
+            basePV[index] = number(row[3]);
+        }
+        for (int day = 1; day <= dayCount; ++day) {
+            bool holiday = holidays.count(day) != 0;
+            bool weekendDay = holiday || (day - 1) % 7 >= 5;
+            const auto& schedule = weekendDay ? weekend : weekday;
+            periods.insert(periods.end(), schedule.begin(), schedule.end());
+        }
+        for (std::string line; std::getline(stream, line);) {
+            if (!line.empty()) commands.push_back(line);
+struct HourRecord {
+    i64 index = 0, day = 0, hour = 0;
+    std::string period;
+    i64 load = 0, pv = 0, soc = 0;
+    std::array<i64, 8> flows{};
+    i64 charge = 0, discharge = 0, imported = 0, exported = 0, curtailed = 0;
+    i64 drawn = 0, shortfall = 0, loss = 0;
+    i64 importCost = 0, exportIncome = 0, netCost = 0;
+
+    HourRecord(i64 index_, std::string period_, i64 load_, i64 pv_, i64 soc_,
+               std::array<i64, 8> flows_, i64 drawn_, i64 shortfall_, i64 loss_,
+               i64 price, i64 feedin)
+        : index(index_), day(index_ / 24 + 1), hour(index_ % 24),
+          period(std::move(period_)), load(load_), pv(pv_), soc(soc_),
+          flows(flows_), drawn(drawn_), shortfall(shortfall_), loss(loss_) {
+        discharge = flows[4] + flows[5];
+        imported = flows[6] + flows[7];
+        exported = flows[2] + flows[5];
+        curtailed = flows[3];
+        importCost = imported * price / 100000;
+        exportIncome = exported * feedin / 100000;
+        netCost = importCost - exportIncome;
+struct Totals {
+    i64 count = 0, load = 0, pv = 0, charge = 0, discharge = 0;
+    i64 imported = 0, exported = 0, curtailed = 0, drawn = 0;
+    i64 loss = 0, shortfall = 0, importCost = 0, exportIncome = 0, netCost = 0;
+    void add(const HourRecord& record) {
+        load += record.load; pv += record.pv;
+        imported += record.imported; exported += record.exported;
+        loss += record.loss; shortfall += record.shortfall;
+        importCost += record.importCost; exportIncome += record.exportIncome;
+        netCost += record.netCost;
+struct SimulationResult {
+    Strategy strategy;
+    Settings settings;
+    Prices prices;
+    i64 startSOC, reserve, endSOC = 0, peak = 0, demandCharge = 0, bill = 0;
+    std::vector<HourRecord> hours;
+    std::vector<Totals> daily, byPeriod;
+    Totals total;
+
+    SimulationResult(Strategy strategy_, Settings settings_, Prices prices_,
+                     i64 start, i64 reserve_, std::vector<HourRecord> records)
+        : strategy(std::move(strategy_)), settings(std::move(settings_)),
+          prices(std::move(prices_)), startSOC(start), reserve(reserve_),
+          hours(std::move(records)) {
+        for (std::size_t i = 0; i < hours.size(); ++i) {
+            const auto& record = hours[i];
+            total.add(record);
+            peak = std::max(peak, record.imported);
+        }
+        byPeriod.resize(prices.size());
+        for (const auto& record : hours) {
+            for (std::size_t i = 0; i < prices.size(); ++i) {
+                if (prices[i].first == record.period) {
+                    byPeriod[i].add(record);
+                    break;
+        endSOC = hours.back().soc;
+        demandCharge = peak * value(settings, "DEMAND") / 1000;
+        bill = total.netCost + value(settings, "FIXED") + demandCharge;
+struct Simulator {
+    const InputData& data;
+    Strategy strategy;
+    Settings settings;
+    Prices prices;
+    std::optional<std::pair<i64, i64>> outage;
+    i64 capacity, ceff, deff, reserve, startSOC, soc;
+    std::string cheapest, peak;
+    bool arbitrage;
+
+    Simulator(const InputData& data_, Strategy strategy_, Settings settings_, Prices prices_,
+              std::optional<std::pair<i64, i64>> outage_ = std::nullopt)
+        : data(data_), strategy(std::move(strategy_)), settings(std::move(settings_)),
+          prices(std::move(prices_)), outage(outage_),
+          capacity(value(settings, "CAPACITY")), ceff(value(settings, "CEFF")),
+          deff(value(settings, "DEFF")), reserve(0), startSOC(0), soc(0),
+          arbitrage(false) {
+        i64 reservePercent = value(settings, "RESERVE");
+        if (strategy.name == "BACKUP") reservePercent = std::max(reservePercent, *strategy.parameter);
+        reserve = capacity * reservePercent / 100;
+        startSOC = capacity * value(settings, "INITIAL") / 100;
+        soc = startSOC;
+        arbitrage = strategy.name == "EXPORTPEAK" &&
+                    value(settings, "FEEDIN") > priceOf(prices, cheapest);
+    i64 dischargeTarget(i64 deficit, const std::string& period) const {
+        if (strategy.name == "TOU") return period == peak ? deficit : 0;
+        if (strategy.name == "PEAKSHAVE") return std::max<i64>(0, deficit - *strategy.parameter);
+        if (arbitrage && period == cheapest && period != peak) return 0;
+        return deficit;
+    i64 gridCharge(const std::string& period, i64 pvCharge, i64 gridLoad) {
+        std::optional<i64> target;
+        if (strategy.name == "TOU" && period == cheapest && period != peak) {
+        } else if (strategy.name == "PEAKSHAVE" && period == cheapest) {
+        } else if (strategy.name == "BACKUP" && period == cheapest) {
+        } else if (arbitrage && period == cheapest && period != peak) {
+        if (!target) return 0;
+    HourRecord runHour(i64 index) {
+        i64 load = data.loads[index];
+        i64 pv = data.basePV[index] * value(settings, "PVSCALE") / 100;
+        const auto& period = data.periods[index];
+        i64 direct = std::min(load, pv);
+        i64 surplus = pv - direct;
+        i64 deficit = load - direct;
+        i64 pvCharge = std::min({surplus, value(settings, "CHARGE"),
+                                 ceiling(100 * (capacity - soc), ceff)});
+        soc += pvCharge * ceff / 100;
+        surplus -= pvCharge;
+        bool isOutage = outage && outage->first <= index && index <= outage->second;
+        i64 target = isOutage ? deficit : dischargeTarget(deficit, period);
+        i64 lowerBound = isOutage ? 0 : reserve;
+        i64 loadDrawn = std::min({ceiling(100 * target, deff), value(settings, "DISCHARGE"),
+                                  std::max<i64>(0, soc - lowerBound)});
+        i64 loadDischarge = loadDrawn * deff / 100;
+        soc -= loadDrawn;
+        deficit -= loadDischarge;
+        i64 gridLoad = 0, shortfall = 0, pvExport = 0, curtailed = 0;
+        i64 gridCharged = 0, exportDrawn = 0, batteryExport = 0;
+        if (isOutage) {
+            shortfall = deficit;
+            curtailed = surplus;
+        } else {
+            gridLoad = deficit;
+            pvExport = std::min(surplus, value(settings, "EXPORT"));
+            curtailed = surplus - pvExport;
+            gridCharged = gridCharge(period, pvCharge, gridLoad);
+            if (arbitrage && period == peak && pvCharge == 0) {
+        std::array<i64, 8> flows = {
+            direct, pvCharge, pvExport, curtailed, loadDischarge,
+            batteryExport, gridLoad, gridCharged
+        };
+        return HourRecord(index, period, load, pv, soc, flows, loadDrawn + exportDrawn,
+                          shortfall, loss, priceOf(prices, period), value(settings, "FEEDIN"));
+    SimulationResult run() {
+        std::vector<HourRecord> records;
+        for (std::size_t i = 0; i < data.loads.size(); ++i) records.push_back(runHour(i));
+        return SimulationResult(strategy, settings, prices, startSOC, reserve, std::move(records));
+class DispatchDesk {
+    const InputData& data;
+    Settings settings;
+    Prices prices;
+    std::optional<SimulationResult> current;
+
+    const SimulationResult& requireResult() const {
+        if (!current) throw CommandError("no run");
+        return *current;
+    }
+    int checkedDay(const std::string& text) const {
+        i64 day = number(text);
+        if (day < 1 || day > data.dayCount) throw CommandError("invalid day");
+        return static_cast<int>(day);
+    }
+    const SimulationResult& resultWithoutArguments(const std::vector<std::string>& args) const {
+        requireCount(args, 0);
+        return requireResult();
+    SimulationResult simulate(Strategy strategy, Settings settings_, Prices prices_,
+                              std::optional<std::pair<i64, i64>> outage = std::nullopt) const {
+        return Simulator(data, std::move(strategy), std::move(settings_),
+                         std::move(prices_), outage).run();
+    }
+    SimulationResult simulate(Strategy strategy) const {
+        return simulate(std::move(strategy), settings, prices);
+    std::vector<std::string> run(const std::vector<std::string>& args) {
+        Strategy strategy = oneStrategy(args);
+        current = simulate(strategy);
+        const auto& result = *current;
+        const auto& total = result.total;
+        return {"RUN " + strategyText(strategy) + " bill " + money(result.bill) +
+                " import " + str(total.imported) + " export " + str(total.exported) +
+                " soc " + str(result.endSOC)};
+    }
+
+    std::vector<std::string> setValue(const std::vector<std::string>& args) {
+        requireCount(args, 2);
+        auto it = SETTING_RANGES.find(args[0]);
+        if (it == SETTING_RANGES.end()) throw CommandError("unknown parameter " + args[0]);
+        i64 newValue = number(args[1]);
+        if (newValue < it->second.first || newValue > it->second.second)
+            throw CommandError("invalid value for " + args[0]);
+        i64 oldValue = settings.at(args[0]);
+        settings[args[0]] = newValue;
+        return {"SET " + args[0] + " " + str(oldValue) + " -> " + str(newValue)};
+    std::vector<std::string> outage(const std::vector<std::string>& args) const {
+        requireCount(args, 3);
+        int day = checkedDay(args[0]);
+        i64 start = number(args[1]), end = number(args[2]);
+        if (start < 0 || start > end || end > 23) throw CommandError("invalid hours");
+        const auto& current = requireResult();
+        i64 first = (day - 1) * 24 + start;
+        i64 last = (day - 1) * 24 + end;
+        auto result = simulate(current.strategy, current.settings, current.prices,
+                               std::make_pair(first, last));
+        i64 before = first > 0 ? result.hours[first - 1].soc : result.startSOC;
+        std::vector<std::string> lines = {
+            "OUTAGE day " + str(day) + " hours " + str(start) + "-" + str(end) +
+                " strategy " + strategyText(result.strategy) + " soc " + str(before),
+            "hour   load     pv  disch    soc  short   curt"
+        };
+        Totals total;
+        for (i64 i = first; i <= last; ++i) {
+            const auto& r = result.hours[i];
+            total.add(r);
+            lines.push_back(tableRow({str(r.hour), str(r.load), str(r.pv),
+                                      str(r.discharge), str(r.soc), str(r.shortfall),
+                                      str(r.curtailed)}, {4, 7, 7, 7, 7, 7, 7}));
+        }
+        std::string served = total.load
+            ? percentage(total.load - total.shortfall, total.load) : "100.00";
+        lines.push_back("TOTAL load " + str(total.load) +
+                        " unserved " + str(total.shortfall) +
+                        " served " + served + "% bill " + money(result.bill));
+        return lines;
+    std::vector<std::string> bill(const std::vector<std::string>& args) const {
+        const auto& result = resultWithoutArguments(args);
+        std::vector<std::string> lines = {
+            "BILL strategy " + strategyText(result.strategy) + " days " + str(data.dayCount)
+        };
+        for (std::size_t i = 0; i < result.prices.size(); ++i) {
+            const auto& t = result.byPeriod[i];
+            lines.push_back("IMPORT " + result.prices[i].first + " " + str(t.imported) +
+                            " Wh " + money(t.importCost));
+        }
+        lines.push_back("EXPORT " + str(result.total.exported) +
+                        " Wh " + money(-result.total.exportIncome));
+        lines.push_back("FIXED " + money(value(result.settings, "FIXED")));
+        lines.push_back("DEMAND " + str(result.peak) +
+                        " Wh " + money(result.demandCharge));
+        lines.push_back("TOTAL " + money(result.bill));
+        return lines;
+public:
+    explicit DispatchDesk(const InputData& data_)
+        : data(data_), settings(data.initialSettings), prices(data.initialPrices) {}
+
+    std::vector<std::string> execute(const std::vector<std::string>& tokens) {
+        const std::string& cmd = tokens[0];
+        std::vector<std::string> args(tokens.begin() + 1, tokens.end());
+        try {
+            if (cmd == "RUN") return run(args);
+            if (cmd == "SET") return setValue(args);
+            if (cmd == "OUTAGE") return outage(args);
+            if (cmd == "BILL") return bill(args);
+            return {"ERROR unknown command " + cmd};
+        } catch (const CommandError& error) {
+            return {"ERROR " + std::string(error.what())};
+int main() {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    InputData data(std::cin);
+    DispatchDesk desk(data);
+    for (const auto& line : data.commands) {
+        auto tokens = words(line);
+        if (tokens[0] == "END") break;
+        for (const auto& result : desk.execute(tokens)) std::cout << result << '\n';

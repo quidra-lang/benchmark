@@ -1,0 +1,313 @@
+<?php
+class Station
+{
+    public int $transfer = 0;
+    public bool $closed = false;
+    public function __construct(public int $zone, public string $name) {}
+}
+
+class MetroLine
+{
+    public int $delay = 0;
+    public bool $suspended = false;
+    public function __construct(public string $id, public int $first, public int $last,
+        public int $headway, public array $stops, public array $offsets) {}
+
+    public function trips(): int
+    {
+        return intdiv($this->last - $this->first, $this->headway) + 1;
+    }
+
+    public function duration(): int
+    {
+        return $this->offsets[count($this->offsets) - 1];
+    }
+
+    public function directions(): array
+    {
+        return [[$this->stops, $this->offsets], [array_reverse($this->stops),
+            array_map(fn($c) => $this->duration() - $c, array_reverse($this->offsets))]];
+    }
+
+    public function nextTrain(int $offset, int $ready): ?int
+    {
+        $difference = max(0, $ready - $this->first - $this->delay - $offset);
+        $q = intdiv($difference + $this->headway - 1, $this->headway);
+        return $q < $this->trips() ? $q : null;
+    }
+
+    public function time(int $q, int $offset): int
+    {
+        return $this->first + $this->delay + $q * $this->headway + $offset;
+    }
+}
+
+class MetroError extends Exception {}
+
+class Metro
+{
+    private array $stations = [];
+    private array $lines = [];
+    private array $walks = [];
+    private array $closed = [];
+    private ?array $tariff = null;
+
+    private function minutes(string $text): int
+    {
+        [$hour, $minute] = array_map('intval', explode(':', $text));
+        return $hour * 60 + $minute;
+    }
+    private function sortedKeys(array $map): array
+    {
+        $keys = array_keys($map);
+        sort($keys, SORT_STRING);
+        return $keys;
+    }
+
+    private function segment(string $a, string $b): string
+    {
+        return strcmp($a, $b) < 0 ? "$a-$b" : "$b-$a";
+    }
+
+    private function blocked(string $a, string $b): bool
+    {
+        return isset($this->closed[$this->segment($a, $b)]);
+    }
+
+    private function stationCheck(string $id): void
+    {
+        if (!isset($this->stations[$id])) {
+            throw new MetroError("unknown station $id");
+        }
+    }
+    private function openCheck(string $id): void
+    {
+        if ($this->stations[$id]->closed) {
+            throw new MetroError("station $id is closed");
+        }
+    }
+
+    private function journeyCheck(string $origin, string $destination): void
+    {
+        $this->stationCheck($origin);
+        $this->stationCheck($destination);
+        if ($origin === $destination) {
+            throw new MetroError('origin and destination are the same');
+        }
+        $this->openCheck($origin);
+        $this->openCheck($destination);
+    }
+
+    private function runningLines(): array
+    {
+        $result = [];
+        foreach ($this->sortedKeys($this->lines) as $id) {
+            if (!$this->lines[$id]->suspended) {
+                $result[] = $this->lines[$id];
+            }
+        }
+        return $result;
+    }
+
+    private function update(array &$labels, string $destination, int $time, array $journey): bool
+    {
+        if (isset($labels[$destination]) && $labels[$destination][0] <= $time) {
+            return false;
+        }
+        $labels[$destination] = [$time, $journey];
+        return true;
+    }
+
+    private function earliest(string $origin, int $departure): array
+    {
+        $labels = [$origin => [$departure, []]];
+        $settled = [];
+        $lines = $this->runningLines();
+        while (true) {
+            $u = null;
+            foreach ($this->sortedKeys($labels) as $id) {
+                if (!isset($settled[$id]) && ($u === null || $labels[$id][0] < $labels[$u][0])) {
+                    $u = $id;
+                }
+            }
+            if ($u === null) {
+                break;
+            }
+            $settled[$u] = true;
+            [$arrival, $journey] = $labels[$u];
+            $ready = $arrival + ($u === $origin ? 0 : $this->stations[$u]->transfer);
+            foreach ($lines as $line) {
+                if (!in_array($u, $line->stops, true)) {
+                    continue;
+                }
+                foreach ($line->directions() as [$stops, $offsets]) {
+                    $i = array_search($u, $stops, true);
+                    if ($i === count($stops) - 1) {
+                        continue;
+                    }
+                    $q = $line->nextTrain($offsets[$i], $ready);
+                    if ($q === null) {
+                        continue;
+                    }
+                    $boarding = $line->time($q, $offsets[$i]);
+                    for ($j = $i + 1; $j < count($stops); $j++) {
+                        if ($this->blocked($stops[$j - 1], $stops[$j])) {
+                            break;
+                        }
+                        if ($this->stations[$stops[$j]]->closed) {
+                            continue;
+                        }
+                        $time = $line->time($q, $offsets[$j]);
+                        $leg = ['ride', $line->id, $stops[count($stops) - 1], $u, $boarding, $stops[$j], $time, $j - $i];
+                        $this->update($labels, $stops[$j], $time, [...$journey, $leg]);
+                    }
+                }
+            }
+            foreach ($this->sortedKeys($this->walks[$u]) as $v) {
+                $time = $arrival + $this->walks[$u][$v];
+                if (!$this->stations[$v]->closed && $time <= 1440) {
+                    $this->update($labels, $v, $time, [...$journey, ['walk', $u, $arrival, $v, $time]]);
+                }
+            }
+        }
+        return $labels;
+    }
+    private function printFare(string $origin, string $destination, string $timeText, string $class, array $journey): void
+    {
+        [$discountCap, $window, $prices] = $this->tariff;
+        $half = fn($x) => intdiv($x + 19, 20) * 10;
+        $cap = $class === 'CHILD' ? $half($discountCap) : $discountCap;
+        $tickets = [];
+        $previousEnd = null;
+        foreach ($journey as $leg) {
+            if ($leg[0] !== 'ride') {
+                continue;
+            }
+            [, $lineId, $toward, $from, $boarding, $to, $arrival] = $leg;
+            $line = $this->lines[$lineId];
+            foreach ($line->directions() as [$stops, $_]) {
+                if ($stops[count($stops) - 1] === $toward) {
+                    break;
+                }
+            }
+            $start = array_search($from, $stops, true);
+            $finish = array_search($to, $stops, true);
+            $zones = [];
+            for ($i = $start; $i <= $finish; $i++) {
+                $zones[$this->stations[$stops[$i]]->zone] = true;
+            }
+            $zoneCount = count($zones);
+            $price = $prices[min($zoneCount, count($prices)) - 1];
+            if ($class === 'CHILD') {
+                $price = $half($price);
+            }
+            $discount = $previousEnd !== null && $boarding - $previousEnd <= $window ? min($cap, $price) : 0;
+            $tickets[] = [$lineId, $from, $to, $zoneCount, $price, $discount, $price - $discount];
+            $previousEnd = $arrival;
+        }
+        echo "FARE $origin $destination $timeText $class rides ", count($tickets),
+            ' total ', array_sum(array_column($tickets, 6)), "\n";
+        foreach ($tickets as [$line, $from, $to, $zones, $price, $discount, $pay]) {
+            echo "TICKET $line $from $to zones $zones price $price discount $discount pay $pay\n";
+        }
+    }
+
+    private function searchCommand(string $command, array $args): void
+    {
+        [$origin, $destination] = $args;
+        $this->journeyCheck($origin, $destination);
+        $departure = isset($args[2]) ? $this->minutes($args[2]) : null;
+        if ($command === 'FARE') {
+            if (!in_array($args[3], ['ADULT', 'CHILD'], true)) {
+                throw new MetroError("unknown fare class {$args[3]}");
+            }
+            if ($this->tariff === null) {
+                throw new MetroError('no tariff');
+            }
+        }
+        if ($command === 'ROUTE' || $command === 'FARE') {
+            $label = $this->earliest($origin, $departure)[$destination] ?? null;
+            if ($label === null) {
+                echo "$command ", implode(' ', $args), " unreachable\n";
+            } else {
+                $this->printFare($origin, $destination, $args[2], $args[3], $label[1]);
+            }
+    public function execute(string $text): void
+    {
+        $args = explode(' ', $text);
+        $command = array_shift($args);
+        $a = $args[0] ?? null;
+        $b = $args[1] ?? null;
+        try {
+            switch ($command) {
+                case 'STATION':
+                    if (isset($this->stations[$a])) {
+                        throw new MetroError("station $a already exists");
+                    }
+                    $this->stations[$a] = new Station((int)$b, $args[2]);
+                    $this->walks[$a] = [];
+                    break;
+                case 'LINE':
+                    if (isset($this->lines[$a])) {
+                        throw new MetroError("line $a already exists");
+                    }
+                    $stops = [];
+                    $offsets = [0];
+                    for ($i = 4; $i < count($args); $i += 2) {
+                        $stops[] = $args[$i];
+                        $this->stationCheck($args[$i]);
+                    }
+                    $seen = [];
+                    foreach ($stops as $id) {
+                        if (isset($seen[$id])) {
+                            throw new MetroError("station $id appears twice on line $a");
+                        }
+                        $seen[$id] = true;
+                    }
+                    $first = $this->minutes($b);
+                    $last = $this->minutes($args[2]);
+                    if ($first > $last) {
+                        throw new MetroError("line $a first departure is after last departure");
+                    }
+                    for ($i = 5; $i < count($args); $i += 2) {
+                        $offsets[] = $offsets[count($offsets) - 1] + (int)$args[$i];
+                    }
+                    if ($last + $offsets[count($offsets) - 1] > 1440) {
+                        throw new MetroError("line $a runs past 24:00");
+                    }
+                    $line = new MetroLine($a, $first, $last, (int)$args[3], $stops, $offsets);
+                    $this->lines[$a] = $line;
+                    break;
+                case 'WALK':
+                    $this->stationCheck($a);
+                    $this->stationCheck($b);
+                    if ($a === $b) {
+                        throw new MetroError("walk from $a to itself");
+                    }
+                    $this->walks[$a][$b] = (int)$args[2];
+                    $this->walks[$b][$a] = (int)$args[2];
+                    break;
+                case 'TARIFF':
+                    $prices = array_map('intval', array_slice($args, 2));
+                    for ($i = 1; $i < count($prices); $i++) {
+                        if ($prices[$i] < $prices[$i - 1]) {
+                            throw new MetroError('tariff prices must not decrease');
+                        }
+                    }
+                    $this->tariff = [(int)$a, (int)$b, $prices];
+                    break;
+                case 'FARE':
+                    $this->searchCommand($command, $args);
+                    break;
+            }
+        } catch (MetroError $error) {
+            echo 'ERROR ', $error->getMessage(), "\n";
+        }
+    }
+}
+
+$metro = new Metro();
+$count = (int)fgets(STDIN);
+for ($i = 0; $i < $count; $i++) {
+    $metro->execute(rtrim(fgets(STDIN), "\r\n"));
+}

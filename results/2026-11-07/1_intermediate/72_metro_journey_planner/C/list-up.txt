@@ -1,0 +1,401 @@
+#define APPEND(a, n, v) do { (a) = resize((a), ((n) + 1) * sizeof(*(a))); (a)[(n)++] = (v); } while (0)
+typedef struct {
+    char *data;
+    size_t length, capacity;
+} Buffer;
+typedef struct Station Station;
+typedef struct Line Line;
+typedef struct {
+    Station *neighbor;
+    int minutes;
+} Walk;
+struct Station {
+    char *id, *name;
+    int zone, transfer;
+    size_t index;
+    bool closed;
+    Walk *walks;
+    size_t walk_count;
+};
+struct Line {
+    char *id;
+    int first, last, headway, delay;
+    bool suspended;
+    Station **stops;
+    int *cumulative;
+    size_t count;
+};
+typedef struct {
+    Station *a, *b;
+} Segment;
+typedef struct {
+    char kind;
+    Line *line;
+    Station *terminal, *from, *to;
+    int departure, arrival, stops;
+} Leg;
+typedef struct Node Node;
+struct Node {
+    Leg leg;
+    Node *previous, *allocated_next;
+};
+typedef struct {
+    bool present;
+    int time;
+    Node *journey;
+} Label;
+typedef struct {
+    Label *labels;
+    Node *allocated;
+} Search;
+typedef struct {
+    char **items;
+    size_t count;
+} Strings;
+static Station **stations;
+static Line **lines;
+static Segment *closed_segments;
+static size_t station_count, line_count, closed_count;
+static int *prices, discount, window;
+static size_t price_count;
+static jmp_buf failure;
+static char *error_reason;
+
+static void *allocate(size_t size) {
+    void *p = calloc(1, size ? size : 1);
+    if (!p) exit(EXIT_FAILURE);
+    return p;
+}
+
+static void *resize(void *p, size_t size) {
+    p = realloc(p, size ? size : 1);
+    if (!p) exit(EXIT_FAILURE);
+    return p;
+}
+
+static char *slice(const char *s, size_t n) {
+    char *out = allocate(n + 1);
+    memcpy(out, s, n);
+    return out;
+}
+
+static char *copy(const char *s) {
+    return slice(s, strlen(s));
+}
+static char *format(const char *pattern, ...) {
+    va_list args, saved;
+    va_start(args, pattern);
+    va_copy(saved, args);
+    int n = vsnprintf(NULL, 0, pattern, args);
+    va_end(args);
+    char *out = allocate((size_t)n + 1);
+    vsnprintf(out, (size_t)n + 1, pattern, saved);
+    va_end(saved);
+    return out;
+}
+
+static void error(const char *pattern, ...) {
+    va_list args, saved;
+    va_start(args, pattern);
+    va_copy(saved, args);
+    int n = vsnprintf(NULL, 0, pattern, args);
+    va_end(args);
+    error_reason = allocate((size_t)n + 1);
+    vsnprintf(error_reason, (size_t)n + 1, pattern, saved);
+    va_end(saved);
+    longjmp(failure, 1);
+}
+
+static void append(Buffer *b, const char *s) {
+    size_t n = strlen(s);
+    if (b->length + n + 1 > b->capacity) {
+        b->capacity = (b->length + n + 1) * 2;
+        b->data = resize(b->data, b->capacity);
+    }
+    memcpy(b->data + b->length, s, n);
+    b->length += n;
+    b->data[b->length] = 0;
+}
+
+static char *finish(Buffer *b) {
+    return b->data ? b->data : copy("");
+}
+
+static Station *find_station(const char *id) {
+    for (size_t i = 0; i < station_count; i++) if (!strcmp(stations[i]->id, id)) return stations[i];
+    return NULL;
+}
+
+static Station *station(const char *id) {
+    Station *result = find_station(id);
+    if (!result) error("unknown station %s", id);
+    return result;
+}
+
+static Line *find_line(const char *id) {
+    for (size_t i = 0; i < line_count; i++) if (!strcmp(lines[i]->id, id)) return lines[i];
+    return NULL;
+}
+static int station_compare(const void *a, const void *b) {
+    return strcmp((*(Station *const *)a)->id, (*(Station *const *)b)->id);
+}
+
+static int line_compare(const void *a, const void *b) {
+    return strcmp((*(Line *const *)a)->id, (*(Line *const *)b)->id);
+}
+
+static int walk_compare(const void *a, const void *b) {
+    return strcmp(((const Walk *)a)->neighbor->id, ((const Walk *)b)->neighbor->id);
+}
+
+static int time_value(const char *text) {
+    return atoi(text) * 60 + atoi(text + 3);
+}
+static Segment segment(Station *a, Station *b) {
+    return strcmp(a->id, b->id) <= 0 ? (Segment){a, b} : (Segment){b, a};
+}
+static bool same_segment(Segment a, Segment b) {
+    return a.a == b.a && a.b == b.b;
+}
+
+static bool blocked(Station *a, Station *b) {
+    Segment key = segment(a, b);
+    for (size_t i = 0; i < closed_count; i++) if (same_segment(key, closed_segments[i])) return true;
+    return false;
+}
+static int total(Line *line) {
+    return line->cumulative[line->count - 1];
+}
+
+static int trips(Line *line) {
+    return (line->last - line->first) / line->headway + 1;
+}
+
+static Station *stop(Line *line, int direction, int index) {
+    return line->stops[direction ? line->count - 1 - (size_t)index : (size_t)index];
+}
+
+static int offset(Line *line, int direction, int index) {
+    return direction ? total(line) - line->cumulative[line->count - 1 - (size_t)index] : line->cumulative[index];
+}
+
+static int position(Line *line, int direction, Station *station) {
+    for (size_t i = 0; i < line->count; i++) if (line->stops[i] == station) return direction ? (int)(line->count - 1 - i) : (int)i;
+    return -1;
+}
+
+static int train_time(Line *line, int direction, int index, int train) {
+    return line->first + line->delay + train * line->headway + offset(line, direction, index);
+}
+
+static int next_train(Line *line, int direction, int index, int ready) {
+    int start = train_time(line, direction, index, 0), train = ready <= start ? 0 : (ready - start + line->headway - 1) / line->headway;
+    return train < trips(line) ? train : -1;
+}
+static Node *add_leg(Node **allocated, Node *previous, Leg leg) {
+    Node *node = allocate(sizeof(*node));
+    *node = (Node){leg, previous, *allocated};
+    *allocated = node;
+    return node;
+}
+static bool better(Label *labels, Station *station, int arrival) {
+    return !labels[station->index].present || labels[station->index].time > arrival;
+}
+
+static void relax(Label *labels, Node **allocated, Station *station, int arrival, Node *journey, Leg leg) {
+    if (better(labels, station, arrival)) labels[station->index] = (Label){true, arrival, add_leg(allocated, journey, leg)};
+}
+
+static Search earliest(Station *origin, int departure) {
+    Search result = {.labels = allocate(station_count * sizeof(*result.labels))};
+    bool *settled = allocate(station_count * sizeof(*settled));
+    result.labels[origin->index] = (Label){true, departure, NULL};
+    while (true) {
+        Station *selected = NULL;
+        for (size_t i = 0; i < station_count; i++) {
+            Station *s = stations[i];
+            if (!settled[s->index] && result.labels[s->index].present && (!selected || result.labels[s->index].time < result.labels[selected->index].time)) selected = s;
+        }
+        if (!selected) break;
+        Station *u = selected;
+        settled[u->index] = true;
+        Label label = result.labels[u->index];
+        int ready = label.time + (u == origin ? 0 : u->transfer);
+        for (size_t l = 0; l < line_count; l++) {
+            Line *current = lines[l];
+            if (current->suspended || position(current, 0, u) < 0) continue;
+            for (int d = 0; d < 2; d++) {
+                int i = position(current, d, u), last = (int)current->count - 1;
+                if (i == last) continue;
+                int train = next_train(current, d, i, ready);
+                if (train < 0) continue;
+                int start = train_time(current, d, i, train);
+                for (int j = i + 1; j <= last; j++) {
+                    Station *v = stop(current, d, j);
+                    if (blocked(stop(current, d, j - 1), v)) break;
+                    if (v->closed) continue;
+                    int arrival = train_time(current, d, j, train);
+                    relax(result.labels, &result.allocated, v, arrival, label.journey, (Leg){'R', current, stop(current, d, last), u, v, start, arrival, j - i});
+                }
+            }
+        }
+        for (size_t i = 0; i < u->walk_count; i++) {
+            Walk walk = u->walks[i];
+            int arrival = label.time + walk.minutes;
+            if (!walk.neighbor->closed && arrival <= 1440) relax(result.labels, &result.allocated, walk.neighbor, arrival, label.journey, (Leg){'W', NULL, NULL, u, walk.neighbor, label.time, arrival, 0});
+        }
+    }
+    free(settled);
+    return result;
+}
+static int rides(Node *journey) {
+    int count = 0;
+    for (; journey; journey = journey->previous) if (journey->leg.kind == 'R') count++;
+    return count;
+}
+
+static Leg *journey_legs(Node *journey, size_t *count) {
+    *count = 0;
+    for (Node *node = journey; node; node = node->previous) (*count)++;
+    Leg *result = allocate(*count * sizeof(*result));
+    size_t at = *count;
+    for (; journey; journey = journey->previous) result[--at] = journey->leg;
+    return result;
+}
+static void search_check(Station *origin, Station *destination) {
+    if (origin == destination) error("origin and destination are the same");
+    if (origin->closed) error("station %s is closed", origin->id);
+    if (destination->closed) error("station %s is closed", destination->id);
+}
+
+static int half(int value) {
+    return (value + 19) / 20 * 10;
+}
+
+static void fare(const char *heading, Station *origin, Station *destination, int departure, bool child) {
+    Search result = earliest(origin, departure);
+    Label label = result.labels[destination->index];
+    if (!label.present) {
+        printf("%s unreachable\n", heading);
+        return;
+    }
+    Strings tickets = {0};
+    size_t count;
+    Leg *legs = journey_legs(label.journey, &count);
+    int total_payment = 0, last_ride = -1;
+    for (size_t i = 0; i < count; i++) {
+        Leg leg = legs[i];
+        if (leg.kind != 'R') continue;
+        int a = position(leg.line, 0, leg.from), b = position(leg.line, 0, leg.to), first = a < b ? a : b, last = a > b ? a : b;
+        bool seen[10] = {0};
+        int zones = 0;
+        for (int j = first; j <= last; j++) {
+            int zone = leg.line->stops[j]->zone;
+            if (!seen[zone]) zones++;
+            seen[zone] = true;
+        }
+        int price = prices[(size_t)zones <= price_count ? (size_t)zones - 1 : price_count - 1];
+        if (child) price = half(price);
+        int reduction = 0, cap = child ? half(discount) : discount;
+        if (last_ride >= 0 && leg.departure - last_ride <= window) reduction = cap < price ? cap : price;
+        int pay = price - reduction;
+        total_payment += pay;
+        APPEND(tickets.items, tickets.count, format("TICKET %s %s %s zones %d price %d discount %d pay %d", leg.line->id, leg.from->id, leg.to->id, zones, price, reduction, pay));
+        last_ride = leg.arrival;
+    }
+    printf("%s rides %d total %d\n", heading, rides(label.journey), total_payment);
+    for (size_t i = 0; i < tickets.count; i++) puts(tickets.items[i]);
+static void set_walk(Station *a, Station *b, int minutes) {
+    for (size_t i = 0; i < a->walk_count; i++) if (a->walks[i].neighbor == b) {
+        a->walks[i].minutes = minutes;
+        return;
+    }
+    APPEND(a->walks, a->walk_count, ((Walk){b, minutes}));
+    qsort(a->walks, a->walk_count, sizeof(*a->walks), walk_compare);
+}
+static Strings split(const char *text) {
+    Strings result = {0};
+    size_t start = 0;
+    for (size_t i = 0;; i++) if (!text[i] || text[i] == ' ') {
+        APPEND(result.items, result.count, slice(text + start, i - start));
+        start = i + 1;
+        if (!text[i]) break;
+    }
+    return result;
+}
+static void command(char **w, size_t argc) {
+    char *cmd = w[0];
+    if (!strcmp(cmd, "STATION")) {
+        if (find_station(w[1])) error("station %s already exists", w[1]);
+        Station *added = allocate(sizeof(*added));
+        added->id = w[1];
+        added->name = w[3];
+        added->zone = atoi(w[2]);
+        added->index = station_count;
+        APPEND(stations, station_count, added);
+        qsort(stations, station_count, sizeof(*stations), station_compare);
+        return;
+    }
+    if (!strcmp(cmd, "LINE")) {
+        if (find_line(w[1])) error("line %s already exists", w[1]);
+        Station **stops = NULL;
+        size_t count = 0;
+        for (size_t i = 5; i < argc; i += 2) APPEND(stops, count, station(w[i]));
+        for (size_t i = 0; i < count; i++) for (size_t j = 0; j < i; j++) if (stops[i] == stops[j]) error("station %s appears twice on line %s", stops[i]->id, w[1]);
+        int first = time_value(w[2]), last = time_value(w[3]);
+        if (first > last) error("line %s first departure is after last departure", w[1]);
+        int *cumulative = allocate(count * sizeof(*cumulative));
+        for (size_t i = 1; i < count; i++) cumulative[i] = cumulative[i - 1] + atoi(w[4 + 2 * i]);
+        if (last + cumulative[count - 1] > 1440) error("line %s runs past 24:00", w[1]);
+        Line *added = allocate(sizeof(*added));
+        *added = (Line){.id = w[1], .first = first, .last = last, .headway = atoi(w[4]), .stops = stops, .cumulative = cumulative, .count = count};
+        APPEND(lines, line_count, added);
+        qsort(lines, line_count, sizeof(*lines), line_compare);
+        return;
+    }
+    if (!strcmp(cmd, "WALK")) {
+        Station *a = station(w[1]), *b = station(w[2]);
+        if (a == b) error("walk from %s to itself", a->id);
+        int minutes = atoi(w[3]);
+        set_walk(a, b, minutes);
+        set_walk(b, a, minutes);
+        return;
+    }
+    if (!strcmp(cmd, "TARIFF")) {
+        size_t count = argc - 3;
+        int *added = allocate(count * sizeof(*added));
+        for (size_t i = 0; i < count; i++) {
+            added[i] = atoi(w[i + 3]);
+            if (i && added[i] < added[i - 1]) error("tariff prices must not decrease");
+        }
+        prices = added;
+        price_count = count;
+        discount = atoi(w[1]);
+        window = atoi(w[2]);
+        return;
+    }
+    Station *origin = station(w[1]), *destination = station(w[2]);
+    search_check(origin, destination);
+    char *heading = format("%s %s %s", cmd, origin->id, destination->id);
+    if (!strcmp(cmd, "FARE")) {
+        if (strcmp(w[4], "ADULT") && strcmp(w[4], "CHILD")) error("unknown fare class %s", w[4]);
+        if (!prices) error("no tariff");
+        fare(format("%s %s %s", heading, w[3], w[4]), origin, destination, time_value(w[3]), !strcmp(w[4], "CHILD"));
+        return;
+    }
+static char *read_line(void) {
+    Buffer b = {0};
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') append(&b, (char[]){(char)c, 0});
+    if (c == EOF && !b.length) return NULL;
+    return finish(&b);
+}
+int main(void) {
+    int count = atoi(read_line());
+    for (int i = 0; i < count; i++) {
+        Strings words = split(read_line());
+        if (setjmp(failure)) printf("ERROR %s\n", error_reason);
+        else command(words.items, words.count);
+    }
+    return 0;
+}

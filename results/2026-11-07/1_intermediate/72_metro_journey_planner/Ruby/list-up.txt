@@ -1,0 +1,196 @@
+require 'set'
+
+Station = Struct.new(:zone, :name, :transfer, :closed)
+MetroLine = Struct.new(:id, :first, :last, :headway, :stops, :offsets, :delay, :suspended) do
+  def trips
+    (last - first) / headway + 1
+  end
+
+  def duration
+    offsets.last
+  end
+
+  def directions
+    [[stops, offsets], [stops.reverse, offsets.reverse.map { |c| duration - c }]]
+  end
+
+  def next_train(offset, ready)
+    q = [0, (ready - first - delay - offset + headway - 1) / headway].max
+    q < trips ? q : nil
+  end
+
+  def time(q, offset)
+    first + delay + q * headway + offset
+  end
+end
+
+class MetroError < StandardError; end
+
+class Metro
+  def initialize
+    @stations = {}
+    @lines = {}
+    @walks = {}
+    @closed = Set.new
+    @tariff = nil
+  end
+
+  def minutes(text)
+    hour, minute = text.split(':').map(&:to_i)
+    hour * 60 + minute
+  end
+  def segment(a, b)
+    [a, b].sort
+  end
+
+  def blocked?(a, b)
+    @closed.include?(segment(a, b))
+  end
+
+  def station_check(id)
+    raise MetroError, "unknown station #{id}" unless @stations.key?(id)
+  end
+  def open_check(id)
+    raise MetroError, "station #{id} is closed" if @stations[id].closed
+  end
+
+  def journey_check(origin, destination)
+    station_check(origin)
+    station_check(destination)
+    raise MetroError, 'origin and destination are the same' if origin == destination
+    open_check(origin)
+    open_check(destination)
+  end
+
+  def running_lines
+    @lines.keys.sort.map { |id| @lines[id] }.reject(&:suspended)
+  end
+
+  def update(labels, destination, time, journey)
+    return false if labels.key?(destination) && labels[destination][0] <= time
+    labels[destination] = [time, journey]
+    true
+  end
+
+  def earliest(origin, departure)
+    labels = { origin => [departure, []] }
+    settled = Set.new
+    lines = running_lines
+    loop do
+      u = (labels.keys - settled.to_a).min_by { |id| [labels[id][0], id] }
+      break unless u
+      settled << u
+      arrival, journey = labels[u]
+      ready = arrival + (u == origin ? 0 : @stations[u].transfer)
+      lines.each do |line|
+        next unless line.stops.include?(u)
+        line.directions.each do |stops, offsets|
+          i = stops.index(u)
+          next if i == stops.length - 1
+          q = line.next_train(offsets[i], ready)
+          next unless q
+          boarding = line.time(q, offsets[i])
+          ((i + 1)...stops.length).each do |j|
+            break if blocked?(stops[j - 1], stops[j])
+            next if @stations[stops[j]].closed
+            time = line.time(q, offsets[j])
+            leg = [:ride, line.id, stops.last, u, boarding, stops[j], time, j - i]
+            update(labels, stops[j], time, journey + [leg])
+          end
+        end
+      end
+      @walks[u].keys.sort.each do |v|
+        time = arrival + @walks[u][v]
+        next if @stations[v].closed || time > 1440
+        update(labels, v, time, journey + [[:walk, u, arrival, v, time]])
+      end
+    end
+    labels
+  end
+  def print_fare(origin, destination, time_text, fare_class, journey)
+    discount_cap, window, prices = @tariff
+    half = ->(x) { (x + 19) / 20 * 10 }
+    cap = fare_class == 'CHILD' ? half.call(discount_cap) : discount_cap
+    tickets = []
+    previous_end = nil
+    journey.each do |leg|
+      next unless leg[0] == :ride
+      _, line_id, toward, from, boarding, to, arrival, = leg
+      line = @lines[line_id]
+      stops = line.directions.find { |sequence, _| sequence.last == toward }[0]
+      zones = stops[stops.index(from)..stops.index(to)].map { |id| @stations[id].zone }.uniq.length
+      price = prices[[zones, prices.length].min - 1]
+      price = half.call(price) if fare_class == 'CHILD'
+      discount = previous_end && boarding - previous_end <= window ? [cap, price].min : 0
+      tickets << [line_id, from, to, zones, price, discount, price - discount]
+      previous_end = arrival
+    end
+    puts "FARE #{origin} #{destination} #{time_text} #{fare_class} rides #{tickets.length} total #{tickets.sum { |t| t[6] }}"
+    tickets.each do |line, from, to, zones, price, discount, pay|
+      puts "TICKET #{line} #{from} #{to} zones #{zones} price #{price} discount #{discount} pay #{pay}"
+    end
+  end
+
+  def search_command(command, args)
+    origin, destination = args
+    journey_check(origin, destination)
+    departure = minutes(args[2]) if args[2]
+    if command == 'FARE'
+      raise MetroError, "unknown fare class #{args[3]}" unless %w[ADULT CHILD].include?(args[3])
+      raise MetroError, 'no tariff' unless @tariff
+    end
+    case command
+    when 'ROUTE', 'FARE'
+      label = earliest(origin, departure)[destination]
+      if label
+        else
+          print_fare(origin, destination, args[2], args[3], label[1])
+        end
+      else
+        puts "#{command} #{args.join(' ')} unreachable"
+      end
+  def execute(line)
+    command, *args = line.split(' ')
+    a, b = args
+    case command
+    when 'STATION'
+      raise MetroError, "station #{a} already exists" if @stations.key?(a)
+      @stations[a] = Station.new(b.to_i, args[2], 0, false)
+      @walks[a] = {}
+    when 'LINE'
+      raise MetroError, "line #{a} already exists" if @lines.key?(a)
+      stops = args.drop(4).each_slice(2).map(&:first)
+      stops.each { |id| station_check(id) }
+      seen = Set.new
+      stops.each do |id|
+        raise MetroError, "station #{id} appears twice on line #{a}" if seen.include?(id)
+        seen << id
+      end
+      first = minutes(b)
+      last = minutes(args[2])
+      raise MetroError, "line #{a} first departure is after last departure" if first > last
+      offsets = [0]
+      args.drop(5).each_slice(2) { |duration, _| offsets << offsets.last + duration.to_i }
+      raise MetroError, "line #{a} runs past 24:00" if last + offsets.last > 1440
+      service = MetroLine.new(a, first, last, args[3].to_i, stops, offsets, 0, false)
+      @lines[a] = service
+    when 'WALK'
+      station_check(a)
+      station_check(b)
+      raise MetroError, "walk from #{a} to itself" if a == b
+      @walks[a][b] = @walks[b][a] = args[2].to_i
+    when 'TARIFF'
+      prices = args.drop(2).map(&:to_i)
+      raise MetroError, 'tariff prices must not decrease' if prices.each_cons(2).any? { |x, y| x > y }
+      @tariff = [a.to_i, b.to_i, prices]
+    when 'ROUTE', 'FEWEST', 'PARETO', 'FARE', 'LASTTRAIN', 'ARRIVEBY', 'PROFILE'
+      search_command(command, args)
+    end
+  rescue MetroError => error
+    puts "ERROR #{error.message}"
+  end
+end
+
+metro = Metro.new
+count = STDIN.gets.to_i
+count.times { metro.execute(STDIN.gets.chomp) }

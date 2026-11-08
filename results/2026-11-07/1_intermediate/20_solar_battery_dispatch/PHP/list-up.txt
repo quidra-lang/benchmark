@@ -1,0 +1,366 @@
+const SETTING_RANGES = [
+    'CAPACITY' => [1, 100000], 'INITIAL' => [0, 100],
+    'CHARGE' => [1, 20000], 'DISCHARGE' => [1, 20000],
+    'CEFF' => [1, 100], 'DEFF' => [1, 100],
+    'RESERVE' => [0, 100], 'COST' => [0, 100000],
+    'EXPORT' => [0, 100000], 'FEEDIN' => [0, 10000],
+    'FIXED' => [0, 100000], 'DEMAND' => [0, 100000],
+    'PVSCALE' => [0, 300],
+const TOTAL_FIELDS = [
+    'load', 'pv', 'charge', 'discharge', 'imported', 'exported',
+    'curtailed', 'drawn', 'loss', 'shortfall', 'importCost', 'exportIncome',
+function money(int $value): string
+{
+    $amount = abs($value);
+    return ($value < 0 ? '-' : '') . intdiv($amount, 100) . '.' .
+        str_pad((string) ($amount % 100), 2, '0', STR_PAD_LEFT);
+}
+
+function percentage(int $numerator, int $denominator): string
+{
+    $value = $denominator === 0 ? 0 : intdiv(10000 * $numerator, $denominator);
+    return intdiv($value, 100) . '.' . str_pad((string) ($value % 100), 2, '0', STR_PAD_LEFT);
+}
+
+function ceiling(int $number, int $denominator): int
+{
+    return intdiv($number + $denominator - 1, $denominator);
+}
+
+function tableRow(array $values, array $widths): string
+{
+    $result = '';
+    foreach ($values as $index => $value) {
+        $result .= str_pad((string) $value, $widths[$index], ' ', STR_PAD_LEFT);
+    }
+    return $result;
+function strategyText(array $strategy): string
+{
+    return $strategy[0] . ($strategy[1] === null ? '' : ' ' . $strategy[1]);
+}
+
+function readStrategies(array $tokens): array
+{
+    $strategies = [];
+    for ($index = 0; $index < count($tokens);) {
+        $name = $tokens[$index++];
+        if ($name === 'SELF' || $name === 'EXPORTPEAK') {
+            $strategies[] = [$name, null];
+            continue;
+    return $strategies;
+function requireCount(array $values, int $count): void
+{
+    if (count($values) !== $count) throw new CommandError('wrong number of arguments');
+}
+
+function oneStrategy(array $arguments): array
+{
+    $strategies = readStrategies($arguments);
+    requireCount($strategies, 1);
+    return $strategies[0];
+final class InputData
+    public int $dayCount;
+    public array $loads = [];
+    public array $basePV = [];
+    public array $periods = [];
+    private int $position = 0;
+    public function __construct(array $lines)
+    {
+        $this->lines = $lines;
+        $battery = array_map('intval', array_slice($this->read(), 1));
+        $grid = array_map('intval', array_slice($this->read(), 1));
+        $this->initialSettings = array_combine(array_keys(SETTING_RANGES),
+                                                array_merge($battery, $grid, [100]));
+        $periodCount = (int) $this->read()[1];
+        $this->initialPrices = [];
+        for ($i = 0; $i < $periodCount; ++$i) {
+            [$name, $price] = $this->read();
+            $this->initialPrices[$name] = (int) $price;
+        }
+        $weekday = $this->readPeriodHours(array_slice($this->read(), 1));
+        $weekend = $this->readPeriodHours(array_slice($this->read(), 1));
+        $profileCount = (int) $this->read()[1];
+        $profiles = [];
+        for ($i = 0; $i < $profileCount; ++$i) {
+            [$kind, $name, $values] = $this->splitProfile($this->read());
+            $profiles[$kind . '/' . $name] = $values;
+        }
+        $this->dayCount = (int) $this->read()[1];
+        for ($i = 0; $i < $this->dayCount; ++$i) {
+            [$loadName, $loadPct, $pvName, $pvPct] = $this->read();
+            foreach ($profiles['LOAD/' . $loadName] as $value) {
+                $this->loads[] = intdiv($value * (int) $loadPct, 100);
+            }
+            foreach ($profiles['PV/' . $pvName] as $value) {
+                $this->basePV[] = intdiv($value * (int) $pvPct, 100);
+            }
+        }
+        $holidays = array_fill_keys(array_map('intval', array_slice($this->read(), 2)), true);
+        $overrideCount = (int) $this->read()[1];
+        for ($i = 0; $i < $overrideCount; ++$i) {
+            [$day, $hour, $load, $pv] = array_map('intval', $this->read());
+            $index = ($day - 1) * 24 + $hour;
+            $this->loads[$index] = $load;
+            $this->basePV[$index] = $pv;
+        }
+        for ($day = 1; $day <= $this->dayCount; ++$day) {
+            $holiday = isset($holidays[$day]);
+            $weekendDay = $holiday || ($day - 1) % 7 >= 5;
+            array_push($this->periods, ...($weekendDay ? $weekend : $weekday));
+        $this->commands = array_slice($this->lines, $this->position);
+    private function read(): array
+    {
+        return explode(' ', $this->lines[$this->position++]);
+    }
+
+    private function splitProfile(array $tokens): array
+    {
+        return [$tokens[0], $tokens[1], array_map('intval', array_slice($tokens, 2))];
+    }
+
+    private function readPeriodHours(array $tokens): array
+    {
+        $hours = [];
+        for ($i = 0; $i < count($tokens); $i += 2) {
+            $start = (int) $tokens[$i];
+            $end = isset($tokens[$i + 2]) ? (int) $tokens[$i + 2] : 24;
+            for ($hour = $start; $hour < $end; ++$hour) $hours[] = $tokens[$i + 1];
+        }
+        return $hours;
+final class HourRecord
+    public function __construct(
+        public int $index, public string $period, public int $load, public int $pv,
+        public int $soc, public array $flows, public int $drawn, public int $shortfall,
+        public int $loss, int $price, int $feedin
+    ) {
+        $this->hour = $index % 24;
+        $this->discharge = $flows[4] + $flows[5];
+        $this->imported = $flows[6] + $flows[7];
+        $this->exported = $flows[2] + $flows[5];
+        $this->curtailed = $flows[3];
+        $this->importCost = intdiv($this->imported * $price, 100000);
+        $this->exportIncome = intdiv($this->exported * $feedin, 100000);
+final class Totals
+    public int $load = 0;
+    public int $imported = 0;
+    public int $exported = 0;
+    public int $shortfall = 0;
+    public int $importCost = 0;
+    public int $exportIncome = 0;
+    public function __construct(array $records)
+        foreach ($records as $record) {
+            foreach (TOTAL_FIELDS as $field) $this->$field += $record->$field;
+        $this->netCost = $this->importCost - $this->exportIncome;
+final class SimulationResult
+    public array $byPeriod = [];
+    public function __construct(
+        public array $strategy, public array $settings, public array $prices,
+        public int $startSoc, public int $reserve, public array $hours
+    ) {
+        foreach ($prices as $period => $_) {
+            $this->byPeriod[$period] = new Totals(array_values(array_filter(
+                $hours, static fn(HourRecord $record): bool => $record->period === $period
+            )));
+        }
+        $this->total = new Totals($hours);
+        $this->peak = max(array_map(static fn(HourRecord $record): int => $record->imported, $hours));
+        $this->demandCharge = intdiv($this->peak * $settings['DEMAND'], 1000);
+        $this->bill = $this->total->netCost + $settings['FIXED'] + $this->demandCharge;
+        $this->endSoc = end($hours)->soc;
+final class Simulator
+    public function __construct(
+        private InputData $data, private array $strategy,
+        private array $settings, private array $prices, private ?array $outage = null
+    ) {
+        [$this->name, $this->parameter] = $strategy;
+        $this->capacity = $settings['CAPACITY'];
+        $this->ceff = $settings['CEFF'];
+        $this->deff = $settings['DEFF'];
+        $reservePercent = $this->name === 'BACKUP'
+            ? max($settings['RESERVE'], $this->parameter) : $settings['RESERVE'];
+        $this->reserve = intdiv($this->capacity * $reservePercent, 100);
+        $this->startSoc = intdiv($this->capacity * $settings['INITIAL'], 100);
+        $this->soc = $this->startSoc;
+        $this->arbitrage = $this->name === 'EXPORTPEAK'
+            && $settings['FEEDIN'] > $prices[$this->cheapest];
+    private function dischargeTarget(int $deficit, string $period): int
+    {
+        if ($this->name === 'TOU') return $period === $this->peak ? $deficit : 0;
+        if ($this->name === 'PEAKSHAVE') return max(0, $deficit - $this->parameter);
+        if ($this->arbitrage && $period === $this->cheapest && $period !== $this->peak) return 0;
+        return $deficit;
+    private function gridCharge(string $period, int $pvCharge, int $gridLoad): int
+        $target = null;
+        if ($this->name === 'TOU' && $period === $this->cheapest && $period !== $this->peak) {
+        } elseif ($this->name === 'PEAKSHAVE' && $period === $this->cheapest) {
+        } elseif ($this->name === 'BACKUP' && $period === $this->cheapest) {
+        } elseif ($this->arbitrage && $period === $this->cheapest && $period !== $this->peak) {
+        if ($target === null) return 0;
+    private function runHour(int $index): HourRecord
+    {
+        $settings = $this->settings;
+        $load = $this->data->loads[$index];
+        $pv = intdiv($this->data->basePV[$index] * $settings['PVSCALE'], 100);
+        $period = $this->data->periods[$index];
+        $direct = min($load, $pv);
+        $surplus = $pv - $direct;
+        $deficit = $load - $direct;
+        $pvCharge = min($surplus, $settings['CHARGE'],
+                        ceiling(100 * ($this->capacity - $this->soc), $this->ceff));
+        $this->soc += intdiv($pvCharge * $this->ceff, 100);
+        $surplus -= $pvCharge;
+        $isOutage = $this->outage !== null
+                    && $this->outage[0] <= $index && $index <= $this->outage[1];
+        $target = $isOutage ? $deficit : $this->dischargeTarget($deficit, $period);
+        $lowerBound = $isOutage ? 0 : $this->reserve;
+        $loadDrawn = min(ceiling(100 * $target, $this->deff), $settings['DISCHARGE'],
+                         max(0, $this->soc - $lowerBound));
+        $loadDischarge = intdiv($loadDrawn * $this->deff, 100);
+        $this->soc -= $loadDrawn;
+        $deficit -= $loadDischarge;
+        $exportDrawn = $batteryExport = 0;
+        if ($isOutage) {
+            $gridLoad = 0;
+            $shortfall = $deficit;
+            $pvExport = 0;
+            $curtailed = $surplus;
+            $gridCharge = 0;
+        } else {
+            $gridLoad = $deficit;
+            $shortfall = 0;
+            $pvExport = min($surplus, $settings['EXPORT']);
+            $curtailed = $surplus - $pvExport;
+            $gridCharge = $this->gridCharge($period, $pvCharge, $gridLoad);
+            if ($this->arbitrage && $period === $this->peak && $pvCharge === 0) {
+        $flows = [$direct, $pvCharge, $pvExport, $curtailed, $loadDischarge,
+                  $batteryExport, $gridLoad, $gridCharge];
+        return new HourRecord($index, $period, $load, $pv, $this->soc, $flows,
+                              $loadDrawn + $exportDrawn, $shortfall, $loss,
+                              $this->prices[$period], $settings['FEEDIN']);
+    }
+
+    public function run(): SimulationResult
+    {
+        $records = [];
+        foreach ($this->data->loads as $index => $_) $records[] = $this->runHour($index);
+        return new SimulationResult($this->strategy, $this->settings, $this->prices,
+                                    $this->startSoc, $this->reserve, $records);
+final class DispatchDesk
+    private ?SimulationResult $current = null;
+    private const COMMANDS = [
+        'RUN' => 'cmdRun', 'SET' => 'cmdSet', 'PRICE' => 'cmdPrice',
+        'SIZE' => 'cmdSize', 'SWEEP' => 'cmdSweep', 'OUTAGE' => 'cmdOutage',
+        'BILL' => 'cmdBill', 'SAVINGS' => 'cmdSavings',
+    public function __construct(private InputData $data)
+    {
+        $this->settings = $data->initialSettings;
+        $this->prices = $data->initialPrices;
+    }
+
+    public function execute(array $tokens): array
+    {
+        $command = array_shift($tokens);
+        if (!isset(self::COMMANDS[$command])) return ['ERROR unknown command ' . $command];
+        try {
+            return $this->{self::COMMANDS[$command]}($tokens);
+        } catch (CommandError $error) {
+            return ['ERROR ' . $error->getMessage()];
+        }
+    }
+
+    private function requireResult(): SimulationResult
+    {
+        if ($this->current === null) throw new CommandError('no run');
+        return $this->current;
+    }
+
+    private function checkedDay(string $text): int
+    {
+        $day = (int) $text;
+        if ($day < 1 || $day > $this->data->dayCount) throw new CommandError('invalid day');
+        return $day;
+    }
+
+    private function resultWithoutArguments(array $args): SimulationResult
+    {
+        requireCount($args, 0);
+        return $this->requireResult();
+    private function simulate(array $strategy, ?array $settings = null,
+                              ?array $prices = null, ?array $outage = null): SimulationResult
+    {
+        return (new Simulator($this->data, $strategy, $settings ?? $this->settings,
+                              $prices ?? $this->prices, $outage))->run();
+    private function cmdRun(array $args): array
+    {
+        $strategy = oneStrategy($args);
+        $result = $this->simulate($strategy);
+        $this->current = $result;
+        $total = $result->total;
+        return ['RUN ' . strategyText($strategy) . ' bill ' . money($result->bill) .
+                ' import ' . $total->imported . ' export ' . $total->exported .
+                ' soc ' . $result->endSoc];
+    }
+
+    private function cmdSet(array $args): array
+    {
+        requireCount($args, 2);
+        [$item, $text] = $args;
+        if (!isset(SETTING_RANGES[$item])) throw new CommandError('unknown parameter ' . $item);
+        $value = (int) $text;
+        [$low, $high] = SETTING_RANGES[$item];
+        if ($value < $low || $value > $high) throw new CommandError('invalid value for ' . $item);
+        $previous = $this->settings[$item];
+        $this->settings[$item] = $value;
+        return ["SET $item $previous -> $value"];
+    private function cmdOutage(array $args): array
+    {
+        requireCount($args, 3);
+        $day = $this->checkedDay($args[0]);
+        $start = (int) $args[1];
+        $end = (int) $args[2];
+        if ($start < 0 || $start > $end || $end > 23) throw new CommandError('invalid hours');
+        $current = $this->requireResult();
+        $first = ($day - 1) * 24 + $start;
+        $last = ($day - 1) * 24 + $end;
+        $result = $this->simulate($current->strategy, $current->settings, $current->prices,
+                                  [$first, $last]);
+        $before = $first ? $result->hours[$first - 1]->soc : $result->startSoc;
+        $output = ["OUTAGE day $day hours $start-$end strategy " .
+                   strategyText($result->strategy) . " soc $before",
+                   'hour   load     pv  disch    soc  short   curt'];
+        $records = array_slice($result->hours, $first, $last - $first + 1);
+        foreach ($records as $record) {
+            $output[] = tableRow([$record->hour, $record->load, $record->pv,
+                                  $record->discharge, $record->soc, $record->shortfall,
+                                  $record->curtailed], array_merge([4], array_fill(0, 6, 7)));
+        }
+        $total = new Totals($records);
+        $served = $total->load === 0 ? '100.00'
+            : percentage($total->load - $total->shortfall, $total->load);
+        $output[] = "TOTAL load $total->load unserved $total->shortfall served $served% bill " .
+                    money($result->bill);
+        return $output;
+    private function cmdBill(array $args): array
+    {
+        $result = $this->resultWithoutArguments($args);
+        $output = ['BILL strategy ' . strategyText($result->strategy) .
+                   ' days ' . $this->data->dayCount];
+        foreach ($result->byPeriod as $period => $total) {
+            $output[] = "IMPORT $period $total->imported Wh " . money($total->importCost);
+        }
+        $output[] = 'EXPORT ' . $result->total->exported . ' Wh ' .
+                    money(-$result->total->exportIncome);
+        $output[] = 'FIXED ' . money($result->settings['FIXED']);
+        $output[] = 'DEMAND ' . $result->peak . ' Wh ' . money($result->demandCharge);
+        $output[] = 'TOTAL ' . money($result->bill);
+        return $output;
+$lines = file('php://stdin', FILE_IGNORE_NEW_LINES);
+$data = new InputData($lines);
+$desk = new DispatchDesk($data);
+$output = [];
+foreach ($data->commands as $line) {
+    $tokens = explode(' ', $line);
+    if ($tokens[0] === 'END') break;
+    array_push($output, ...$desk->execute($tokens));
+}
+if ($output) echo implode("\n", $output) . "\n";

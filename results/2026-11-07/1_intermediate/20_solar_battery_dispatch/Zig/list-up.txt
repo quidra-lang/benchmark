@@ -1,0 +1,368 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Error = error{BadCommand} || Allocator.Error || std.Io.Writer.Error;
+fn integer(s: []const u8) i64 {
+    return std.fmt.parseInt(i64, s, 10) catch unreachable;
+}
+fn ix(n: i64) usize {
+    return @intCast(n);
+}
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn ceilDiv(a: i64, b: i64) i64 {
+    return @divFloor(a + b - 1, b);
+}
+fn money(gpa: Allocator, cents: i64) Allocator.Error![]const u8 {
+    const magnitude = @abs(cents);
+    return std.fmt.allocPrint(gpa, "{s}{d}.{d:0>2}", .{ if (cents < 0) "-" else "", magnitude / 100, magnitude % 100 });
+}
+fn percentage(gpa: Allocator, a: i64, b: i64) Allocator.Error![]const u8 {
+    const v = if (b == 0) 0 else @divFloor(10000 * a, b);
+    return std.fmt.allocPrint(gpa, "{d}.{d:0>2}", .{ @divFloor(v, 100), @mod(v, 100) });
+const Settings = struct {
+    capacity: i64,
+    initial: i64,
+    charge: i64,
+    discharge: i64,
+    ceff: i64,
+    deff: i64,
+    reserve: i64,
+    cost: i64,
+    export_limit: i64,
+    feedin: i64,
+    fixed: i64,
+    demand: i64,
+    pvscale: i64 = 100,
+};
+const Item = enum {
+    CAPACITY,
+    INITIAL,
+    CHARGE,
+    DISCHARGE,
+    CEFF,
+    DEFF,
+    RESERVE,
+    COST,
+    EXPORT,
+    FEEDIN,
+    FIXED,
+    DEMAND,
+    PVSCALE,
+    const fields = [_][]const u8{ "capacity", "initial", "charge", "discharge", "ceff", "deff", "reserve", "cost", "export_limit", "feedin", "fixed", "demand", "pvscale" };
+    fn minimum(item: Item) i64 {
+        return switch (item) {
+            .CAPACITY, .CHARGE, .DISCHARGE, .CEFF, .DEFF => 1,
+            else => 0,
+    fn maximum(item: Item) i64 {
+        return switch (item) {
+            .INITIAL, .CEFF, .DEFF, .RESERVE => 100,
+    fn get(item: Item, s: Settings) i64 {
+        switch (item) {
+            inline else => |tag| return @field(s, fields[@backingInt(tag)]),
+        }
+    }
+    fn set(item: Item, s: *Settings, value: i64) void {
+        switch (item) {
+            inline else => |tag| @field(s, fields[@backingInt(tag)]) = value,
+const Kind = enum { SELF, TOU, PEAKSHAVE, BACKUP, EXPORTPEAK };
+const Strategy = struct {
+    kind: Kind,
+    parameter: i64 = 0,
+    fn hasParameter(s: Strategy) bool {
+        return s.kind == .TOU or s.kind == .PEAKSHAVE or s.kind == .BACKUP;
+    }
+    fn text(s: Strategy, gpa: Allocator) Allocator.Error![]const u8 {
+        return if (s.hasParameter()) std.fmt.allocPrint(gpa, "{s} {d}", .{ @tagName(s.kind), s.parameter }) else @tagName(s.kind);
+    }
+};
+const HourInput = struct { load: i64, pv: i64, period: usize = 0 };
+const Data = struct {
+    period_names: []const []const u8,
+    hours: []HourInput,
+    holiday: []bool,
+    fn days(data: Data) usize {
+        return data.holiday.len;
+    }
+    fn weekend(data: Data, day: usize) bool {
+        return data.holiday[day] or day % 7 >= 5;
+const Metrics = struct {
+    load: i64 = 0,
+    discharge: i64 = 0,
+    soc: i64 = 0,
+    imported: i64 = 0,
+    exported: i64 = 0,
+    curtailed: i64 = 0,
+    shortfall: i64 = 0,
+    import_cost: i64 = 0,
+    export_income: i64 = 0,
+    fn add(total: *Metrics, values: Metrics) void {
+        inline for (@typeInfo(Metrics).@"struct".field_names) |name| @field(total, name) += @field(values, name);
+    }
+    fn net(values: Metrics) i64 {
+        return values.import_cost - values.export_income;
+const Record = struct { values: Metrics, period: usize, flows: [8]i64 };
+const Outage = struct { first: usize, last: usize };
+const Result = struct {
+    records: []Record,
+    settings: Settings,
+    prices: [6]i64,
+    strategy: Strategy,
+    starting: i64,
+    reserve: i64,
+    total: Metrics = .{},
+    periods: [6]Metrics = @splat(.{}),
+    peak: i64 = 0,
+    demand_charge: i64 = 0,
+    bill: i64 = 0,
+    fn deinit(result: *Result) void {
+        std.heap.page_allocator.free(result.records);
+    }
+    fn endSoc(result: Result) i64 {
+        return result.records[result.records.len - 1].values.soc;
+    fn sum(result: Result, first: usize, last: usize) Metrics {
+        var total: Metrics = .{};
+        for (result.records[first..last]) |record| total.add(record.values);
+        return total;
+fn simulate(data: Data, s: Settings, prices: [6]i64, strategy: Strategy, outage: ?Outage) Allocator.Error!Result {
+    const records = try std.heap.page_allocator.alloc(Record, data.hours.len);
+    const reserve_pct = if (strategy.kind == .BACKUP) @max(s.reserve, strategy.parameter) else s.reserve;
+    const reserve = @divFloor(s.capacity * reserve_pct, 100);
+    var soc = @divFloor(s.capacity * s.initial, 100);
+    var result: Result = .{ .records = records, .settings = s, .prices = prices, .strategy = strategy, .starting = soc, .reserve = reserve };
+    const arbitrage = strategy.kind == .EXPORTPEAK and s.feedin > prices[periods.low];
+    for (data.hours, records, 0..) |input, *record, i| {
+        const p = input.period;
+        const pv = @divFloor(input.pv * s.pvscale, 100);
+        const u = @min(input.load, pv);
+        var surplus = pv - u;
+        var deficit = input.load - u;
+        const x1 = @min(surplus, s.charge, ceilDiv(100 * (s.capacity - soc), s.ceff));
+        const stored1 = @divFloor(x1 * s.ceff, 100);
+        soc += stored1;
+        surplus -= x1;
+        const off = if (outage) |o| i >= o.first and i <= o.last else false;
+        const target = if (off) deficit else switch (strategy.kind) {
+            .SELF, .BACKUP => deficit,
+        const lower = if (off) 0 else reserve;
+        const y1 = @min(ceilDiv(100 * target, s.deff), s.discharge, @max(0, soc - lower));
+        const d1 = @divFloor(y1 * s.deff, 100);
+        soc -= y1;
+        deficit -= d1;
+        const g = if (off) 0 else deficit;
+        const e1 = if (off) 0 else @min(surplus, s.export_limit);
+        var x2: i64 = 0;
+        var y2: i64 = 0;
+        var d2: i64 = 0;
+        if (!off) {
+            const charge_target: ?i64 = switch (strategy.kind) {
+                .SELF => null,
+            if (charge_target) |v| {
+            if (strategy.kind == .EXPORTPEAK and arbitrage and p == periods.high and x1 == 0) {
+        const curtailed = surplus - e1;
+        record.* = .{
+            .values = .{ .load = input.load, .pv = pv, .charge = x1 + x2, .discharge = d1 + d2, .drawn = y1 + y2, .soc = soc, .imported = g + x2, .exported = e1 + d2, .curtailed = curtailed, .shortfall = if (off) deficit else 0, .loss = x1 - stored1 + x2 - @divFloor(x2 * s.ceff, 100) + y1 - d1 + y2 - d2, .import_cost = @divFloor((g + x2) * prices[p], 100000), .export_income = @divFloor((e1 + d2) * s.feedin, 100000) },
+            .period = p,
+            .flows = .{ u, x1, e1, curtailed, d1, d2, g, x2 },
+        };
+        result.total.add(record.values);
+        result.periods[p].add(record.values);
+        result.peak = @max(result.peak, record.values.imported);
+    result.demand_charge = @divFloor(result.peak * s.demand, 1000);
+    result.bill = result.total.net() + s.fixed + result.demand_charge;
+    return result;
+const Command = enum { RUN, SET, PRICE, RESET, CONFIG, NOBATTERY, COMPARE, SIZE, SWEEP, OUTAGE, DIFF, HOURLY, DAILY, BILL, SAVINGS, BYPERIOD, DAYTYPE, PEAKS, PROFILE, FLOWS, SELFSUFF, CYCLES, USAGE, HISTOGRAM, CHART, END };
+const App = struct {
+    data: Data,
+    settings: Settings,
+    prices: [6]i64,
+    initial_settings: Settings,
+    initial_prices: [6]i64,
+    current: ?Result = null,
+    error_message: []const u8 = "",
+
+    fn fail(app: *App, gpa: Allocator, comptime format: []const u8, args: anytype) Error {
+        app.error_message = std.fmt.allocPrint(gpa, format, args) catch return error.OutOfMemory;
+        return error.BadCommand;
+    }
+    fn arity(app: *App, gpa: Allocator, a: []const []const u8, count: usize) Error!void {
+        if (a.len != count) return app.fail(gpa, "wrong number of arguments", .{});
+    }
+    fn dayArgument(app: *App, gpa: Allocator, text: []const u8) Error!usize {
+        const day = integer(text);
+        if (day < 1 or day > @as(i64, @intCast(app.data.days()))) return app.fail(gpa, "invalid day", .{});
+        return ix(day - 1);
+    }
+    fn itemArgument(app: *App, gpa: Allocator, text: []const u8) Error!Item {
+        return std.meta.stringToEnum(Item, text) orelse app.fail(gpa, "unknown parameter {s}", .{text});
+    fn strategies(app: *App, gpa: Allocator, a: []const []const u8) Error![]Strategy {
+        var parsed: std.ArrayList(Strategy) = .empty;
+        var i: usize = 0;
+        while (i < a.len) {
+            const name = a[i];
+            i += 1;
+            var strategy: Strategy = .{ .kind = std.meta.stringToEnum(Kind, name) orelse return app.fail(gpa, "unknown strategy {s}", .{name}) };
+            if (strategy.hasParameter()) {
+            try parsed.append(gpa, strategy);
+        return parsed.items;
+    fn oneStrategy(app: *App, gpa: Allocator, a: []const []const u8) Error!Strategy {
+        const parsed = try app.strategies(gpa, a);
+        if (parsed.len != 1) return app.fail(gpa, "wrong number of arguments", .{});
+        return parsed[0];
+    }
+    fn result(app: *App, gpa: Allocator) Error!Result {
+        return app.current orelse app.fail(gpa, "no run", .{});
+    fn execute(app: *App, gpa: Allocator, out: *std.Io.Writer, words: []const []const u8) Error!bool {
+        const cmd = std.meta.stringToEnum(Command, words[0]) orelse return app.fail(gpa, "unknown command {s}", .{words[0]});
+        const a = words[1..];
+        switch (cmd) {
+            .END => {
+                try app.arity(gpa, a, 0);
+                return true;
+            },
+            .RUN => {
+                const strategy = try app.oneStrategy(gpa, a);
+                var trial = try simulate(app.data, app.settings, app.prices, strategy, null);
+                errdefer trial.deinit();
+                try out.print("RUN {s} bill {s} import {d} export {d} soc {d}\n", .{ try strategy.text(gpa), try money(gpa, trial.bill), trial.total.imported, trial.total.exported, trial.endSoc() });
+                if (app.current) |*old| old.deinit();
+                app.current = trial;
+            },
+            .SET => {
+                try app.arity(gpa, a, 2);
+                const item = try app.itemArgument(gpa, a[0]);
+                const value = integer(a[1]);
+                if (value < item.minimum() or value > item.maximum()) return app.fail(gpa, "invalid value for {s}", .{a[0]});
+                const old = item.get(app.settings);
+                item.set(&app.settings, value);
+                try out.print("SET {s} {d} -> {d}\n", .{ a[0], old, value });
+            .OUTAGE => {
+                try app.arity(gpa, a, 3);
+                const day = try app.dayArgument(gpa, a[0]);
+                const start = integer(a[1]);
+                const end = integer(a[2]);
+                if (start < 0 or start > end or end > 23) return app.fail(gpa, "invalid hours", .{});
+                const r = try app.result(gpa);
+                const first = day * 24 + ix(start);
+                const last = day * 24 + ix(end);
+                var trial = try simulate(app.data, r.settings, r.prices, r.strategy, .{ .first = first, .last = last });
+                defer trial.deinit();
+                const before = if (first == 0) trial.starting else trial.records[first - 1].values.soc;
+                try out.print("OUTAGE day {d} hours {d}-{d} strategy {s} soc {d}\nhour   load     pv  disch    soc  short   curt\n", .{ day + 1, start, end, try r.strategy.text(gpa), before });
+                for (trial.records[first .. last + 1], ix(start)..) |record, h| {
+                    const v = record.values;
+                    try out.print("{d:>4}{d:>7}{d:>7}{d:>7}{d:>7}{d:>7}{d:>7}\n", .{ h, v.load, v.pv, v.discharge, v.soc, v.shortfall, v.curtailed });
+                }
+                const v = trial.sum(first, last + 1);
+                const served = if (v.load == 0) "100.00" else try percentage(gpa, v.load - v.shortfall, v.load);
+                try out.print("TOTAL load {d} unserved {d} served {s}% bill {s}\n", .{ v.load, v.shortfall, served, try money(gpa, trial.bill) });
+            else => {
+                try app.arity(gpa, a, 0);
+                try app.report(gpa, out, cmd, 0, 0);
+            },
+        }
+        return false;
+    fn report(app: *App, gpa: Allocator, out: *std.Io.Writer, cmd: Command, day: usize, count: usize) Error!void {
+        const r = try app.result(gpa);
+        const label = try r.strategy.text(gpa);
+        const total = r.total;
+        switch (cmd) {
+            .BILL => {
+                try out.print("BILL strategy {s} days {d}\n", .{ label, app.data.days() });
+                for (app.data.period_names, 0..) |name, p| try out.print("IMPORT {s} {d} Wh {s}\n", .{ name, r.periods[p].imported, try money(gpa, r.periods[p].import_cost) });
+                try out.print("EXPORT {d} Wh {s}\nFIXED {s}\nDEMAND {d} Wh {s}\nTOTAL {s}\n", .{ total.exported, try money(gpa, -total.export_income), try money(gpa, r.settings.fixed), r.peak, try money(gpa, r.demand_charge), try money(gpa, r.bill) });
+fn readWords(gpa: Allocator, input: *std.Io.Reader) ![]const []const u8 {
+    var buffer: std.Io.Writer.Allocating = .init(gpa);
+    defer buffer.deinit();
+    _ = try input.streamDelimiterEnding(&buffer.writer, '\n');
+    if (input.seek < input.end) input.toss(1) else if (buffer.written().len == 0) return error.EndOfStream;
+    const line = try buffer.toOwnedSlice();
+    var words: std.ArrayList([]const u8) = .empty;
+    var split = std.mem.splitScalar(u8, line, ' ');
+    while (split.next()) |word| try words.append(gpa, word);
+    return words.items;
+}
+fn readInput(gpa: Allocator, input: *std.Io.Reader) !App {
+    const battery = try readWords(gpa, input);
+    const grid = try readWords(gpa, input);
+    const settings: Settings = .{ .capacity = integer(battery[1]), .initial = integer(battery[2]), .charge = integer(battery[3]), .discharge = integer(battery[4]), .ceff = integer(battery[5]), .deff = integer(battery[6]), .reserve = integer(battery[7]), .cost = integer(battery[8]), .export_limit = integer(grid[1]), .feedin = integer(grid[2]), .fixed = integer(grid[3]), .demand = integer(grid[4]) };
+    const period_count = ix(integer((try readWords(gpa, input))[1]));
+    const names = try gpa.alloc([]const u8, period_count);
+    var prices: [6]i64 = @splat(0);
+    for (names, 0..) |*name, p| {
+        const words = try readWords(gpa, input);
+        name.* = words[0];
+        prices[p] = integer(words[1]);
+    }
+    var divisions: [2][24]usize = undefined;
+    for (&divisions) |*division| {
+        const words = try readWords(gpa, input);
+        var j: usize = 1;
+        while (j < words.len) : (j += 2) {
+            const first = ix(integer(words[j]));
+            const last = if (j + 2 < words.len) ix(integer(words[j + 2])) else 24;
+            var p: usize = 0;
+            while (!equal(names[p], words[j + 1])) p += 1;
+            @memset(division[first..last], p);
+        }
+    }
+    const Profile = struct { kind: []const u8, name: []const u8, values: [24]i64 };
+    const profile_count = ix(integer((try readWords(gpa, input))[1]));
+    const profiles = try gpa.alloc(Profile, profile_count);
+    for (profiles) |*profile| {
+        const words = try readWords(gpa, input);
+        profile.* = .{ .kind = words[0], .name = words[1], .values = undefined };
+        for (&profile.values, words[2..]) |*value, word| value.* = integer(word);
+    }
+    const days = ix(integer((try readWords(gpa, input))[1]));
+    const hours = try gpa.alloc(HourInput, days * 24);
+    for (0..days) |day| {
+        const words = try readWords(gpa, input);
+        var load: *const Profile = undefined;
+        var pv: *const Profile = undefined;
+        for (profiles) |*profile| {
+            if (equal(profile.kind, "LOAD") and equal(profile.name, words[0])) load = profile;
+            if (equal(profile.kind, "PV") and equal(profile.name, words[2])) pv = profile;
+        }
+        for (0..24) |h| hours[day * 24 + h] = .{ .load = @divFloor(load.values[h] * integer(words[1]), 100), .pv = @divFloor(pv.values[h] * integer(words[3]), 100) };
+    }
+    const holiday = try gpa.alloc(bool, days);
+    @memset(holiday, false);
+    const holiday_words = try readWords(gpa, input);
+    for (holiday_words[2..]) |word| holiday[ix(integer(word) - 1)] = true;
+    const data: Data = .{ .period_names = names, .hours = hours, .holiday = holiday };
+    for (hours, 0..) |*hour, i| hour.period = divisions[@intFromBool(data.weekend(i / 24))][i % 24];
+    const overrides = ix(integer((try readWords(gpa, input))[1]));
+    for (0..overrides) |_| {
+        const words = try readWords(gpa, input);
+        const i = ix(integer(words[0]) - 1) * 24 + ix(integer(words[1]));
+        hours[i].load = integer(words[2]);
+        hours[i].pv = integer(words[3]);
+    }
+    return .{ .data = data, .settings = settings, .prices = prices, .initial_settings = settings, .initial_prices = prices };
+}
+
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var input_buffer: [8192]u8 = undefined;
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output_buffer: [8192]u8 = undefined;
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    var app = try readInput(arena.allocator(), &input.interface);
+    defer if (app.current) |*r| r.deinit();
+    while (true) {
+        var command_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer command_arena.deinit();
+        const gpa = command_arena.allocator();
+        const words = try readWords(gpa, &input.interface);
+        var response: std.Io.Writer.Allocating = .init(gpa);
+        const done = app.execute(gpa, &response.writer, words) catch |err| {
+            if (err != error.BadCommand) return err;
+            try output.interface.print("ERROR {s}\n", .{app.error_message});
+            continue;
+        };
+        try output.interface.writeAll(response.written());
+        if (done) break;
+    }
+    try output.interface.flush();

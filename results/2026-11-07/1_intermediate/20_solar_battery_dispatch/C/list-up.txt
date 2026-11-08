@@ -1,0 +1,370 @@
+typedef int64_t Money;
+enum Setting {
+    CAPACITY, INITIAL, CHARGE, DISCHARGE, CEFF, DEFF, RESERVE, COST,
+    EXPORT, FEEDIN, FIXED, DEMAND, PVSCALE, SETTING_COUNT
+};
+static const char *settingNames[SETTING_COUNT] = {
+    "CAPACITY", "INITIAL", "CHARGE", "DISCHARGE", "CEFF", "DEFF", "RESERVE",
+    "COST", "EXPORT", "FEEDIN", "FIXED", "DEMAND", "PVSCALE"
+};
+static const Money settingMinimum[SETTING_COUNT] = {1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+static const Money settingMaximum[SETTING_COUNT] = {
+    100000, 100, 20000, 20000, 100, 100, 100, 100000,
+    100000, 10000, 100000, 100000, 300
+typedef struct { Money values[SETTING_COUNT]; } Settings;
+typedef struct { char name[11]; Money price; } Price;
+
+typedef struct {
+    int kind;
+    char name[11];
+    Money values[24];
+} Profile;
+
+typedef struct {
+    Settings initial;
+    Price prices[MAX_PERIODS];
+    int priceCount;
+    int dayCount;
+    Money loads[MAX_HOURS], pv[MAX_HOURS];
+    int periods[MAX_HOURS], weekend[MAX_DAYS];
+    char days[MAX_DAYS][4];
+} Data;
+
+enum Method { SELF, TOU, PEAKSHAVE, BACKUP, EXPORTPEAK };
+typedef struct { enum Method method; Money parameter; } Strategy;
+
+typedef struct {
+    int index, day, hour, period;
+    Money load, pv, soc, flows[8], charge, discharge;
+    Money imported, exported, curtailed, drawn, shortfall, loss;
+    Money importCost, exportIncome, netCost;
+} Hour;
+
+typedef struct {
+    int count;
+    Money load, pv, charge, discharge, imported, exported, curtailed;
+    Money drawn, shortfall, loss, importCost, exportIncome, netCost;
+    Money flows[8];
+} Totals;
+
+typedef struct {
+    Strategy strategy;
+    Settings settings;
+    Money prices[MAX_PERIODS];
+    Money startSoc, reserve, endSoc, peak, demandCharge, bill;
+    Hour hours[MAX_HOURS];
+    Totals daily[MAX_DAYS], byPeriod[MAX_PERIODS], total;
+} Result;
+static Data data;
+static Settings settings;
+static Money prices[MAX_PERIODS];
+static Result current, reference, trial;
+static bool hasCurrent = false;
+
+static Money value(const char *text) { return strtoll(text, NULL, 10); }
+static Money min(Money a, Money b) { return a < b ? a : b; }
+static Money max(Money a, Money b) { return a > b ? a : b; }
+static Money min3(Money a, Money b, Money c) { return min(min(a, b), c); }
+static Money ceiling(Money a, Money b) { return (a + b - 1) / b; }
+static const char *money(Money amount) {
+    static char buffers[16][36];
+    static int next = 0;
+    char *buffer = buffers[next++ % 16];
+    Money positive = amount < 0 ? -amount : amount;
+    snprintf(buffer, 36, "%s%lld.%02lld", amount < 0 ? "-" : "",
+             (long long)(positive / 100), (long long)(positive % 100));
+    return buffer;
+}
+static const char *percentage(Money numerator, Money denominator) {
+    static char buffers[16][36];
+    static int next = 0;
+    char *buffer = buffers[next++ % 16];
+    Money fraction = denominator ? numerator * 10000 / denominator : 0;
+    snprintf(buffer, 36, "%lld.%02lld", (long long)(fraction / 100),
+             (long long)(fraction % 100));
+    return buffer;
+static void error(const char *message) { printf("ERROR %s\n", message); }
+static void requireArgumentError(void) { error("wrong number of arguments"); }
+
+static int tokenize(char *line, char *tokens[MAX_ARGS]) {
+    int count = 0;
+    for (char *token = strtok(line, " \t\r\n"); token && count < MAX_ARGS;
+         token = strtok(NULL, " \t\r\n")) tokens[count++] = token;
+    return count;
+}
+static void inputTokens(char *tokens[MAX_ARGS], int *count) {
+    static char line[4096];
+    if (!fgets(line, sizeof(line), stdin)) exit(1);
+    *count = tokenize(line, tokens);
+}
+static int periodIndex(const char *name) {
+    for (int i = 0; i < data.priceCount; ++i)
+        if (!strcmp(name, data.prices[i].name)) return i;
+    return -1;
+}
+static int settingIndex(const char *name) {
+    for (int i = 0; i < SETTING_COUNT; ++i)
+        if (!strcmp(name, settingNames[i])) return i;
+    return -1;
+}
+static void periodHours(char *tokens[MAX_ARGS], int n, int hours[24]) {
+    for (int i = 1; i < n; i += 2) {
+        int start = (int)value(tokens[i]);
+        int end = i + 2 < n ? (int)value(tokens[i + 2]) : 24;
+        int period = periodIndex(tokens[i + 1]);
+        for (int h = start; h < end; ++h) hours[h] = period;
+static void readData(void) {
+    char *tokens[MAX_ARGS];
+    int n;
+    inputTokens(tokens, &n);
+    for (int i = 0; i < 8; ++i) data.initial.values[i] = value(tokens[i + 1]);
+    inputTokens(tokens, &n);
+    for (int i = 0; i < 4; ++i) data.initial.values[i + 8] = value(tokens[i + 1]);
+    data.initial.values[PVSCALE] = 100;
+    inputTokens(tokens, &n);
+    data.priceCount = (int)value(tokens[1]);
+    for (int i = 0; i < data.priceCount; ++i) {
+        inputTokens(tokens, &n);
+        strcpy(data.prices[i].name, tokens[0]);
+        data.prices[i].price = value(tokens[1]);
+    }
+    int weekday[24], weekend[24];
+    inputTokens(tokens, &n);
+    periodHours(tokens, n, weekday);
+    inputTokens(tokens, &n);
+    periodHours(tokens, n, weekend);
+    inputTokens(tokens, &n);
+    int profileCount = (int)value(tokens[1]);
+    Profile profiles[MAX_PROFILES];
+    for (int i = 0; i < profileCount; ++i) {
+        inputTokens(tokens, &n);
+        profiles[i].kind = !strcmp(tokens[0], "LOAD") ? 0 : 1;
+        strcpy(profiles[i].name, tokens[1]);
+        for (int h = 0; h < 24; ++h) profiles[i].values[h] = value(tokens[h + 2]);
+    }
+    inputTokens(tokens, &n);
+    data.dayCount = (int)value(tokens[1]);
+    for (int day = 0; day < data.dayCount; ++day) {
+        inputTokens(tokens, &n);
+        Profile *load = NULL, *pv = NULL;
+        for (int i = 0; i < profileCount; ++i) {
+            if (!profiles[i].kind && !strcmp(profiles[i].name, tokens[0])) load = &profiles[i];
+            if (profiles[i].kind && !strcmp(profiles[i].name, tokens[2])) pv = &profiles[i];
+        }
+        Money loadPct = value(tokens[1]), pvPct = value(tokens[3]);
+        for (int h = 0; h < 24; ++h) {
+            data.loads[24 * day + h] = load->values[h] * loadPct / 100;
+            data.pv[24 * day + h] = pv->values[h] * pvPct / 100;
+        }
+    }
+    int holidays[MAX_DAYS + 1] = {0};
+    inputTokens(tokens, &n);
+    for (int i = 2; i < n; ++i) holidays[(int)value(tokens[i])] = 1;
+    inputTokens(tokens, &n);
+    int overrides = (int)value(tokens[1]);
+    for (int i = 0; i < overrides; ++i) {
+        inputTokens(tokens, &n);
+        int index = ((int)value(tokens[0]) - 1) * 24 + (int)value(tokens[1]);
+        data.loads[index] = value(tokens[2]);
+        data.pv[index] = value(tokens[3]);
+    }
+    for (int day = 1; day <= data.dayCount; ++day) {
+        int holiday = holidays[day];
+        int isWeekend = holiday || (day - 1) % 7 >= 5;
+        for (int hour = 0; hour < 24; ++hour)
+            data.periods[(day - 1) * 24 + hour] = isWeekend ? weekend[hour] : weekday[hour];
+    }
+    settings = data.initial;
+    for (int i = 0; i < data.priceCount; ++i) prices[i] = data.prices[i].price;
+static const char *strategyName(enum Method method) {
+    static const char *names[] = {"SELF", "TOU", "PEAKSHAVE", "BACKUP", "EXPORTPEAK"};
+    return names[method];
+}
+static const char *strategyText(Strategy strategy) {
+    static char buffer[50];
+    if (strategy.method == SELF || strategy.method == EXPORTPEAK)
+        snprintf(buffer, sizeof(buffer), "%s", strategyName(strategy.method));
+    return buffer;
+static bool parseStrategies(char *tokens[], int n, Strategy results[],
+                            int *count, char *errorMessage) {
+    *count = 0;
+    for (int i = 0; i < n;) {
+        char *name = tokens[i++];
+        Strategy strategy = {0};
+        if (!strcmp(name, "SELF")) strategy.method = SELF;
+        results[(*count)++] = strategy;
+    return true;
+}
+static bool oneStrategy(char *tokens[], int n, Strategy *strategy) {
+    char message[100];
+    Strategy results[MAX_ARGS];
+    int count;
+    if (!parseStrategies(tokens, n, results, &count, message)) { error(message); return false; }
+    if (count != 1) { requireArgumentError(); return false; }
+    *strategy = results[0];
+    return true;
+static void addHour(Totals *total, const Hour *hour) {
+    total->load += hour->load; total->pv += hour->pv;
+    total->imported += hour->imported; total->exported += hour->exported;
+    total->shortfall += hour->shortfall; total->loss += hour->loss;
+    total->importCost += hour->importCost; total->exportIncome += hour->exportIncome;
+    total->netCost += hour->netCost;
+static void simulate(Strategy strategy, const Settings *options,
+                     const Money tariff[MAX_PERIODS], Result *result,
+                     int outageFirst, int outageLast) {
+    memset(result, 0, sizeof(*result));
+    result->strategy = strategy;
+    result->settings = *options;
+    memcpy(result->prices, tariff, sizeof(result->prices));
+    Money capacity = options->values[CAPACITY];
+    Money ceff = options->values[CEFF], deff = options->values[DEFF];
+    Money reservePct = options->values[RESERVE];
+    if (strategy.method == BACKUP) reservePct = max(reservePct, strategy.parameter);
+    result->reserve = capacity * reservePct / 100;
+    result->startSoc = capacity * options->values[INITIAL] / 100;
+    Money soc = result->startSoc;
+    int arbitrage = strategy.method == EXPORTPEAK &&
+                    options->values[FEEDIN] > tariff[cheapest];
+    int count = data.dayCount * 24;
+    for (int index = 0; index < count; ++index) {
+        Hour *r = &result->hours[index];
+        r->index = index;
+        r->day = index / 24 + 1;
+        r->hour = index % 24;
+        r->period = data.periods[index];
+        r->load = data.loads[index];
+        r->pv = data.pv[index] * options->values[PVSCALE] / 100;
+        Money direct = min(r->load, r->pv);
+        Money surplus = r->pv - direct;
+        Money deficit = r->load - direct;
+        Money pvCharge = min3(surplus, options->values[CHARGE],
+                              ceiling(100 * (capacity - soc), ceff));
+        soc += pvCharge * ceff / 100;
+        surplus -= pvCharge;
+        bool outage = index >= outageFirst && index <= outageLast;
+        Money target = deficit;
+        if (!outage) {
+            if (strategy.method == TOU) target = r->period == peak ? deficit : 0;
+            else if (strategy.method == PEAKSHAVE) target = max(0, deficit - strategy.parameter);
+            else if (arbitrage && r->period == cheapest && r->period != peak) target = 0;
+        Money lowerBound = outage ? 0 : result->reserve;
+        Money loadDrawn = min3(ceiling(100 * target, deff), options->values[DISCHARGE],
+                               max(0, soc - lowerBound));
+        Money loadDischarge = loadDrawn * deff / 100;
+        soc -= loadDrawn;
+        deficit -= loadDischarge;
+        Money gridLoad = 0, shortfall = 0, pvExport = 0, curtailed = 0, gridCharge = 0;
+        Money exportDrawn = 0, batteryExport = 0;
+        if (outage) { shortfall = deficit; curtailed = surplus; }
+        else {
+            gridLoad = deficit;
+            pvExport = min(surplus, options->values[EXPORT]);
+            curtailed = surplus - pvExport;
+            Money chargeTarget = -1;
+            if (strategy.method == TOU && r->period == cheapest && r->period != peak)
+            else if (strategy.method == PEAKSHAVE && r->period == cheapest) {
+            } else if (strategy.method == BACKUP && r->period == cheapest)
+            else if (arbitrage && r->period == cheapest && r->period != peak)
+            if (chargeTarget >= 0) {
+            if (arbitrage && r->period == peak && pvCharge == 0) {
+        r->soc = soc;
+        r->discharge = loadDischarge + batteryExport;
+        r->imported = gridLoad + gridCharge;
+        r->exported = pvExport + batteryExport;
+        r->curtailed = curtailed;
+        r->shortfall = shortfall;
+        r->importCost = r->imported * tariff[r->period] / 100000;
+        r->exportIncome = r->exported * options->values[FEEDIN] / 100000;
+        r->netCost = r->importCost - r->exportIncome;
+        addHour(&result->total, r);
+        addHour(&result->byPeriod[r->period], r);
+        result->peak = max(result->peak, r->imported);
+    }
+    result->demandCharge = result->peak * options->values[DEMAND] / 1000;
+    result->bill = result->total.netCost + options->values[FIXED] + result->demandCharge;
+    result->endSoc = soc;
+static bool checkCount(int actual, int expected) {
+    if (actual != expected) { requireArgumentError(); return false; }
+    return true;
+}
+static bool checkCurrent(void) {
+    if (!hasCurrent) { error("no run"); return false; }
+    return true;
+}
+static bool checkedDay(const char *token, int *day) {
+    *day = (int)value(token);
+    if (*day < 1 || *day > data.dayCount) { error("invalid day"); return false; }
+    return true;
+static bool checkNoArgs(int argc) { return checkCount(argc, 0) && checkCurrent(); }
+static void execute(char *tokens[MAX_ARGS], int n) {
+    if (!n) return;
+    char *command = tokens[0];
+    char **args = tokens + 1;
+    int argc = n - 1;
+
+    if (!strcmp(command, "RUN")) {
+        Strategy strategy;
+        if (!oneStrategy(args, argc, &strategy)) return;
+        simulate(strategy, &settings, prices, &current, 1, 0);
+        hasCurrent = true;
+        printf("RUN %s bill %s import %lld export %lld soc %lld\n", strategyText(strategy),
+               money(current.bill), (long long)current.total.imported,
+               (long long)current.total.exported, (long long)current.endSoc);
+    } else if (!strcmp(command, "SET")) {
+        if (!checkCount(argc, 2)) return;
+        int which = settingIndex(args[0]);
+        if (which < 0) { printf("ERROR unknown parameter %s\n", args[0]); return; }
+        Money number = value(args[1]);
+        if (number < settingMinimum[which] || number > settingMaximum[which]) {
+            printf("ERROR invalid value for %s\n", args[0]); return;
+        }
+        printf("SET %s %lld -> %lld\n", args[0], (long long)settings.values[which], (long long)number);
+        settings.values[which] = number;
+    } else if (!strcmp(command, "OUTAGE")) {
+        if (!checkCount(argc, 3)) return;
+        int day;
+        if (!checkedDay(args[0], &day)) return;
+        int start = (int)value(args[1]), end = (int)value(args[2]);
+        if (start < 0 || start > end || end > 23) { error("invalid hours"); return; }
+        if (!checkCurrent()) return;
+        int first = (day - 1) * 24 + start, last = (day - 1) * 24 + end;
+        simulate(current.strategy, &current.settings, current.prices, &trial, first, last);
+        Money before = first ? trial.hours[first - 1].soc : trial.startSoc;
+        printf("OUTAGE day %d hours %d-%d strategy %s soc %lld\n", day, start, end,
+               strategyText(trial.strategy), (long long)before);
+        puts("hour   load     pv  disch    soc  short   curt");
+        Totals total = {0};
+        for (int i = first; i <= last; ++i) {
+            const Hour *r = &trial.hours[i];
+            printf("%4d%7lld%7lld%7lld%7lld%7lld%7lld\n", r->hour,
+                   (long long)r->load, (long long)r->pv, (long long)r->discharge,
+                   (long long)r->soc, (long long)r->shortfall, (long long)r->curtailed);
+            addHour(&total, r);
+        }
+        printf("TOTAL load %lld unserved %lld served %s%% bill %s\n",
+               (long long)total.load, (long long)total.shortfall,
+               total.load ? percentage(total.load - total.shortfall, total.load) : "100.00",
+               money(trial.bill));
+    } else if (!strcmp(command, "BILL")) {
+        if (!checkNoArgs(argc)) return;
+        printf("BILL strategy %s days %d\n", strategyText(current.strategy), data.dayCount);
+        for (int i = 0; i < data.priceCount; ++i) {
+            const Totals *t = &current.byPeriod[i];
+            printf("IMPORT %s %lld Wh %s\n", data.prices[i].name,
+                   (long long)t->imported, money(t->importCost));
+        }
+        printf("EXPORT %lld Wh %s\n", (long long)current.total.exported,
+               money(-current.total.exportIncome));
+        printf("FIXED %s\n", money(current.settings.values[FIXED]));
+        printf("DEMAND %lld Wh %s\n", (long long)current.peak, money(current.demandCharge));
+        printf("TOTAL %s\n", money(current.bill));
+int main(void) {
+    readData();
+    char line[4096];
+    while (fgets(line, sizeof(line), stdin)) {
+        char *tokens[MAX_ARGS];
+        int n = tokenize(line, tokens);
+        if (n && !strcmp(tokens[0], "END")) break;
+        execute(tokens, n);
+    }
+    return 0;
