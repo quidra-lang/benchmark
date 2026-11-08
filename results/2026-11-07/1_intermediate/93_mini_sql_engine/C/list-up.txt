@@ -1,0 +1,254 @@
+static jmp_buf failure;
+static void *allocate(size_t size) {
+    void *p = calloc(1, size ? size : 1);
+    if (!p) exit(1);
+    return p;
+}
+static void error(const char *pattern, ...) {
+    va_list args;
+    va_start(args, pattern);
+    fputs("ERROR: ", stdout);
+    vprintf(pattern, args);
+    putchar('\n');
+    va_end(args);
+    longjmp(failure, 1);
+}
+#define VECTOR(T, Name) typedef struct { T *v; int n, capacity; } Name
+#define APPEND(a, x) do { if ((a).n == (a).capacity) { int cap = (a).capacity ? (a).capacity * 2 : 8; void *p = allocate((size_t)cap * sizeof(*(a).v)); if ((a).n) memcpy(p, (a).v, (size_t)(a).n * sizeof(*(a).v)); (a).v = p; (a).capacity = cap; } (a).v[(a).n++] = (x); } while (0)
+
+typedef enum {
+    NULL_VALUE, INTEGER_VALUE, TEXT_VALUE
+} Type;
+
+typedef struct {
+    Type type;
+    int64_t integer;
+    char *text;
+} Value;
+static char *written(Value v) {
+    return v.type == NULL_VALUE ? "NULL" : v.type == TEXT_VALUE ? v.text : format("%" PRId64, v.integer);
+}
+
+static int compare(Value a, Value b) {
+    if (a.type == NULL_VALUE || b.type == NULL_VALUE) return (a.type != NULL_VALUE) - (b.type != NULL_VALUE);
+    if (a.type == INTEGER_VALUE) return (a.integer > b.integer) - (a.integer < b.integer);
+    int c = strcmp(a.text,b.text);
+    return (c > 0) - (c < 0);
+}
+
+static int equal(Value a, Value b) {
+    return a.type == b.type && compare(a,b) == 0;
+}
+
+static int truth(Value v) {
+    return v.type != NULL_VALUE && v.integer != 0;
+}
+static int is(const char *a, const char *b) {
+    return strcmp(a,b) == 0;
+}
+typedef struct {
+    char *name;
+    Type type;
+    int not_null, keys;
+} Column;
+VECTOR(Column, Columns);
+VECTOR(char *, Names);
+    } else if (accept("UPDATE")) {
+        s.command="UPDATE";
+        s.name=parse_name();
+        expect("SET");
+        do {
+            char *name=parse_name();
+            expect("=");
+            Expr *e=parse_expr();
+            APPEND(s.assignments,((Assignment){
+                name,e
+            }));
+        } while (accept(","));
+        s.where=parse_clause("WHERE");
+VECTOR(Value *, Rows);
+
+typedef struct {
+    char *name;
+    Columns columns;
+    Rows rows;
+} Table;
+
+static Table *database[20];
+
+static int table_count;
+
+static Table *lookup(char *name) {
+    for (int i=0;i<table_count;i++) if (is(database[i]->name,name)) return database[i];
+    error("unknown table %s",name);
+    return NULL;
+}
+
+static int column_index(Table *t, char *name) {
+    for (int i=0;i<t->columns.n;i++) if (is(t->columns.v[i].name,name)) return i;
+    return -1;
+}
+static char *persist_string(const char *s) {
+    size_t n=strlen(s)+1;
+    char *p=malloc(n);
+    if (!p) exit(1);
+    memcpy(p,s,n);
+    return p;
+}
+
+static Table *persist_table(Table *t) {
+    Table *p=calloc(1,sizeof(*p));
+    if (!p) exit(1);
+    p->name=persist_string(t->name);
+    p->columns.n=t->columns.n;
+    p->columns.v=calloc((size_t)p->columns.n,sizeof(Column));
+    p->rows.n=t->rows.n;
+    p->rows.v=calloc((size_t)p->rows.n,sizeof(Value *));
+    if (!p->columns.v || (!p->rows.v && p->rows.n)) exit(1);
+    for (int i=0;i<p->columns.n;i++) {
+        p->columns.v[i]=t->columns.v[i];
+        p->columns.v[i].name=persist_string(t->columns.v[i].name);
+    }
+    for (int i=0;i<p->rows.n;i++) {
+        p->rows.v[i]=malloc((size_t)p->columns.n*sizeof(Value));
+        if (!p->rows.v[i]) exit(1);
+        for (int j=0;j<p->columns.n;j++) {
+            p->rows.v[i][j]=t->rows.v[i][j];
+            if (p->rows.v[i][j].type == TEXT_VALUE) p->rows.v[i][j].text=persist_string(p->rows.v[i][j].text);
+        }
+    }
+    return p;
+}
+static void replace_table(Table *original, Table *modified) {
+    Table *saved=persist_table(modified);
+    for (int i=0;i<table_count;i++) if (database[i] == original) {
+        database[i]=saved;
+        destroy_table(original);
+        return;
+    }
+}
+typedef struct {
+    char *name;
+    Table *table;
+    int offset;
+} Entry;
+VECTOR(Entry, Entries);
+
+typedef struct {
+    Entries entries;
+    int width;
+} Scope;
+
+static void add_scope(Scope *scope, char *name, Table *table) {
+    for (int i=0;i<scope->entries.n;i++) if (is(scope->entries.v[i].name,name)) error("duplicate table name %s",name);
+    APPEND(scope->entries,((Entry){
+        name,table,scope->width
+    }));
+    scope->width+=table->columns.n;
+}
+
+static Type resolve(Expr *e, Scope *scope) {
+    int count=0, found_table=0;
+    Type type=NULL_VALUE;
+    for (int i=0;i<scope->entries.n;i++) {
+        Entry entry=scope->entries.v[i];
+        if (e->table && !is(e->table,entry.name)) continue;
+        found_table=1;
+        int j=column_index(entry.table,e->column);
+        if (j>=0) {
+            count++;
+            e->index=entry.offset+j;
+            type=entry.table->columns.v[j].type;
+        }
+    }
+    if (e->table && !found_table) error("unknown table %s",e->table);
+    if (!count) error("unknown column %s",e->written);
+    if (count>1) error("ambiguous column %s",e->column);
+    return type;
+}
+
+static void require(Type a, Type b, const char *op) {
+    if (a != b && a != NULL_VALUE && b != NULL_VALUE) error("type mismatch for %s",op);
+}
+
+static Type check(Expr *e, Scope *scope, int allowed, Expressions *grouped, int inside) {
+    if (e->kind == 'l') return e->literal.type;
+    if (e->kind == 'c') {
+        Type t=resolve(e,scope);
+        if (grouped && !inside) {
+            int found=0;
+            for (int i=0;i<grouped->n;i++) if (grouped->v[i]->index == e->index) found=1;
+            if (!found) error("column %s is not grouped",e->written);
+        }
+        return t;
+    }
+    if (e->kind == 'a') {
+        if (!allowed || inside) error("misuse of aggregate %s",e->op);
+static void condition(Expr *e, Scope *scope, const char *clause, int allowed, Expressions *grouped) {
+    if (e) require(check(e,scope,allowed,grouped,0),INTEGER_VALUE,clause);
+}
+static Value evaluate(Expr *e, Value *row, Rows *group) {
+    if (e->kind == 'l') return e->literal;
+    if (e->kind == 'c') return row[e->index];
+static int *targets(Names names, Table *t) {
+    int *indices=allocate((size_t)names.n*sizeof(int));
+    for (int i=0;i<names.n;i++) {
+        int index=column_index(t,names.v[i]);
+        if (index<0) error("unknown column %s",names.v[i]);
+        for (int j=0;j<i;j++) if (indices[j]==index) error("duplicate column %s",names.v[i]);
+        indices[i]=index;
+    }
+    return indices;
+}
+
+static void constraints(Table *t, int *indices, int n) {
+    int key=-1;
+    for (int j=0;j<t->columns.n;j++) if (t->columns.v[j].keys) key=j;
+    for (int a=0;a<n;a++) {
+        int i=indices[a];
+        for (int j=0;j<t->columns.n;j++) if (t->columns.v[j].not_null && t->rows.v[i][j].type == NULL_VALUE) error("NULL value in column %s",t->columns.v[j].name);
+        if (key>=0) for (int j=0;j<t->rows.n;j++) if (i!=j && equal(t->rows.v[i][key],t->rows.v[j][key])) error("duplicate primary key %s",written(t->rows.v[i][key]));
+    }
+}
+static void count_message(int n, const char *verb) {
+    printf("%d %s %s.\n",n,n==1 ? "row" : "rows",verb);
+}
+    Table *original=lookup(s->name);
+    Table t={
+        original->name,original->columns,{
+            0
+        }
+    };
+    for (int i=0;i<original->rows.n;i++) {
+        Value *row=allocate((size_t)t.columns.n*sizeof(Value));
+        memcpy(row,original->rows.v[i],(size_t)t.columns.n*sizeof(Value));
+        APPEND(t.rows,row);
+    }
+    Scope scope={
+        0
+    };
+    add_scope(&scope,t.name,&t);
+    int *assigned=NULL;
+    if (is(s->command,"UPDATE")) {
+        Names names={
+            0
+        };
+        for (int i=0;i<s->assignments.n;i++) APPEND(names,s->assignments.v[i].name);
+        assigned=targets(names,&t);
+        for (int i=0;i<s->assignments.n;i++) require(check(s->assignments.v[i].expr,&scope,0,NULL,0),t.columns.v[assigned[i]].type,format("column %s",t.columns.v[assigned[i]].name));
+    }
+    condition(s->where,&scope,"WHERE",0,NULL);
+    int *checked=allocate((size_t)t.rows.n*sizeof(int)), count=0;
+    for (int i=0;i<t.rows.n;i++) if (!s->where || truth(evaluate(s->where,t.rows.v[i],NULL))) checked[count++]=i;
+    if (is(s->command,"DELETE")) {
+    } else {
+        for (int k=0;k<count;k++) {
+            int i=checked[k];
+            Value *before=allocate((size_t)t.columns.n*sizeof(Value));
+            memcpy(before,t.rows.v[i],(size_t)t.columns.n*sizeof(Value));
+            for (int j=0;j<s->assignments.n;j++) t.rows.v[i][assigned[j]]=evaluate(s->assignments.v[j].expr,before,NULL);
+        }
+        constraints(&t,checked,count);
+    }
+    replace_table(original,&t);
+    count_message(count,is(s->command,"DELETE") ? "deleted" : "updated");

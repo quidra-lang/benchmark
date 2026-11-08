@@ -1,0 +1,223 @@
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Value {
+    Null,
+    Int(i64),
+    Text(String),
+}
+impl Value {
+    fn text(&self) -> String {
+        match self {
+            Self::Null => "NULL".into(),
+            Self::Int(n) => n.to_string(),
+            Self::Text(s) => s.clone(),
+        }
+    }
+    fn truth(&self) -> Option<bool> {
+        match self {
+            Self::Int(n) => Some(*n != 0),
+            _ => None,
+        }
+    }
+    fn ty(&self) -> u8 {
+        match self {
+            Self::Null => 0,
+            Self::Int(_) => 1,
+            Self::Text(_) => 2,
+        }
+    }
+}
+#[derive(Clone)]
+struct Column {
+    name: String,
+    ty: u8,
+    not_null: bool,
+    pk: usize,
+}
+#[derive(Clone)]
+struct Table {
+    columns: Vec<Column>,
+    rows: Vec<Vec<Value>>,
+}
+        } else if self.eat("UPDATE") {
+            let n = self.name()?;
+            self.expect("SET")?;
+            let mut assignments = Vec::new();
+            loop {
+                let c = self.name()?;
+                self.expect("=")?;
+                assignments.push((c, self.expr()?));
+                if !self.eat(",") {
+                    break;
+                }
+            }
+            let filter = self.optional_where()?;
+            Command::Update(n, assignments, filter)
+#[derive(Clone)]
+struct ScopeColumn {
+    table: String,
+    name: String,
+    ty: u8,
+}
+type Scope = Vec<ScopeColumn>;
+fn scope(table: &Table, n: &str) -> Scope {
+    table
+        .columns
+        .iter()
+        .map(|c| ScopeColumn {
+            table: n.into(),
+            name: c.name.clone(),
+            ty: c.ty,
+        })
+        .collect()
+}
+fn resolve(r: &Option<String>, c: &str, s: &Scope) -> Result<usize, String> {
+    let raw = r.as_ref().map_or(c.to_string(), |r| format!("{}.{}", r, c));
+    if let Some(r) = r {
+        if !s.iter().any(|x| x.table == *r) {
+            return Err(format!("unknown table {}", r));
+        }
+    }
+    let matches: Vec<_> = s
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| x.name == c && r.as_ref().is_none_or(|r| x.table == *r))
+        .map(|(i, _)| i)
+        .collect();
+    if matches.is_empty() {
+        Err(format!("unknown column {}", raw))
+    } else if matches.len() > 1 {
+        Err(format!("ambiguous column {}", c))
+    } else {
+        Ok(matches[0])
+    }
+}
+fn compatible(a: u8, b: u8) -> bool {
+    a == 0 || b == 0 || a == b
+}
+fn check(
+    e: &Expr,
+    s: &Scope,
+    aggregates: bool,
+    groups: Option<&[usize]>,
+    inside: bool,
+) -> Result<u8, String> {
+    match e {
+        Expr::Literal(v) => Ok(v.ty()),
+        Expr::Column(r, c) => {
+            let i = resolve(r, c, s)?;
+            if !inside && groups.is_some_and(|g| !g.contains(&i)) {
+                return Err(format!(
+                    "column {} is not grouped",
+                    r.as_ref().map_or(c.clone(), |r| format!("{}.{}", r, c))
+                ));
+            }
+            Ok(s[i].ty)
+        }
+        Expr::Paren(e) => check(e, s, aggregates, groups, inside),
+        Expr::Aggregate(n, _, arg) => {
+            if !aggregates || inside {
+                return Err(format!("misuse of aggregate {}", n));
+            }
+fn condition(
+    e: &Option<Expr>,
+    s: &Scope,
+    ag: bool,
+    g: Option<&[usize]>,
+    kind: &str,
+) -> Result<(), String> {
+    if let Some(e) = e {
+        if !compatible(check(e, s, ag, g, false)?, 1) {
+            return Err(format!("type mismatch for {}", kind));
+        }
+    }
+    Ok(())
+}
+fn evaluate(e: &Expr, s: &Scope, row: &[Value], group: &[Vec<Value>]) -> Value {
+    match e {
+        Expr::Literal(v) => v.clone(),
+        Expr::Column(r, c) => row
+            .get(resolve(r, c, s).unwrap())
+            .cloned()
+            .unwrap_or(Value::Null),
+        Expr::Paren(e) => evaluate(e, s, row, group),
+fn table<'a>(db: &'a BTreeMap<String, Table>, n: &str) -> Result<&'a Table, String> {
+    db.get(n).ok_or_else(|| format!("unknown table {}", n))
+}
+fn targets(t: &Table, names: &[String]) -> Result<Vec<usize>, String> {
+    let mut ids = Vec::new();
+    for n in names {
+        let i = t
+            .columns
+            .iter()
+            .position(|c| c.name == *n)
+            .ok_or_else(|| format!("unknown column {}", n))?;
+        if ids.contains(&i) {
+            return Err(format!("duplicate column {}", n));
+        }
+        ids.push(i)
+    }
+    Ok(ids)
+}
+fn constraints(t: &Table, ids: &[usize]) -> Result<(), String> {
+    let primary = t.columns.iter().position(|c| c.pk > 0);
+    for &i in ids {
+        let row = &t.rows[i];
+        for (j, c) in t.columns.iter().enumerate() {
+            if c.not_null && row[j] == Value::Null {
+                return Err(format!("NULL value in column {}", c.name));
+            }
+        }
+        if let Some(pk) = primary {
+            if t.rows
+                .iter()
+                .enumerate()
+                .any(|(j, r)| j != i && r[pk] == row[pk])
+            {
+                return Err(format!("duplicate primary key {}", row[pk].text()));
+            }
+        }
+    }
+    Ok(())
+}
+fn execute(command: Command, db: &mut BTreeMap<String, Table>) -> Result<Vec<String>, String> {
+    let message = |n: usize, verb: &str| {
+        vec![format!(
+            "{} row{} {}.",
+            n,
+            if n == 1 { "" } else { "s" },
+            verb
+        )]
+    };
+        Command::Update(n, assignments, filter) => {
+            let mut t = table(db, &n)?.clone();
+            let ids = targets(
+                &t,
+                &assignments
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect::<Vec<_>>(),
+            )?;
+            let s = scope(&t, &n);
+            for ((_, e), &i) in assignments.iter().zip(&ids) {
+                if !compatible(check(e, &s, false, None, false)?, t.columns[i].ty) {
+                    return Err(format!("type mismatch for column {}", t.columns[i].name));
+                }
+            }
+            condition(&filter, &s, false, None, "WHERE")?;
+            let mut modified = Vec::new();
+            for i in 0..t.rows.len() {
+                if filter
+                    .as_ref()
+                    .is_none_or(|e| evaluate(e, &s, &t.rows[i], &[]).truth() == Some(true))
+                {
+                    let old = t.rows[i].clone();
+                    for ((_, e), &j) in assignments.iter().zip(&ids) {
+                        t.rows[i][j] = evaluate(e, &s, &old, &[])
+                    }
+                    modified.push(i)
+                }
+            }
+            constraints(&t, &modified)?;
+            db.insert(n, t);
+            Ok(message(modified.len(), "updated"))
+        }

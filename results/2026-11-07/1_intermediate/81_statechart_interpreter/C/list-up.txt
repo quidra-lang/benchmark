@@ -1,0 +1,552 @@
+static void *allocate(size_t size) {
+    void *pointer = calloc(1, size ? size : 1);
+    Allocation *allocation = malloc(sizeof(*allocation));
+    if (!pointer || !allocation) exit(EXIT_FAILURE);
+    *allocation = (Allocation){pointer, allocations};
+    allocations = allocation;
+    return pointer;
+static char *substring(const char *text, size_t length) {
+    char *result = allocate(length + 1);
+    memcpy(result, text, length);
+    return result;
+}
+
+static char *copy_string(const char *text) {
+    return substring(text, strlen(text));
+static char *format(const char *pattern, ...) {
+    va_list args, saved;
+    va_start(args, pattern);
+    va_copy(saved, args);
+    int length = vsnprintf(NULL, 0, pattern, saved);
+    va_end(saved);
+    char *result = allocate((size_t)length + 1);
+    vsnprintf(result, (size_t)length + 1, pattern, args);
+    va_end(args);
+    return result;
+static char *read_line(void) {
+    size_t length = 0, capacity = 128;
+    char *text = malloc(capacity);
+    if (!text) exit(EXIT_FAILURE);
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') {
+        if (length + 1 == capacity) {
+            capacity *= 2;
+            char *grown = realloc(text, capacity);
+            if (!grown) exit(EXIT_FAILURE);
+            text = grown;
+        }
+        text[length++] = (char)c;
+    }
+    if (length && text[length - 1] == '\r') length--;
+    text[length] = '\0';
+    return text;
+static bool equal(const char *a, const char *b) {
+    return strcmp(a, b) == 0;
+}
+
+static bool starts(const char *text, const char *prefix) {
+    return strncmp(text, prefix, strlen(prefix)) == 0;
+}
+
+static char *word(const char **text) {
+    while (**text == ' ') (*text)++;
+    const char *start = *text;
+    while (**text && **text != ' ') (*text)++;
+    char *result = substring(start, (size_t)(*text - start));
+    while (**text == ' ') (*text)++;
+    return result;
+}
+typedef struct {
+    char **items;
+    int count;
+} Words;
+
+static Words words(const char *text) {
+    Words result = {allocate((strlen(text) + 1) * sizeof(char *)), 0};
+    while (*text) result.items[result.count++] = word(&text);
+    return result;
+typedef enum {
+    STATE,
+    PARALLEL,
+    FINAL,
+    HISTORY
+} StateKind;
+typedef struct Node Node;
+typedef enum {
+    ASSIGN,
+    RAISE,
+    SEND,
+    CANCEL,
+    LOG
+} ActionKind;
+typedef struct {
+    ActionKind kind;
+    char *name, *literal;
+    Node *expression;
+    int delay;
+} Action;
+typedef struct {
+    Action *items;
+    int count;
+} Actions;
+typedef enum {
+    EVENT_TRIGGER,
+    TIMER_TRIGGER,
+    ALWAYS_TRIGGER,
+    START_TRIGGER
+} TriggerKind;
+typedef enum {
+    INTERNAL,
+    EXTERNAL,
+    LOCAL
+} TransitionMode;
+typedef struct Transition Transition;
+struct Transition {
+    int source, target;
+    char *target_name;
+    TriggerKind trigger;
+    TransitionMode mode;
+    char **descriptors;
+    int descriptor_count, delay;
+    Node *guard;
+    Actions actions;
+};
+typedef struct {
+    char *name, *initial_name, *default_name;
+    StateKind kind;
+    int parent, children[40], child_count, depth;
+    bool deep, active, history_recorded;
+    uint64_t history;
+    Actions entries[120], exits[120];
+    int entry_count, exit_count;
+    Transition *transitions[120];
+    int transition_count;
+    long long entered, taken, dwell, entry_time;
+} State;
+typedef struct {
+    char *name;
+    long long value;
+} Event;
+typedef struct {
+    long long due, number;
+    Transition *timer;
+    Event event;
+} Reservation;
+typedef struct {
+    TriggerKind kind;
+    Event event;
+    Transition *timer;
+} Trigger;
+typedef struct {
+    Transition *transition;
+    int scope;
+    uint64_t exits;
+} Choice;
+typedef struct {
+    Choice items[40];
+    int count;
+} Choices;
+typedef struct {
+    int number;
+    char *text, *error;
+    int state;
+} Definition;
+typedef struct {
+    State states[41];
+    int state_count, order[40], order_count;
+    Variable variables[20];
+    int variable_count;
+    Event queue[10000];
+    int queue_front, queue_count;
+    Reservation reservations[5000];
+    int reservation_count;
+    long long time, data, creations, macrosteps, microsteps;
+    int in_macro;
+    bool trace, halted;
+} Chart;
+static uint64_t bit(int state) {
+    return UINT64_C(1) << state;
+}
+
+static bool contains(uint64_t set, int state) {
+    return (set & bit(state)) != 0;
+}
+
+static int find_state(const Chart *chart, const char *name) {
+    for (int i = 1; i < chart->state_count; i++) if (equal(chart->states[i].name, name)) return i;
+    return -1;
+static int child_state_count(const Chart *chart, int state) {
+    int count = 0;
+    const State *s = &chart->states[state];
+    for (int i = 0; i < s->child_count; i++) if (chart->states[s->children[i]].kind != HISTORY) count++;
+    return count;
+}
+
+static bool compound(const Chart *chart, int state) {
+    return state == 0 || (chart->states[state].kind == STATE && child_state_count(chart, state) != 0);
+}
+
+static bool parallel(const Chart *chart, int state) {
+    return chart->states[state].kind == PARALLEL && child_state_count(chart, state) != 0;
+}
+
+static bool atomic(const Chart *chart, int state) {
+    return chart->states[state].kind != HISTORY && child_state_count(chart, state) == 0;
+static int initial(const Chart *chart, int state) {
+    const State *s = &chart->states[state];
+    if (s->initial_name) return find_state(chart, s->initial_name);
+    for (int i = 0; i < s->child_count; i++) if (chart->states[s->children[i]].kind != HISTORY) return s->children[i];
+    return -1;
+static void visit(Chart *chart, int state) {
+    chart->order[chart->order_count++] = state;
+    const State *s = &chart->states[state];
+    for (int i = 0; i < s->child_count; i++) visit(chart, s->children[i]);
+static char *reference(const Chart *chart, const Node *n) {
+    if (!n) return NULL;
+static Actions actions(const char *text) {
+    Actions result = {allocate(10 * sizeof(Action)), 0};
+    while (*text) {
+        const char *separator = strstr(text, "; ");
+        const char *rest = separator ? substring(text, (size_t)(separator - text)) : text;
+        char *first = word(&rest);
+        Action *a = &result.items[result.count++];
+        a->literal = "";
+        } else if (equal(first, "log")) {
+            a->kind = LOG;
+            if (*rest == '"') {
+                const char *end = strchr(rest + 1, '"');
+                a->literal = substring(rest + 1, (size_t)(end - rest - 1));
+                if (end[1]) a->expression = expression(end + 2);
+            } else a->expression = expression(rest);
+        if (!separator) break;
+        text = separator + 2;
+    }
+    return result;
+static char *action_references(const Chart *chart, Actions list) {
+    for (int i = 0; i < list.count; i++) {
+        Action *a = &list.items[i];
+        if (a->kind == ASSIGN && find_variable(chart, a->name) < 0) return format("unknown variable %s", a->name);
+        char *error = reference(chart, a->expression);
+        if (error) return error;
+    }
+    return NULL;
+static Transition *parse_transition(const Chart *chart, const char *text) {
+    Transition *t = allocate(sizeof(*t));
+    const char *rest = text + 3;
+    t->source = find_state(chart, word(&rest));
+    t->target = -1;
+    char *trigger = word(&rest);
+    if (equal(trigger, "after")) {
+        t->trigger = TIMER_TRIGGER;
+        t->delay = atoi(word(&rest));
+    } else if (equal(trigger, "always")) t->trigger = ALWAYS_TRIGGER;
+    else {
+        t->trigger = EVENT_TRIGGER;
+        t->descriptors = allocate(5 * sizeof(char *));
+        char *start = trigger;
+        for (char *p = trigger;; p++) if (*p == '|' || *p == '\0') {
+            t->descriptors[t->descriptor_count++] = substring(start, (size_t)(p - start));
+            if (!*p) break;
+            start = p + 1;
+        }
+    }
+    if (*rest == '[') {
+        const char *close = strchr(rest, ']');
+        t->guard = expression(substring(rest + 1, (size_t)(close - rest - 1)));
+        rest = close + 1;
+        while (*rest == ' ') rest++;
+    }
+    if (starts(rest, "-> ") || starts(rest, "~> ")) {
+        t->mode = rest[0] == '~' ? LOCAL : EXTERNAL;
+        rest += 3;
+        t->target_name = word(&rest);
+    }
+    if (starts(rest, "/ ")) t->actions = actions(rest + 2);
+    return t;
+static bool define(Chart *chart, Definition *definitions, int count) {
+    for (int i = 0; i < count; i++) {
+        Definition *d = &definitions[i];
+        Words a = words(d->text);
+        const char *kind = a.items[0];
+        d->state = -1;
+        if (equal(kind, "state") || equal(kind, "parallel") || equal(kind, "final") || equal(kind, "history")) {
+            char *parent_name = a.count > 2 && !equal(a.items[2], "initial") ? a.items[2] : NULL;
+            int parent = parent_name ? find_state(chart, parent_name) : 0;
+            if (find_state(chart, a.items[1]) >= 0) d->error = format("duplicate state %s", a.items[1]);
+            else if (parent < 0) d->error = format("unknown state %s", parent_name);
+            else if (chart->states[parent].kind == FINAL || chart->states[parent].kind == HISTORY) d->error = format("%s cannot have children", parent_name);
+            else {
+                int index = chart->state_count++;
+                State *state = &chart->states[index];
+                d->state = index;
+                state->name = a.items[1];
+                state->kind = equal(kind, "state") ? STATE : equal(kind, "parallel") ? PARALLEL : equal(kind, "final") ? FINAL : HISTORY;
+                state->parent = parent;
+                state->depth = chart->states[parent].depth + 1;
+                chart->states[parent].children[chart->states[parent].child_count++] = index;
+                if (state->kind == STATE) for (int j = 2; j < a.count; j++) if (equal(a.items[j], "initial")) state->initial_name = a.items[j + 1];
+    for (int i = 0; i < count; i++) {
+        Definition *d = &definitions[i];
+        if (d->error) continue;
+        Words a = words(d->text);
+        const char *kind = a.items[0];
+        State *state = d->state >= 0 ? &chart->states[d->state] : NULL;
+        if (equal(kind, "state") && state->initial_name) {
+            int child = find_state(chart, state->initial_name);
+        } else if (equal(kind, "on")) {
+            int source = find_state(chart, a.items[1]);
+            if (source < 0) d->error = format("unknown state %s", a.items[1]);
+            else if (chart->states[source].kind == FINAL || chart->states[source].kind == HISTORY) d->error = format("%s cannot have transitions", a.items[1]);
+            else {
+                Transition *t = parse_transition(chart, d->text);
+                d->error = reference(chart, t->guard);
+                if (!d->error && t->target_name && find_state(chart, t->target_name) < 0) d->error = format("unknown state %s", t->target_name);
+                if (!d->error) d->error = action_references(chart, t->actions);
+                if (!d->error) {
+                    if (t->target_name) t->target = find_state(chart, t->target_name);
+                    chart->states[source].transitions[chart->states[source].transition_count++] = t;
+                }
+            }
+        }
+    }
+    bool valid = true;
+    for (int i = 0; i < count; i++) if (definitions[i].error) {
+        printf("error line %d: %s\n", definitions[i].number, definitions[i].error);
+        valid = false;
+    }
+    if (!valid) return false;
+    for (int i = 0; i < chart->states[0].child_count; i++) visit(chart, chart->states[0].children[i]);
+    return true;
+static Choice make_choice(const Chart *chart, Transition *t) {
+    Choice choice = {t, -1, 0};
+    if (t->target < 0) return choice;
+static bool matches(const Transition *t, Trigger trigger) {
+    if (trigger.kind == ALWAYS_TRIGGER) return t->trigger == ALWAYS_TRIGGER;
+    if (trigger.kind == TIMER_TRIGGER) return t == trigger.timer;
+    if (t->trigger != EVENT_TRIGGER) return false;
+    for (int i = 0; i < t->descriptor_count; i++) {
+        const char *d = t->descriptors[i];
+        size_t length = strlen(d);
+        if (equal(d, "*") || equal(d, trigger.event.name) || (starts(trigger.event.name, d) && trigger.event.name[length] == '.')) return true;
+    }
+    return false;
+}
+
+static void enqueue(Chart *chart, const char *name, long long value) {
+    chart->queue[chart->queue_count++] = (Event){(char *)name, value};
+}
+
+static Choices select_transitions(Chart *chart, Trigger trigger) {
+    Transition *candidates[40];
+    int count = 0;
+    for (int i = 0; i < chart->order_count; i++) {
+        int state = chart->order[i];
+        if (!chart->states[state].active || !atomic(chart, state)) continue;
+        Transition *selected = NULL;
+        for (int source = state; source != 0 && !selected; source = chart->states[source].parent) {
+            State *s = &chart->states[source];
+            for (int j = 0; j < s->transition_count; j++) if (matches(s->transitions[j], trigger)) {
+                Transition *t = s->transitions[j];
+                bool success = true;
+                long long guard = t->guard ? evaluate(chart, t->guard, &success) : 1;
+                if (!success) enqueue(chart, "error.execution", 0);
+                if (success && guard != 0) {
+                    selected = t;
+                    break;
+                }
+            }
+        }
+        if (selected) {
+            bool seen = false;
+            for (int j = 0; j < count; j++) if (candidates[j] == selected) seen = true;
+            if (!seen) candidates[count++] = selected;
+        }
+    }
+    Choices result = {0};
+    uint64_t exited = 0;
+    for (int i = 0; i < count; i++) {
+        Choice choice = make_choice(chart, candidates[i]);
+        if (!(choice.exits & exited)) {
+            result.items[result.count++] = choice;
+            exited |= choice.exits;
+        }
+    }
+    return result;
+static void perform(Chart *chart, Actions list) {
+    for (int i = 0; i < list.count; i++) {
+        Action *a = &list.items[i];
+        bool success = true;
+        long long value = a->expression ? evaluate(chart, a->expression, &success) : 0;
+        switch (a->kind) {
+            case ASSIGN:
+                chart->variables[find_variable(chart, a->name)].value = value;
+                break;
+            case RAISE:
+                enqueue(chart, a->name, value);
+                break;
+            case SEND:
+                reserve(chart, NULL, (Event){a->name, value}, a->delay);
+            case LOG:
+                fputs(a->literal, stdout);
+                if (a->expression) printf("%lld", value);
+                putchar('\n');
+                break;
+static uint64_t expand(const Chart *chart, uint64_t entry) {
+    uint64_t before;
+    do {
+        before = entry;
+        for (int i = 0; i < chart->order_count; i++) {
+            int state = chart->order[i];
+            if (!contains(entry, state)) continue;
+            const State *s = &chart->states[state];
+            bool has_child = false;
+            for (int j = 0; j < s->child_count; j++) {
+                int child = s->children[j];
+                if (chart->states[child].kind == HISTORY) continue;
+                if (parallel(chart, state)) entry |= bit(child);
+                if (contains(entry, child)) has_child = true;
+            }
+            if (compound(chart, state) && !has_child) entry |= bit(initial(chart, state));
+        }
+    } while (entry != before);
+    return entry;
+static void enter(Chart *chart, uint64_t entry) {
+    for (int i = 0; i < chart->order_count; i++) {
+        int state = chart->order[i];
+        if (!contains(entry, state)) continue;
+        State *s = &chart->states[state];
+        s->active = true;
+        s->entered++;
+        s->entry_time = chart->time;
+        for (int j = 0; j < s->transition_count; j++) if (s->transitions[j]->trigger == TIMER_TRIGGER) reserve(chart, s->transitions[j], (Event){0}, s->transitions[j]->delay);
+        for (int j = 0; j < s->entry_count; j++) perform(chart, s->entries[j]);
+        if (s->kind == FINAL) {
+            int parent = s->parent;
+            enqueue(chart, format("done.state.%s", chart->states[parent].name), 0);
+static bool micro(Chart *chart, Choices selected, Trigger trigger) {
+    if (chart->in_macro == 1000) {
+        printf("LIVELOCK t=%lld\n", chart->time);
+        chart->halted = true;
+        return false;
+    }
+    chart->in_macro++;
+    chart->microsteps++;
+    uint64_t exits = 0;
+    for (int i = 0; i < selected.count; i++) exits |= selected.items[i].exits;
+    for (int i = 0; i < chart->order_count; i++) {
+        State *history = &chart->states[chart->order[i]];
+        if (history->kind != HISTORY || !contains(exits, history->parent)) continue;
+    uint64_t entry = 0;
+    for (int i = 0; i < selected.count; i++) {
+        Choice choice = selected.items[i];
+        if (choice.transition->target < 0) continue;
+    entry = expand(chart, entry);
+    }
+    for (int i = chart->order_count - 1; i >= 0; i--) {
+        int state = chart->order[i];
+        if (!contains(exits, state)) continue;
+        State *s = &chart->states[state];
+        for (int j = 0; j < s->exit_count; j++) perform(chart, s->exits[j]);
+        s->active = false;
+    for (int i = 0; i < selected.count; i++) {
+        Transition *t = selected.items[i].transition;
+        perform(chart, t->actions);
+        chart->states[t->source].taken++;
+    }
+    enter(chart, entry);
+    return true;
+}
+
+static void macro(Chart *chart, Trigger trigger) {
+    chart->macrosteps++;
+    chart->in_macro = 0;
+    if (trigger.kind == START_TRIGGER) {
+        chart->data = 0;
+        enter(chart, expand(chart, bit(initial(chart, 0))));
+    } else {
+        chart->data = trigger.kind == TIMER_TRIGGER ? 0 : trigger.event.value;
+        Choices selected = select_transitions(chart, trigger);
+        if (selected.count && !micro(chart, selected, trigger)) return;
+    }
+    while (!chart->halted) {
+        chart->data = 0;
+        Trigger always = {
+            ALWAYS_TRIGGER, {0}, NULL
+        };
+        Choices selected = select_transitions(chart, always);
+        if (selected.count) {
+            if (!micro(chart, selected, always)) return;
+            continue;
+        }
+        if (chart->queue_front == chart->queue_count) return;
+        Event event = chart->queue[chart->queue_front++];
+        chart->data = event.value;
+        Trigger internal = {EVENT_TRIGGER, event, NULL};
+        selected = select_transitions(chart, internal);
+        if (selected.count && !micro(chart, selected, internal)) return;
+static void dump(Chart *chart) {
+    printf("dump t=%lld\n", chart->time);
+    for (int i = 0; i < chart->order_count; i++) {
+        State *s = &chart->states[chart->order[i]];
+        if (s->active) printf("%*s%s\n", 2 * s->depth, "", s->name);
+static void script(Chart *chart, const char *text) {
+    if (chart->halted) return;
+    const char *rest = text;
+    char *command = word(&rest);
+    if (equal(command, "event")) {
+        char *name = word(&rest);
+        macro(chart, (Trigger) {
+            EVENT_TRIGGER, {name, *rest ? strtoll(rest, NULL, 10) : 0}, NULL
+        });
+            Reservation r = chart->reservations[next];
+            remove_reservation(chart, next);
+            chart->time = r.due;
+            macro(chart, (Trigger){r.timer ? TIMER_TRIGGER : EVENT_TRIGGER, r.event, r.timer});
+    } else if (equal(command, "dump")) dump(chart);
+int main(void) {
+    char *line = read_line();
+    int count = atoi(line), number = 1;
+    free(line);
+    for (int chart_index = 0; chart_index < count; chart_index++) {
+        line = read_line();
+        number++;
+        printf("chart %s\n", line + 6);
+        free(line);
+        Definition definitions[120] = {0};
+        int definition_count = 0, script_count = 0;
+        char *commands[300];
+        while (true) {
+            line = read_line();
+            number++;
+            if (equal(line, "RUN")) {
+                free(line);
+                break;
+            }
+            definitions[definition_count++] = (Definition){number, copy_string(line), NULL, -1};
+            free(line);
+        }
+        while (true) {
+            line = read_line();
+            number++;
+            if (equal(line, "END")) {
+                free(line);
+                break;
+            }
+            commands[script_count++] = copy_string(line);
+            free(line);
+        }
+        Chart *chart = allocate(sizeof(*chart));
+        chart->state_count = 1;
+        chart->states[0].name = "";
+        chart->states[0].parent = -1;
+        if (define(chart, definitions, definition_count)) {
+            warnings(chart);
+            macro(chart, (Trigger) {
+                START_TRIGGER, {0}, NULL
+            });
+            for (int i = 0; i < script_count; i++) script(chart, commands[i]);
+            statistics(chart);
+        }
+        release_chart();
+    }
+    return 0;

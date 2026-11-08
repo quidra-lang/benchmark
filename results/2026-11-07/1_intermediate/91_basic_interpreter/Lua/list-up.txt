@@ -1,0 +1,372 @@
+local signatures = {
+    ABS = {'I'}, SGN = {'I'}, INT = {'I'}, SQR = {'I'}, RND = {'I'},
+}
+local operators = {
+    [0] = {OR = true},
+    [1] = {AND = true},
+    [2] = {},
+    [3] = {['='] = true, ['<>'] = true, ['<'] = true,
+           ['>'] = true, ['<='] = true, ['>='] = true},
+    [4] = {['+'] = true, ['-'] = true},
+    [5] = {['*'] = true, ['/'] = true, MOD = true},
+    [6] = {},
+    [7] = {['^'] = true}
+}
+local function syntax()
+    error({kind = 'syntax'}, 0)
+end
+
+local function fault(message)
+    error({kind = 'runtime', message = message}, 0)
+end
+local function name_type(name)
+    return name:sub(-1) == '$' and 'S' or 'I'
+end
+local function expression_node(kind, value_type_, value, args)
+    return {kind = kind, type = value_type_, value = value, args = args or {}}
+end
+
+local function statement(kind)
+    return {
+        kind = kind, line = 0, next = nil, expr = nil, target = nil,
+        targets = {}, expressions = {}, values = {}, numbers = {},
+        name = '', mode = '', clauses = {}, items = {}
+    }
+end
+local function tokenize(text)
+    local tokens = {}
+    local p = 1
+    while p <= #text do
+        local ch = text:sub(p, p)
+        if ch == ' ' then
+            p = p + 1
+        elseif ch == '"' then
+            local ending = text:find('"', p + 1, true)
+            if not ending then syntax() end
+            tokens[#tokens + 1] = {
+                kind = 'S', text = text:sub(p, ending),
+                value = text:sub(p + 1, ending - 1)
+            }
+            p = ending + 1
+        elseif ch:match('%d') then
+            local start = p
+            repeat
+                p = p + 1
+            until p > #text or not text:sub(p, p):match('%d')
+            local word = text:sub(start, p - 1)
+            local n = tonumber(word)
+            if n > 32767 then syntax() end
+            tokens[#tokens + 1] = {kind = 'I', text = word, value = n}
+        elseif ch:match('[A-Z]') then
+            local start = p
+            repeat
+                p = p + 1
+            until p > #text or not text:sub(p, p):match('[A-Z0-9]')
+            if text:sub(p, p) == '$' then p = p + 1 end
+            local word = text:sub(start, p - 1)
+            tokens[#tokens + 1] = {kind = 'W', text = word, value = word}
+        else
+            if not ch:match('[+%-%*/%^=<>() ,;:]') then syntax() end
+            local word = text:sub(p, p + 1)
+            if word ~= '<>' and word ~= '<=' and word ~= '>=' then
+                word = ch
+            end
+            tokens[#tokens + 1] = {kind = 'P', text = word, value = word}
+            p = p + #word
+        end
+    end
+    tokens[#tokens + 1] = {kind = 'E', text = '', value = ''}
+    return tokens
+end
+
+local Parser = {}
+Parser.__index = Parser
+
+function Parser.new(tokens)
+    return setmetatable({tokens = tokens, position = 1}, Parser)
+end
+
+function Parser:current()
+    return self.tokens[self.position]
+end
+
+function Parser:at(word)
+    local current = self:current()
+    return (current.kind == 'P' or current.kind == 'W') and current.text == word
+end
+
+function Parser:take(word)
+    if not self:at(word) then return false end
+    self.position = self.position + 1
+    return true
+end
+
+function Parser:expect(word)
+    if not self:take(word) then syntax() end
+end
+
+function Parser:integer()
+    local e = self:expression(0)
+    if e.type ~= 'I' then syntax() end
+    return e
+end
+
+function Parser:integer_at(level)
+    local e = self:expression(level)
+    if e.type ~= 'I' then syntax() end
+    return e
+end
+function Parser:expression(level)
+    level = level or 0
+    if level == 2 and self:take('NOT') then
+        return expression_node('unary', 'I', 'NOT', {self:integer_at(2)})
+    end
+    if level == 6 and self:take('-') then
+        return expression_node('unary', 'I', '-', {self:integer_at(6)})
+    end
+    if level == 8 then return self:primary() end
+    local left = self:expression(level + 1)
+    while operators[level][self:current().text] do
+        local op = self:current().text
+        self.position = self.position + 1
+        local right = self:expression(level == 7 and 6 or level + 1)
+        if left.type ~= right.type or
+           (left.type == 'S' and level ~= 3 and op ~= '+') then
+            syntax()
+        end
+        left = expression_node('binary', level == 3 and 'I' or left.type,
+                               op, {left, right})
+        if level == 7 then break end
+    end
+    return left
+end
+
+function Parser:primary()
+    local token = self:current()
+    if token.kind == 'I' or token.kind == 'S' then
+        self.position = self.position + 1
+        return expression_node('constant', token.kind, token.value)
+    end
+    if self:take('(') then
+        local e = self:expression(0)
+        self:expect(')')
+        return e
+    end
+    if token.kind == 'W' and signatures[token.text] then
+        self.position = self.position + 1
+        self:expect('(')
+        local args = {self:expression(0)}
+        while self:take(',') do args[#args + 1] = self:expression(0) end
+        self:expect(')')
+        local kinds = {}
+        for _, e in ipairs(args) do kinds[#kinds + 1] = e.type end
+        local signature = table.concat(kinds)
+        local valid = false
+        for _, allowed in ipairs(signatures[token.text]) do
+            if signature == allowed then valid = true end
+        end
+        if not valid then syntax() end
+        return expression_node('call', name_type(token.text), token.text, args)
+    end
+    syntax()
+end
+function Parser:list(in_clause)
+    local statements = {self:statement(in_clause or false)}
+    while self:take(':') do
+        statements[#statements + 1] = self:statement(in_clause or false)
+    end
+    return statements
+end
+
+function Parser:statement(in_clause)
+    local word = self:current().text
+    if in_clause and ({IF = true, FOR = true, NEXT = true,
+                       WHILE = true, WEND = true, DATA = true})[word] then
+        syntax()
+    end
+    local s = statement(word)
+    if self:take('PRINT') then
+        local expression_last = false
+        while self:current().kind ~= 'E' and
+              not self:at(':') and not self:at('ELSE') do
+            if self:take(';') then
+                s.items[#s.items + 1] = {kind = ';'}
+                expression_last = false
+            elseif self:take(',') then
+                s.items[#s.items + 1] = {kind = ','}
+                expression_last = false
+            else
+                local kind = self:at('TAB') and 'TAB' or
+                             self:at('SPC') and 'SPC' or 'value'
+                if kind == 'value' and expression_last then syntax() end
+                local e
+                if kind == 'value' then
+                    e = self:expression(0)
+                s.items[#s.items + 1] = {kind = kind, expr = e}
+                expression_last = kind == 'value'
+            end
+        end
+        return s
+    end
+function Parser:parse()
+    local result = self:list(false)
+    if self:current().kind ~= 'E' then syntax() end
+    return result
+end
+
+local Machine = {}
+Machine.__index = Machine
+
+function Machine.new(inputs)
+    return setmetatable({
+        inputs = inputs, variables = {}, arrays = {}, stack = {},
+        entries = {}, sequence = {}, data = {}, data_position = 1,
+        input_position = 1, random = 1, handler = 0, handling = false,
+        remembered = nil, err = 0, erl = 0, buffer = '', output = {}
+    }, Machine)
+end
+function Machine:end_line()
+    self.output[#self.output + 1] = (self.buffer:gsub(' +$', ''))
+    self.buffer = ''
+end
+
+function Machine:message(text)
+    if #self.buffer > 0 then self:end_line() end
+    self.output[#self.output + 1] = text
+end
+
+function Machine:checked(value)
+    if value < -32768 or value > 32767 then fault('OVERFLOW') end
+    return math.tointeger(value) or value
+end
+local function quotient(a, b)
+    local result = math.abs(a) // math.abs(b)
+    return ((a < 0) ~= (b < 0)) and -result or result
+end
+function Machine:evaluate(e)
+    local op = e.value
+    if e.kind == 'constant' then return op end
+    if e.kind == 'unary' then
+        local a = self:evaluate(e.args[1])
+        if op == 'NOT' then return ~a end
+        return self:checked(-a)
+    end
+    local args = {}
+    for _, a in ipairs(e.args) do args[#args + 1] = self:evaluate(a) end
+    if e.kind == 'call' then return self:call(op, args) end
+    local a, b = args[1], args[2]
+    if op == '/' or op == 'MOD' then
+        if b == 0 then fault('DIVISION BY ZERO') end
+        local q = quotient(a, b)
+        if op == '/' then return self:checked(q) end
+        return a - b * q
+    end
+    if op == 'AND' then return a & b end
+    if op == 'OR' then return a | b end
+    syntax()
+end
+
+function Machine:call(name, args)
+    local a, b, c = args[1], args[2], args[3]
+    if name == 'RND' then
+        if a < 1 then fault('ILLEGAL FUNCTION CALL') end
+        self.random = (48271 * self.random) % 2147483647
+        return self.random % a + 1
+    end
+function Machine:execute(s)
+    local following = s.next
+    elseif s.kind == 'PRINT' then
+        for _, item in ipairs(s.items) do
+            if item.kind == ',' then
+                self.buffer = self.buffer .. string.rep(' ', 10 - #self.buffer % 10)
+            elseif item.kind ~= ';' then
+                local value = self:evaluate(item.expr)
+                if item.kind == 'value' then
+                    self.buffer = self.buffer .. tostring(value)
+            end
+        end
+        local last = s.items[#s.items]
+        if not last or (last.kind ~= ';' and last.kind ~= ',') then
+            self:end_line()
+        end
+    return following
+function Machine:connect(body, after, number)
+    local following = after
+    for i = #body, 1, -1 do
+        local s = body[i]
+        s.line = number
+        s.next = following
+        following = s
+    end
+end
+
+function Machine:finish()
+    if #self.buffer > 0 then self:end_line() end
+    self.output[#self.output + 1] = 'READY'
+    return self.output
+end
+
+function Machine:run(source)
+    local parsed = {}
+    local numbers = {}
+    for number in pairs(source) do numbers[#numbers + 1] = number end
+    table.sort(numbers)
+    for _, number in ipairs(numbers) do
+        local ok, result = pcall(function()
+            return Parser.new(tokenize(source[number])):parse()
+        end)
+        if not ok then
+            self:message('ERROR IN LINE ' .. number .. ': SYNTAX ERROR')
+            return self:finish()
+        end
+        parsed[#parsed + 1] = {number = number, body = result}
+    end
+    local after = nil
+    for i = #parsed, 1, -1 do
+        local entry = parsed[i]
+        self:connect(entry.body, after, entry.number)
+        self.entries[entry.number] = entry.body[1]
+        after = entry.body[1]
+    end
+    local position = after
+    while position do
+        local stmt = position
+        local ok, result = pcall(function() return self:execute(stmt) end)
+        if ok then
+            position = result
+        else
+            local failure = type(result) == 'table' and result.message or 'OVERFLOW'
+            if self.handler ~= 0 and not self.handling then
+            else
+                self:message('ERROR IN LINE ' .. stmt.line .. ': ' .. failure)
+                position = nil
+            end
+        end
+    end
+    return self:finish()
+end
+local lines = {}
+for line in io.lines() do lines[#lines + 1] = line end
+local programs = tonumber(lines[1])
+local cursor = 2
+local output = {}
+for _ = 1, programs do
+    local source = {}
+    while lines[cursor] ~= 'RUN' do
+        local number, content = lines[cursor]:match('^(%d+)%s*(.*)$')
+        number = tonumber(number)
+        if content == '' then source[number] = nil
+        else source[number] = content end
+        cursor = cursor + 1
+    end
+    cursor = cursor + 1
+    local inputs = {}
+    while lines[cursor] ~= 'END' do
+        inputs[#inputs + 1] = lines[cursor]
+        cursor = cursor + 1
+    end
+    cursor = cursor + 1
+    local result = Machine.new(inputs):run(source)
+    for _, text in ipairs(result) do output[#output + 1] = text end
+end
+io.write(table.concat(output, '\n'), '\n')

@@ -1,0 +1,446 @@
+local categories = {
+    "ONES",
+    "TWOS",
+    "THREES",
+    "FOURS",
+    "FIVES",
+    "SIXES",
+    "THREEKIND",
+    "FOURKIND",
+    "FULLHOUSE",
+    "SMALL",
+    "LARGE",
+    "YAHTZEE",
+    "CHANCE"
+}
+local category_index = {}
+for i, category in ipairs(categories) do
+    category_index[category] = i
+local function fail(format, ...)
+    error({message = string.format(format, ...)}, 0)
+end
+
+local function positive(word, maximum)
+    if not word:match("^[1-9][0-9]*$") then
+        fail("bad value %s", word)
+    end
+    local value = tonumber(word, 10)
+    if value > maximum then
+        fail("bad value %s", word)
+    end
+    return value
+end
+
+local function check_name(word)
+    if #word > 8 or not word:match("^[A-Z]+$") then
+        fail("bad name %s", word)
+    end
+end
+
+local function parse_pattern(word)
+    if #word ~= 5 or word:find("[^01]") then
+        fail("bad pattern %s", word)
+    end
+    return tonumber(word, 2)
+end
+
+local function parse_category(word)
+    if not category_index[word] then
+        fail("bad category %s", word)
+    end
+    return category_index[word]
+local function held(mask, die)
+    return (mask & (1 << (5 - die))) ~= 0
+end
+
+local function pattern_text(mask)
+    local text = {}
+    for i = 1, 5 do
+        text[i] = held(mask, i) and "1" or "0"
+    end
+    return table.concat(text)
+end
+
+local function faces_text(faces, mask)
+    local selected = {}
+    if faces then
+        for i = 1, 5 do
+            if held(mask or 31, i) then
+                selected[#selected + 1] = tostring(faces[i])
+            end
+        end
+    end
+    return #selected == 0 and "-" or table.concat(selected, " ")
+end
+
+local function face_counts(faces)
+    local counts = {0, 0, 0, 0, 0, 0}
+    for _, face in ipairs(faces) do
+        counts[face] = counts[face] + 1
+    end
+    return counts
+local function yahtzee(counts)
+    for _, count in ipairs(counts) do
+        if count == 5 then
+            return true
+        end
+    end
+    return false
+end
+
+local function normal_score(category, counts)
+    if category <= 6 then
+        return category * counts[category]
+    end
+    local total, largest, bits, pair, triple = 0, 0, 0, false, false
+    for face, count in ipairs(counts) do
+        total = total + face * count
+        largest = math.max(largest, count)
+        if count > 0 then
+            bits = bits | (1 << (face - 1))
+        end
+        pair, triple = pair or count == 2, triple or count == 3
+    end
+    if category == 7 then
+        return largest >= 3 and total or 0
+    elseif category == 8 then
+        return largest >= 4 and total or 0
+    elseif category == 9 then
+        return pair and triple and 25 or 0
+    elseif category == 10 then
+        return ((bits & 15) == 15 or (bits & 30) == 30 or (bits & 60) == 60) and 30 or 0
+    elseif category == 11 then
+        return (bits == 31 or bits == 62) and 40 or 0
+    elseif category == 12 then
+        return largest == 5 and 50 or 0
+    else
+        return total
+local Player = {}
+Player.__index = Player
+function Player.new(name)
+    return setmetatable({name = name, strategy = "KIND", scores = {}, yahtzee_bonus = 0}, Player)
+end
+function Player:upper()
+    local sum = 0
+    for c = 1, 6 do
+        sum = sum + (self.scores[c] or 0)
+    end
+    return sum
+end
+function Player:upper_bonus()
+    return self:upper() >= 63 and 35 or 0
+end
+function Player:total()
+    local sum = self:upper_bonus() + self.yahtzee_bonus
+    for c = 1, 13 do
+        sum = sum + (self.scores[c] or 0)
+    end
+    return sum
+end
+function Player:round()
+    local round = 1
+    for c = 1, 13 do
+        if self.scores[c] ~= nil then
+            round = round + 1
+        end
+    end
+    return round
+end
+
+local function evaluate(player, counts, rule)
+    local allowed = 0
+    for c = 1, 13 do
+        if player.scores[c] == nil then
+            allowed = allowed | (1 << (c - 1))
+        end
+    end
+    local joker = rule ~= "OFF" and yahtzee(counts) and player.scores[12] ~= nil
+    if joker and rule == "FORCED" then
+    local points, best = {}, nil
+    for c = 1, 13 do
+        points[c] = -1
+        if player.scores[c] == nil then
+            if (allowed & (1 << (c - 1))) == 0 then
+                points[c] = 0
+            elseif joker and c >= 9 and c <= 11 then
+                points[c] = ({25, 30, 40})[c - 8]
+            else
+                points[c] = normal_score(c, counts)
+            end
+            if not best or points[c] > points[best] then
+                best = c
+            end
+        end
+    end
+    return {points = points, allowed = allowed, joker = joker, best = best}
+local function new_turn(seat)
+    return {seat = seat or 1, rolls = 0, hold = 0}
+end
+local Game = {}
+Game.__index = Game
+function Game.new(seed, names, rolls, joker, output)
+    local players = {}
+    for i, name in ipairs(names) do
+        players[i] = Player.new(name)
+    end
+    return setmetatable(
+        {
+            random_state = seed,
+            players = players,
+            max_rolls = rolls,
+            joker = joker,
+            output = output,
+            loaded = {},
+            loaded_head = 1,
+            face_totals = {0, 0, 0, 0, 0, 0},
+            entries = {},
+            redo_list = {},
+            turn = new_turn()
+        },
+        Game
+    )
+end
+function Game:emit(format, ...)
+    if self.output then
+        self.output(string.format(format, ...))
+    end
+end
+function Game:current()
+    return self.players[self.turn.seat]
+end
+function Game:check_turn()
+    if not self.turn then
+        fail("game over")
+    end
+end
+function Game:check_rolled()
+    self:check_turn()
+    if self.turn.rolls == 0 then
+        fail("not rolled")
+    end
+end
+function Game:check_rolls_left()
+    self:check_rolled()
+    if self.turn.rolls == self.max_rolls then
+        fail("no rolls left")
+    end
+end
+function Game:roll()
+    self:check_turn()
+    local turn = self.turn
+    if turn.rolls == self.max_rolls then
+        fail("no rolls left")
+    end
+    if turn.hold == 31 then
+        fail("all dice held")
+    end
+    self.redo_list = {}
+    local faces = {}
+    for i = 1, 5 do
+        if turn.rolls > 0 and held(turn.hold, i) then
+            faces[i] = turn.faces[i]
+        else
+            if self.loaded_head <= #self.loaded then
+                faces[i] = self.loaded[self.loaded_head]
+                self.loaded_head = self.loaded_head + 1
+            else
+                self.random_state = 48271 * self.random_state % 2147483647
+                faces[i] = self.random_state % 6 + 1
+            end
+            self.face_totals[faces[i]] = self.face_totals[faces[i]] + 1
+        end
+    end
+    self.turn = {seat = turn.seat, rolls = turn.rolls + 1, faces = faces, hold = turn.hold}
+    self:emit("%s roll %d: %s", self:current().name, self.turn.rolls, faces_text(faces))
+end
+function Game:hold(mask)
+    self:check_rolls_left()
+    self.redo_list = {}
+    local turn = self.turn
+    self.turn = {seat = turn.seat, rolls = turn.rolls, faces = turn.faces, hold = mask}
+    self:emit(
+        "%s holds %s: %s",
+        self:current().name,
+        pattern_text(mask),
+        faces_text(turn.faces, mask)
+function Game:score(category, preview)
+    self:check_rolled()
+    local player = self:current()
+    if player.scores[category] ~= nil then
+        fail("%s already used", categories[category])
+    end
+    local counts = face_counts(self.turn.faces)
+    local candidates = evaluate(player, counts, self.joker)
+    if (candidates.allowed & (1 << (category - 1))) == 0 then
+        local upper = frequent(counts)
+        fail("joker requires %s", player.scores[upper] == nil and categories[upper] or "lower box")
+    end
+    local points = candidates.points[category]
+    local bonus = yahtzee(counts) and player.scores[12] == 50 and 100 or 0
+    local upper_bonus =
+        category <= 6 and player:upper() < 63 and player:upper() + points >= 63 and 35 or 0
+    local line =
+        string.format(
+        "%s %s %d in %s",
+        player.name,
+        preview and "would score" or "scores",
+        points,
+        categories[category]
+    )
+    if candidates.joker then
+        line = line .. " joker"
+    end
+    if bonus ~= 0 then
+        line = line .. " ybonus 100"
+    end
+    if upper_bonus ~= 0 then
+        line = line .. " ubonus 35"
+    end
+    line = line .. string.format(" total %d", player:total() + points + bonus + upper_bonus)
+    if preview then
+        self:emit("%s", line)
+        return
+    end
+    self.redo_list = {}
+    local entry = {
+        before = self.turn,
+        category = category,
+        points = points,
+        bonus = bonus,
+        joker = candidates.joker
+    }
+    self.entries[#self.entries + 1] = entry
+    player.scores[category] = points
+    player.yahtzee_bonus = player.yahtzee_bonus + bonus
+    if #self.entries == 13 * #self.players then
+        self.turn = nil
+    else
+        self.turn = new_turn(entry.before.seat % #self.players + 1)
+    end
+    self:emit("%s", line)
+    if self.turn then
+        self:emit("turn %d %s", self:current():round(), self:current().name)
+    else
+        self:emit("game over")
+    end
+end
+function Game:undo()
+    if #self.entries == 0 then
+        fail("nothing to undo")
+    end
+    local entry = table.remove(self.entries)
+    self.redo_list[#self.redo_list + 1] = {after = self.turn, entry = entry}
+    local player = self.players[entry.before.seat]
+    player.scores[entry.category] = nil
+    player.yahtzee_bonus = player.yahtzee_bonus - entry.bonus
+    self.turn = entry.before
+    self:emit("undo %s %s %d", player.name, categories[entry.category], entry.points)
+end
+function Game:redo()
+    if #self.redo_list == 0 then
+        fail("nothing to redo")
+    end
+    local saved = table.remove(self.redo_list)
+    local entry = saved.entry
+    local player = self.players[entry.before.seat]
+    player.scores[entry.category] = entry.points
+    player.yahtzee_bonus = player.yahtzee_bonus + entry.bonus
+    self.entries[#self.entries + 1] = entry
+    self.turn = saved.after
+    self:emit("redo %s %s %d", player.name, categories[entry.category], entry.points)
+local Program = {}
+Program.__index = Program
+function Program.new()
+    return setmetatable({rolls = 3, joker = "FORCED", records = {}, output = {}}, Program)
+end
+function Program:emit(format, ...)
+    self.output[#self.output + 1] = string.format(format, ...)
+end
+function Program:table()
+    if not self.game then
+        fail("no game")
+    end
+    return self.game
+function Program:execute(words)
+    local command = words[1]
+    elseif command == "GAME" then
+        local seed = positive(words[2], 2147483646)
+        local names = {}
+        for i = 3, #words do
+            check_name(words[i])
+            names[#names + 1] = words[i]
+        end
+        if #names > 6 then
+            fail("too many players")
+        end
+        if self.game then
+            fail("game in progress")
+        end
+        local seen = {}
+        for _, name in ipairs(names) do
+            if seen[name] then
+                fail("duplicate name %s", name)
+            end
+            seen[name] = true
+        end
+        self.game =
+            Game.new(
+            seed,
+            names,
+            self.rolls,
+            self.joker,
+            function(line)
+                self.output[#self.output + 1] = line
+            end
+        )
+        self:emit("game seed %d players %s", seed, table.concat(names, " "))
+        self:emit("turn 1 %s", names[1])
+    elseif command == "LOAD" or command == "KEEP" then
+        local values = {}
+        for i = 2, #words do
+            values[#values + 1] = positive(words[i], 6)
+        end
+        local game = self:table()
+        if command == "KEEP" then
+            game:keep(values)
+        else
+            for _, value in ipairs(values) do
+                game.loaded[#game.loaded + 1] = value
+            end
+            self:emit("loaded %d", #game.loaded - game.loaded_head + 1)
+        end
+    elseif command == "ROLL" then
+        self:table():roll()
+    elseif command == "HOLD" or command == "ODDS" then
+        local mask = parse_pattern(words[2])
+        local game = self:table()
+        if command == "HOLD" then
+            game:hold(mask)
+        else
+            self:odds(game, mask)
+        end
+    elseif command == "SCORE" or command == "WHATIF" then
+        local category = parse_category(words[2])
+        self:table():score(category, command == "WHATIF")
+    elseif command == "UNDO" then
+        self:table():undo()
+    elseif command == "REDO" then
+        self:table():redo()
+local count = tonumber(io.read("l"), 10)
+local program = Program.new()
+for _ = 1, count do
+    local words = {}
+    for word in io.read("l"):gmatch("%S+") do
+        words[#words + 1] = word
+    end
+    local ok, problem = pcall(program.execute, program, words)
+    if not ok then
+        if type(problem) ~= "table" or not problem.message then
+            error(problem, 0)
+        end
+        program:emit("error: %s", problem.message)
+    end
+end
+if #program.output > 0 then
+    io.write(table.concat(program.output, "\n"), "\n")
+end

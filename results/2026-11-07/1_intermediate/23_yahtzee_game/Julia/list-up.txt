@@ -1,0 +1,311 @@
+@enum Category::Int8 ONES=1 TWOS THREES FOURS FIVES SIXES THREEKIND FOURKIND FULLHOUSE SMALL LARGE YAHTZEE CHANCE
+@enum BotStrategy::UInt8 KIND STRAIGHT HIGH UPPER
+@enum JokerRule::UInt8 FORCED FREE OFF
+const CATEGORY_NAMES = string.(instances(Category))
+const COMMANDS = Set(split("RULE GAME BOT LOAD ROLL HOLD KEEP SCORE WHATIF UNDO REDO SUGGEST ODDS ADVISE AUTO STATUS CARD BONUS STATS LOG FACES STANDINGS END RECORDS SIM"))
+const Dice = NTuple{5,Int}
+const Holds = NTuple{5,Bool}
+const Counts = NTuple{6,Int}
+const NO_HOLDS = ntuple(_ -> false, 5)
+struct CommandError <: Exception
+    reason::String
+end
+fail(reason::AbstractString) = throw(CommandError(String(reason)))
+emit(parts...) = println(join(string.(parts), " "))
+
+function integer_word(text::String, minimum::Int64, maximum::Int64)::Int64
+    occursin(r"^-?(0|[1-9][0-9]*)$", text) && text != "-0" || fail("bad value $text")
+    value = parse(Int64, text)
+    minimum <= value <= maximum || fail("bad value $text")
+    value
+end
+
+function player_name(text::String)::String
+    occursin(r"^[A-Z]{1,8}$", text) || fail("bad name $text")
+    text
+function category_word(text::String)::Category
+    index = findfirst(==(text), CATEGORY_NAMES)
+    index === nothing && fail("bad category $text")
+    Category(index)
+end
+
+function hold_pattern(text::String)::Holds
+    occursin(r"^[01]{5}$", text) || fail("bad pattern $text")
+    ntuple(index -> text[index] == '1', 5)
+end
+
+face_words(tokens::Vector{String}) = Int[integer_word(token, 1, 6) for token in tokens]
+faces_text(dice) = dice === nothing || isempty(dice) ? "-" : join(dice, " ")
+pattern_text(holds::Holds) = join(mark ? "1" : "0" for mark in holds)
+held_faces(dice::Dice, holds::Holds) = [dice[index] for index in 1:5 if holds[index]]
+face_counts(dice)::Counts = ntuple(face -> count(==(face), dice), 6)
+struct Rules
+    rolls::Int
+    joker::JokerRule
+end
+Rules() = Rules(3, FORCED)
+
+mutable struct Player
+    name::String
+    strategy::BotStrategy
+    boxes::Vector{Union{Nothing,Int64}}
+    yahtzee_bonus::Int64
+end
+Player(name::String, strategy::BotStrategy=KIND) = Player(name, strategy, Union{Nothing,Int64}[nothing for _ in 1:13], 0)
+
+upper_subtotal(player::Player)::Int64 = sum(something(score, Int64(0)) for score in view(player.boxes, 1:6))
+upper_bonus(player::Player)::Int64 = upper_subtotal(player) >= 63 ? 35 : 0
+player_total(player::Player)::Int64 = sum(something(score, Int64(0)) for score in player.boxes) + upper_bonus(player) + player.yahtzee_bonus
+player_round(player::Player)::Int = count(score -> score !== nothing, player.boxes) + 1
+
+function normal_score(category::Category, counts::Counts)::Int64
+    index = Int(category)
+    index <= 6 && return index * counts[index]
+struct CandidateScores
+    joker::Bool
+    allowed::BitVector
+    points::Vector{Int64}
+    best::Category
+    requirement::String
+end
+
+function candidates(player::Player, counts::Counts, joker_rule::JokerRule)::CandidateScores
+    allowed = BitVector(isnothing.(player.boxes))
+    joker = joker_rule != OFF && 5 in counts && player.boxes[Int(YAHTZEE)] !== nothing
+    requirement = ""
+    if joker && joker_rule == FORCED
+    points = zeros(Int64, 13)
+    best_category = ONES
+    best_points = Int64(-1)
+    for category in instances(Category)
+        index = Int(category)
+        allowed[index] || continue
+        score = normal_score(category, counts)
+        if joker
+            category == FULLHOUSE && (score = 25)
+            category == SMALL && (score = 30)
+            category == LARGE && (score = 40)
+        end
+        points[index] = score
+        if score > best_points
+            best_points = score
+            best_category = category
+        end
+    end
+    CandidateScores(joker, allowed, points, best_category, requirement)
+struct Turn
+    player::Int
+    rolls::Int
+    dice::Union{Nothing,Dice}
+    holds::Holds
+end
+Turn(player::Int) = Turn(player, 0, nothing, NO_HOLDS)
+
+struct ScoreEntry
+    turn::Turn
+    category::Category
+    points::Int64
+    yahtzee_bonus::Int64
+    joker::Bool
+end
+
+struct RedoEntry
+    resume::Union{Nothing,Turn}
+    score::ScoreEntry
+end
+
+mutable struct Game
+    state::Int64
+    players::Vector{Player}
+    rules::Rules
+    turn::Union{Nothing,Turn}
+    loaded::Vector{Int}
+    loaded_head::Int
+    face_totals::Vector{Int64}
+    entries::Vector{ScoreEntry}
+    redo::Vector{RedoEntry}
+    silent::Bool
+end
+Game(seed::Int64, players::Vector{Player}, rules::Rules; silent::Bool=false) =
+    Game(seed, players, rules, Turn(1), Int[], 1, zeros(Int64, 6), ScoreEntry[], RedoEntry[], silent)
+
+game_emit(game::Game, parts...) = game.silent ? nothing : emit(parts...)
+turn_check(game::Game) = game.turn === nothing ? fail("game over") : nothing
+function rolled_check(game::Game)
+    turn_check(game)
+    game.turn.rolls == 0 && fail("not rolled")
+    nothing
+end
+function rolls_left_check(game::Game)
+    rolled_check(game)
+    game.turn.rolls == game.rules.rolls && fail("no rolls left")
+    nothing
+function turn_text(game::Game)::String
+    game.turn === nothing && return "game over"
+    player = game.players[game.turn.player]
+    "turn $(player_round(player)) $(player.name)"
+end
+
+function roll_face!(game::Game)::Int
+    if game.loaded_head <= length(game.loaded)
+        face = game.loaded[game.loaded_head]
+        game.loaded_head += 1
+    else
+        game.state = 48271 * game.state % 2147483647
+        face = Int(game.state % 6) + 1
+    end
+    game.face_totals[face] += 1
+    face
+end
+
+function roll_dice!(game::Game)
+    current = game.turn::Turn
+    dice = current.dice === nothing ? zeros(Int, 5) : collect(current.dice)
+    for die in 1:5
+        if current.rolls == 0 || !current.holds[die]
+            dice[die] = roll_face!(game)
+        end
+    end
+    game.turn = Turn(current.player, current.rolls + 1, Tuple(dice), current.holds)
+    empty!(game.redo)
+    game_emit(game, game.players[current.player].name, "roll", "$(game.turn.rolls):", faces_text(game.turn.dice))
+end
+
+function set_holds!(game::Game, holds::Holds)
+    current = game.turn::Turn
+    game.turn = Turn(current.player, current.rolls, current.dice, holds)
+    empty!(game.redo)
+    game_emit(game, game.players[current.player].name, "holds", pattern_text(holds) * ":", faces_text(held_faces(current.dice, holds)))
+end
+
+function score_details(game::Game, category::Category)::ScoreEntry
+    current = game.turn::Turn
+    player = game.players[current.player]
+    counts = face_counts(current.dice)
+    options = candidates(player, counts, game.rules.joker)
+    bonus = 5 in counts && player.boxes[Int(YAHTZEE)] == 50 ? 100 : 0
+    ScoreEntry(current, category, options.points[Int(category)], bonus, options.joker)
+end
+
+function score_check(game::Game, category::Category)
+    rolled_check(game)
+    player = game.players[game.turn.player]
+    player.boxes[Int(category)] !== nothing && fail("$category already used")
+    options = candidates(player, face_counts(game.turn.dice), game.rules.joker)
+    options.allowed[Int(category)] || fail("joker requires $(options.requirement)")
+    nothing
+end
+
+function score_text(game::Game, entry::ScoreEntry; hypothetical::Bool=false)::String
+    player = game.players[entry.turn.player]
+    upper = upper_subtotal(player)
+    after = upper + (Int(entry.category) <= 6 ? entry.points : 0)
+    added_upper = upper < 63 <= after ? 35 : 0
+    verb = hypothetical ? "would score" : "scores"
+    text = "$(player.name) $verb $(entry.points) in $(entry.category)"
+    entry.joker && (text *= " joker")
+    entry.yahtzee_bonus > 0 && (text *= " ybonus 100")
+    added_upper > 0 && (text *= " ubonus 35")
+    text * " total $(player_total(player) + entry.points + entry.yahtzee_bonus + added_upper)"
+end
+
+function enter_score!(game::Game, category::Category)
+    entry = score_details(game, category)
+    game_emit(game, score_text(game, entry))
+    player = game.players[entry.turn.player]
+    player.boxes[Int(category)] = entry.points
+    player.yahtzee_bonus += entry.yahtzee_bonus
+    push!(game.entries, entry)
+    empty!(game.redo)
+    game.turn = length(game.entries) == 13 * length(game.players) ? nothing : Turn(mod1(entry.turn.player + 1, length(game.players)))
+    game_emit(game, turn_text(game))
+mutable struct Program
+    rules::Rules
+    game::Union{Nothing,Game}
+Program() = Program(Rules(), nothing, Dict{String,Record}(), RollTables())
+function require_game(program::Program)::Game
+    program.game === nothing && fail("no game")
+    program.game
+end
+
+function game_command!(program::Program, tokens::Vector{String})
+    op = tokens[1]
+    elseif op == "LOAD" || op == "KEEP"
+        faces = face_words(tokens[2:end])
+    elseif op == "HOLD" || op == "ODDS"
+        holds = hold_pattern(tokens[2])
+    elseif op == "SCORE" || op == "WHATIF"
+        category = category_word(tokens[2])
+    game = require_game(program)
+    elseif op == "LOAD"
+        append!(game.loaded, faces)
+        emit("loaded", length(game.loaded) - game.loaded_head + 1)
+    elseif op == "ROLL"
+        turn_check(game)
+        game.turn.rolls == game.rules.rolls && fail("no rolls left")
+        all(game.turn.holds) && fail("all dice held")
+        roll_dice!(game)
+    elseif op == "HOLD"
+        rolls_left_check(game)
+        set_holds!(game, holds)
+    elseif op == "SCORE" || op == "WHATIF"
+        score_check(game, category)
+        if op == "WHATIF"
+            emit(score_text(game, score_details(game, category); hypothetical=true))
+        else
+            enter_score!(game, category)
+        end
+    elseif op == "UNDO"
+        isempty(game.entries) && fail("nothing to undo")
+        entry = pop!(game.entries)
+        push!(game.redo, RedoEntry(game.turn, entry))
+        player = game.players[entry.turn.player]
+        player.boxes[Int(entry.category)] = nothing
+        player.yahtzee_bonus -= entry.yahtzee_bonus
+        game.turn = entry.turn
+        emit("undo", player.name, entry.category, entry.points)
+    elseif op == "REDO"
+        isempty(game.redo) && fail("nothing to redo")
+        saved = pop!(game.redo)
+        entry = saved.score
+        player = game.players[entry.turn.player]
+        player.boxes[Int(entry.category)] = entry.points
+        player.yahtzee_bonus += entry.yahtzee_bonus
+        push!(game.entries, entry)
+        game.turn = saved.resume
+        emit("redo", player.name, entry.category, entry.points)
+function execute!(program::Program, tokens::Vector{String})
+    op = tokens[1]
+    op in COMMANDS || fail("unknown command $op")
+    elseif op == "GAME"
+        seed = integer_word(tokens[2], 1, 2147483646)
+        names = tokens[3:end]
+        foreach(player_name, names)
+        length(names) > 6 && fail("too many players")
+        program.game !== nothing && fail("game in progress")
+        seen = Set{String}()
+        for name in names
+            name in seen && fail("duplicate name $name")
+            push!(seen, name)
+        end
+        program.game = Game(seed, Player.(names), program.rules)
+        emit("game seed", seed, "players", join(names, " "))
+        emit("turn 1", names[1])
+    else
+        game_command!(program, tokens)
+    end
+    nothing
+function main()
+    command_count = parse(Int, readline())
+    program = Program()
+    for _ in 1:command_count
+        tokens = String.(split(readline(), ' '))
+        try
+            execute!(program, tokens)
+        catch problem
+            problem isa CommandError || rethrow()
+            emit("error:", problem.reason)
+        end
+    end
+end
+main()

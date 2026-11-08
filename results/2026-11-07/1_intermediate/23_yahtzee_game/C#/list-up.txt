@@ -1,0 +1,249 @@
+enum JokerRule { Forced, Free, Off }
+sealed class CommandError(string message) : Exception(message);
+static class Dice
+    public static readonly string[] Categories = ["ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND", "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE"];
+    public static int[] Counts(int[] faces)
+    {
+        var counts = new int[6];
+        foreach (int face in faces) counts[face - 1]++;
+        return counts;
+    public static bool Held(int mask, int die) => (mask & (1 << (4 - die))) != 0;
+    public static string Pattern(int mask) => Convert.ToString(mask, 2).PadLeft(5, '0');
+    public static string Faces(int[]? faces, int mask = 31)
+    {
+        var selected = faces?.Where((_, i) => Held(mask, i)).ToArray() ?? [];
+        return selected.Length == 0 ? "-" : string.Join(" ", selected);
+    public static int Normal(int category, int[] counts)
+    {
+        if (category < 6) return (category + 1) * counts[category];
+        int total = 0, maximum = 0, bits = 0;
+        for (int i = 0; i < 6; i++)
+        {
+            total += (i + 1) * counts[i];
+            maximum = Math.Max(maximum, counts[i]);
+            if (counts[i] > 0) bits |= 1 << i;
+        }
+        return category switch
+        {
+            6 => maximum >= 3 ? total : 0,
+            7 => maximum >= 4 ? total : 0,
+            8 => counts.Contains(3) && counts.Contains(2) ? 25 : 0,
+            9 => (bits & 15) == 15 || (bits & 30) == 30 || (bits & 60) == 60 ? 30 : 0,
+            10 => bits == 31 || bits == 62 ? 40 : 0,
+            11 => maximum == 5 ? 50 : 0,
+            _ => total,
+    public readonly record struct Candidates(int[] Points, int Allowed, bool Joker, int Best);
+    public static Candidates Evaluate(Player player, int[] counts, JokerRule rule)
+    {
+        int allowed = 0;
+        for (int c = 0; c < 13; c++) if (player.Scores[c] is null) allowed |= 1 << c;
+        bool joker = rule != JokerRule.Off && counts.Contains(5) && player.Scores[11] is not null;
+        if (joker && rule == JokerRule.Forced)
+        var points = new int[13];
+        int best = -1;
+        for (int c = 0; c < 13; c++)
+        {
+            points[c] = player.Scores[c] is not null ? -1 : (allowed & (1 << c)) == 0 ? 0
+                : joker && (c is >= 8 and <= 10) ? c == 8 ? 25 : c == 9 ? 30 : 40 : Normal(c, counts);
+            if (points[c] >= 0 && (best < 0 || points[c] > points[best])) best = c;
+        }
+        return new(points, allowed, joker, best);
+sealed class Player(string name, Strategy strategy = Strategy.Kind)
+{
+    public string Name { get; } = name;
+    public Strategy Strategy { get; set; } = strategy;
+    public int?[] Scores { get; } = new int?[13];
+    public int YahtzeeBonus { get; set; }
+    public int Upper => Scores.Take(6).Sum(value => value ?? 0);
+    public int UpperBonus => Upper >= 63 ? 35 : 0;
+    public int Total => Scores.Sum(value => value ?? 0) + UpperBonus + YahtzeeBonus;
+    public int Round => Scores.Count(value => value is not null) + 1;
+}
+
+sealed record Turn(int Seat = 0, int Rolls = 0, int[]? Faces = null, int Hold = 0, bool Finished = false);
+sealed record ScoreEntry(Turn Before, int Category, int Points, int Bonus, bool Joker);
+sealed record RedoEntry(Turn After, ScoreEntry Entry);
+
+sealed class Game(long seed, Player[] players, int rolls, JokerRule joker, Action<string>? output)
+{
+    public Player[] Players { get; } = players;
+    public long RandomState { get; private set; } = seed;
+    public int MaxRolls { get; } = rolls;
+    public JokerRule Joker { get; } = joker;
+    public Queue<int> Loaded { get; } = new();
+    public long[] FaceCounts { get; } = new long[6];
+    public List<ScoreEntry> Entries { get; } = [];
+    public Stack<RedoEntry> RedoList { get; } = new();
+    public Turn State { get; private set; } = new();
+    public Player Current => Players[State.Seat];
+    public void Emit(string line) => output?.Invoke(line);
+    public void CheckTurn()
+    {
+        if (State.Finished) throw new CommandError("game over");
+    }
+
+    public void CheckRolled()
+    {
+        CheckTurn();
+        if (State.Rolls == 0) throw new CommandError("not rolled");
+    }
+
+    public void CheckRollsLeft()
+    {
+        CheckRolled();
+        if (State.Rolls == MaxRolls) throw new CommandError("no rolls left");
+    public void Roll()
+    {
+        CheckTurn();
+        if (State.Rolls == MaxRolls) throw new CommandError("no rolls left");
+        if (State.Hold == 31) throw new CommandError("all dice held");
+        RedoList.Clear();
+        var faces = State.Faces is null ? new int[5] : (int[])State.Faces.Clone();
+        for (int i = 0; i < 5; i++)
+        {
+            if (State.Rolls > 0 && Dice.Held(State.Hold, i)) continue;
+            if (Loaded.Count > 0) faces[i] = Loaded.Dequeue();
+            else { RandomState = 48271 * RandomState % 2147483647; faces[i] = (int)(RandomState % 6) + 1; }
+            FaceCounts[faces[i] - 1]++;
+        }
+        State = State with { Rolls = State.Rolls + 1, Faces = faces };
+        Emit($"{Current.Name} roll {State.Rolls}: {Dice.Faces(faces)}");
+    }
+
+    public void Hold(int mask)
+    {
+        CheckRollsLeft();
+        RedoList.Clear();
+        State = State with { Hold = mask };
+        Emit($"{Current.Name} holds {Dice.Pattern(mask)}: {Dice.Faces(State.Faces, mask)}");
+    public void Score(int category, bool preview = false)
+    {
+        CheckRolled();
+        var player = Current;
+        if (player.Scores[category] is not null) throw new CommandError($"{Dice.Categories[category]} already used");
+        int[] counts = Dice.Counts(State.Faces!);
+        var candidates = Dice.Evaluate(player, counts, Joker);
+        if ((candidates.Allowed & (1 << category)) == 0)
+        {
+            int upper = Array.IndexOf(counts, 5);
+            throw new CommandError($"joker requires {(player.Scores[upper] is null ? Dice.Categories[upper] : "lower box")}");
+        }
+        int points = candidates.Points[category];
+        int bonus = counts.Contains(5) && player.Scores[11] == 50 ? 100 : 0;
+        int upperBonus = category < 6 && player.Upper < 63 && player.Upper + points >= 63 ? 35 : 0;
+        string line = $"{player.Name} {(preview ? "would score" : "scores")} {points} in {Dice.Categories[category]}";
+        if (candidates.Joker) line += " joker";
+        if (bonus != 0) line += " ybonus 100";
+        if (upperBonus != 0) line += " ubonus 35";
+        line += $" total {player.Total + points + bonus + upperBonus}";
+        if (preview) { Emit(line); return; }
+        RedoList.Clear();
+        Entries.Add(new(State, category, points, bonus, candidates.Joker));
+        player.Scores[category] = points;
+        player.YahtzeeBonus += bonus;
+        State = Entries.Count == 13 * Players.Length ? new(Finished: true) : new((State.Seat + 1) % Players.Length);
+        Emit(line);
+        Emit(State.Finished ? "game over" : $"turn {Current.Round} {Current.Name}");
+    }
+
+    public void Undo()
+    {
+        if (Entries.Count == 0) throw new CommandError("nothing to undo");
+        var entry = Entries[^1];
+        Entries.RemoveAt(Entries.Count - 1);
+        RedoList.Push(new(State, entry));
+        var player = Players[entry.Before.Seat];
+        player.Scores[entry.Category] = null;
+        player.YahtzeeBonus -= entry.Bonus;
+        State = entry.Before;
+        Emit($"undo {player.Name} {Dice.Categories[entry.Category]} {entry.Points}");
+    }
+
+    public void Redo()
+    {
+        if (RedoList.Count == 0) throw new CommandError("nothing to redo");
+        var saved = RedoList.Pop();
+        var entry = saved.Entry;
+        var player = Players[entry.Before.Seat];
+        player.Scores[entry.Category] = entry.Points;
+        player.YahtzeeBonus += entry.Bonus;
+        Entries.Add(entry);
+        State = saved.After;
+        Emit($"redo {player.Name} {Dice.Categories[entry.Category]} {entry.Points}");
+sealed class Program
+{
+    int rolls = 3;
+    JokerRule joker = JokerRule.Forced;
+    Game? game;
+    readonly Dictionary<string, Record> records = new(StringComparer.Ordinal);
+    readonly StringBuilder output = new();
+    void Emit(string line) => output.Append(line).Append('\n');
+    Game Table() => game ?? throw new CommandError("no game");
+    static long Positive(string word, long maximum)
+    {
+        if (word[0] < '1' || word[0] > '9' || word.Any(c => c < '0' || c > '9')) throw new CommandError($"bad value {word}");
+        long value = long.Parse(word, CultureInfo.InvariantCulture);
+        if (value > maximum) throw new CommandError($"bad value {word}");
+        return value;
+    }
+
+    static void Name(string word)
+    {
+        if (word.Length > 8 || word.Any(c => c < 'A' || c > 'Z')) throw new CommandError($"bad name {word}");
+    }
+
+    static int Pattern(string word)
+    {
+        if (word.Length != 5 || word.Any(c => c != '0' && c != '1')) throw new CommandError($"bad pattern {word}");
+        return Convert.ToInt32(word, 2);
+    }
+
+    static int Category(string word)
+    {
+        int category = Array.IndexOf(Dice.Categories, word);
+        return category >= 0 ? category : throw new CommandError($"bad category {word}");
+    void Execute(string[] words)
+    {
+        switch (words[0])
+            case "GAME":
+            {
+                long seed = Positive(words[1], 2147483646);
+                string[] names = words[2..];
+                foreach (string name in names) Name(name);
+                if (names.Length > 6) throw new CommandError("too many players");
+                if (game is not null) throw new CommandError("game in progress");
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (string name in names) if (!seen.Add(name)) throw new CommandError($"duplicate name {name}");
+                game = new(seed, names.Select(name => new Player(name)).ToArray(), rolls, joker, Emit);
+                Emit($"game seed {seed} players {string.Join(" ", names)}");
+                Emit($"turn 1 {names[0]}");
+                break;
+            case "LOAD":
+                int[] values = words.Skip(1).Select(word => (int)Positive(word, 6)).ToArray();
+                var table = Table();
+                else { foreach (int value in values) table.Loaded.Enqueue(value); Emit($"loaded {table.Loaded.Count}"); }
+            case "ROLL": Table().Roll(); break;
+            case "HOLD":
+                int mask = Pattern(words[1]);
+                var table = Table();
+                if (words[0] == "HOLD") table.Hold(mask); else Odds(table, mask);
+                break;
+            case "SCORE":
+                int category = Category(words[1]);
+                Table().Score(category, words[0] == "WHATIF");
+                break;
+            case "UNDO": Table().Undo(); break;
+            case "REDO": Table().Redo(); break;
+            default: throw new CommandError($"unknown command {words[0]}");
+    static void Main()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        var program = new Program();
+        int count = int.Parse(Console.ReadLine()!, CultureInfo.InvariantCulture);
+        for (int i = 0; i < count; i++)
+        {
+            string[] words = Console.ReadLine()!.Split(' ');
+            try { program.Execute(words); }
+            catch (CommandError error) { program.Emit($"error: {error.Message}"); }
+        }
+        Console.Write(program.output);

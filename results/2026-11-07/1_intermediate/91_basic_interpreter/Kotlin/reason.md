@@ -1,0 +1,25 @@
+# Task B selection — Kotlin
+
+## Answer requirements shared across languages
+
+1. Trace numbered source storage through RUN, ordered parsing and the handoff to statement execution and PRINT.
+2. Locate the unchanged syntax/type checks for both operands, including the precedence structure and function-argument checks.
+3. Identify the eager operand evaluation site and explain a runtime-only AND-left-0 / OR-left-minus-1 short circuit, without converting bitwise results into booleans.
+4. Preserve one left-to-right evaluation of operands and function arguments on all non-skipped paths, and skip the entire right subtree on the decisive paths.
+5. Show why a skipped runtime fault and RND call do not execute, and trace random initialization/update to an observable subsequent printed expression.
+
+## Selected source locations
+
+- `main.kt`: 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 26, 31, 40, 42, 43, 44, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 119, 120, 121, 122, 123, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 185, 186, 187, 188, 189, 190, 191, 192, 193, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 215, 216, 217, 218, 219, 220, 307, 308, 309, 310, 311, 323, 324, 325, 329, 330, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 381, 382, 383, 386, 387, 388, 389, 390, 391, 392, 393, 407, 408, 409, 413, 414, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 430, 431, 432, 433, 434, 481, 482, 483, 489, 490, 491, 492, 493, 494, 500, 501, 502, 503, 624, 626, 627, 628, 629, 630, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649, 650, 654, 655, 656, 657, 658, 659, 660, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704
+
+## Evidence and language semantics
+
+Keep numbered-source loading, parsing, AST construction, operator precedence and both-operand type validation unchanged. The runtime evaluator is the modification boundary: for a binary node, evaluate the left child exactly once; return integer 0 for AND when that value is 0, or integer -1 for OR when it is -1, before any evaluation of the right child. Otherwise evaluate the right child once and use the existing bitwise operation. Other operators and function-argument sequences retain their existing left-to-right evaluation. Do not use host-language truthiness: a nonzero value other than -1 is not decisive for bitwise OR, and neither operation should return a boolean. Because parsing still builds and checks the right subtree before execution, malformed syntax or a string operand remains a syntax/type error even on a would-be skipped branch. A runtime division-by-zero or invalid RND limit inside a skipped subtree is never reached. A skipped RND also leaves random state unchanged. For a fresh session, the illustrative source lines `10 PRINT 0 AND (1 / 0)`, `20 PRINT -1 OR RND(10)`, and `30 PRINT RND(10)` would print 0, -1 and 2 after the proposed change, then READY. The first executed RND advances the initial state 1 to 48271 and yields 48271 mod 10 + 1 = 2. This is a source-based explanation of the proposed behavior, not an implementation or an executed test.
+
+The eager e.args.map is the point that must move behind the binary decisive-value check. Keep the parser level table, both-child BASIC type comparison and signature check unchanged. The normal Int bitwise and/or operations remain on non-skipped paths; ordered argument mapping remains for function calls. The random Long field starts at 1L and the RND case advances it.
+
+## Minimization and alternatives
+
+Compared the local bitwise cases alone, a parser-only selection, and the selected pipeline slice. The local cases are too late to prevent eager right evaluation and cannot prove pre-execution validation or unchanged random state. Parser code alone cannot show runtime faults, side effects or printed results. The selected source-loading/RUN handoff, expression checks, eager evaluation path, fault/RND cases and PRINT path jointly meet all requirements. Unrelated statements, array addressing, error-resume machinery, DATA/INPUT handling and other built-ins are omitted. A valid PRINT-only scenario is sufficient to trace the required end-to-end behavior; shared parse/evaluation locations are counted once. No Task A code is modified.
+
+The excerpt contains 4706 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

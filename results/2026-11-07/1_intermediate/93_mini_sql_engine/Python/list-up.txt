@@ -1,0 +1,174 @@
+class SqlError(Exception):
+    pass
+    def comma_list(self, parse_item):
+        items = [parse_item()]
+        while self.accept(','):
+            items.append(parse_item())
+        return items
+    def parse_update(self):
+        table = self.expect_kind('name')
+        self.expect('SET')
+        assignments = self.comma_list(self.parse_assignment)
+        return Update(table, assignments, self.parse_clause('WHERE'))
+
+    def parse_assignment(self):
+        column = self.expect_kind('name')
+        self.expect('=')
+        return column, self.parse_expr()
+@dataclass
+class Column:
+    name: str
+    type: str
+    not_null: bool
+
+
+@dataclass
+class Table:
+    name: str
+    columns: list
+    primary_key: int | None
+    rows: list = field(default_factory=list)
+
+    def column_index(self, name):
+        for index, column in enumerate(self.columns):
+            if column.name == name:
+                return index
+        return None
+@dataclass
+class ScopeEntry:
+    name: str
+    table: Table
+    offset: int
+
+
+class Scope:
+    def __init__(self):
+        self.entries = []
+        self.width = 0
+
+    def add(self, name, table):
+        if any(entry.name == name for entry in self.entries):
+            raise SqlError(f'duplicate table name {name}')
+        self.entries.append(ScopeEntry(name, table, self.width))
+        self.width += len(table.columns)
+
+    def resolve(self, ref):
+        entries = self.entries
+        if ref.table is not None:
+            entries = [entry for entry in entries if entry.name == ref.table]
+            if not entries:
+                raise SqlError(f'unknown table {ref.table}')
+        candidates = []
+        for entry in entries:
+            index = entry.table.column_index(ref.column)
+            if index is not None:
+                candidates.append((entry, index))
+        if not candidates:
+            raise SqlError(f'unknown column {ref.text}')
+        if len(candidates) > 1:
+            raise SqlError(f'ambiguous column {ref.column}')
+        entry, index = candidates[0]
+        ref.index = entry.offset + index
+        return entry.table.columns[index].type
+@dataclass
+class CheckContext:
+    scope: Scope
+    allow_aggregates: bool = False
+    grouping: list | None = None
+
+
+def table_scope(table):
+    scope = Scope()
+    scope.add(table.name, table)
+    return scope
+
+
+def compatible(first, second):
+    return first == second or 'NULL' in (first, second)
+
+
+def require(actual, expected, operator):
+    if not compatible(actual, expected):
+        raise SqlError(f'type mismatch for {operator}')
+def check(expr, context, in_aggregate=False):
+    match expr:
+        case Literal(value=None):
+            return 'NULL'
+        case Literal(value=int()):
+            return 'INT'
+        case Literal():
+            return 'TEXT'
+        case ColumnRef():
+            column_type = context.scope.resolve(expr)
+            grouping = context.grouping
+            if grouping is not None and not in_aggregate and expr.index not in grouping:
+                raise SqlError(f'column {expr.text} is not grouped')
+            return column_type
+        case Aggregate():
+            if not context.allow_aggregates or in_aggregate:
+                raise SqlError(f'misuse of aggregate {expr.name}')
+def check_condition(condition, context, clause):
+    if condition is not None:
+        require(check(condition, context), 'INT', clause)
+def is_true(value):
+    return value is not None and value != 0
+def evaluate(expr, row, group=None):
+    match expr:
+        case Literal():
+            return expr.value
+        case ColumnRef():
+            return row[expr.index]
+def satisfies(condition, row, group=None):
+    return condition is None or is_true(evaluate(condition, row, group))
+def format_value(value):
+    return 'NULL' if value is None else str(value)
+
+
+def count_rows(count):
+    return '1 row' if count == 1 else f'{count} rows'
+def column_indices(table, names):
+    indices = []
+    for name in names:
+        index = table.column_index(name)
+        if index is None:
+            raise SqlError(f'unknown column {name}')
+        if index in indices:
+            raise SqlError(f'duplicate column {name}')
+        indices.append(index)
+    return indices
+
+
+def check_constraints(table, rows, checked):
+    key = table.primary_key
+    key_counts = Counter(row[key] for row in rows) if key is not None else Counter()
+    for position in checked:
+        row = rows[position]
+        for column, value in zip(table.columns, row):
+            if column.not_null and value is None:
+                raise SqlError(f'NULL value in column {column.name}')
+        if key is not None and key_counts[row[key]] > 1:
+            raise SqlError(f'duplicate primary key {format_value(row[key])}')
+    def table(self, name):
+        if name not in self.tables:
+            raise SqlError(f'unknown table {name}')
+        return self.tables[name]
+    def update(self, statement):
+        table = self.table(statement.table)
+        targets = column_indices(table, [column for column, _ in statement.assignments])
+        context = CheckContext(table_scope(table))
+        for (_, expr), index in zip(statement.assignments, targets):
+            column = table.columns[index]
+            require(check(expr, context), column.type, f'column {column.name}')
+        check_condition(statement.where, context, 'WHERE')
+        rows = list(table.rows)
+        updated = []
+        for position, row in enumerate(table.rows):
+            if satisfies(statement.where, row):
+                new_row = list(row)
+                for (_, expr), index in zip(statement.assignments, targets):
+                    new_row[index] = evaluate(expr, row)
+                rows[position] = new_row
+                updated.append(position)
+        check_constraints(table, rows, updated)
+        table.rows = rows
+        print(f'{count_rows(len(updated))} updated.')

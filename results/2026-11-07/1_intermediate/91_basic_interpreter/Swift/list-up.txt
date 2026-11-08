@@ -1,0 +1,417 @@
+struct SyntaxFault: Error {}
+struct BasicFault: Error {
+    let message: String
+}
+
+func syntax() throws -> Never {
+    throw SyntaxFault()
+}
+
+func fault(_ message: String) throws -> Never {
+    throw BasicFault(message: message)
+}
+
+enum Value: Equatable {
+    case integer(Int)
+    case text(String)
+
+    var type: String {
+        switch self {
+        case .integer: return "I"
+        case .text: return "S"
+        }
+    }
+
+    var number: Int {
+        switch self {
+        case .integer(let value): return value
+        case .text: preconditionFailure()
+        }
+    }
+    var rendered: String {
+        switch self {
+        case .integer(let value): return String(value)
+        case .text(let value): return value
+        }
+    }
+}
+
+struct Token {
+    let kind: String
+    let text: String
+    let value: Value
+}
+
+final class Expression {
+    var kind: String
+    let type: String
+    let value: Value
+    var args: [Expression]
+
+    init(_ kind: String, _ type: String, _ value: Value = .text(""),
+         _ args: [Expression] = []) {
+        self.kind = kind
+        self.type = type
+        self.value = value
+        self.args = args
+    }
+}
+
+struct PrintItem {
+    let kind: String
+    let expression: Expression?
+}
+final class Statement {
+    var kind: String
+    var line = 0
+    var next: Statement?
+    var items: [PrintItem] = []
+    init(_ kind: String) {
+        self.kind = kind
+    }
+let signatures: [String: [String]] = [
+    "RND": ["I"], "LEN": ["S"], "ASC": ["S"], "VAL": ["S"],
+]
+func digit(_ character: UInt8) -> Bool {
+    character >= 48 && character <= 57
+}
+
+func upper(_ character: UInt8) -> Bool {
+    character >= 65 && character <= 90
+}
+func nameType(_ name: String) -> String {
+    name.hasSuffix("$") ? "S" : "I"
+}
+
+func tokenize(_ source: String) throws -> [Token] {
+    let bytes = Array(source.utf8)
+    var position = 0
+    var tokens: [Token] = []
+    while position < bytes.count {
+        let c = bytes[position]
+        if c == 32 {
+            position += 1
+        } else if c == 34 {
+            let start = position
+            position += 1
+            while position < bytes.count && bytes[position] != 34 {
+                position += 1
+            }
+            if position == bytes.count { try syntax() }
+            tokens.append(Token(
+                kind: "S",
+                text: String(decoding: bytes[start...position], as: UTF8.self),
+                value: .text(String(decoding: bytes[(start + 1)..<position], as: UTF8.self))
+            ))
+            position += 1
+        } else if digit(c) {
+            let start = position
+            while position < bytes.count && digit(bytes[position]) {
+                position += 1
+            }
+            let word = String(decoding: bytes[start..<position], as: UTF8.self)
+            guard let n = Int(word), n <= 32767 else { try syntax() }
+            tokens.append(Token(kind: "I", text: word, value: .integer(n)))
+        } else if upper(c) {
+            let start = position
+            while position < bytes.count && (upper(bytes[position]) || digit(bytes[position])) {
+                position += 1
+            }
+            if position < bytes.count && bytes[position] == 36 {
+                position += 1
+            }
+            let word = String(decoding: bytes[start..<position], as: UTF8.self)
+            tokens.append(Token(kind: "W", text: word, value: .text(word)))
+        } else {
+            let candidate = String(decoding: bytes[position..<min(position + 2, bytes.count)], as: UTF8.self)
+            let word = ["<>", "<=", ">="].contains(candidate)
+                ? candidate : String(decoding: bytes[position...position], as: UTF8.self)
+            if !"+-*/^=<>() ,;:".utf8.contains(c) {
+                try syntax()
+            }
+            tokens.append(Token(kind: "P", text: word, value: .text(word)))
+            position += word.utf8.count
+        }
+    }
+    tokens.append(Token(kind: "E", text: "", value: .text("")))
+    return tokens
+}
+final class Parser {
+    private let tokens: [Token]
+    private var index = 0
+
+    init(_ tokens: [Token]) {
+        self.tokens = tokens
+    }
+
+    private var current: Token { tokens[index] }
+
+    private func at(_ word: String) -> Bool {
+        (current.kind == "P" || current.kind == "W") && current.text == word
+    }
+
+    @discardableResult
+    private func take(_ word: String) -> Bool {
+        if !at(word) { return false }
+        index += 1
+        return true
+    }
+
+    private func expect(_ word: String) throws {
+        if !take(word) { try syntax() }
+    }
+    private func integer(_ level: Int = 0) throws -> Expression {
+        let result = try expression(level)
+        if result.type != "I" { try syntax() }
+        return result
+    }
+    private func primary() throws -> Expression {
+        let token = current
+        if token.kind == "I" || token.kind == "S" {
+            index += 1
+            return Expression("constant", token.kind, token.value)
+        }
+        if take("(") {
+            let value = try expression()
+            try expect(")")
+            return value
+        }
+        if token.kind == "W", let expected = signatures[token.text] {
+            index += 1
+            try expect("(")
+            var arguments = [try expression()]
+            while take(",") { arguments.append(try expression()) }
+            try expect(")")
+            if !expected.contains(arguments.map(\.type).joined()) { try syntax() }
+            return Expression("call", nameType(token.text), .text(token.text), arguments)
+        }
+        try syntax()
+    }
+
+    private func expression(_ level: Int = 0) throws -> Expression {
+        if level == 2 && take("NOT") {
+            return Expression("unary", "I", .text("NOT"), [try integer(2)])
+        }
+        if level == 6 && take("-") {
+            return Expression("unary", "I", .text("-"), [try integer(6)])
+        }
+        if level == 8 { return try primary() }
+        var left = try expression(level + 1)
+        let operators = [
+            ["OR"], ["AND"], [],
+            ["=", "<>", "<", ">", "<=", ">="],
+            ["+", "-"], ["*", "/", "MOD"], [], ["^"]
+        ][level]
+        while operators.contains(where: { at($0) }) {
+            let op = current.text
+            index += 1
+            let right = try expression(level == 7 ? 6 : level + 1)
+            if left.type != right.type ||
+               (left.type == "S" && level != 3 && op != "+") { try syntax() }
+            left = Expression("binary", level == 3 ? "I" : left.type,
+                              .text(op), [left, right])
+            if level == 7 { break }
+        }
+        return left
+    }
+    private func list(_ insideClause: Bool = false) throws -> [Statement] {
+        var result = [try statement(insideClause)]
+        while take(":") { result.append(try statement(insideClause)) }
+        return result
+    }
+
+    private func statement(_ insideClause: Bool) throws -> Statement {
+        let word = current.text
+        if insideClause && ["IF", "FOR", "NEXT", "WHILE", "WEND", "DATA"].contains(word) {
+            try syntax()
+        }
+        let s = Statement(word)
+        if take("PRINT") {
+            var lastWasValue = false
+            while current.kind != "E" && !at(":") && !at("ELSE") {
+                if take(";") {
+                    s.items.append(PrintItem(kind: ";", expression: nil))
+                    lastWasValue = false
+                } else if take(",") {
+                    s.items.append(PrintItem(kind: ",", expression: nil))
+                    lastWasValue = false
+                } else {
+                    let mode = at("TAB") ? "TAB" : at("SPC") ? "SPC" : "value"
+                    if mode == "value" && lastWasValue { try syntax() }
+                    let value: Expression
+                    if mode == "value" {
+                        value = try expression()
+                    s.items.append(PrintItem(kind: mode, expression: value))
+                    lastWasValue = mode == "value"
+                }
+            }
+            return s
+        }
+    func parse() throws -> [Statement] {
+        let result = try list()
+        if current.kind != "E" { try syntax() }
+        return result
+    }
+    private var randomState = 1
+    private var handler = 0
+    private var handling = false
+    private var buffer = ""
+    private var output: [String] = []
+
+    init(_ inputs: [String]) {
+        self.inputs = inputs
+    }
+
+    private func endLine() {
+        while buffer.hasSuffix(" ") { buffer.removeLast() }
+        output.append(buffer)
+        buffer = ""
+    }
+
+    private func message(_ text: String) {
+        if !buffer.isEmpty { endLine() }
+        output.append(text)
+    }
+
+    private func checked(_ value: Int) throws -> Int {
+        if value < -32768 || value > 32767 { try fault("OVERFLOW") }
+        return value
+    }
+    private func evaluate(_ expression: Expression) throws -> Value {
+        let op = expression.value.stringIfText
+        if expression.kind == "constant" { return expression.value }
+        if expression.kind == "unary" {
+            let a = try evaluate(expression.args[0]).number
+            return .integer(op == "NOT" ? ~a : try checked(-a))
+        }
+        let args = try expression.args.map { try evaluate($0) }
+        if expression.kind == "call" { return try call(op, args) }
+        let a = args[0], b = args[1]
+        let x = a.number, y = b.number
+        switch op {
+        case "/":
+            if y == 0 { try fault("DIVISION BY ZERO") }
+            return .integer(try checked(x / y))
+        case "MOD":
+            if y == 0 { try fault("DIVISION BY ZERO") }
+            return .integer(x % y)
+        case "AND": return .integer(x & y)
+        case "OR": return .integer(x | y)
+        default: try syntax()
+        }
+    }
+
+    private func call(_ name: String, _ args: [Value]) throws -> Value {
+        let n = args[0].type == "I" ? args[0].number : 0
+        switch name {
+        case "RND":
+            if n < 1 { try fault("ILLEGAL FUNCTION CALL") }
+            randomState = randomState * 48271 % 2147483647
+            return .integer(randomState % n + 1)
+    private func execute(_ s: Statement) throws -> Statement? {
+        var next = s.next
+        switch s.kind {
+        case "PRINT":
+            for item in s.items {
+                if item.kind == "," {
+                    buffer += String(repeating: " ", count: 10 - buffer.utf8.count % 10)
+                } else if item.kind != ";" {
+                    let value = try evaluate(item.expression!)
+                    if item.kind == "value" {
+                        buffer += value.rendered
+                }
+            }
+            if s.items.isEmpty || ![";", ","].contains(s.items.last!.kind) { endLine() }
+        return next
+    private func connect(_ body: [Statement], _ after: Statement?, _ number: Int) {
+        var next = after
+        for statement in body.reversed() {
+            statement.line = number
+            statement.next = next
+            next = statement
+        }
+    }
+
+    private func finish() -> [String] {
+        if !buffer.isEmpty { endLine() }
+        output.append("READY")
+        return output
+    }
+
+    func run(_ source: [Int: String]) -> [String] {
+        var parsed: [(line: Int, statements: [Statement])] = []
+        for number in source.keys.sorted() {
+            do {
+                let statements = try Parser(try tokenize(source[number]!)).parse()
+                parsed.append((number, statements))
+            } catch is SyntaxFault {
+                message("ERROR IN LINE " + String(number) + ": SYNTAX ERROR")
+                return finish()
+            } catch {
+                message("ERROR IN LINE " + String(number) + ": SYNTAX ERROR")
+                return finish()
+            }
+        }
+        var after: Statement?
+        for (number, statements) in parsed.reversed() {
+            connect(statements, after, number)
+            entries[number] = statements.first!
+            after = statements.first
+        }
+        var position = after
+        while let statement = position {
+            do {
+                position = try execute(statement)
+            } catch let error as BasicFault {
+                if handler != 0 && !handling {
+                } else {
+                    message("ERROR IN LINE " + String(statement.line) + ": " + error.message)
+                    position = nil
+                }
+            } catch {
+                position = nil
+            }
+        }
+        return finish()
+    }
+extension Value {
+    var stringIfText: String {
+        if case .text(let value) = self { return value }
+        return ""
+    }
+}
+let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+let lines = input.components(separatedBy: "\n")
+var cursor = 0
+let sessions = Int(lines[cursor].trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+cursor += 1
+var output = ""
+for _ in 0..<sessions {
+    var source: [Int: String] = [:]
+    while cursor < lines.count && lines[cursor] != "RUN" {
+        let text = lines[cursor]
+        cursor += 1
+        let bytes = Array(text.utf8)
+        var p = 0
+        while p < bytes.count && digit(bytes[p]) { p += 1 }
+        guard p > 0, let number = Int(String(decoding: bytes[0..<p], as: UTF8.self))
+        else { continue }
+        if p == bytes.count {
+            source.removeValue(forKey: number)
+        } else {
+            while p < bytes.count && bytes[p] == 32 { p += 1 }
+            source[number] = String(decoding: bytes[p..<bytes.count], as: UTF8.self)
+        }
+    }
+    cursor += 1
+    var data: [String] = []
+    while cursor < lines.count && lines[cursor] != "END" {
+        data.append(lines[cursor])
+        cursor += 1
+    }
+    cursor += 1
+    for line in Machine(data).run(source) {
+        output += line + "\n"
+    }
+}
+print(output, terminator: "")

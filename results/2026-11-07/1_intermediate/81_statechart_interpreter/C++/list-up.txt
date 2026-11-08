@@ -1,0 +1,427 @@
+using Integer = long long;
+vector<string> words(const string& text) {
+    istringstream input(text);
+    vector<string> result;
+    string word;
+    while (input >> word) result.push_back(word);
+    return result;
+struct Expression;
+using Expr = shared_ptr<Expression>;
+struct Expression {
+    string kind, text;
+    Integer value = 0;
+    Expr left, right;
+};
+struct ParsedExpression {
+    Expr tree;
+    vector<pair<string, string>> references;
+struct Action {
+    string kind, name, prefix;
+    int delay = 0;
+    bool has_string = false;
+    ParsedExpression argument;
+};
+vector<Action> parse_actions(const string& text) {
+    vector<Action> result;
+    for (size_t start = 0; start < text.size();) {
+        size_t end = text.find("; ", start);
+        string part = text.substr(start, end == string::npos ? end : end - start);
+        Action action;
+        size_t assignment = part.find(" = ");
+        if (assignment != string::npos && part.rfind("log ", 0) != 0) {
+            action.kind = "assign";
+            action.name = part.substr(0, assignment);
+            action.argument = expression(part.substr(assignment + 3));
+        } else if (part.rfind("log ", 0) == 0) {
+            action.kind = "log";
+            string rest = part.substr(4);
+            if (rest[0] == '"') {
+                size_t quote = rest.find('"', 1);
+                action.has_string = true;
+                action.prefix = rest.substr(1, quote - 1);
+                if (quote + 1 < rest.size()) action.argument = expression(rest.substr(quote + 2));
+        result.push_back(move(action));
+        if (end == string::npos) break;
+        start = end + 2;
+    }
+    return result;
+}
+struct Transition {
+    string source_name, target_name, kind, trigger;
+    vector<string> descriptors;
+    int source = -1, target = -1, delay = 0;
+    ParsedExpression guard;
+    vector<Action> actions;
+Transition parse_transition(const string& text) {
+    Transition result;
+    size_t position = 3, end = text.find(' ', position);
+    result.source_name = text.substr(position, end - position);
+    position = end + 1;
+    end = text.find(' ', position);
+    string trigger = text.substr(position, end == string::npos ? end : end - position);
+    position = end == string::npos ? text.size() : end;
+    if (trigger == "after") {
+    } else if (trigger == "always") result.trigger = "always";
+    else {
+        result.trigger = "event";
+        for (size_t start = 0;;) {
+            size_t separator = trigger.find('|', start);
+            result.descriptors.push_back(trigger.substr(start, separator == string::npos ? separator : separator - start));
+            if (separator == string::npos) break;
+            start = separator + 1;
+        }
+    }
+    if (text.compare(position, 2, " [") == 0) {
+        end = text.find(']', position + 2);
+        result.guard = expression(text.substr(position + 2, end - position - 2));
+        position = end + 1;
+    }
+    result.kind = "internal";
+    if (text.compare(position, 4, " -> ") == 0 || text.compare(position, 4, " ~> ") == 0) {
+    if (position < text.size()) result.actions = parse_actions(text.substr(position + 3));
+    return result;
+}
+struct Definition {
+    int line = 0, state = -1;
+    string kind, name, parent, initial, history_kind, default_name;
+    Integer value = 0;
+    vector<Action> actions;
+    Transition transition;
+    string error;
+};
+Definition parse_definition(const string& text, int line) {
+    auto items = words(text);
+    Definition result;
+    result.line = line;
+    result.kind = items[0];
+    result.name = items[1];
+    if (result.kind == "var") result.value = stoll(items[2]);
+    else if (result.kind == "entry" || result.kind == "exit") result.actions = parse_actions(text.substr(text.find(" / ") + 3));
+    else if (result.kind == "on") result.transition = parse_transition(text);
+    else if (result.kind == "state") {
+        size_t position = 2;
+        if (position < items.size() && items[position] != "initial") result.parent = items[position++];
+        if (position < items.size()) result.initial = items[position + 1];
+    return result;
+struct State {
+    string name, kind, initial_name, history_kind, default_name;
+    int parent = -1, depth = 0, initial = -1, default_target = -1;
+    vector<int> children, child_states, transitions;
+    vector<vector<Action>> entry, exit;
+    Integer entered = 0, taken = 0, dwell = 0, entry_time = 0;
+};
+struct Event {
+    string name;
+    Integer value = 0;
+};
+struct Reservation {
+    Integer due, sequence;
+    int transition = -1;
+    Event event;
+};
+struct Trigger {
+    string kind;
+    Event event;
+    int transition = -1;
+};
+struct Selected {
+    int transition, scope;
+    vector<bool> exits;
+};
+struct EvaluationError {
+};
+
+class Chart {
+    vector<State> states{State{}};
+    map<string, int> identifiers;
+    map<string, Integer> variables;
+    vector<Transition> transitions;
+    vector<int> document;
+    vector<bool> active;
+    vector<optional<vector<int>>> history;
+    deque<Event> internal;
+    vector<Reservation> reservations;
+    Integer current_value = 0, clock = 0, creation = 0, macrosteps = 0, microsteps = 0;
+    bool tracing = false, halted = false;
+    bool compound(int state) const {
+        return state == 0 || (states[state].kind == "state" && !states[state].child_states.empty());
+    }
+    bool parallel(int state) const {
+        return states[state].kind == "parallel" && !states[state].child_states.empty();
+    }
+    bool atomic(int state) const {
+        return state != 0 && states[state].kind != "history" && states[state].child_states.empty();
+    }
+    void visit(int state) {
+        document.push_back(state);
+        for (int child : states[state].children) visit(child);
+    }
+    string bad_reference(const vector<pair<string, string>>& references) const {
+        for (const auto& [kind, name] : references) {
+            if (kind == "state" && !identifiers.count(name)) return "unknown state " + name;
+            if (kind == "variable" && !variables.count(name)) return "unknown variable " + name;
+        }
+        return "";
+    }
+    string bad_actions(const vector<Action>& actions) const {
+        for (const auto& action : actions) {
+            if (action.kind == "assign" && !variables.count(action.name)) return "unknown variable " + action.name;
+            string error = bad_reference(action.argument.references);
+            if (!error.empty()) return error;
+        }
+        return "";
+    void execute(const vector<Action>& actions) {
+        for (const auto& action : actions) {
+            Integer value = 0;
+            try {
+                if (action.argument.tree) value = evaluate(action.argument.tree);
+            }
+            catch (const EvaluationError&) {
+                internal.push_back({"error.execution", 0});
+                break;
+            }
+            if (action.kind == "assign") variables[action.name] = value;
+            else if (action.kind == "raise") internal.push_back({action.name, value});
+            else if (action.kind == "send") reservations.push_back({clock + action.delay, ++creation, -1, {action.name, value}});
+            else if (action.kind == "log") {
+                if (action.has_string) cout << action.prefix;
+                if (action.argument.tree) cout << value;
+                cout << '\n';
+    Selected selection(int id) const {
+        const auto& transition = transitions[id];
+        Selected result{id, -1, vector<bool>(states.size())};
+        if (transition.kind == "internal") return result;
+    bool matches(const Transition& transition, int id, const Trigger& trigger) const {
+        if (trigger.kind == "always") return transition.trigger == "always";
+        if (trigger.kind == "timer") return transition.trigger == "timer" && id == trigger.transition;
+        if (transition.trigger != "event") return false;
+        for (const auto& descriptor : transition.descriptors)
+            if (descriptor == "*" || descriptor == trigger.event.name || trigger.event.name.rfind(descriptor + ".", 0) == 0) return true;
+        return false;
+    }
+    vector<Selected> select(const Trigger& trigger) {
+        vector<int> candidates;
+        set<int> seen;
+        for (int leaf : document) if (active[leaf] && atomic(leaf)) {
+            int chosen = -1;
+            for (int source = leaf; source > 0 && chosen < 0; source = states[source].parent) {
+                for (int id : states[source].transitions) {
+                    const auto& transition = transitions[id];
+                    if (!matches(transition, id, trigger)) continue;
+                    bool enabled = true;
+                    try {
+                        if (transition.guard.tree) enabled = evaluate(transition.guard.tree) != 0;
+                    }
+                    catch (const EvaluationError&) {
+                        internal.push_back({"error.execution", 0});
+                        enabled = false;
+                    }
+                    if (enabled) {
+                        chosen = id;
+                        break;
+                    }
+                }
+            }
+            if (chosen >= 0 && seen.insert(chosen).second) candidates.push_back(chosen);
+        }
+        vector<Selected> result;
+        vector<bool> exiting(states.size());
+        for (int candidate : candidates) {
+            Selected current = selection(candidate);
+            bool conflict = false;
+            for (int state : document) if (current.exits[state] && exiting[state]) {
+                conflict = true;
+                break;
+            }
+            if (!conflict) {
+                for (int state : document) exiting[state] = exiting[state] || current.exits[state];
+                result.push_back(move(current));
+            }
+        }
+        return result;
+    void expand(vector<bool>& entries) const {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (int state : document) if (entries[state]) {
+                if (parallel(state)) {
+                    for (int child : states[state].child_states) if (!entries[child]) {
+                        entries[child] = true;
+                        changed = true;
+                    }
+                } else if (compound(state)) {
+    void enter(const vector<bool>& entries) {
+        for (int id : document) if (entries[id]) {
+            State& state = states[id];
+            active[id] = true;
+            ++state.entered;
+            state.entry_time = clock;
+            for (int transition : state.transitions) if (transitions[transition].trigger == "timer")
+                reservations.push_back({clock + transitions[transition].delay, ++creation, transition, {}});
+            for (const auto& actions : state.entry) execute(actions);
+            if (state.kind == "final") {
+                int parent = state.parent;
+                internal.push_back({"done.state." + states[parent].name, 0});
+    void microstep(const vector<Selected>& selected, const Trigger& trigger) {
+        vector<bool> exits(states.size()), entries(states.size());
+        for (const auto& item : selected) for (int state : document) exits[state] = exits[state] || item.exits[state];
+        for (int state : document) if (exits[state]) {
+            for (int child : states[state].children) if (states[child].kind == "history") {
+        for (const auto& item : selected) {
+            const auto& transition = transitions[item.transition];
+            if (transition.kind == "internal") continue;
+        expand(entries);
+        for (auto it = document.rbegin(); it != document.rend(); ++it) if (exits[*it]) {
+            int id = *it;
+            State& state = states[id];
+            for (const auto& actions : state.exit) execute(actions);
+            active[id] = false;
+        for (const auto& item : selected) {
+            const auto& transition = transitions[item.transition];
+            execute(transition.actions);
+            ++states[transition.source].taken;
+        }
+        enter(entries);
+    }
+    void macrostep(const Trigger& initial) {
+        ++macrosteps;
+        int count = 0;
+        auto perform = [&](const vector<Selected>& selected, const Trigger& trigger) {
+            if (count == 1000) {
+                cout << "LIVELOCK t=" << clock << '\n';
+                halted = true;
+                return;
+            }
+            ++count;
+            ++microsteps;
+            microstep(selected, trigger);
+        };
+        if (initial.kind == "start") {
+            current_value = 0;
+            vector<bool> entries(states.size());
+            entries[states[0].initial] = true;
+            expand(entries);
+            enter(entries);
+        } else {
+            current_value = initial.kind == "timer" ? 0 : initial.event.value;
+            auto selected = select(initial);
+            if (!selected.empty()) perform(selected, initial);
+        }
+        while (!halted) {
+            current_value = 0;
+            Trigger eventless{"always", {}, -1};
+            auto selected = select(eventless);
+            if (!selected.empty()) {
+                perform(selected, eventless);
+                continue;
+            }
+            if (internal.empty()) break;
+            Event event = internal.front();
+            internal.pop_front();
+            current_value = event.value;
+            Trigger trigger{"event", event, -1};
+            selected = select(trigger);
+            if (!selected.empty()) perform(selected, trigger);
+    void dump() const {
+        cout << "dump t=" << clock << '\n';
+        for (int state : document) if (active[state]) cout << string(2 * states[state].depth, ' ') << states[state].name << '\n';
+    bool define(vector<Definition>& definitions) {
+        states[0].kind = "state";
+        for (auto& definition : definitions) {
+            const string& kind = definition.kind;
+            } else if (kind == "state" || kind == "parallel" || kind == "final" || kind == "history") {
+                if (identifiers.count(definition.name)) definition.error = "duplicate state " + definition.name;
+                else if (!definition.parent.empty() && !identifiers.count(definition.parent)) definition.error = "unknown state " + definition.parent;
+                else {
+                    int parent = definition.parent.empty() ? 0 : identifiers.at(definition.parent);
+                    if (states[parent].kind == "final" || states[parent].kind == "history") definition.error = definition.parent + " cannot have children";
+                    else {
+                        int id = states.size();
+                        State state;
+                        state.name = definition.name;
+                        state.kind = kind;
+                        state.parent = parent;
+                        state.depth = states[parent].depth + 1;
+                        state.initial_name = definition.initial;
+                        state.history_kind = definition.history_kind;
+                        state.default_name = definition.default_name;
+                        states.push_back(move(state));
+                        states[parent].children.push_back(id);
+                        if (kind != "history") states[parent].child_states.push_back(id);
+                        identifiers[definition.name] = id;
+                        definition.state = id;
+        for (size_t id = 0; id < states.size(); ++id) if (compound(id)) {
+            if (states[id].initial_name.empty()) {
+                if (!states[id].child_states.empty()) states[id].initial = states[id].child_states[0];
+            } else if (identifiers.count(states[id].initial_name)) states[id].initial = identifiers.at(states[id].initial_name);
+        }
+        for (auto& definition : definitions) if (definition.error.empty()) {
+            const auto& kind = definition.kind;
+            if (kind == "state" && !definition.initial.empty()) {
+            } else if (kind == "entry" || kind == "exit" || kind == "on") {
+                if (!identifiers.count(definition.name)) definition.error = "unknown state " + definition.name;
+                else {
+                    int source = identifiers.at(definition.name);
+                    if (kind != "on" && states[source].kind == "history") definition.error = definition.name + " cannot have actions";
+                    else if (kind == "on" && (states[source].kind == "history" || states[source].kind == "final")) definition.error = definition.name + " cannot have transitions";
+                    else {
+                        if (kind == "on") {
+                            auto& transition = definition.transition;
+                            definition.error = bad_reference(transition.guard.references);
+                            if (definition.error.empty() && !transition.target_name.empty() && !identifiers.count(transition.target_name))
+                                definition.error = "unknown state " + transition.target_name;
+                            if (definition.error.empty()) definition.error = bad_actions(transition.actions);
+                            if (definition.error.empty()) {
+                                transition.source = source;
+                                if (!transition.target_name.empty()) transition.target = identifiers.at(transition.target_name);
+                                states[source].transitions.push_back(transitions.size());
+                                transitions.push_back(transition);
+        bool valid = true;
+        for (const auto& definition : definitions) if (!definition.error.empty()) {
+            valid = false;
+            cout << "error line " << definition.line << ": " << definition.error << '\n';
+        }
+        if (!valid) return false;
+        for (size_t id = 1; id < states.size(); ++id) if (states[id].kind == "history")
+            states[id].default_target = states[id].default_name.empty() ? states[states[id].parent].initial : identifiers.at(states[id].default_name);
+        for (int child : states[0].children) visit(child);
+        active.resize(states.size());
+        history.resize(states.size());
+        macrostep({"start", {}, -1});
+        return true;
+    void script(const string& text) {
+        if (halted) return;
+        auto items = words(text);
+        if (items[0] == "event") macrostep({"event", {items[1], items.size() == 3 ? stoll(items[2]) : 0}, -1});
+        else if (items[0] == "tick") {
+            Integer finish = clock + stoll(items[1]);
+                Reservation next = *first;
+                reservations.erase(first);
+                clock = next.due;
+                if (next.transition >= 0) macrostep({"timer", {}, next.transition});
+                else macrostep({"event", next.event, -1});
+        } else if (items[0] == "dump") dump();
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int count;
+    cin >> count;
+    string line;
+    getline(cin, line);
+    int line_number = 1;
+    while (count--) {
+        getline(cin, line);
+        ++line_number;
+        cout << "chart " << line.substr(6) << '\n';
+        vector<Definition> definitions;
+        while (getline(cin, line)) {
+            ++line_number;
+            if (line == "RUN") break;
+            definitions.push_back(parse_definition(line, line_number));
+        }
+        Chart chart;
+        bool valid = chart.define(definitions);
+        while (getline(cin, line)) {
+            ++line_number;
+            if (line == "END") break;
+            if (valid) chart.script(line);
