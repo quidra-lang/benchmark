@@ -1,0 +1,22 @@
+# Task B selection — Python
+
+## Answer requirements shared across languages
+
+1. Locate command-token parsing and the distinct FIRE, AI, and TORPEDO dispatches. Explain an exact SHOT-to-FIRE name normalization or equivalent handler alias before those tests, preserving player and the complete ordered target argument list.
+2. Follow FIRE through the existing common turn checks and whole-batch allowance/reef validation before battle/shot mutations. Explain that a later invalid command reports its error without undoing an earlier accepted shot, and that a bad later cell in the same batch is rejected before its first shot; no per-cell redispatch or partial validation is introduced.
+3. Preserve the ordered shot/result/statistics hooks, duplicate-cell handling by the same shot operation, early stop on victory, and one completion stage per accepted batch with all hit results for winner, turn, CHAIN, and automatic-control handling.
+4. Keep AI strategy selection and TORPEDO row/side, one-use validation and distinct action/output paths unchanged. The request explicitly does not require helper implementations: retain necessary caller/callee and update hooks, not target-selection, board geometry, placement, or unrelated command implementations.
+
+## Selected source locations
+
+- `main.py`: 252, 314, 315, 316, 331, 334, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 435, 448, 449, 450, 451, 453, 454, 455, 456, 457, 458, 459, 465, 466, 467, 469, 470, 471, 472, 473, 475, 476, 477, 478, 480, 481, 482, 483, 484, 485, 486, 488, 489, 490, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 590, 591, 592, 593, 594, 595, 597, 598, 599, 600, 601, 602, 603, 604, 605, 793, 794, 795, 801, 802, 803, 820, 821, 822, 823, 824, 825, 826, 827, 830, 831, 832, 833, 834
+
+## Evidence and language semantics
+
+Normalize only the parsed command name SHOT to FIRE (or bind SHOT to exactly the existing FIRE handler), before all name-based routing, leaving argument positions and the ordered batch intact. Do not loop by dispatching separate FIRE commands: that would repeat validation/allowance and finish turns independently. The excerpt separates batch validation from action and retains the original per-shot and completion calls. An error in a later command does not undo already accepted state; an invalid later cell in the current batch is discovered during its preflight before any shot. Exceptions/early returns bypass completion. Repeated cells reach the unchanged shot operation in order, so its existing ALREADY behavior remains; victory still stops remaining shots. AI and TORPEDO keep their own operands, handlers, output and action rules. Python bound-method entries in handlers select self.fire/self.ai/self.torpedo; handlers[command](arguments) passes the same list. CommandError is caught around one invocation. fire preflights every parsed cell, then accumulates shoot results and passes them to finish_turn; shoot calls record_shot, close_turn calls end_turn, which increments turns, checks victory and evaluates CHAIN over all results. finish_turn invokes automatic play only after a non-winning completion. The same Referee survives successive input lines; no rollback or recreation occurs in the error handler.
+
+## Minimization and alternatives
+
+Selected complete lines were reviewed individually and then as a standalone excerpt. Dispatch alone would identify an alias entry but not prove preservation of batch validation, failure boundaries, action order or completion; the FIRE body alone would miss the original name-resolution and AI/TORPEDO separation. Necessary state/statistics/completion hooks are retained where their connection is not otherwise visible. As explicitly permitted by the question, helper implementations for geometry, shot-result calculation, strategy algorithms and unrelated command functions are omitted. Adding all helpers or the full dispatcher would add independently unnecessary lines. Separate aliases in every downstream name test are a larger and error-prone alternative to canonicalizing the single input command token; global replacement of SHOT output text is not a command alias.
+
+The excerpt contains 1503 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.
