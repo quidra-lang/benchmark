@@ -1,5 +1,7 @@
 # Quidra Benchmark
 
+[Open the shared token viewer](https://quidra-lang.github.io/benchmark/)
+
 ## Purpose
 
 This repository contains the data and instructions needed to benchmark the number of tokens an LLM would need to generate and understand programs written in different programming languages.
@@ -45,10 +47,11 @@ When the user asks you to "start the benchmark," follow the steps below.
 
 Do not add, edit, or delete any files other than those explicitly specified in this README.
 
-The shared token viewer consists of `metric/tokenizer.py`, `metric/build_viewer.py`,
-`metric/viewer.html`, `metric/viewer.js`, `metric/viewer.css`, `metric/views.json`,
-`metric/test_viewer.py`, and `metric/test_viewer.cjs`. These files and this README
-may be updated when maintaining the viewer. Generated task data is stored as
+The shared token viewer consists of `results/index.html`, `results/viewer.js`,
+`results/viewer.css`, and `results/views.json`. Its generation tools are
+`metric/tokenizer.py` and `metric/build_viewer.py`, and its publishing workflow is
+`.github/workflows/pages.yml`. These files and this README may be updated when
+maintaining the viewer. Generated task data is stored as
 `taskA.json` and `taskB.json` in each language directory; individual task HTML
 files must not be retained in benchmark results.
 
@@ -238,7 +241,8 @@ python3 metric/tokenizer.py --json "$LANG_DIR/taskB.json" "$LANG_DIR/list-up.txt
 
 For a Task A program consisting of multiple source files, pass all of its files to the same command and **sum the per-file token counts** printed to standard output. The viewer shows all supplied files in argument order. `--json` sets the output path; if omitted, the default is `token.json` in the current working directory. Python uses the same tokenizer for counts and saved boundaries; viewing never re-tokenizes the source or executes Python.
 
-Do not save individual `taskA.html` or `taskB.html` files in benchmark results. All task views use the shared viewer. An explicit `--html PATH` export remains available for an occasional self-contained file that can be opened directly without a web server.
+Do not save individual `taskA.html` or `taskB.html` files in benchmark results.
+All dates and task views use the single shared `results/index.html` viewer.
 
 Write both totals to the `tokens.csv` file in the corresponding **language directory** (`$LANG_DIR/tokens.csv`), using this format:
 
@@ -249,7 +253,9 @@ taskB,3749
 
 Repeat this for every affected language/topic.
 
-After adding or removing task JSON files, rebuild the shared selection index:
+The publishing workflow rebuilds the shared selection index automatically on
+each relevant push to `develop`, including when a new date's task JSON files
+are added. To refresh the index for a local preview, run:
 
 ```sh
 python3 metric/build_viewer.py
@@ -257,12 +263,27 @@ python3 metric/build_viewer.py
 
 #### View token-colored code
 
-The shared `metric/viewer.html` loads the small `metric/views.json` selection index,
-then fetches only the selected task's JSON. The JSON stores normalized source text
-and token lengths instead of repeating HTML tags. Line numbers, token colors, blank
-lines, and separate source-file blocks are reconstructed by `metric/viewer.js`.
-No external JavaScript libraries, Python runtime, or application backend are needed
-in the browser.
+Open the [shared token viewer](https://quidra-lang.github.io/benchmark/) and select
+a date, difficulty, topic, language, and task. The viewer shows the total token
+count and token-colored source. Its address updates to a shareable link that
+restores the selected view.
+
+The shared `results/index.html` loads the small `results/views.json` selection
+index, then fetches only the selected task's JSON. The JSON stores normalized
+source text and token lengths instead of repeating HTML tags. Line numbers,
+token colors, blank lines, and separate source-file blocks are reconstructed by
+`results/viewer.js`. No external JavaScript libraries, Python runtime, or
+application backend are needed in the browser.
+
+`.github/workflows/pages.yml` scans every measured date directory and publishes
+`results/` as the GitHub Pages site after relevant pushes to `develop`. New date,
+topic, language, and task entries are discovered from `taskA.json` and
+`taskB.json`; no viewer edit or generated-index commit is needed to publish them.
+Dates without measured task JSON do not appear in the selection list.
+
+For the initial publication, configure the repository's Settings > Pages >
+Build and deployment > Source as **GitHub Actions**. If the `github-pages`
+environment has deployment branch restrictions, allow `develop`.
 
 Serve the repository root with any static web server, for example:
 
@@ -270,19 +291,12 @@ Serve the repository root with any static web server, for example:
 python3 -m http.server 8000 --bind 127.0.0.1
 ```
 
-Open [the shared viewer](http://localhost:8000/metric/viewer.html) and select a date,
-difficulty, topic, language, and task. The address updates to a shareable link for
-the selected view. For a standalone data file, use
-`http://localhost:8000/metric/viewer.html?view=token.json`, where `view` is a path
-relative to the repository root. The same files can be served by GitHub Pages or
-another static host; keep `metric/` and `results/` at their existing relative paths.
-Opening `viewer.html` with a `file://` URL does not permit automatic JSON fetches.
-
-Run tooling regression tests with
-`python3 -m unittest discover -s metric -p 'test_*.py'`.
-For browser integration tests, install the development-only `playwright` Node
-package and its Chromium browser, then run `node metric/test_viewer.cjs`.
-An existing Chromium executable can be selected with `CHROMIUM_PATH`.
+Open [the local viewer](http://localhost:8000/results/). The `view` query parameter
+is relative to `results/`, for example
+`?view=2026-11-07/0_beginner/00_array_mean/Quidra/taskA.json`.
+The same `results/` directory can be served by any static host; its shared viewer
+and dated data directories must keep their relative positions. Opening
+`index.html` with a `file://` URL does not permit automatic JSON fetches.
 
 ## 3. Aggregate results
 

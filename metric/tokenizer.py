@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tokenize source files and write compact data for the shared static viewer.
 
-Usage: python3 tokenizer.py [--json PATH | --html PATH] FILE [FILE ...]
+Usage: python3 tokenizer.py [--json PATH] FILE [FILE ...]
 Writes a single integer per input to stdout and creates token.json in the
-current directory by default. --html explicitly exports standalone HTML.
+current directory by default for results/index.html.
 The lexical rules are independent of file extension. The attached loop
 declaration keyword for: counts as one token, like the operator :=.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from html import escape
 import json
 from pathlib import Path
 import re
@@ -435,60 +434,6 @@ def tokenize(source: str) -> list[Token]:
     return tokens
 
 
-# Pastel backgrounds distinguish adjacent tokens without changing their text.
-COLORS = (
-    "#ffedb5", "#c9f1d9", "#cdeaff", "#f3d8ff",
-    "#ffd7d7", "#dce5bd", "#ffe2c0", "#cdddf7",
-    "#d4f3ef", "#f7e6c5", "#e0d9ff", "#dff0c5",
-)
-
-CSS = """
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-body{margin:16px;background:#f6f7f9;color:#1c2430}
-.program{overflow-x:auto;margin-bottom:20px;padding:10px 0;background:#fff;
-         border:1px solid #e5e7eb}
-.line{display:flex;min-height:1.65em;min-width:max-content;
-      font:14px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.number{position:sticky;left:0;display:inline-block;flex:0 0 3.5em;
-        padding:0 .8em 0 .3em;text-align:right;user-select:none;
-        background:#fff;color:#8b919c;border-right:1px solid #e5e7eb}
-.code{padding:0 .75em;white-space:pre}
-.token{white-space:pre;border-radius:1px}
-.line,.number,.code,.token{font-size:14px;line-height:1.65}
-"""
-
-
-def render_html(programs: list[list[Token]]) -> str:
-    colors = "\n".join(
-        f".c{i}{{background:{color}}}" for i, color in enumerate(COLORS)
-    )
-    blocks = []
-    for tokens in programs:
-        lines: list[list[str]] = [[]]
-        for index, tok in enumerate(tokens):
-            color = index % len(COLORS)
-            for part_number, part in enumerate(tok.text.split("\n")):
-                if part_number:
-                    lines.append([])
-                if part:
-                    lines[-1].append(
-                        f'<span class="token c{color}">{escape(part)}</span>'
-                    )
-        rows = "".join(
-            f'<div class="line"><span class="number">{number}</span>'
-            f'<span class="code">{"".join(parts)}</span></div>'
-            for number, parts in enumerate(lines, start=1)
-        )
-        blocks.append(f'<div class="program">{rows}</div>')
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<style>{CSS}{colors}</style></head><body>'
-        + "".join(blocks) + '</body></html>\n'
-    )
-
-
 def render_data(programs: list[list[Token]]) -> str:
     """Store normalized source and Unicode code-point token lengths once."""
     return json.dumps({
@@ -503,16 +448,11 @@ def render_data(programs: list[list[Token]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Count source tokens and write data for metric/viewer.html."
+        description="Count source tokens and write data for results/index.html."
     )
-    output = parser.add_mutually_exclusive_group()
-    output.add_argument(
+    parser.add_argument(
         "--json", metavar="PATH",
         help="compact token data output file (default: token.json)",
-    )
-    output.add_argument(
-        "--html", metavar="PATH",
-        help="optional standalone HTML export instead of compact JSON",
     )
     parser.add_argument(
         "files", nargs="*", metavar="FILE",
@@ -528,8 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         for item in inputs:
             source = sys.stdin.read() if item == "-" else Path(item).read_text(encoding="utf-8-sig")
             all_tokens.append(tokenize(source))
-        path = Path(args.html or args.json or "token.json")
-        content = render_html(all_tokens) if args.html else render_data(all_tokens)
+        path = Path(args.json or "token.json")
+        content = render_data(all_tokens)
         path.write_text(content, encoding="utf-8")
     except (OSError, UnicodeError) as error:
         parser.exit(2, f"error: {error}\n")

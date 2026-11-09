@@ -5,8 +5,9 @@
   const selectors = ['date', 'difficulty', 'topic', 'language', 'task']
     .map(id => document.getElementById(id));
   const message = document.getElementById('message');
+  const summary = document.getElementById('summary');
   const output = document.getElementById('programs');
-  const root = new URL('../', document.baseURI);
+  const root = new URL('./', document.baseURI);
   let catalog;
   let pending;
 
@@ -88,11 +89,16 @@
     const request = new AbortController();
     pending = request;
     output.replaceChildren();
+    summary.hidden = true;
+    summary.textContent = '';
     status('Loading…');
     try {
       const data = await readJSON(dataURL(view), request.signal);
       if (pending !== request) return;
       output.replaceChildren(render(data));
+      const total = data.programs.reduce((count, program) => count + program.lengths.length, 0);
+      summary.textContent = `Tokens: ${total.toLocaleString('en-US')}`;
+      summary.hidden = false;
       status('');
       const url = new URL(location.href);
       url.searchParams.set('view', view);
@@ -123,7 +129,7 @@
 
   function selectedView() {
     const parts = selectors.map(select => select.value);
-    return parts.every(Boolean) ? `results/${parts.slice(0, 4).join('/')}/task${parts[4]}.json` : null;
+    return parts.every(Boolean) ? `${parts.slice(0, 4).join('/')}/task${parts[4]}.json` : null;
   }
 
   controls.addEventListener('change', () => {
@@ -134,7 +140,7 @@
 
   async function start() {
     if (location.protocol === 'file:') {
-      status('Open this viewer through a static web server, such as GitHub Pages or http://localhost:8000/metric/viewer.html.', true);
+      status('Open this viewer through a static web server, such as GitHub Pages or http://localhost:8000/results/.', true);
       return;
     }
     const requested = new URL(location.href).searchParams.get('view');
@@ -144,8 +150,8 @@
         throw new Error('Invalid view index.');
       }
       const parts = requested?.split('/');
-      const selection = parts?.length === 6 && parts[0] === 'results' && /^task[AB]\.json$/.test(parts[5]) ?
-        [...parts.slice(1, 5), parts[5][4]] : [];
+      const selection = parts?.length === 5 && /^task[AB]\.json$/.test(parts[4]) ?
+        [...parts.slice(0, 4), parts[4][4]] : [];
       fill(selection);
       if (requested) {
         // Also permit a standalone token.json without adding it to the benchmark index.
