@@ -11,7 +11,7 @@ Counts exclude prompts, answers, and selection rationales; they do not measure a
 
 1. Pull the latest `develop`. Limit file changes to the requested work and the benchmark outputs below.
 2. Use the requested benchmark date, or today's date if none is specified. Continue in `results/YYYY-MM-DD` if it exists; otherwise copy the most recent earlier date directory.
-3. Read that date's `version.csv`. For a new run, check official language updates and report the previous/current versions and recommended updates or skips. Use the languages, versions, and source revisions approved for the run; preserve them when resuming. Ask for a selection only if none has been approved, and update only the corresponding entries in `version.csv`.
+3. Read that date's `version.csv`. For a new run, check official language updates and present the previous/current versions and proposed updates or skips to the user in chat. Obtain the user's explicit approval in chat before starting the benchmark; only then proceed with the approved languages, versions, and source revisions. Preserve those choices when resuming, and update only the corresponding entries in `version.csv`.
 4. Within the approved scope, update only topics affected by language or task-requirement changes. Refresh their Task A sources, Task B selections and rationales, and token counts even if the language version is unchanged.
 
 Each date contains three difficulty levels with 100 topics each. Task definitions are shared across languages; source files and measured outputs are stored in each topic's language directories.
@@ -65,7 +65,7 @@ Generate `taskA.json` and `taskB.json` for each measured language/topic. Do not 
 
 1. Aggregate all `tokens.csv` files in the working date into `score.md`, preserving its existing metrics, normalization, weights, and structure. Do not add scope or focus breakdowns.
 2. Commit and push the changes to `develop`, then verify that the remote branch contains them.
-3. Report **Normalized token consumption** and **Total token consumption**, along with the updated languages/topics and skipped language updates.
+3. Report **Normalized token consumption** and **Total token consumption** to the user in chat, along with the updated languages/topics and skipped language updates.
 
 ## Viewer
 
