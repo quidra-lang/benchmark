@@ -1,0 +1,283 @@
+private val settingNames = listOf(
+    "CAPACITY", "INITIAL", "CHARGE", "DISCHARGE", "CEFF", "DEFF", "RESERVE", "COST",
+    "EXPORT", "FEEDIN", "FIXED", "DEMAND", "PVSCALE"
+)
+private val settingRanges = mapOf(
+    "CAPACITY" to (1L..100000L), "INITIAL" to (0L..100L),
+private class CommandError(message: String) : Exception(message)
+private fun fail(message: String): Nothing = throw CommandError(message)
+private fun ceil(numerator: Long, denominator: Long): Long =
+    (numerator + denominator - 1) / denominator
+private fun money(cents: Long): String {
+    val absolute = if (cents < 0) -cents else cents
+    return "${if (cents < 0) "-" else ""}${absolute / 100}.${(absolute % 100).toString().padStart(2, '0')}"
+}
+private fun percentage(numerator: Long, denominator: Long): String {
+    val n = if (denominator == 0L) 0 else 10000 * numerator / denominator
+    return "${n / 100}.${(n % 100).toString().padStart(2, '0')}"
+}
+private fun rightRow(values: List<Any>, widths: List<Int>): String =
+    values.zip(widths).joinToString("") { (value, width) -> value.toString().padStart(width) }
+private data class Strategy(val name: String, val parameter: Long? = null) {
+    override fun toString(): String = if (parameter == null) name else "$name $parameter"
+}
+
+private fun readStrategies(words: List<String>): List<Strategy> {
+    val strategies = mutableListOf<Strategy>()
+    var i = 0
+    while (i < words.size) {
+        val name = words[i++]
+        if (name == "SELF" || name == "EXPORTPEAK") {
+            strategies.add(Strategy(name))
+            continue
+    return strategies
+private fun requireCount(args: List<String>, expected: Int) {
+    if (args.size != expected) fail("wrong number of arguments")
+}
+private fun oneStrategy(args: List<String>): Strategy {
+    val strategies = readStrategies(args)
+    if (strategies.size != 1) fail("wrong number of arguments")
+    return strategies.single()
+private class InputData(lines: List<String>) {
+    init {
+        var position = 0
+        fun read(): List<String> = lines[position++].split(' ')
+        val settings = (read().drop(1) + read().drop(1) + "100").map(String::toLong)
+        initialSettings = settingNames.zip(settings).toMap()
+        val prices = linkedMapOf<String, Long>()
+        repeat(read()[1].toInt()) {
+            val tokens = read()
+            prices[tokens[0]] = tokens[1].toLong()
+        }
+        initialPrices = prices
+        priceOrder = prices.keys.toList()
+        val weekdayHours = periodHours(read().drop(1))
+        val weekendHours = periodHours(read().drop(1))
+        val profiles = mutableMapOf<Pair<String, String>, List<Long>>()
+        repeat(read()[1].toInt()) {
+            val tokens = read()
+            profiles[tokens[0] to tokens[1]] = tokens.drop(2).map(String::toLong)
+        }
+        dayCount = read()[1].toInt()
+        val hourlyLoads = mutableListOf<Long>()
+        val hourlyPV = mutableListOf<Long>()
+        repeat(dayCount) {
+            val tokens = read()
+            hourlyLoads.addAll(profiles.getValue("LOAD" to tokens[0]).map { it * tokens[1].toLong() / 100 })
+            hourlyPV.addAll(profiles.getValue("PV" to tokens[2]).map { it * tokens[3].toLong() / 100 })
+        }
+        val holidays = read().drop(2).map(String::toInt).toSet()
+        repeat(read()[1].toInt()) {
+            val tokens = read().map(String::toLong)
+            val hour = ((tokens[0] - 1) * 24 + tokens[1]).toInt()
+            hourlyLoads[hour] = tokens[2]
+            hourlyPV[hour] = tokens[3]
+        }
+        loads = hourlyLoads
+        basePV = hourlyPV
+        weekendDays = (1..dayCount).map { it in holidays || (it - 1) % 7 >= 5 }
+        periods = weekendDays.flatMap { if (it) weekendHours else weekdayHours }
+        commands = lines.drop(position)
+    }
+
+    private fun periodHours(tokens: List<String>): List<String> = buildList {
+        for (i in tokens.indices step 2) {
+            val start = tokens[i].toInt()
+            val end = if (i + 2 < tokens.size) tokens[i + 2].toInt() else 24
+            repeat(end - start) { add(tokens[i + 1]) }
+private class HourRecord(
+    val index: Int, val period: String, val load: Long, val pv: Long,
+    val soc: Long, val flows: List<Long>, val drawn: Long, val shortfall: Long,
+    val loss: Long, price: Long, feedin: Long
+) {
+    val hour = index % 24
+    val discharge = flows[4] + flows[5]
+    val imported = flows[6] + flows[7]
+    val exported = flows[2] + flows[5]
+    val curtailed = flows[3]
+    val importCost = imported * price / 100000
+    val exportIncome = exported * feedin / 100000
+private class Totals(records: List<HourRecord>) {
+    val load = records.sumOf { it.load }
+    val imported = records.sumOf { it.imported }
+    val exported = records.sumOf { it.exported }
+    val shortfall = records.sumOf { it.shortfall }
+    val importCost = records.sumOf { it.importCost }
+    val exportIncome = records.sumOf { it.exportIncome }
+    val netCost = importCost - exportIncome
+private class SimulationResult(
+    val strategy: Strategy, originalSettings: Map<String, Long>, originalPrices: Map<String, Long>,
+    val startSOC: Long, val reserve: Long, val hours: List<HourRecord>, priceOrder: List<String>
+) {
+    val settings = originalSettings.toMap()
+    val prices = originalPrices.toMap()
+    val byPeriod = priceOrder.associateWith { name -> Totals(hours.filter { it.period == name }) }
+    val total = Totals(hours)
+    val peak = hours.maxOf { it.imported }
+    val demandCharge = peak * settings.getValue("DEMAND") / 1000
+    val bill = total.netCost + settings.getValue("FIXED") + demandCharge
+    val endSOC = hours.last().soc
+private class Simulator(
+    private val data: InputData, private val strategy: Strategy,
+    originalSettings: Map<String, Long>, originalPrices: Map<String, Long>,
+    private val outage: IntRange? = null
+) {
+    private val settings = originalSettings.toMap()
+    private val prices = originalPrices.toMap()
+    private val name = strategy.name
+    private val parameter = strategy.parameter ?: 0L
+    private val capacity = settings.getValue("CAPACITY")
+    private val ceff = settings.getValue("CEFF")
+    private val deff = settings.getValue("DEFF")
+    private val reservePercent = if (name == "BACKUP") max(settings.getValue("RESERVE"), parameter)
+        else settings.getValue("RESERVE")
+    private val reserve = capacity * reservePercent / 100
+    private val startSOC = capacity * settings.getValue("INITIAL") / 100
+    private var soc = startSOC
+    private val arbitrage = name == "EXPORTPEAK" && settings.getValue("FEEDIN") > prices.getValue(cheapest)
+    private fun dischargeTarget(deficit: Long, period: String): Long = when {
+        name == "TOU" -> if (period == peak) deficit else 0L
+        name == "PEAKSHAVE" -> max(0L, deficit - parameter)
+        arbitrage && period == cheapest && period != peak -> 0L
+        else -> deficit
+    }
+    private fun gridCharge(period: String, pvCharge: Long, gridLoad: Long): Long {
+        val target = when {
+            name == "TOU" && period == cheapest && period != peak -> capacity * parameter / 100
+            name == "PEAKSHAVE" && period == cheapest -> {
+            }
+            name == "BACKUP" && period == cheapest -> reserve
+            arbitrage && period == cheapest && period != peak -> capacity
+            else -> return 0L
+        }
+    private fun hour(index: Int): HourRecord {
+        val load = data.loads[index]
+        val pv = data.basePV[index] * settings.getValue("PVSCALE") / 100
+        val period = data.periods[index]
+        val direct = min(load, pv)
+        var surplus = pv - direct
+        var deficit = load - direct
+        val pvCharge = minOf(surplus, settings.getValue("CHARGE"), ceil(100 * (capacity - soc), ceff))
+        soc += pvCharge * ceff / 100
+        surplus -= pvCharge
+        val isOutage = outage?.contains(index) == true
+        val target = if (isOutage) deficit else dischargeTarget(deficit, period)
+        val lowerBound = if (isOutage) 0L else reserve
+        val loadDrawn = minOf(ceil(100 * target, deff), settings.getValue("DISCHARGE"),
+            max(0L, soc - lowerBound))
+        val loadDischarge = loadDrawn * deff / 100
+        soc -= loadDrawn
+        deficit -= loadDischarge
+        var gridLoad = 0L
+        var shortfall = 0L
+        var pvExport = 0L
+        var curtailed = 0L
+        var gridCharge = 0L
+        var exportDrawn = 0L
+        var batteryExport = 0L
+        if (isOutage) {
+            shortfall = deficit
+            curtailed = surplus
+        } else {
+            gridLoad = deficit
+            pvExport = min(surplus, settings.getValue("EXPORT"))
+            curtailed = surplus - pvExport
+            gridCharge = gridCharge(period, pvCharge, gridLoad)
+            if (arbitrage && period == peak && pvCharge == 0L) {
+            }
+        }
+        val flows = listOf(direct, pvCharge, pvExport, curtailed, loadDischarge,
+            batteryExport, gridLoad, gridCharge)
+        return HourRecord(index, period, load, pv, soc, flows, loadDrawn + exportDrawn,
+            shortfall, loss, prices.getValue(period), settings.getValue("FEEDIN"))
+    }
+
+    fun run(): SimulationResult = SimulationResult(strategy, settings, prices, startSOC, reserve,
+        data.loads.indices.map(::hour), data.priceOrder)
+private class DispatchDesk(private val data: InputData) {
+    private var settings = data.initialSettings.toMutableMap()
+    private var prices = data.initialPrices.toMutableMap()
+    private var current: SimulationResult? = null
+
+    fun execute(tokens: List<String>): List<String> = try {
+        handle(tokens[0], tokens.drop(1))
+    } catch (error: CommandError) {
+        listOf("ERROR ${error.message}")
+    }
+
+    private fun simulate(
+        strategy: Strategy, settings: Map<String, Long> = this.settings,
+        prices: Map<String, Long> = this.prices, outage: IntRange? = null
+    ) = Simulator(data, strategy, settings, prices, outage).run()
+    private fun needResult() = current ?: fail("no run")
+    private fun checkedDay(token: String): Int {
+        val day = token.toInt()
+        if (day !in 1..data.dayCount) fail("invalid day")
+        return day
+    }
+    private fun resultNoArgs(args: List<String>): SimulationResult {
+        requireCount(args, 0)
+        return needResult()
+    private fun handle(command: String, args: List<String>): List<String> = when (command) {
+        "RUN" -> {
+            val strategy = oneStrategy(args)
+            val result = simulate(strategy)
+            current = result
+            listOf("RUN $strategy bill ${money(result.bill)} import ${result.total.imported} " +
+                "export ${result.total.exported} soc ${result.endSOC}")
+        }
+        "SET" -> {
+            requireCount(args, 2)
+            val name = args[0]
+            val allowed = settingRanges[name] ?: fail("unknown parameter $name")
+            val number = args[1].toLong()
+            if (number !in allowed) fail("invalid value for $name")
+            val old = settings.getValue(name)
+            settings[name] = number
+            listOf("SET $name $old -> $number")
+        "OUTAGE" -> {
+            requireCount(args, 3)
+            val day = checkedDay(args[0])
+            val start = args[1].toInt()
+            val finish = args[2].toInt()
+            if (start < 0 || start > finish || finish > 23) fail("invalid hours")
+            val previous = needResult()
+            val first = (day - 1) * 24 + start
+            val last = (day - 1) * 24 + finish
+            val result = simulate(previous.strategy, previous.settings, previous.prices, first..last)
+            val before = if (first == 0) result.startSOC else result.hours[first - 1].soc
+            val subset = result.hours.subList(first, last + 1)
+            val total = Totals(subset)
+            val served = if (total.load == 0L) "100.00" else percentage(total.load - total.shortfall, total.load)
+            buildList {
+                add("OUTAGE day $day hours $start-$finish strategy ${result.strategy} soc $before")
+                add("hour   load     pv  disch    soc  short   curt")
+                subset.forEach { record -> add(rightRow(listOf(record.hour, record.load, record.pv,
+                    record.discharge, record.soc, record.shortfall, record.curtailed),
+                    listOf(4, 7, 7, 7, 7, 7, 7))) }
+                add("TOTAL load ${total.load} unserved ${total.shortfall} served $served% bill ${money(result.bill)}")
+        "BILL" -> {
+            val result = resultNoArgs(args)
+            buildList {
+                add("BILL strategy ${result.strategy} days ${data.dayCount}")
+                data.priceOrder.forEach { name ->
+                    val total = result.byPeriod.getValue(name)
+                    add("IMPORT $name ${total.imported} Wh ${money(total.importCost)}")
+                }
+                add("EXPORT ${result.total.exported} Wh ${money(-result.total.exportIncome)}")
+                add("FIXED ${money(result.settings.getValue("FIXED"))}")
+                add("DEMAND ${result.peak} Wh ${money(result.demandCharge)}")
+                add("TOTAL ${money(result.bill)}")
+fun main() {
+    val reader = BufferedReader(InputStreamReader(System.`in`))
+    val lines = generateSequence { reader.readLine() }.toList()
+    if (lines.isEmpty()) return
+    val data = InputData(lines)
+    val desk = DispatchDesk(data)
+    val output = mutableListOf<String>()
+    for (line in data.commands) {
+        val tokens = line.split(' ')
+        if (tokens.first() == "END") break
+        output.addAll(desk.execute(tokens))
+    }
+    if (output.isNotEmpty()) println(output.joinToString("\n"))

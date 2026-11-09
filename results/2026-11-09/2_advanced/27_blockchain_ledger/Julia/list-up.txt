@@ -1,0 +1,495 @@
+struct MempoolEntry
+    transaction::Transaction
+    fee::Int
+    arrival::Int
+end
+setting(node,key,i=1) = parse(Int,node.params[key][i])
+height(record) = record.block.height
+next_height(node) = height(node.tip)+1
+reward(node,h) = block_reward(h,setting(node,"REWARD"),setting(node,"REWARD",2))
+difficulty(node,parent=node.tip) = required_difficulty(
+    parent,
+    setting(node,"DIFFICULTY"),
+    setting(node,"RETARGET"),
+    setting(node,"RETARGET",2)
+)
+mature(node,coin) = is_mature(coin,next_height(node),setting(node,"MATURITY"))
+locked_references(node) = Set(ref for entry in node.mempool for ref in entry.transaction.inputs)
+priority_order(node) = sort(
+    node.mempool,
+    lt=(
+        a,
+        b
+    )->a.fee*b.transaction.size == b.fee*a.transaction.size ? a.transaction.txid < b.transaction.txid : a.fee*b.transaction.size > b.fee*a.transaction.size
+)
+find_entry(node,txid) = findfirst(entry->entry.transaction.txid == txid,node.mempool)
+log!(node,parts...) = push!(node.log,join((node.now,parts...),' '))
+function refresh_chain!(node)
+    node.main_chain = chain_to(node.tip)
+    empty!(node.confirmed)
+    for record in node.main_chain, tx in record.block.transactions
+        node.confirmed[tx.txid] = height(record)
+    end
+end
+function acceptance(node,tx)
+    is_coinbase(tx) && return ("coinbase",0,MempoolEntry[])
+    (haskey(node.confirmed,tx.txid) || !isnothing(find_entry(node,tx.txid))) && return (
+        "duplicate",
+        0,
+        MempoolEntry[]
+    )
+    reason,fee = check_transaction(
+        tx,
+        node.tip.utxo,
+        Set{Reference}(),
+        next_height(node),
+        node.owners,
+        setting(node,"MATURITY")
+    )
+    !isnothing(reason) && return (reason,0,MempoolEntry[])
+    fee*1000 < setting(node,"MINFEERATE")*tx.size && return ("low-fee",0,MempoolEntry[])
+    inputs = Set(tx.inputs)
+    conflicts = [entry for entry in node.mempool if any(ref in inputs for ref in entry.transaction.inputs)]
+    if !isempty(conflicts) && !(fee > sum(entry.fee for entry in conflicts) && all(fee*entry.transaction.size > entry.fee*tx.size for entry in conflicts))
+        return ("conflict",0,MempoolEntry[])
+    end
+    nothing,fee,conflicts
+end
+function record_drop!(node,txid,reason)
+    node.drops[txid] = reason
+    log!(node,"DROP",short_hash(txid),reason)
+end
+function drop!(node,entry,reason)
+    filter!(other->other !== entry,node.mempool)
+    record_drop!(node,entry.transaction.txid,reason)
+end
+function register!(node,tx,result,arrival)
+    _,fee,conflicts = result
+    for entry in conflicts
+        drop!(node,entry,"replaced")
+    end
+    push!(node.mempool,MempoolEntry(tx,fee,arrival))
+    length(node.mempool) > setting(node,"MEMPOOL") && drop!(node,priority_order(node)[end],"mempool-full")
+end
+function rebuild_mempool!(node,returned)
+    previous = node.mempool
+    node.mempool = MempoolEntry[]
+    candidates = vcat(
+        [(tx,node.now,true) for tx in returned],
+        [(entry.transaction,entry.arrival,false) for entry in previous]
+    )
+    for (tx,arrival,is_returned) in candidates
+        haskey(node.confirmed,tx.txid) && continue
+        result = acceptance(node,tx)
+        if !isnothing(result[1])
+            record_drop!(node,tx.txid,result[1])
+        else
+            is_returned && log!(node,"RETURN",short_hash(tx.txid))
+            register!(node,tx,result,arrival)
+        end
+    end
+end
+function switch_tip!(node,target)
+    old = node.tip
+    fork = fork_point(old,target)
+    disconnected,connected = height(old)-height(fork),height(target)-height(fork)
+    if disconnected > setting(node,"MAXREORG")
+        log!(
+            node,
+            "REFUSE",
+            height(target),
+            short_hash(target.block.hash),
+            "work",
+            target.cumulative_work,
+            "fork",
+            height(fork),
+            "depth",
+            disconnected
+        )
+        return
+    end
+    returned = [tx for record in node.main_chain[(height(fork)+2):end] for tx in record.block.transactions[2:end]]
+    node.tip = target
+    refresh_chain!(node)
+    if disconnected == 0
+        log!(node,"TIP",height(target),short_hash(target.block.hash),"work",target.cumulative_work)
+    else
+        log!(
+            node,
+            "REORG",
+            height(target),
+            short_hash(target.block.hash),
+            "work",
+            target.cumulative_work,
+            "fork",
+            height(fork),
+            "disconnected",
+            disconnected,
+            "connected",
+            connected
+        )
+        push!(
+            node.reorganizations,
+            (node.now,height(fork),disconnected,connected,old.block.hash,target.block.hash)
+        )
+    end
+    rebuild_mempool!(node,returned)
+end
+function validate_block(node,block,parent)
+    block.height != height(parent)+1 && return ("bad-height",nothing,nothing)
+    block.difficulty != difficulty(node,parent) && return ("bad-difficulty",nothing,nothing)
+    block.timestamp <= median_time(parent) && return ("time-too-old",nothing,nothing)
+    block.timestamp > node.now+setting(node,"DRIFT") && return ("time-too-new",nothing,nothing)
+    utxo = copy(parent.utxo)
+    spent = Set{Reference}()
+    fees = Int[]
+    for position in 2:length(block.transactions)
+        tx = block.transactions[position]
+        reason,fee = check_transaction(tx,utxo,spent,block.height,node.owners,setting(node,"MATURITY"))
+        !isnothing(reason) && return ("$reason tx $position",nothing,nothing)
+        union!(spent,tx.inputs)
+        apply_transaction!(utxo,tx,block.height)
+        push!(fees,fee)
+    end
+    tx = block.transactions[1]
+    any(!haskey(node.owners,a) || v == 0 for (a,v) in tx.outputs) && return (
+        "bad-output tx 1",
+        nothing,
+        nothing
+    )
+    output_total(tx) > reward(node,block.height)+sum(fees;init=0) && return ("bad-coinbase",nothing,nothing)
+    apply_transaction!(utxo,tx,block.height)
+    nothing,utxo,fees
+end
+function connect_block!(node,kind,block,peer)
+    parent = node.records[block.previous]
+    reason,utxo,fees = validate_block(node,block,parent)
+    if !isnothing(reason)
+        reject_block!(node,kind,block,peer,reason)
+        return
+    end
+    record = BlockRecord(block,parent,utxo,fees,peer.name)
+    node.records[block.hash] = record
+    peer.blocks += 1
+    log!(node,kind,peer.name,block.height,short_hash(block.hash),"accepted","work",record.cumulative_work)
+    record.cumulative_work > node.tip.cumulative_work && switch_tip!(node,record)
+end
+function resolve_orphans!(node,start)
+    queue = [start]
+    while !isempty(queue)
+        parent = popfirst!(queue)
+        children = filter(item->item[1].previous == parent,node.orphans)
+        for (block,peer) in children
+            filter!(item->item[1].hash != block.hash,node.orphans)
+            if parent in node.rejected
+                reject_block!(node,"UNORPHAN",block,peer,"bad-parent")
+            else
+                connect_block!(node,"UNORPHAN",block,peer)
+            end
+            push!(queue,block.hash)
+        end
+    end
+end
+function receive_block!(node,peer,block)
+    if haskey(
+        node.records,
+        block.hash
+    ) || any(item[1].hash == block.hash for item in node.orphans) || block.hash in node.rejected
+        log!(node,"BLOCK",peer.name,block.height,short_hash(block.hash),"rejected","duplicate")
+        peer.rejected_blocks += 1
+        tally!(node,"block","duplicate")
+        return
+    end
+    reason = context_free_error(block,setting(node,"MAXBLOCK"))
+    isnothing(reason) && block.previous in node.rejected && (reason = "bad-parent")
+    if !isnothing(reason)
+        reject_block!(node,"BLOCK",block,peer,reason)
+        resolve_orphans!(node,block.hash)
+    elseif !haskey(node.records,block.previous)
+        push!(node.orphans,(block,peer))
+        peer.orphans += 1
+        log!(
+            node,
+            "BLOCK",
+            peer.name,
+            block.height,
+            short_hash(block.hash),
+            "orphan",
+            "parent",
+            short_hash(block.previous)
+        )
+        if length(node.orphans) > setting(node,"ORPHANS")
+            evicted = popfirst!(node.orphans)
+            log!(node,"EVICT",short_hash(evicted[1].hash),"orphan-limit")
+        end
+    else
+        connect_block!(node,"BLOCK",block,peer)
+        resolve_orphans!(node,block.hash)
+    end
+end
+function process!(node,fields,texts)
+    node.now = parse(Int,fields[1])
+    for entry in copy(node.mempool)
+        node.now-entry.arrival >= setting(node,"EXPIRY") && drop!(node,entry,"expired")
+    end
+    kind = fields[2]
+    else
+        peer = get!(()->Peer(fields[3]),node.peers,fields[3])
+        if peer.score >= setting(node,"BAN")
+            peer.ignored += 1
+            log!(node,"IGNORE",peer.name,kind)
+        elseif kind == "TX"
+            receive_transaction!(node,peer,parse_transaction(fields[4]))
+        else
+            receive_block!(node,peer,parse_block_event(fields,texts))
+        end
+    end
+end
+function chain_lines(node)
+    tip = node.tip
+    lines = ["TIP $(height(tip)) $(tip.block.hash) work $(tip.cumulative_work) stored $(length(node.records)) orphans $(length(node.orphans))"]
+    for record in node.main_chain
+        b = record.block
+        miner = b.height == 0 ? "-" : node.owners[miner_address(record)].name
+        push!(
+            lines,
+            "BLOCK $(b.height) $(b.hash) prev $(short_hash(b.previous)) time $(b.timestamp) bits $(b.difficulty) nonce $(b.nonce) txs $(length(b.transactions)) size $(block_size(b)) fees $(record.fees) miner $miner source $(record.source) work $(record.cumulative_work)"
+        )
+    end
+    main_hashes = Set(r.block.hash for r in node.main_chain)
+    stale = sort(
+        [r for r in values(node.records) if !(r.block.hash in main_hashes)],
+        by=r->(height(r),r.block.hash)
+    )
+    for r in stale
+        push!(
+            lines,
+            "STALE $(height(r)) $(r.block.hash) prev $(short_hash(r.block.previous)) source $(r.source) work $(r.cumulative_work)"
+        )
+    end
+    for (t,f,d,c,old,new) in node.reorganizations
+        push!(
+            lines,
+            "REORG $t fork $f disconnected $d connected $c old $(short_hash(old)) new $(short_hash(new))"
+        )
+    end
+    for (rank,e) in enumerate(priority_order(node))
+        push!(
+            lines,
+            "MEMPOOL $rank $(e.transaction.txid) fee $(e.fee) size $(e.transaction.size) time $(e.arrival)"
+        )
+    end
+    lines
+end
+function balance_lines(node)
+    locked = locked_references(node)
+    lines = ["wallet,address,balance,immature,locked,incoming,utxos"]
+    for w in node.wallets
+        coins = [(ref,c) for (ref,c) in node.tip.utxo if c.address == w.address]
+        balance = sum((c.amount for (_,c) in coins);init=0)
+        immature = sum((c.amount for (_,c) in coins if !mature(node,c));init=0)
+        amount_locked = sum((c.amount for (ref,c) in coins if ref in locked);init=0)
+        incoming = sum((v for e in node.mempool for (a,v) in e.transaction.outputs if a == w.address);init=0)
+        push!(lines,join((w.name,w.address,balance,immature,amount_locked,incoming,length(coins)),','))
+    end
+    lines
+end
+coin_category(c) = c.height == 0 ? "genesis" : c.coinbase ? "coinbase" : "payment"
+function utxo_lines(node)
+    locked = locked_references(node)
+    lines = String[]
+    for ref in sort(collect(keys(node.tip.utxo)))
+        c = node.tip.utxo[ref]
+        state = !mature(node,c) ? "immature" : ref in locked ? "locked" : "free"
+        push!(
+            lines,
+            "$(ref[1]):$(ref[2]) $(node.owners[c.address].name) $(c.amount) height $(c.height) $(coin_category(c)) $state"
+        )
+    end
+    root = merkle_root(digest.(lines))
+    push!(lines,"TOTAL $(length(node.tip.utxo)) $(sum(c.amount for c in values(node.tip.utxo)))","ROOT $root")
+    lines
+end
+function history_lines(node)
+    confirmed = Dict(tx.txid=>tx for r in node.main_chain for tx in r.block.transactions)
+    lines = String[]
+    for w in node.wallets
+        push!(lines,"WALLET $(w.name) $(w.address)")
+        count,spent_total,received_total,balance,pending = 0,0,0,0,0
+        for r in node.main_chain, tx in r.block.transactions
+            inputs = [confirmed[id].outputs[index+1] for (id,index) in tx.inputs]
+            involved = any(a == w.address for (a,_) in inputs) || any(a == w.address for (a,_) in tx.outputs)
+            involved || continue
+            spent = sum((v for (a,v) in inputs if a == w.address);init=0)
+            received = sum((v for (a,v) in tx.outputs if a == w.address);init=0)
+            count += 1
+            spent_total += spent
+            received_total += received
+            balance += received-spent
+            category = is_coinbase(tx) ? (height(r) == 0 ? "genesis" : "coinbase") : "payment"
+            push!(
+                lines,
+                "$(height(r)) $(short_hash(tx.txid)) $category spent $spent received $received net $(signed(received-spent)) balance $balance"
+            )
+        end
+        for e in priority_order(node)
+            tx = e.transaction
+            spent = sum((node.tip.utxo[ref].amount for ref in tx.inputs if node.tip.utxo[ref].address == w.address);init=0)
+            received = sum((v for (a,v) in tx.outputs if a == w.address);init=0)
+            if spent != 0 || received != 0
+                pending += 1
+                push!(
+                    lines,
+                    "pending $(short_hash(tx.txid)) spent $spent received $received net $(signed(received-spent))"
+                )
+            end
+        end
+        push!(
+            lines,
+            "END $(w.name) txs $count spent $spent_total received $received_total balance $balance pending $pending"
+        )
+    end
+    lines
+end
+    lines = readlines("input/events.txt")
+    position = 1
+    while position <= length(lines)
+        fields = String.(split(lines[position]))
+        count = fields[2] == "BLOCK" ? parse(Int,fields[10]) : 0
+        process!(node,fields,lines[(position+1):(position+count)])
+        position += count+1
+    end
+    mkpath("output")
+    for (name,contents) in (
+        ("log.txt",node.log),
+        ("chain.txt",chain_lines(node)),
+        ("balances.csv",balance_lines(node)),
+        ("utxo.txt",utxo_lines(node)),
+        ("history.txt",history_lines(node))
+    )
+                println(io,line)
+struct BlockRecord
+    block::Block
+    parent::Union{Nothing,BlockRecord}
+    utxo::Dict{Reference,Coin}
+    transaction_fees::Vector{Int}
+    fees::Int
+    source::String
+    cumulative_work::Int
+end
+BlockRecord(block,parent,utxo,fees,source) = BlockRecord(
+    block,
+    parent,
+    utxo,
+    fees,
+    sum(fees;init=0),
+    source,
+    isnothing(parent) ? 1 : parent.cumulative_work+16^block.difficulty
+)
+function ancestor(record,height)
+    while record.block.height > height
+        record = record.parent
+    end
+    record
+end
+function chain_to(record)
+    records = BlockRecord[]
+    while !isnothing(record)
+        push!(records,record)
+        record = record.parent
+    end
+    reverse!(records)
+end
+function fork_point(first,second)
+    h = min(first.block.height,second.block.height)
+    first,second = ancestor(first,h),ancestor(second,h)
+    while first !== second
+        first,second = first.parent,second.parent
+    end
+    first
+end
+struct Block
+    height::Int
+    previous::String
+    merkle::String
+    timestamp::Int
+    difficulty::Int
+    nonce::Int
+    transactions::Vector{Transaction}
+    hash::String
+end
+header_text(h,p,m,t,d,n) = "$h|$p|$m|$t|$d|$n"
+Block(h,p,m,t,d,n,txs) = Block(h,p,m,t,d,n,txs,digest(header_text(h,p,m,t,d,n)))
+block_size(block) = sum((tx.size for tx in block.transactions[2:end]); init=0)
+meets_difficulty(hash,difficulty) = startswith(hash, repeat("0",difficulty))
+function parse_block_event(fields,texts)
+    Block(
+        parse(Int,fields[4]),
+        fields[5],
+        fields[6],
+        parse(Int,fields[7]),
+        parse(Int,fields[8]),
+        parse(Int,fields[9]),
+        parse_transaction.(texts)
+    )
+end
+function context_free_error(block,max_size)
+    !meets_difficulty(block.hash,block.difficulty) && return "bad-pow"
+    merkle_root([tx.txid for tx in block.transactions]) != block.merkle && return "bad-merkle"
+    first = block.transactions[1]
+    (!is_coinbase(first) || first.coinbase_height != block.height || any(
+        is_coinbase,
+        block.transactions[2:end]
+    )) && return "bad-structure"
+    block_size(block) > max_size && return "too-large"
+    nothing
+end
+const Reference = Tuple{String,Int}
+const Output = Tuple{String,Int}
+struct Transaction
+    text::String
+    txid::String
+    size::Int
+    inputs::Vector{Reference}
+    outputs::Vector{Output}
+    signatures::Vector{String}
+    coinbase_height::Union{Nothing,Int}
+end
+struct Coin
+    address::String
+    amount::Int
+    height::Int
+    coinbase::Bool
+end
+is_coinbase(tx) = !isnothing(tx.coinbase_height)
+is_mature(coin, height, maturity) = !coin.coinbase || coin.height == 0 || height >= coin.height + maturity
+output_total(tx) = sum((v for (_,v) in tx.outputs); init=0)
+transaction_body(tx) = first(split(tx.text, ";sig="))
+function check_transaction(tx, utxo, spent, height, owners, maturity)
+    any(!haskey(owners,a) || v == 0 for (a,v) in tx.outputs) && return ("bad-output",0)
+    seen = Set{Reference}()
+    total = 0
+    for (i,ref) in enumerate(tx.inputs)
+        (ref in spent || ref in seen) && return ("double-spend",0)
+        !haskey(utxo,ref) && return ("missing-input",0)
+        coin = utxo[ref]
+        !is_mature(coin,height,maturity) && return ("immature",0)
+        tx.signatures[i] != signature(
+            owners[coin.address].secret,
+            i-1,
+            transaction_body(tx)
+        ) && return ("bad-sig",0)
+        push!(seen,ref)
+        total += coin.amount
+    end
+    total < output_total(tx) && return ("overspend",0)
+    nothing, total - output_total(tx)
+end
+function apply_transaction!(utxo, tx, height)
+    for ref in tx.inputs
+        delete!(utxo,ref)
+    end
+    for (i,(address,amount)) in enumerate(tx.outputs)
+        utxo[(tx.txid,i-1)] = Coin(address,amount,height,is_coinbase(tx))
+    end
+end

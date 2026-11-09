@@ -1,0 +1,25 @@
+fn main() {
+    let a = [3, 8, 11, 15, 19, 24, 27, 31, 36, 42, 47, 53, 58, 64, 70, 77];
+    for t in [42, 3, 77, 31, 50, 1] {
+        let (mut lo, mut hi, mut found) = (0_i32, 15_i32, -1);
+        print!("{}: probes", t);
+        while lo <= hi {
+            let mid = (lo + hi) / 2;
+            print!(" {}", mid);
+            if a[mid as usize] == t {
+                found = mid;
+                break;
+            }
+            if a[mid as usize] < t {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if found >= 0 {
+            println!(" -> index {}", found);
+        } else {
+            println!(" -> not found");
+        }
+    }
+}

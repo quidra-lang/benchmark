@@ -1,0 +1,154 @@
+static void start_throw(Simulator *s, int index, char position) {
+    Point *p = &s->layout.points[index];
+    p->moving = true;
+    p->target = position;
+    p->completion = s->time + s->throw_time;
+    log_event(s, "MOVE %s %c until %d", p->name, position, p->completion);
+}
+static void add_request(Simulator *s, int index, const char *requester) {
+    Request *q = &s->queue[s->queue_count++];
+    *q = (Request){.number = ++s->total_requests, .route = index, .time = s->time};
+    strcpy(q->reason, "none");
+    Route *r = &s->interlocking.routes[index];
+    ++r->requests;
+    log_event(s, "REQUEST q%d %s %s", q->number, r->name, requester);
+}
+static void cancel_route(Simulator *s, int index) {
+    Route *r = &s->interlocking.routes[index];
+    int remaining = 0;
+    bool removed = false;
+    for (int i = 0; i < s->queue_count; ++i) {
+        Request q = s->queue[i];
+        if (q.route == index) {
+            log_event(s, "DROP q%d %s", q.number, r->name);
+            ++s->dropped;
+            removed = true;
+        } else
+            s->queue[remaining++] = q;
+    }
+    s->queue_count = remaining;
+    if (removed)
+        return;
+    if (r->state == ROUTE_LOCKED) {
+        ++r->cancels;
+        Signal *g = &s->layout.signals[r->start];
+        if (g->aspect != ASPECT_RED && occupied(&s->layout.sections[g->section])) {
+            r->state = ROUTE_APPROACH;
+            r->release_time = s->time + r->approach;
+            log_event(s, "CANCEL %s approach until %d", r->name, r->release_time);
+        } else {
+            release_route(&s->interlocking, &s->layout, index);
+            log_event(s, "CANCEL %s released", r->name);
+        }
+    } else
+        log_event(s, "CANCEL %s %s", r->name, r->state == ROUTE_NONE ? "none" : "refused");
+}
+static void request_reason(const Simulator *s, int index, char out[64]) {
+    const Route *r = &s->interlocking.routes[index];
+    out[0] = 0;
+    if (r->state != ROUTE_NONE) {
+        strcpy(out, "busy");
+        return;
+    }
+    for (size_t j = 0; j < r->conflict_count; ++j) {
+        const Route *conflict = &s->interlocking.routes[r->conflicts[j]];
+        if (conflict->state == ROUTE_LOCKED || conflict->state == ROUTE_APPROACH) {
+            snprintf(out, 64, "conflict %s", conflict->name);
+            return;
+        }
+    }
+    for (int j = 0; j < r->section_count + r->overlap_count; ++j) {
+        bool is_route = j < r->section_count;
+        int section_index = is_route ? r->sections[j] : r->overlap[j - r->section_count];
+        const Section *section = &s->layout.sections[section_index];
+        if (occupied(section)) {
+            snprintf(out, 64, "occupied %s", section->name);
+            return;
+        }
+        bool locked =
+            section->route >= 0 &&
+            (is_route || s->interlocking.routes[section->route].direction != r->direction);
+        if (locked || opposite_overlap(s, section, r->direction)) {
+            snprintf(out, 64, "locked %s", section->name);
+            return;
+        }
+    }
+    for (size_t j = 0; j < requirement_count(r); ++j) {
+        Requirement q = requirement_at(r, j);
+        const Point *p = &s->layout.points[q.point];
+        if (q.position == 'N' ? p->reverse_locks != 0 : p->normal_locks != 0) {
+            snprintf(out, 64, "point %s locked", p->name);
+            return;
+        }
+        if ((!p->moving && p->position == q.position) || (p->moving && p->target == q.position))
+            continue;
+        const char *failure = p->failed                                  ? "failed"
+                              : p->moving                                ? "moving"
+                              : occupied(&s->layout.sections[p->common]) ? "occupied"
+                                                                         : NULL;
+        if (failure) {
+            snprintf(out, 64, "point %s %s", p->name, failure);
+            return;
+        }
+    }
+}
+static void judge_requests(Simulator *s) {
+    int pending = 0;
+    for (int i = 0; i < s->queue_count; ++i) {
+        Request q = s->queue[i];
+        Route *r = &s->interlocking.routes[q.route];
+        char failure[64];
+        request_reason(s, q.route, failure);
+        if (*failure) {
+            if (strcmp(failure, q.reason) != 0) {
+                log_event(s, "WAIT q%d %s %s", q.number, r->name, failure);
+                strcpy(q.reason, failure);
+            }
+            s->queue[pending++] = q;
+            continue;
+        }
+        lock_route(&s->interlocking, &s->layout, q.route);
+        int wait = s->time - q.time;
+        ++s->granted;
+        ++r->grants;
+        r->wait += wait;
+        if (wait > r->maxwait)
+            r->maxwait = wait;
+        log_event(s, "GRANT q%d %s wait %d", q.number, r->name, wait);
+        for (size_t j = 0; j < requirement_count(r); ++j) {
+            Requirement requirement = requirement_at(r, j);
+            const Point *p = &s->layout.points[requirement.point];
+            if (!p->moving && p->position != requirement.position)
+                start_throw(s, requirement.point, requirement.position);
+        }
+    }
+    s->queue_count = pending;
+}
+        for (int i = 0; i < s->planned_count; ++i)
+            if (s->planned[i].time == s->time)
+                add_request(s, s->planned[i].route, s->trains[s->planned[i].train].name);
+        for (int i = 0; i < s->event_count; ++i)
+            if (s->events[i].time == s->time)
+                execute_event(s, &s->events[i]);
+        judge_requests(s);
+void lock_route(Interlocking *i, Layout *l, int index) {
+    Route *r = &i->routes[index];
+    uint64_t bit = UINT64_C(1) << index;
+    r->state = ROUTE_LOCKED;
+    memset(r->passed, 0, sizeof(r->passed));
+    for (int j = 0; j < r->section_count; ++j)
+        l->sections[r->sections[j]].route = index;
+    for (int j = 0; j < r->overlap_count; ++j)
+        l->sections[r->overlap[j]].overlaps |= bit;
+    for (size_t j = 0; j < requirement_count(r); ++j) {
+        Requirement q = requirement_at(r, j);
+        Point *p = &l->points[q.point];
+        if (q.position == 'N')
+            p->normal_locks |= bit;
+        else
+            p->reverse_locks |= bit;
+    }
+    r->overlap_locked = true;
+    r->overlap_counter = 0;
+    r->release_time = -1;
+}

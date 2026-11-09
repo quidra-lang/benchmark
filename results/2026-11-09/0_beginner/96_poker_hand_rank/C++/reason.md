@@ -1,0 +1,5 @@
+The rank spelling 23456789TJQKA plus offset 2 encodes T=10 and A=14. Ordinary comparison keys order by multiplicity then descending rank, so an ordinary ace-high hand retains 14 at the high end. The five-distinct-rank wheel condition detects exactly A,2,3,4,5; its comparison sequence is explicitly rewritten [5,4,3,2,1], treating the ace as low rather than 14. These are card-rank comparison values, independent of the final one-based printed hand position. Rank parsing, key formation and wheel override suffice; category selection/output are excluded.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

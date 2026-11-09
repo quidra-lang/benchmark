@@ -1,0 +1,7 @@
+using System;
+using System.Globalization;
+
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+foreach (int seconds in new[] { 0, 59, 3725, 45296, 86400, 312047 })
+    Console.WriteLine($"{seconds} seconds = {seconds / 3600:D2}:{seconds / 60 % 60:D2}:{seconds % 60:D2}");

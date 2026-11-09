@@ -1,0 +1,264 @@
+ordered_sum <- function(values) {
+  total <- 0
+  for (value in values) total <- total+value
+  total
+}
+normalize <- function(values) values/ordered_sum(values)
+make_model <- function(name,states,symbols,missing,initial,transition,emission) {
+  for (i in seq_len(nrow(transition))) {
+    transition[i,] <- normalize(transition[i,])
+    emission[i,] <- normalize(emission[i,])
+  }
+  list(
+      name=name,
+      states=states,
+      symbols=symbols,
+      missing=missing,
+      initial=normalize(initial),
+      transition=transition,
+      emission=emission
+  )
+}
+read_inputs <- function() {
+  read_tokens <- function(name) strsplit(readLines(file.path("input",name))," ",fixed=TRUE)
+  rows <- read_tokens("model.txt")
+  states <- rows[[1L]][-1L]
+  symbols <- rows[[2L]][-1L]
+  k <- length(states)
+  initial <- as.numeric(rows[[4L]][-1L])
+  transition <- do.call(rbind,lapply(rows[seq.int(5L,4L+k)],function(row) as.numeric(row[-(1:2)])))
+  emission <- do.call(rbind,lapply(rows[seq.int(5L+k,4L+2L*k)],function(row) as.numeric(row[-(1:2)])))
+  model <- make_model("INITIAL",states,symbols,rows[[3L]][2L],initial,transition,emission)
+  list(
+      model=model,
+      sequences=read_tokens("sequences.txt"),
+      labeled=read_tokens("labeled.txt"),
+      parameters=read_tokens("params.txt")
+  )
+}
+maximum_index <- function(values) which.max(values)
+emission_factors <- function(model,observation) if (observation == 0L) rep(
+    1,
+    length(model$states)
+) else model$emission[,observation]
+log_emission_factors <- function(model,observation) if (observation == 0L) rep(
+    0,
+    length(model$states)
+) else log(model$emission[,observation])
+scaled_forward <- function(model,observations) {
+  k <- length(model$states)
+  t_count <- length(observations)
+  values <- emissions <- matrix(0,t_count,k)
+  scales <- numeric(t_count)
+  loglik <- 0
+  for (t in seq_len(t_count)) {
+    emissions[t,] <- emission_factors(model,observations[t])
+    unscaled <- numeric(k)
+    for (j in seq_len(k)) {
+      incoming <- if (t == 1L) model$initial[j] else ordered_sum(vapply(
+          seq_len(k),
+          function(i) values[t-1L,i]*model$transition[i,j],
+          numeric(1)
+      ))
+      unscaled[j] <- incoming*emissions[t,j]
+    }
+    scales[t] <- ordered_sum(unscaled)
+    values[t,] <- unscaled/scales[t]
+    loglik <- loglik+log(scales[t])
+  }
+  list(values=values,scales=scales,emissions=emissions,loglik=loglik)
+}
+forward_backward <- function(model,observations) {
+  forward <- scaled_forward(model,observations)
+  k <- length(model$states)
+  t_count <- length(observations)
+  backward <- matrix(0,t_count,k)
+  backward[t_count,] <- 1
+  if (t_count > 1L) for (t in seq.int(t_count-1L,1L)) for (i in seq_len(k))
+    backward[t,i] <- ordered_sum(vapply(
+        seq_len(k),
+        function(j) model$transition[i,j]*forward$emissions[t+1L,j]*backward[t+1L,j],
+        numeric(1)
+    ))/forward$scales[t+1L]
+  list(
+      forward=forward$values,
+      backward=backward,
+      scales=forward$scales,
+      emissions=forward$emissions,
+      posterior=forward$values*backward,
+      loglik=forward$loglik
+  )
+}
+viterbi <- function(model,observations) {
+  k <- length(model$states)
+  t_count <- length(observations)
+  transition <- log(model$transition)
+  scores <- log(model$initial)+log_emission_factors(model,observations[1L])
+  previous <- matrix(0L,t_count,k)
+  if (t_count > 1L) for (t in seq.int(2L,t_count)) {
+    factors <- log_emission_factors(model,observations[t])
+    next_scores <- numeric(k)
+    for (j in seq_len(k)) {
+      candidates <- scores+transition[,j]
+      i <- maximum_index(candidates)
+      previous[t,j] <- i
+      next_scores[j] <- candidates[i]+factors[j]
+    }
+    scores <- next_scores
+  }
+  path <- integer(t_count)
+  path[t_count] <- maximum_index(scores)
+  logprob <- scores[path[t_count]]
+  if (t_count > 1L) for (t in seq.int(t_count,2L)) path[t-1L] <- previous[t,path[t]]
+  list(path=path,logprob=logprob)
+}
+decode <- function(model,observations) {
+  fb <- forward_backward(model,observations)
+  path <- viterbi(model,observations)
+  posterior <- vapply(seq_len(length(observations)),function(t) maximum_index(fb$posterior[t,]),integer(1))
+  confidence <- vapply(seq_along(posterior),function(t) fb$posterior[t,posterior[t]],numeric(1))
+  list(viterbi=path$path,viterbi_logprob=path$logprob,posterior=posterior,confidence=confidence,fb=fb)
+}
+confusion_matrix <- function(k) matrix(0L,k,k)
+accumulate_confusion <- function(matrix,truth,prediction) {
+  for (i in seq_along(truth)) matrix[truth[i],prediction[i]] <- matrix[truth[i],prediction[i]]+1L
+  matrix
+}
+correct_count <- function(truth,prediction) sum(truth == prediction)
+characters <- function(text) strsplit(text,"",fixed=TRUE)[[1L]]
+encode_observations <- function(text,model) {
+  result <- match(text,model$symbols)
+  result[text == model$missing] <- 0L
+  result
+}
+  for (offset in seq.int(1L,length(labeled_rows),by=2L)) {
+    row <- labeled_rows[[offset]]
+    name <- row[1L]
+    role <- row[2L]
+    observations <- characters(toupper(row[3L]))
+    labels <- characters(labeled_rows[[offset+1L]][1L])
+    reason <- rejection_reason(name,observations,labels,seen,model,params)
+    if (is.null(reason)) {
+      record <- list(
+          name=name,
+          observations=encode_observations(observations,model),
+          path=match(labels,model$states)
+      )
+      if (role == "TRAIN") training[[length(training)+1L]] <- record else testing[[length(testing)+1L]] <- record
+    } else rejections <- c(rejections,paste("REJECT labeled.txt line",offset,name,reason))
+  }
+  list(sequences=sequences,training=training,testing=testing,rejections=rejections)
+}
+evaluate_model <- function(model,records,params) {
+  decoded <- lapply(records,function(record) decode(model,record$observations))
+  blocks <- list()
+  correct_totals <- integer()
+  for (decoder in c("VITERBI","POSTERIOR")) {
+    matrix <- confusion_matrix(length(model$states))
+    regions <- bounds <- integer(4L)
+    calibration <- matrix(0L,10L,2L)
+    record_lines <- character()
+    total_correct <- 0L
+    for (i in seq_along(records)) {
+      record <- records[[i]]
+      result <- decoded[[i]]
+      path <- if (decoder == "VITERBI") result$viterbi else result$posterior
+      correct <- correct_count(record$path,path)
+      total_correct <- total_correct+correct
+      matrix <- accumulate_confusion(matrix,record$path,path)
+      predicted <- extract_segments(path,params)
+      truth <- lapply(
+          Filter(function(run) run[1L] == params$segment_state,runs(record$path)),
+          function(run) run[2:3]
+      )
+      regions <- regions+region_counts(predicted,truth)
+      bounds <- bounds+boundary_counts(path,record$path,params$boundary_tolerance)
+      if (decoder == "POSTERIOR") for (t in seq_along(path)) {
+        bin <- min(floor(10*result$confidence[t]),9L)+1L
+        calibration[bin,1L] <- calibration[bin,1L]+1L
+        calibration[bin,2L] <- calibration[bin,2L]+as.integer(path[t] == record$path[t])
+      }
+      record_lines <- c(record_lines,paste("RECORD",record$name,"length",length(path),"correct",correct))
+    }
+    lines <- c(paste("EVALUATION",model$name,decoder),matrix_lines(model$states,matrix),metric_lines(model$states,matrix),
+      paste(
+          "REGIONS",
+          model$states[params$segment_state],
+          "predicted",
+          regions[1L],
+          "true",
+          regions[2L],
+          "precision",
+          fraction(regions[3L],regions[1L]),
+          "recall",
+          fraction(regions[4L],regions[2L])
+      ),
+      paste(
+          "BOUNDARIES predicted",
+          bounds[1L],
+          "true",
+          bounds[2L],
+          "precision",
+          fraction(bounds[3L],bounds[1L]),
+          "recall",
+          fraction(bounds[4L],bounds[2L])
+      ))
+    if (decoder == "POSTERIOR") for (b in seq_len(10L)-1L) {
+      positions <- calibration[b+1L,1L]
+      correct <- calibration[b+1L,2L]
+      if (positions == 0L) next
+      interval <- if (b == 9L) "0.9-1.0" else paste0("0.",b,"-0.",b+1L)
+      lines <- c(
+          lines,
+          paste(
+              "CALIBRATION",
+              interval,
+              "positions",
+              positions,
+              "correct",
+              correct,
+              "accuracy",
+              fraction(correct,positions)
+          )
+      )
+    }
+    blocks[[length(blocks)+1L]] <- c(lines,record_lines)
+    correct_totals <- c(correct_totals,total_correct)
+  }
+  list(blocks=blocks,scores=correct_totals)
+}
+state_string <- function(model,path) paste(model$states[path],collapse="")
+annotate_sequences <- function(model,records,decoded,params) {
+  generator <- minstd(params$posterior_seed)
+  decoding_lines <- character()
+  segment_lines <- "sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"
+  for (i in seq_along(records)) {
+    record <- records[[i]]
+    result <- decoded[[i]]
+    decoding_lines <- c(decoding_lines,paste("SEQUENCE",record$name,"length",n,"loglik",real_text(result$fb$loglik),"viterbi",real_text(result$viterbi_logprob),"differences",differences,"uncertain",uncertain,"expected_segments",real_text(expected_segments)),
+      paste("VITERBI",state_string(model,result$viterbi)),paste("POSTERIOR",state_string(model,result$posterior)),paste("CONFIDENT",confident),paste(
+          "IMPUTED",
+          imputed_string(model,record$observations,result$fb$posterior)
+      ))
+  inputs <- read_inputs()
+  initial <- inputs$model
+  params <- interpret_parameters(inputs$parameters,initial)
+  validated <- validate_inputs(inputs$sequences,inputs$labeled,initial,params)
+  sequences <- validated$sequences
+  training <- validated$training
+  testing <- validated$testing
+  models <- list(initial,bw$model,vt$model,supervised$model)
+  evaluation_blocks <- scores <- list()
+  for (model in models) {
+    evaluation <- evaluate_model(model,testing,params)
+    evaluation_blocks <- c(evaluation_blocks,evaluation$blocks)
+    scores[[length(scores)+1L]] <- evaluation$scores
+  }
+  decoded <- lapply(
+      models,
+      function(model) lapply(sequences,function(record) decode(model,record$observations))
+  )
+  annotation <- annotate_sequences(bw$model,sequences,decoded[[2L]],params)
+  reports <- list("trained_model.txt"=join_blocks(lapply(models[-1L],model_lines)),"loglik_trace.csv"=bw$trace,"viterbi_trace.csv"=vt$trace,
+    "decodings.txt"=annotation$decodings,"segments.csv"=annotation$segments,"samples.txt"=samples,"evaluation.txt"=join_blocks(evaluation_blocks),"report.txt"=join_blocks(report_blocks))
+  for (name in names(reports)) write_lines(name,reports[[name]])

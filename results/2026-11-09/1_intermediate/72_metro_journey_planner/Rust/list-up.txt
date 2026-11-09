@@ -1,0 +1,312 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read};
+fn time(s: &str) -> i32 {
+    let (h,m) = s.split_once(':').unwrap();
+    h.parse::<i32>().unwrap()*60+m.parse::<i32>().unwrap()
+}
+fn pair(a: &str, b: &str) -> (String,String) {
+    if a < b {
+        (a.into(),b.into())
+    } else {
+        (b.into(),a.into())
+    }
+}
+#[derive(Clone)]
+struct Station {
+    zone: i32, name: String, transfer: i32, closed: bool
+}
+#[derive(Clone)]
+struct Line {
+    first: i32, last: i32, headway: i32, stops: Vec<String>, offsets: Vec<i32>, delay: i32, suspended: bool
+}
+impl Line {
+    fn total(&self) -> i32 {
+        *self.offsets.last().unwrap()
+    }
+    fn trips(&self) -> i32 {
+        (self.last-self.first)/self.headway+1
+    }
+    fn direction(&self, reverse: bool) -> (Vec<String>,Vec<i32>) {
+        if reverse {
+            (self.stops.iter().rev().cloned().collect(),self.offsets.iter().rev().map(|&t|self.total()-t).collect())
+        } else {
+            (self.stops.clone(),self.offsets.clone())
+        }
+    }
+    fn next(&self, offset: i32, ready: i32) -> Option<i32> {
+        let delta = ready-self.first-self.delay-offset;
+        let q = if delta <= 0 {
+            0
+        } else {
+            (delta+self.headway-1)/self.headway
+        };
+        (q < self.trips()).then_some(q)
+    }
+    fn at(&self, q: i32, offset: i32) -> i32 {
+        self.first+self.delay+q*self.headway+offset
+    }
+}
+#[derive(Clone)]
+enum Leg {
+    Ride {
+        line: String, terminal: String, from: String, departure: i32, to: String, arrival: i32, stops: usize
+    },
+    Walk {
+        from: String, departure: i32, to: String, arrival: i32
+    },
+    Stay {
+        station: String, start: i32, end: i32
+    },
+}
+#[derive(Clone)]
+struct Label {
+    arrival: i32, journey: Vec<Leg>
+}
+type Labels = BTreeMap<String,Label>;
+fn rides(j: &[Leg]) -> usize {
+    j.iter().filter(|l|matches!(l,Leg::Ride {
+        ..
+    })).count()
+}
+fn relax(labels: &mut Labels, station: &str, arrival: i32, journey: &[Leg], leg: Leg) -> bool {
+    if labels.get(station).is_none_or(|old|old.arrival > arrival) {
+        let mut j = journey.to_vec();
+        j.push(leg);
+        labels.insert(station.into(),Label {
+            arrival,journey:j
+        });
+        true
+    } else {
+        false
+    }
+}
+struct Planner {
+    stations: BTreeMap<String,Station>, lines: BTreeMap<String,Line>, walks: BTreeMap<(String,String),i32>, closed: BTreeSet<(String,String)>, tariff: Option<(i32,i32,Vec<i32>)>
+}
+impl Planner {
+    fn station(&self, s: &str) -> Result<&Station,String> {
+        self.stations.get(s).ok_or_else(||format!("unknown station {s}"))
+    }
+    fn open_station(&self, s: &str) -> Result<(),String> {
+        if self.station(s)?.closed {
+            Err(format!("station {s} is closed"))
+        } else {
+            Ok(())
+        }
+    }
+    fn common(&self, a: &str, b: &str) -> Result<(),String> {
+        self.station(a)?;
+        self.station(b)?;
+        if a == b {
+            return Err("origin and destination are the same".into());
+        }
+        self.open_station(a)?;
+        self.open_station(b)
+    }
+    fn neighbors(&self, s: &str) -> Vec<(String,i32)> {
+        let mut out: Vec<_> = self.walks.iter().filter_map(|((a,b),&t)|if a == s {
+            Some((b.clone(),t))
+        } else if b == s {
+            Some((a.clone(),t))
+        } else {
+            None
+        }).collect();
+        out.sort_by(|a,b|a.0.cmp(&b.0));
+        out
+    }
+    fn earliest(&self, origin: &str, departure: i32) -> Labels {
+        let mut labels = Labels::from([(origin.into(),Label {
+            arrival:departure,journey:Vec::new()
+        })]);
+        let mut settled = BTreeSet::new();
+        loop {
+            let Some((u,label)) = labels.iter().filter(|(s,_)|!settled.contains(*s)).min_by_key(|(s,l)|(l.arrival,*s)).map(|(s,l)|(s.clone(),l.clone())) else {
+                break;
+            };
+            settled.insert(u.clone());
+            let ready = label.arrival+if u == origin {
+                0
+            } else {
+                self.stations[&u].transfer
+            };
+            for (id,line) in &self.lines {
+                if line.suspended || !line.stops.contains(&u) {
+                    continue;
+                }
+                for reverse in [false,true] {
+                    let (stops,offsets) = line.direction(reverse);
+                    let i = stops.iter().position(|s|s == &u).unwrap();
+                    if i+1 == stops.len() {
+                        continue;
+                    }
+                    let Some(q) = line.next(offsets[i],ready) else {
+                        continue;
+                    };
+                    let d = line.at(q,offsets[i]);
+                    for j in i+1..stops.len() {
+                        if self.closed.contains(&pair(&stops[j-1],&stops[j])) {
+                            break;
+                        }
+                        if self.stations[&stops[j]].closed {
+                            continue;
+                        }
+                        let t = line.at(q,offsets[j]);
+                        relax(&mut labels,&stops[j],t,&label.journey,Leg::Ride {
+                            line:id.clone(),terminal:stops.last().unwrap().clone(),from:u.clone(),departure:d,to:stops[j].clone(),arrival:t,stops:j-i
+                        });
+                    }
+                }
+            }
+            for (v,w) in self.neighbors(&u) {
+                let t = label.arrival+w;
+                if !self.stations[&v].closed && t <= 1440 {
+                    relax(&mut labels,&v,t,&label.journey,Leg::Walk {
+                        from:u.clone(),departure:label.arrival,to:v.clone(),arrival:t
+                    });
+                }
+            }
+        }
+        labels
+    }
+    fn fare(&self, journey: &[Leg], child: bool) -> (i32,Vec<String>) {
+        let (discount,window,prices) = self.tariff.as_ref().unwrap();
+        let half = |n:i32|(n+19)/20*10;
+        let cap = if child {
+            half(*discount)
+        } else {
+            *discount
+        };
+        let mut previous = None;
+        let mut total = 0;
+        let mut tickets = Vec::new();
+        for leg in journey {
+            if let Leg::Ride {
+                line,from,to,departure,arrival,..
+            } = leg {
+                let stops = &self.lines[line].stops;
+                let a = stops.iter().position(|s|s == from).unwrap();
+                let b = stops.iter().position(|s|s == to).unwrap();
+                let zones = stops[a.min(b)..=a.max(b)].iter().map(|s|self.stations[s].zone).collect::<BTreeSet<_>>().len();
+                let mut price = prices[zones.min(prices.len())-1];
+                if child {
+                    price = half(price);
+                }
+                let reduction = if previous.is_some_and(|t|departure-t <= *window) {
+                    cap.min(price)
+                } else {
+                    0
+                };
+                let pay = price-reduction;
+                total += pay;
+                previous = Some(*arrival);
+                tickets.push(format!("TICKET {line} {from} {to} zones {zones} price {price} discount {reduction} pay {pay}"));
+            }
+        } (total,tickets)
+    }
+    fn command(&mut self, w: &[&str]) -> Result<Vec<String>,String> {
+        let c = w[0];
+        let a = &w[1..];
+        let num = |i:usize|a[i].parse::<i32>().unwrap();
+        let mut out = Vec::new();
+        match c {
+            "STATION" => {
+                if self.stations.contains_key(a[0]) {
+                    return Err(format!("station {} already exists",a[0]));
+                }
+                self.stations.insert(a[0].into(),Station {
+                    zone:num(1),name:a[2].into(),transfer:0,closed:false
+                });
+            }
+            "LINE" => {
+                if self.lines.contains_key(a[0]) {
+                    return Err(format!("line {} already exists",a[0]));
+                }
+                let stops: Vec<String> = a[4..].iter().step_by(2).map(|s|s.to_string()).collect();
+                for s in &stops {
+                    self.station(s)?;
+                }
+                let mut seen = BTreeSet::new();
+                for s in &stops {
+                    if !seen.insert(s.clone()) {
+                        return Err(format!("station {s} appears twice on line {}",a[0]));
+                    }
+                }
+                let first = time(a[1]);
+                let last = time(a[2]);
+                let mut offsets = vec![0];
+                for s in a[5..].iter().step_by(2) {
+                    offsets.push(offsets.last().unwrap()+s.parse::<i32>().unwrap());
+                }
+                if first > last {
+                    return Err(format!("line {} first departure is after last departure",a[0]));
+                }
+                if last+offsets.last().unwrap() > 1440 {
+                    return Err(format!("line {} runs past 24:00",a[0]));
+                }
+                let line = Line {
+                    first,last,headway:num(3),stops,offsets,delay:0,suspended:false
+                };
+                self.lines.insert(a[0].into(),line);
+            }
+            "WALK" => {
+                self.station(a[0])?;
+                self.station(a[1])?;
+                if a[0] == a[1] {
+                    return Err(format!("walk from {} to itself",a[0]));
+                }
+                let old = self.walks.insert(pair(a[0],a[1]),num(2));
+            }
+            "TARIFF" => {
+                let prices: Vec<_> = (2..a.len()).map(num).collect();
+                if prices.windows(2).any(|p|p[0] > p[1]) {
+                    return Err("tariff prices must not decrease".into());
+                }
+                self.tariff = Some((num(0),num(1),prices));
+            }
+            "ROUTE" | "FEWEST" | "PARETO" | "FARE" | "LASTTRAIN" | "ARRIVEBY" | "PROFILE" => {
+                self.common(a[0],a[1])?;
+                if c == "FARE" {
+                    if !["ADULT","CHILD"].contains(&a[3]) {
+                        return Err(format!("unknown fare class {}",a[3]));
+                    }
+                    if self.tariff.is_none() {
+                        return Err("no tariff".into());
+                    }
+                }
+                let heading = format!("{c} {} {}",a[0],a[1]);
+                else {
+                    let start = time(a[2]);
+                    let labels = self.earliest(a[0],start);
+                    if let Some(label) = labels.get(a[1]) {
+                        if c == "FARE" {
+                            let (total,tickets) = self.fare(&label.journey,a[3] == "CHILD");
+                            out.push(format!("{heading} {} {} rides {} total {total}",a[2],a[3],rides(&label.journey)));
+                            out.extend(tickets);
+                    } else {
+                        out.push(format!("{heading} {}{} unreachable",a[2],if c == "FARE" {
+                            " ".to_string()+a[3]
+                        } else {
+                            String::new()
+                        }));
+                    }
+                }
+            }
+        } Ok(out)
+    }
+}
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let mut lines = input.lines();
+    let n: usize = lines.next().unwrap().parse().unwrap();
+    let mut planner = Planner {
+        stations:BTreeMap::new(),lines:BTreeMap::new(),walks:BTreeMap::new(),closed:BTreeSet::new(),tariff:None
+    };
+    for line in lines.take(n) {
+        match planner.command(&line.split(' ').collect::<Vec<_>>()) {
+            Ok(out) => for line in out {
+                println!("{line}");
+            }, Err(error) => println!("ERROR {error}")
+        }
+    }
+}

@@ -1,0 +1,251 @@
+pub fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+pub fn parseRegister(value: []const u8) i64 {
+    if (eq(value, "-")) return -1;
+    if (value.len < 2 or value.len > 3 or value[0] != 'r' or (value.len == 3 and value[1] == '0')) return -2;
+    var out: i64 = 0;
+    for (value[1..]) |ch| {
+        if (ch < '0' or ch > '9') return -2;
+        out = 10 * out + ch - '0';
+    }
+    return if (out <= 31) out else -2;
+}
+pub fn load(io: std.Io) !Input {
+    var config: Config = .{};
+    for (try readLines(io, "input/config.txt")) |line| {
+        const row = words(line);
+        const key = row[0];
+        } else if (eq(key, "VARIANT")) append(Variant, &config.variants, .{ .name = row[1],
+             .forwarding = eq(row[2], "ON"), .id = eq(row[3], "ID"), .latency = number(row[4]) }) else if (eq(key,
+             "PRIMARY")) {
+            config.primary_variant = row[1];
+            config.primary_predictor = row[2];
+        } else if (eq(key, "WINDOW")) {
+            config.start = number(row[1]);
+            config.end = number(row[2]);
+        } else if (eq(key, "TOP")) config.top = u(number(row[1])) else if (eq(key, "INTERVAL")) config.interval = u(number(row[1]));
+    }
+    return .{ .trace = try readLines(io, "input/trace.txt"), .config = config };
+pub const Timing = struct { f: i64 = 0, d: i64 = 0, x: i64 = 0, m: i64 = 0, w: i64 = 0 };
+pub fn dependencies(instructions: []const c.Instruction) []Sources {
+    const out = c.alloc(Sources, instructions.len);
+    var last = [_]?usize{null} ** 32;
+    for (instructions, 0..) |instruction, i| {
+        out[i] = .{ if (instruction.rs1 > 0) last[c.u(instruction.rs1)] else null, if (instruction.rs2 > 0) last[c.u(instruction.rs2)] else null };
+        if (instruction.rd > 0) last[c.u(instruction.rd)] = i;
+    }
+    return out;
+}
+pub fn idResolved(instruction: c.Instruction, variant: c.Variant) bool {
+    return (instruction.kind == .jump and instruction.rs1 < 0) or (instruction.control() and variant.id);
+}
+pub fn readyCycle(consumer: c.Instruction, producer: c.Instruction, time: Timing, variant: c.Variant) i64 {
+    if (!variant.forwarding) return time.w + 1;
+    return (if (producer.kind == .load) time.w else time.m) + @as(i64, @intFromBool(idResolved(consumer, variant)));
+}
+pub const Record = struct { cause: usize, cycles: i64, responsible: usize, waiting: ?usize, producer: ?usize };
+pub const Run = struct { timings: []h.Timing, records: []const Record, cycles: i64, stalls: [4]i64 = .{ 0,
+     0, 0, 0 }, events: [4]i64 = .{ 0, 0, 0, 0 } };
+pub fn simulate(instructions: []const c.Instruction, sources: []const h.Sources, variant: c.Variant,
+     flags: []const bool) Run {
+    const timings = c.alloc(h.Timing, instructions.len);
+    var records: std.ArrayList(Record) = .empty;
+    for (instructions, 0..) |instruction, i| {
+        var time: h.Timing = .{};
+        const execute = if (instruction.kind == .multiply) variant.latency else 1;
+        if (i == 0) {
+            time.f = 1;
+            time.d = 2;
+            time.x = 3;
+        } else {
+            const previous = timings[i - 1];
+            time.f = if (flags[i - 1]) previous.x + @as(i64, @intFromBool(!h.idResolved(instructions[i - 1],
+                 variant))) else previous.d;
+            time.d = @max(time.f + 1, previous.x);
+            const ideal = previous.x + 1;
+            var bound = [_]i64{ time.d + 1, previous.m, ideal, ideal };
+            var producer = [_]?usize{null} ** 4;
+            for (sources[i]) |source| if (source) |p| {
+                const cause: usize = if (instructions[p].kind == .load) 2 else 3;
+                const ready = h.readyCycle(instruction, instructions[p], timings[p], variant);
+                if (ready > bound[cause]) {
+                    bound[cause] = ready;
+                    producer[cause] = p;
+                }
+            };
+            time.x = ideal;
+            for (bound, 0..) |value, cause| if (value > time.x) {
+                c.append(Record, &records, .{ .cause = cause, .cycles = value - time.x, .responsible = if (cause < 2) i - 1 else i,
+                     .waiting = i, .producer = producer[cause] });
+                time.x = value;
+            };
+        }
+        time.m = time.x + execute;
+        time.w = time.m + 1;
+        timings[i] = time;
+    }
+    var out: Run = .{ .timings = timings, .records = records.items, .cycles = timings[timings.len - 1].w };
+    for (records.items) |record| {
+        out.stalls[record.cause] += record.cycles;
+        out.events[record.cause] += 1;
+    }
+    return out;
+}
+fn check(text: []const u8, trace: *const Trace) Checked {
+    const fields = c.split(text, ' ');
+    const pc = c.parseHex(fields[0]) orelse return .{ .invalid = "pc" };
+    if (@mod(pc, 4) != 0) return .{ .invalid = "pc" };
+    var kind: ?c.Class = null;
+    for (c.classes, 0..) |name, i| if (c.eq(name, fields[1])) {
+        kind = @enumFromInt(i);
+    };
+    if (kind == null) return .{ .invalid = "class" };
+    const registers = [_]i64{ c.parseRegister(fields[2]), c.parseRegister(fields[3]), c.parseRegister(fields[4]) };
+    var out: c.Instruction = .{ .pc = pc, .kind = kind.?, .rd = registers[0], .rs1 = registers[1],
+         .rs2 = registers[2] };
+    return .{ .valid = out };
+fn validate(lines: []const []const u8) Trace {
+    var out: Trace = .{};
+    for (lines, 0..) |line, index| switch (check(line, &out)) {
+        .invalid => |reason| c.append(Rejection, &out.rejected, .{ .line = index + 1, .reason = reason }),
+        .valid => |value| {
+            var instruction = value;
+            instruction.line = index + 1;
+            const entry = out.first.getOrPut(c.allocator, instruction.pc) catch @panic("allocation failed");
+            if (!entry.found_existing) {
+                entry.value_ptr.* = out.statics.items.len;
+                c.append(Static, &out.statics, .{ .first = out.instructions.items.len });
+            }
+            instruction.static_id = entry.value_ptr.*;
+            const group = &out.statics.items[instruction.static_id];
+            c.append(usize, &group.indices, out.instructions.items.len);
+            c.append(c.Instruction, &out.instructions, instruction);
+        },
+    };
+    return out;
+}
+    fn add(self: *Diagram, config: c.Config, number: ?usize, pc: i64, kind: []const u8, segments: []const CellSegment,
+         annotation: []const u8) void {
+        const cells = c.alloc(u8, c.u(config.end - config.start + 1));
+        @memset(cells, '.');
+        var present = false;
+        for (segments) |segment| {
+            if (segment.last < segment.first) continue;
+            if (segment.stage) |stage| self.occupancy[stage][@intFromBool(number == null)] += segment.last - segment.first + 1;
+            var cycle = @max(config.start, segment.first);
+            while (cycle <= @min(config.end, segment.last)) : (cycle += 1) {
+                cells[c.u(cycle - config.start)] = segment.mark;
+                present = true;
+                self.stall_cells += @intFromBool(segment.mark == '*');
+                self.flushed_cells += @intFromBool(segment.mark == 'x');
+                if (segment.stage) |stage| self.contents[c.u(cycle - config.start)][stage] = if (number) |value| c.fmt("{d}",
+                     .{value}) else "w";
+            }
+        }
+        if (present) {
+            self.lines.add("{s}", .{r.diagramRow(number, pc, kind, cells, annotation)});
+            self.rows += 1;
+        }
+    }
+fn diagram(instructions: []const c.Instruction, run: pipeline.Run, variant: c.Variant, prediction: Prediction,
+     config: c.Config) Diagram {
+    var out: Diagram = .{ .contents = c.alloc([5][]const u8, c.u(config.end - config.start + 1)) };
+    for (out.contents) |*row| row.* = .{ ".", ".", ".", ".", "." };
+    out.lines.add("pipeline variant={s} predictor={s} cycles {d}-{d}", .{ variant.name, config.primary_predictor,
+         config.start, config.end });
+    out.lines.add("{s}", .{r.cycleHeading(config.start, config.end)});
+    const annotations = c.alloc(c.Text, instructions.len);
+    @memset(annotations, .{});
+    for (run.records) |record| if (record.waiting) |waiting| annotations[waiting].add(" {s} {d}",
+         .{ c.causes[record.cause], record.cycles });
+    for (instructions, run.timings, 0..) |instruction, t, i| {
+        out.add(config, i + 1, instruction.pc, c.classes[@intFromEnum(instruction.kind)], &.{
+            .{ .first = t.f, .last = t.f, .mark = 'F', .stage = 0 },     .{ .first = t.f + 1,
+                 .last = t.d - 1, .mark = '*', .stage = 0 },
+            .{ .first = t.d, .last = t.d, .mark = 'D', .stage = 1 },     .{ .first = t.d + 1,
+                 .last = t.x - 1, .mark = '*', .stage = 1 },
+            .{ .first = t.x, .last = t.m - 1, .mark = 'X', .stage = 2 }, .{ .first = t.m, .last = t.m,
+                 .mark = 'M', .stage = 3 },
+            .{ .first = t.w, .last = t.w, .mark = 'W', .stage = 4 },
+        }, annotations[i].value());
+    }
+    out.lines.add("rows {d} completed {d} stall_cells {d} flushed {d}", .{ out.rows, out.completed,
+         out.stall_cells, out.flushed_cells });
+    out.lines.add("", .{});
+    out.lines.add("stages", .{});
+    out.lines.add("cycle IF ID EX MEM WB", .{});
+    for (out.contents, 0..) |row, i| out.lines.add("{d} {s} {s} {s} {s} {s}", .{ config.start + c.n(i),
+         row[0], row[1], row[2], row[3], row[4] });
+    return out;
+    const input = try c.load(io);
+    const config = input.config;
+    const trace = validate(input.trace);
+    const instructions = trace.instructions.items;
+    const n = instructions.len;
+    const sources = h.dependencies(instructions);
+    var primary_predictor: usize = 0;
+    var primary_variant: usize = 0;
+        if (c.eq(definition.name, config.primary_predictor)) primary_predictor = p;
+    for (config.variants.items, 0..) |variant, v| if (c.eq(variant.name, config.primary_variant)) {
+        primary_variant = v;
+    };
+    var primary: pipeline.Run = undefined;
+    for (config.variants.items, 0..) |variant, v| for (predictions, 0..) |prediction, p| {
+        var summary: Summary = undefined;
+        if (v == primary_variant and p == primary_predictor) {
+            primary = pipeline.simulate(instructions, sources, variant, prediction.flags);
+            summary = .{ .cycles = primary.cycles, .stalls = primary.stalls };
+        } else summary = scratchSummary(init.gpa, instructions, sources, variant, prediction.flags);
+    };
+    const variant = config.variants.items[primary_variant];
+    const prediction = predictions[primary_predictor];
+    const cycles = primary.cycles;
+    const picture = diagram(instructions, primary, variant, prediction, config);
+    try r.save(io, "pipeline.txt", picture.lines);
+    for (primary.records) |record| {
+        const responsible = instructions[record.responsible];
+        class_stalls[@intFromEnum(responsible.kind)] += record.cycles;
+        trace.statics.items[responsible.static_id].stalls[record.cause] += record.cycles;
+    stats.add("timing variant={s} predictor={s}", .{ variant.name, config.primary_predictor });
+    stats.add("forwarding {s} branch_stage {s} mul_latency {d}", .{ if (variant.forwarding) "on" else "off",
+         if (variant.id) "ID" else "EX", variant.latency });
+    stats.add("cycles {d}", .{cycles});
+    stats.add("cpi {s} {s}", .{ r.fraction(cycles, c.n(n)), r.decimal(cycles, c.n(n)) });
+    stats.add("ipc {s}", .{r.decimal(c.n(n), cycles)});
+    const total_stalls = sum4(primary.stalls);
+    stats.add("stall_cycles total {d} control {d} structural {d} load_use {d} raw {d}", .{ total_stalls,
+         primary.stalls[0], primary.stalls[1], primary.stalls[2], primary.stalls[3] });
+    stats.add("stall_events control {d} structural {d} load_use {d} raw {d}", .{ primary.events[0],
+         primary.events[1], primary.events[2], primary.events[3] });
+    try r.save(io, "stats.txt", stats);
+    const segment_groups = c.alloc(ProfileSegment, statics.len);
+    @memset(segment_groups, .{});
+    a = 0;
+    while (a < n) {
+        var b = a;
+        while (b < n - 1 and !instructions[b].control()) : (b += 1) {}
+        const group = &segment_groups[instructions[a].static_id];
+        group.pc = instructions[a].pc;
+        group.instances += 1;
+        group.instructions += c.n(b - a + 1);
+        group.cycles += primary.timings[b].w - (if (a > 0) primary.timings[a - 1].w else @as(i64, 0));
+        a = b + 1;
+    }
+    var segments_rank: std.ArrayList(ProfileSegment) = .empty;
+    for (segment_groups) |group| if (group.instances > 0) c.append(ProfileSegment, &segments_rank, group);
+    std.mem.sort(ProfileSegment, segments_rank.items, {}, ProfileSegment.less);
+    profile.add("", .{});
+    profile.add("segments total {d}", .{segments_rank.items.len});
+    for (segments_rank.items[0..@min(config.top, segments_rank.items.len)], 0..) |value, i| profile.add("{d} {s} instances {d} instructions {d} cycles {d} cpi {s}",
+         .{ i + 1, r.hexadecimal(value.pc), value.instances, value.instructions, value.cycles,
+         r.decimal(value.cycles, value.instructions) });
+    profile.add("instructions", .{});
+    for (statics) |reference| {
+        const group = trace.statics.items[reference.id];
+        const instruction = instructions[group.first];
+        profile.add("{s} {s} {s} {s} {s} executions {d} stall_cycles {d}", .{ r.hexadecimal(instruction.pc),
+             c.classes[@intFromEnum(instruction.kind)], r.register(instruction.rd), r.register(instruction.rs1),
+             r.register(instruction.rs2), group.indices.items.len, sum4(group.stalls) });
+    }
+    try r.save(io, "profile.txt", profile);

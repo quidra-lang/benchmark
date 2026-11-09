@@ -1,0 +1,292 @@
+def normalize(values):
+    total = 0.0
+    for value in values:
+        total += value
+    return [value / total for value in values]
+
+
+class Model:
+    def __init__(self, name, states, symbols, missing, initial, transition, emission):
+        self.name = name
+        self.states = tuple(states)
+        self.symbols = tuple(symbols)
+        self.missing = missing
+        self.initial = normalize(initial)
+        self.transition = [normalize(row) for row in transition]
+        self.emission = [normalize(row) for row in emission]
+def read_tokens(filename):
+    path = Path("input") / filename
+    with path.open(encoding="ascii") as source:
+        return [line.rstrip("\n").split(" ") for line in source]
+
+
+def read_model(rows):
+    states = rows[0][1:]
+    symbols = rows[1][1:]
+    missing = rows[2][1]
+    count = len(states)
+    initial = [float(value) for value in rows[3][1:]]
+    transition = [
+        [float(value) for value in row[2:]]
+        for row in rows[4:4 + count]
+    ]
+    emission = [
+        [float(value) for value in row[2:]]
+        for row in rows[4 + count:4 + 2 * count]
+    ]
+    return Model("INITIAL", states, symbols, missing, initial, transition, emission)
+def read_inputs():
+    model = read_model(read_tokens("model.txt"))
+    sequences = read_tokens("sequences.txt")
+    labeled = read_tokens("labeled.txt")
+    parameters = read_tokens("params.txt")
+    return model, sequences, labeled, parameters
+def write_lines(filename, lines):
+    directory = Path("output")
+    directory.mkdir(exist_ok=True)
+    with (directory / filename).open("w", encoding="ascii", newline="\n") as target:
+        target.write("\n".join(lines) + "\n")
+Forward = namedtuple("Forward", "values scales emissions loglik")
+ForwardBackward = namedtuple(
+    "ForwardBackward", "forward backward scales emissions posterior loglik"
+)
+Decoding = namedtuple(
+    "Decoding", "viterbi viterbi_logprob posterior confidence fb"
+)
+
+
+def maximum_index(values):
+    best = 0
+    for index in range(1, len(values)):
+        if values[index] > values[best]:
+            best = index
+    return best
+
+
+def emission_factors(model, observation):
+    if observation == -1:
+        return [1.0] * len(model.states)
+    return [row[observation] for row in model.emission]
+
+
+def log_emission_factors(model, observation):
+    if observation == -1:
+        return [0.0] * len(model.states)
+    return [log(row[observation]) for row in model.emission]
+
+
+def scaled_forward(model, observations):
+    count = len(model.states)
+    emissions = [emission_factors(model, symbol) for symbol in observations]
+    values = []
+    scales = []
+    loglik = 0.0
+    for position, factors in enumerate(emissions):
+        unscaled = []
+        for state in range(count):
+            if position == 0:
+                value = model.initial[state] * factors[state]
+            else:
+                total = 0.0
+                for previous in range(count):
+                    total += values[position - 1][previous] * model.transition[previous][state]
+                value = total * factors[state]
+            unscaled.append(value)
+        scale = 0.0
+        for value in unscaled:
+            scale += value
+        scales.append(scale)
+        values.append([value / scale for value in unscaled])
+        loglik += log(scale)
+    return Forward(values, scales, emissions, loglik)
+
+
+def forward_backward(model, observations):
+    forward = scaled_forward(model, observations)
+    count = len(model.states)
+    length = len(observations)
+    backward = [[0.0] * count for _ in observations]
+    backward[-1] = [1.0] * count
+    for position in range(length - 2, -1, -1):
+        for state in range(count):
+            total = 0.0
+            for following in range(count):
+                total += (
+                    model.transition[state][following]
+                    * forward.emissions[position + 1][following]
+                    * backward[position + 1][following]
+                )
+            backward[position][state] = total / forward.scales[position + 1]
+    posterior = [
+        [forward.values[t][state] * backward[t][state] for state in range(count)]
+        for t in range(length)
+    ]
+    return ForwardBackward(
+        forward.values, backward, forward.scales, forward.emissions,
+        posterior, forward.loglik,
+    )
+def viterbi(model, observations):
+    count = len(model.states)
+    transitions = [[log(value) for value in row] for row in model.transition]
+    factors = log_emission_factors(model, observations[0])
+    scores = [log(model.initial[state]) + factors[state] for state in range(count)]
+    predecessors = [[0] * count]
+    for observation in observations[1:]:
+        factors = log_emission_factors(model, observation)
+        next_scores = []
+        previous_states = []
+        for state in range(count):
+            candidates = [
+                scores[previous] + transitions[previous][state]
+                for previous in range(count)
+            ]
+            previous = maximum_index(candidates)
+            previous_states.append(previous)
+            next_scores.append(candidates[previous] + factors[state])
+        predecessors.append(previous_states)
+        scores = next_scores
+    path = [0] * len(observations)
+    path[-1] = maximum_index(scores)
+    logprob = scores[path[-1]]
+    for position in range(len(observations) - 1, 0, -1):
+        path[position - 1] = predecessors[position][path[position]]
+    return path, logprob
+
+
+def decode(model, observations):
+    fb = forward_backward(model, observations)
+    path, logprob = viterbi(model, observations)
+    posterior = [maximum_index(row) for row in fb.posterior]
+    confidence = [row[state] for row, state in zip(fb.posterior, posterior)]
+    return Decoding(path, logprob, posterior, confidence, fb)
+def confusion_matrix(count):
+    return [[0] * count for _ in range(count)]
+
+
+def accumulate_confusion(matrix, truth, prediction):
+    for actual, predicted in zip(truth, prediction):
+        matrix[actual][predicted] += 1
+
+
+def correct_count(truth, prediction):
+    return sum(actual == predicted for actual, predicted in zip(truth, prediction))
+def encode_observations(text, model):
+    return [
+        -1 if character == model.missing else model.symbols.index(character)
+        for character in text
+    ]
+    seen = set()
+    for offset in range(0, len(labeled_rows), 2):
+        name, role, text = labeled_rows[offset]
+        observations = text.upper()
+        labels = labeled_rows[offset + 1][0]
+        reason = rejection_reason(name, observations, labels, seen, model, parameters)
+        if reason is not None:
+            rejections.append(f"REJECT labeled.txt line {offset + 1} {name} {reason}")
+            continue
+        record = Record(
+            name, encode_observations(observations, model),
+            [model.states.index(character) for character in labels],
+        )
+        if role == "TRAIN":
+            training.append(record)
+        else:
+            testing.append(record)
+    return sequences, training, testing, rejections
+def evaluate_model(model, records, parameters):
+    decoded = [decode(model, record.observations) for record in records]
+    blocks = []
+    correct_totals = []
+    for decoder in ("VITERBI", "POSTERIOR"):
+        matrix = confusion_matrix(len(model.states))
+        regions = [0, 0, 0, 0]
+        boundaries = [0, 0, 0, 0]
+        calibration = [[0, 0] for _ in range(10)]
+        record_lines = []
+        total_correct = 0
+        for record, result in zip(records, decoded):
+            path = result.viterbi if decoder == "VITERBI" else result.posterior
+            correct = correct_count(record.path, path)
+            total_correct += correct
+            accumulate_confusion(matrix, record.path, path)
+            predicted_regions = extract_segments(path, parameters)
+            true_regions = [
+                (start, end) for state, start, end in runs(record.path)
+                if state == parameters["segment_state"]
+            ]
+            region_result = region_counts(predicted_regions, true_regions)
+            boundary_result = boundary_counts(path, record.path, parameters["boundary_tolerance"])
+            for index in range(4):
+                regions[index] += region_result[index]
+                boundaries[index] += boundary_result[index]
+            if decoder == "POSTERIOR":
+                for confidence, predicted, actual in zip(result.confidence, path, record.path):
+                    bucket = min(floor(10 * confidence), 9)
+                    calibration[bucket][0] += 1
+                    calibration[bucket][1] += predicted == actual
+            record_lines.append(f"RECORD {record.name} length {len(path)} correct {correct}")
+        lines = [f"EVALUATION {model.name} {decoder}"]
+        lines.extend(matrix_lines(model.states, matrix))
+        lines.extend(metric_lines(model.states, matrix))
+        segment_state = model.states[parameters["segment_state"]]
+        lines.append(
+            f"REGIONS {segment_state} predicted {regions[0]} true {regions[1]} "
+            f"precision {fraction(regions[2], regions[0])} "
+            f"recall {fraction(regions[3], regions[1])}"
+        )
+        lines.append(
+            f"BOUNDARIES predicted {boundaries[0]} true {boundaries[1]} "
+            f"precision {fraction(boundaries[2], boundaries[0])} "
+            f"recall {fraction(boundaries[3], boundaries[1])}"
+        )
+        if decoder == "POSTERIOR":
+            for bucket, (positions, correct) in enumerate(calibration):
+                if positions:
+                    interval = f"0.{bucket}-0.{bucket + 1}" if bucket < 9 else "0.9-1.0"
+                    lines.append(
+                        f"CALIBRATION {interval} positions {positions} correct {correct} "
+                        f"accuracy {fraction(correct, positions)}"
+                    )
+        lines.extend(record_lines)
+        blocks.append(lines)
+        correct_totals.append(total_correct)
+    return blocks, correct_totals
+
+
+def state_string(model, path):
+    return "".join(model.states[state] for state in path)
+    decoding_lines = []
+    segment_lines = [
+        "sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"
+            sample_segments += len(extract_segments(path, parameters))
+        expected_segments = sample_segments / parameters["posterior_samples"]
+            f"SEQUENCE {record.name} length {length} loglik {real(result.fb.loglik)} "
+            f"viterbi {real(result.viterbi_logprob)} differences {differences} "
+            f"uncertain {uncertain} expected_segments {real(expected_segments)}",
+            "VITERBI " + state_string(model, result.viterbi),
+            "POSTERIOR " + state_string(model, result.posterior),
+            "CONFIDENT " + confident,
+            "IMPUTED " + imputed_string(model, record.observations, result.fb.posterior),
+        ])
+    initial, sequence_rows, labeled_rows, parameter_rows = read_inputs()
+    parameters = interpret_parameters(parameter_rows, initial)
+    sequences, training, testing, rejections = validate_inputs(
+        sequence_rows, labeled_rows, initial, parameters
+    )
+    observations = [record.observations for record in sequences]
+    models = [initial, baum_welch, viterbi_training, supervised]
+    evaluation_blocks = []
+    evaluation_scores = []
+    for model in models:
+        blocks, scores = evaluate_model(model, testing, parameters)
+        evaluation_blocks.extend(blocks)
+        evaluation_scores.append(scores)
+    evaluation_blocks.extend((cross_validation_lines, learning_lines))
+    decoded = [[decode(model, record.observations) for record in sequences] for model in models]
+    decoding_lines, segment_lines = annotate_sequences(
+        baum_welch, sequences, decoded[1], parameters
+    )
+        "decodings.txt": decoding_lines,
+        "evaluation.txt": join_blocks(evaluation_blocks),
+    for filename, lines in outputs.items():
+        write_lines(filename, lines)

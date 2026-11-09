@@ -1,0 +1,7 @@
+With no eligible enemy, target selection returns nil. The result represents an Enemy object; the immediate firing guard is next unless enemy, so no shot is created for an empty choice. It cannot be confused with the first enemy’s number: absence is a separate sentinel/optional value, and where the result is an index its mapping to an enemy is shown in the firing path.
+
+Enumerable#min_by returns nil for an empty collection without evaluating its block. Every actual enemy object is truthy, so the firing guard cannot confuse its number with nil.
+
+Evidence: towers.rb: 53–55, 64–65; main.rb: 387–388, 390–391. The selected complete lines contain the decision and its necessary data dependencies. The initialization/empty collection result, eligibility filtering, return and immediate guard establish the complete empty-set path. Target-priority arithmetic is irrelevant when no candidate survives, so its internal formulas are omitted where they would add lines; there is no need to inspect projectile travel or damage.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 148 tokenizer tokens. The full selected source file(s) would be 8850 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

@@ -1,0 +1,497 @@
+import simplex = "./simplex.qui"
+import bnb = "./branch_bound.qui"
+
+int variable_index(const string[] names, string sought)
+    for: position < int(#names)
+        if names[position] == sought
+            return position
+    return -1
+
+r.Fraction[] coefficients(const string[] names, const lp.Term[] terms)
+    values := array(#names, fill = r.Fraction(0))
+    for term := terms[]
+        position := variable_index(names, term.name)
+        values[position] = values[position].add(term.coefficient)
+lp.Model | lp.Problem content(const lp.Parsed parsed)
+    match parsed.problem
+        lp.Problem problem
+            return problem
+        none
+            string[] names := []
+            lp.Term[][] expressions := [parsed.objective]
+            for row := parsed.constraints[]
+                expressions = expressions.append(row.terms)
+            for terms := expressions[]
+                for term := terms[]
+                    if not lp.has(names, term.name)
+                        names = names.append(term.name)
+            bounds := array(#names, fill = lp.Bound(r.Fraction(0), none))
+            integers := array(#names, fill = false)
+            r.Fraction[][] matrix := []
+            r.Fraction[] rhs := []
+            string[] comparisons := []
+            string[] row_names := []
+            for row := parsed.constraints[]
+                matrix = matrix.append(coefficients(names, row.terms))
+                rhs = rhs.append(row.rhs)
+                comparisons = comparisons.append(row.comparison)
+                row_names = row_names.append(row.name)
+            return lp.Model(parsed.name, parsed.maximize, names, coefficients(names, parsed.objective), matrix, rhs, comparisons, row_names, bounds, integers)
+tab.Converted standard(const lp.Model model, const lp.Bound[] bounds)
+    string[] columns := []
+    tab.Substitution[] substitutions := []
+    r.Fraction[] costs := []
+    for: variable < int(#model.names)
+        bound := bounds[variable]
+        tab.Part[] parts := []
+        kind := ""
+        offset := r.Fraction(0)
+        match bound.lower
+            r.Fraction lower
+                parts = parts.append(tab.Part(int(#columns), r.Fraction(1)))
+                columns = columns.append(model.names[variable])
+                costs = costs.append(model.costs[variable])
+                kind = "shift"
+                offset = lower
+        substitutions = substitutions.append(tab.Substitution(kind, offset, parts))
+    variable_columns := int(#columns)
+    rows := model.row_names
+    comparisons := model.comparisons
+    r.Fraction[][] matrix := []
+    r.Fraction[] beta := []
+    for: row < int(#model.matrix)
+        entries := array(nat(variable_columns), fill = r.Fraction(0))
+        rhs := model.rhs[row]
+        for: variable < int(#model.names)
+            rhs = rhs.subtract(model.matrix[row][variable].multiply(substitutions[variable].offset))
+            for part := substitutions[variable].columns[]
+                entries[part.column] = part.direction.multiply(model.matrix[row][variable])
+        matrix = matrix.append(entries)
+        beta = beta.append(rhs)
+    upper_rows := array(#model.names, fill = -1)
+    for: variable < int(#model.names)
+        if substitutions[variable].kind != "shift"
+            continue
+        match bounds[variable].upper
+            none
+                upper_rows[variable] = -1
+    signs := array(#rows, fill = r.Fraction(1))
+    for: row < int(#rows)
+        if beta[row].numerator < 0
+    initial := array(#rows, fill = -1)
+    slacks := initial
+    for: row < int(#rows)
+        if comparisons[row] == "="
+            continue
+    int[] artificial := []
+    for: row < int(#rows)
+        if comparisons[row] == "<="
+            continue
+        column := int(#columns)
+        columns = columns.append("a:" + rows[row])
+        costs = costs.append(r.Fraction(0))
+        for: other < int(#matrix)
+            matrix[other] = matrix[other].append(r.Fraction(0))
+        matrix[row][column] = r.Fraction(1)
+        initial[row] = column
+        artificial = artificial.append(column)
+    sign := r.Fraction(if model.maximize then -1 else 1)
+    constant := r.Fraction(0)
+    for: variable < int(#model.names)
+        constant = constant.add(model.costs[variable].multiply(substitutions[variable].offset))
+    r.Fraction[] phase1 := []
+    r.Fraction[] phase2 := []
+    for: column < int(#columns)
+        phase1 = phase1.append(r.Fraction(if lp.has(artificial, column) then 1 else 0))
+        phase2 = phase2.append(sign.multiply(costs[column]))
+    representation := tab.Standard(columns, rows, signs, initial, slacks, artificial, phase1, phase2, constant, sign, substitutions, upper_rows)
+    return tab.Converted(representation, tab.Tableau(matrix, beta, initial))
+r.Fraction[] recover(const tab.Standard representation, const r.Fraction[] columns, bool offset)
+    r.Fraction[] result := []
+    for variable := representation.substitutions[]
+        r.Fraction value := if offset then variable.offset else r.Fraction(0)
+        for part := variable.columns[]
+            value = value.add(part.direction.multiply(columns[part.column]))
+        result = result.append(value)
+    return result
+tab.Result solve_lp(lp.Model model, lp.Bound[] bounds, int node_number, int level)
+    converted := standard(model, bounds)
+    tab.Standard representation := converted.standard
+    tab.Tableau state := converted.tableau
+    log := ["SOLVE node {node_number} rows {#representation.rows} columns {#representation.columns} artificials {#representation.artificial}"]
+    if level >= 1
+        for: variable < int(#representation.substitutions)
+            tab.Substitution substitution := representation.substitutions[variable]
+            line := "MAP {model.names[variable]} {substitution.kind}"
+            if substitution.kind != "split"
+                line += " {substitution.offset.text()}"
+                if substitution.kind == "shift"
+                    match bounds[variable].upper
+                        r.Fraction upper
+                            line += " upper {upper.text()}"
+                        none
+                            line = line
+            log = log.append(line)
+        for: row < int(#representation.signs)
+            if representation.signs[row].numerator < 0
+                log = log.append("FLIP {representation.rows[row]}")
+    phase1 := 0
+    phase2 := 0
+    drives := 0
+    redundant := 0
+    status := "OPTIMAL"
+    infeasibility := r.Fraction(0)
+    int | none unbounded := none
+    if #representation.artificial > 0
+        if level >= 1
+            log = log.append("PHASE 1")
+        if level >= 2
+            log = log.concat(tab.display(state, "phase 1 start", representation.columns, representation.rows, representation.phase1, r.Fraction(0), r.Fraction(1)))
+        int[] candidates := []
+        for: column < int(#representation.columns)
+            candidates = candidates.append(column)
+        result := simplex.phase(&state, representation.phase1, candidates, representation.columns, representation.rows, r.Fraction(0), r.Fraction(1), level, &log)
+        phase1 = result.iterations
+        infeasibility = tab.value(state, representation.phase1)
+        if level >= 1
+            log = log.append("PHASE 1 END objective {infeasibility.text()} iterations {phase1}")
+        if infeasibility.numerator > 0
+            status = "INFEASIBLE"
+            if level >= 2
+                log = log.concat(tab.display(state, "final", representation.columns, representation.rows, representation.phase1, r.Fraction(0), r.Fraction(1)))
+        else
+            for: row < int(#representation.rows)
+                if not lp.has(representation.artificial, state.basis[row])
+                    continue
+                entering := -1
+                for: column < int(#representation.columns)
+                    if not lp.has(representation.artificial, column) and state.matrix[row][column].numerator != 0
+                        entering = column
+                        break
+                if entering >= 0
+                    if level >= 1
+                        log = log.append("DRIVE row {representation.rows[row]} enter {representation.columns[entering]} leave {representation.columns[state.basis[row]]}")
+                    tab.pivot(&state, row, entering)
+                    drives += 1
+                else
+                    redundant += 1
+                    if level >= 1
+                        log = log.append("REDUNDANT row {representation.rows[row]}")
+    if status != "INFEASIBLE"
+        if level >= 1
+            log = log.append("PHASE 2")
+        if level >= 2
+            log = log.concat(tab.display(state, "phase 2 start", representation.columns, representation.rows, representation.phase2, representation.constant, representation.sign))
+        int[] candidates := []
+        for: column < int(#representation.columns)
+            if not lp.has(representation.artificial, column)
+                candidates = candidates.append(column)
+        result := simplex.phase(&state, representation.phase2, candidates, representation.columns, representation.rows, representation.constant, representation.sign, level, &log)
+        phase2 = result.iterations
+        unbounded = result.unbounded
+        match unbounded
+            int column
+                status = "UNBOUNDED"
+                if level >= 1
+                    log = log.append("UNBOUNDED enter {representation.columns[column]}")
+            none
+                status = "OPTIMAL"
+        objective := representation.constant.add(representation.sign.multiply(tab.value(state, representation.phase2)))
+        if level >= 1
+            log = log.append("PHASE 2 END objective {objective.text()} iterations {phase2}")
+        if level >= 2
+            log = log.concat(tab.display(state, "final", representation.columns, representation.rows, representation.phase2, representation.constant, representation.sign))
+    value := representation.constant.add(representation.sign.multiply(tab.value(state, representation.phase2)))
+    columns := array(#representation.columns, fill = r.Fraction(0))
+    for: row < int(#representation.rows)
+        columns[state.basis[row]] = state.beta[row]
+    solution := recover(representation, columns, true)
+    reduced := tab.reduced(state, representation.phase1)
+    r.Fraction[] multipliers := []
+    if status == "INFEASIBLE"
+        for: row < int(#representation.initial)
+            column := representation.initial[row]
+            multipliers = multipliers.append(representation.signs[row].multiply(representation.phase1[column].subtract(reduced[column])))
+    r.Fraction[] ray := []
+    rate := r.Fraction(0)
+    match unbounded
+        int column
+            direction := array(#representation.columns, fill = r.Fraction(0))
+            direction[column] = r.Fraction(1)
+            for: row < int(#representation.rows)
+                direction[state.basis[row]] = state.matrix[row][column].negate()
+            ray = recover(representation, direction, false)
+            for: variable < int(#model.names)
+                rate = rate.add(model.costs[variable].multiply(ray[variable]))
+        none
+            rate = rate
+    objective_text := if status == "OPTIMAL" then value.text() else "-"
+    log = log.append("RESULT {status} objective {objective_text} phase1 {phase1} phase2 {phase2} drives {drives} redundant {redundant}")
+    return tab.Result(representation, state, status, value, solution, phase1, phase2, drives, infeasibility, multipliers, ray, rate, log)
+void write_output(string name, const string[] lines)
+    bool exists := file.is_directory("output")
+    if not exists
+        file.mkdir("output")
+    string text := if #lines == 0 then "" else lines.join(NL) + NL
+    writer1 := file.write("output/{name}")
+    .writer1(text)
+
+void run_program()
+    lp.Parsed[] blocks := lp.read_models()
+    params := lp.read_params()
+    string[] iterations := []
+    string[] solutions := []
+    string[] sensitivity_lines := []
+    string[] tree := []
+    csv := ["model,status,objective,approx,relaxation,nodes,pivots"]
+    statuses := [0, 0, 0, 0, 0]
+    totals := [0, 0, 0, 0]
+    analyzed := 0
+    integer_models := 0
+    integer_nodes := 0
+    limits := 0
+    for block := blocks[]
+        match content(block)
+            lp.Model model
+                integer_model := bnb.integer_count(model) > 0
+                level := setting(params.levels, model.name, params.level)
+                limit := setting(params.limits, model.name, params.limit)
+                iterations = iterations.append("MODEL {model.name} level {level}")
+                bnb.Outcome outcome
+                if integer_model
+                    outcome = bnb.solve(model, limit, level, solve_lp)
+                else
+                    root := solve_lp(model, model.bounds, 1, level)
+                    r.Fraction[] | none solution := none
+                    r.Fraction | none objective := none
+                    if root.status == "OPTIMAL"
+                        solution = root.solution
+                        objective = root.value
+                    outcome = bnb.Outcome(root.status, root, solution, objective, 1, root.phase1, root.phase2, root.drives, [], root.log)
+                iterations = iterations.concat(outcome.log)
+                root := outcome.root
+                status := outcome.status
+                status_index := if status == "OPTIMAL" then 0 elif status == "INFEASIBLE" then 1 elif status == "UNBOUNDED" then 2 else 3
+                statuses[status_index] += 1
+                totals[0] += outcome.nodes
+                totals[1] += outcome.phase1
+                totals[2] += outcome.phase2
+                totals[3] += outcome.drives
+                direction := if model.maximize then "maximize" else "minimize"
+                solutions = solutions.concat(["MODEL {model.name} {direction} variables {#model.names} constraints {#model.matrix} integers {bnb.integer_count(model)}", statistics(model), "STATUS {status}"])
+                objective_text := "-"
+                approximate_text := "-"
+                match outcome.objective
+                    r.Fraction value
+                        objective_text = value.text()
+                        approximate_text = value.approximate()
+                        solutions = solutions.append("OBJECTIVE {objective_text} approx {approximate_text}")
+                relaxation := "-"
+                if root.status == "OPTIMAL"
+                    relaxation = root.value.text()
+                r.Fraction[] | none values := outcome.solution
+                if status == "UNBOUNDED"
+                    values = root.solution
+                match values
+                    r.Fraction[] found
+                        for: variable < int(#model.names)
+                            solutions = solutions.append("VALUE {model.names[variable]} {found[variable].text()}")
+                solutions = solutions.append("PIVOTS {outcome.pivots()}")
+                csv = csv.append("{model.name},{status},{objective_text},{approximate_text},{relaxation},{outcome.nodes},{outcome.pivots()}")
+    iterations = iterations.append("TOTAL solves {totals[0]} phase1 {totals[1]} phase2 {totals[2]} drives {totals[3]} pivots {totals[1] + totals[2] + totals[3]}")
+    solutions = solutions.append("SUMMARY models {#blocks} optimal {statuses[0]} infeasible {statuses[1]} unbounded {statuses[2]} node_limit {statuses[3]} error {statuses[4]}")
+    write_output("iterations.txt", iterations)
+    write_output("solutions.txt", solutions)
+    write_output("summary.csv", csv)
+Term[] | none expression(const string[] words)
+    Term[] terms := []
+    position := 0
+    sign := 1
+    if #words > 0 and words[0] == "-"
+        position += 1
+        sign = -1
+    while position < int(#words)
+        variable := ""
+        value := r.Fraction(1)
+        match r.read(words[position])
+            r.Fraction coefficient
+                if position + 1 >= int(#words) or not name(words[position + 1])
+                    return none
+                variable = words[position + 1]
+                value = coefficient
+                position += 2
+            none
+                if not name(words[position])
+                    return none
+                variable = words[position]
+                position += 1
+        terms = terms.append(Term(variable, value.multiply(r.Fraction(sign))))
+        if position == int(#words)
+            return terms
+        if words[position] != "+" and words[position] != "-"
+            return none
+        sign = if words[position] == "+" then 1 else -1
+        position += 1
+    return none
+
+Named | none named(const string[] words)
+    if #words < 2 or not words[0].ends_with(":")
+        return none
+    label := words[0][0:<int(#words[0]) - 1]
+    if not name(label)
+        return none
+    match expression(words[1:<int(#words)])
+        Term[] terms
+            return Named(label, terms)
+        none
+            return none
+
+Constraint | none constraint(const string[] words, int line)
+    count := int(#words)
+    if count < 4 or not has(["<=", ">=", "="], words[count - 2])
+        return none
+    match r.read(words[count - 1], true)
+        r.Fraction rhs
+            match named(words[0:<count - 2])
+                Named value
+                    return Constraint(line, value.name, value.terms, words[count - 2], rhs)
+                none
+                    return none
+        none
+            return none
+
+bool present(const r.Fraction | none value)
+    match value
+        r.Fraction found
+            return true
+        none
+            return false
+Parsed parse(string model_name, const BodyLine[] body, int end_line)
+    result := Parsed(model_name)
+    state := "A"
+    for line := body[]
+        words := line.text.split(" ")
+        accepted := false
+        if state == "A"
+            if line.text == "maximize" or line.text == "minimize"
+                result.maximize = line.text == "maximize"
+                state = "B"
+                accepted = true
+        elif state == "B"
+            match named(words)
+                Named value
+                    result.objective = value.terms
+                    state = "C"
+                    accepted = true
+                none
+                    accepted = false
+        elif state == "C"
+            if line.text == "subject to"
+                state = "D"
+                accepted = true
+        elif state == "D" or state == "E"
+            if state == "E" and has(["bounds", "integer", "binary"], line.text)
+                state = if line.text == "bounds" then "F" elif line.text == "integer" then "G" else "H"
+                accepted = true
+            else
+                match constraint(words, line.number)
+                    Constraint value
+                        result.constraints = result.constraints.append(value)
+                        state = "E"
+                        accepted = true
+                    none
+                        accepted = false
+        if not accepted
+            result.problem = Problem(line.number, "syntax error")
+            return result
+    if has(["A", "B", "C", "D"], state)
+        result.problem = Problem(end_line, "syntax error")
+    return result
+
+Parsed[] read_models()
+    string text := string.from_utf8(file.read_bin("input/models.lp"))
+    lines := text.split(NL)
+    Parsed[] result := []
+    current := ""
+    BodyLine[] body := []
+    for: position < int(#lines)
+        line := lines[position]
+        if line == "" or line.starts_with("#")
+            continue
+        if current == ""
+            words := line.split(" ")
+            current = words[1]
+            body = []
+        elif line == "end"
+            result = result.append(parse(current, body, position + 1))
+            current = ""
+        else
+            body = body.append(BodyLine(position + 1, line))
+    return result
+Phase phase(tab.Tableau &state, const r.Fraction[] costs, const int[] candidates, const string[] columns, const string[] rows, const r.Fraction constant, const r.Fraction sign, int level, string[] &log)
+    count := 0
+    while true
+        reduced := tab.reduced(state, costs)
+        entering := -1
+        for column := candidates[]
+            if reduced[column].numerator < 0
+                entering = column
+                break
+        if entering < 0
+            return Phase(count, none)
+        leaving := -1
+        best_ratio := r.Fraction(0)
+        for: row < int(#state.matrix)
+            if state.matrix[row][entering].numerator <= 0
+                continue
+            ratio := state.beta[row].divide(state.matrix[row][entering])
+            if leaving < 0 or ratio.compare(best_ratio) < 0 or (ratio == best_ratio and state.basis[row] < state.basis[leaving])
+                leaving = row
+                best_ratio = ratio
+        if leaving < 0
+            return Phase(count, entering)
+        before := reduced[entering]
+        previous := state.basis[leaving]
+        tab.pivot(&state, leaving, entering)
+        count += 1
+        if level >= 1
+            objective := constant.add(sign.multiply(tab.value(state, costs)))
+            log = log.append("PIVOT {count} enter {columns[entering]} reduced {before.text()} leave {columns[previous]} row {rows[leaving]} ratio {best_ratio.text()} objective {objective.text()}")
+class Tableau(r.Fraction[][] matrix, r.Fraction[] beta, int[] basis)
+class Part(int column, r.Fraction direction)
+class Substitution(string kind, r.Fraction offset, Part[] columns)
+class Standard(string[] columns, string[] rows, r.Fraction[] signs, int[] initial, int[] slacks, int[] artificial, r.Fraction[] phase1, r.Fraction[] phase2, r.Fraction constant, r.Fraction sign, Substitution[] substitutions, int[] upper_rows)
+class Converted(Standard standard, Tableau tableau)
+class Result(Standard standard, Tableau tableau, string status, r.Fraction value, r.Fraction[] solution, int phase1, int phase2, int drives, r.Fraction infeasibility, r.Fraction[] multipliers, r.Fraction[] ray, r.Fraction rate, string[] log)
+    int pivots()
+        return phase1 + phase2 + drives
+
+void pivot(Tableau &state, int row, int column)
+    divisor := state.matrix[row][column]
+    for: position < int(#state.matrix[row])
+        state.matrix[row][position] = state.matrix[row][position].divide(divisor)
+    state.beta[row] = state.beta[row].divide(divisor)
+    for: other < int(#state.matrix)
+        if other == row
+            continue
+        factor := state.matrix[other][column]
+        for: position < int(#state.matrix[other])
+            state.matrix[other][position] = state.matrix[other][position].subtract(factor.multiply(state.matrix[row][position]))
+        state.beta[other] = state.beta[other].subtract(factor.multiply(state.beta[row]))
+    state.basis[row] = column
+
+r.Fraction[] reduced(const Tableau state, const r.Fraction[] costs)
+    result := costs
+    for: column < int(#costs)
+        for: row < int(#state.matrix)
+            result[column] = result[column].subtract(costs[state.basis[row]].multiply(state.matrix[row][column]))
+    return result
+
+r.Fraction value(const Tableau state, const r.Fraction[] costs)
+    result := r.Fraction(0)
+    for: row < int(#state.matrix)
+        result = result.add(costs[state.basis[row]].multiply(state.beta[row]))
+    return result
+class Outcome(string status, tab.Result root, r.Fraction[] | none solution, r.Fraction | none objective, int nodes, int phase1, int phase2, int drives, string[] lines, string[] log)
+    int pivots()
+        return phase1 + phase2 + drives

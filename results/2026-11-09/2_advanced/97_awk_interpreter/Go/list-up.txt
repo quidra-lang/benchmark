@@ -1,0 +1,1014 @@
+func (p Position) String() string { return strconv.Itoa(p.Line) + ":" + strconv.Itoa(p.Column) }
+
+type SyntaxIssue struct{ Position Position }
+type Token struct {
+	Kind, Spelling, Text string
+	Number               int64
+	Position             Position
+}
+
+func letter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+func digit(c byte) bool  { return c >= '0' && c <= '9' }
+func wordIn(words, value string) bool {
+	for _, word := range strings.Fields(words) {
+		if word == value {
+			return true
+		}
+	}
+	return false
+}
+func decimal(text string) int64 {
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+func tokenize(source string) []Token {
+	tokens := []Token{}
+	line, column := 1, 1
+	for i := 0; i < len(source); {
+		c := source[i]
+		position := Position{line, column}
+		if c == ' ' {
+			i++
+			column++
+			continue
+		}
+		if c == '\\' && i+1 < len(source) && source[i+1] == '\n' {
+			i += 2
+			line++
+			column = 1
+			continue
+		}
+		if c == '#' {
+			for i < len(source) && source[i] != '\n' {
+				i++
+				column++
+			}
+			continue
+		}
+		if c == '\n' {
+			tokens = append(tokens, Token{Kind: "newline", Spelling: "\n", Position: position})
+			i++
+			line++
+			column = 1
+			continue
+		}
+		if digit(c) {
+			start := i
+			for i < len(source) && digit(source[i]) {
+				i++
+				column++
+			}
+			text := source[start:i]
+			tokens = append(tokens, Token{Kind: "number", Spelling: text, Number: decimal(text), Position: position})
+			continue
+		}
+		if letter(c) || c == '_' {
+			start := i
+			for i < len(source) && (letter(source[i]) || digit(source[i]) || source[i] == '_') {
+				i++
+				column++
+			}
+			text := source[start:i]
+			kind := "name"
+			if wordIn("BEGIN END function if else while for do break continue next exit return delete in getline print printf", text) {
+				kind = "keyword"
+			} else if wordIn("length substr index split sprintf toupper tolower close int", text) {
+				kind = "builtin"
+			} else if i < len(source) && source[i] == '(' {
+				kind = "function_name"
+			}
+			tokens = append(tokens, Token{Kind: kind, Spelling: text, Position: position})
+			continue
+		}
+		if c == '"' {
+			start := i
+			i++
+			column++
+			var value strings.Builder
+			for {
+				if i == len(source) || source[i] == '\n' {
+					panic(SyntaxIssue{position})
+				}
+				c = source[i]
+				i++
+				column++
+				if c == '"' {
+					break
+				}
+				if c == '\\' {
+					slash := Position{line, column - 1}
+					if i == len(source) {
+						panic(SyntaxIssue{position})
+					}
+					c = source[i]
+					i++
+					column++
+					switch c {
+					case 'n':
+						c = '\n'
+					case 't':
+						c = '\t'
+					case '\\', '"', '/':
+					default:
+						panic(SyntaxIssue{slash})
+					}
+				}
+				value.WriteByte(c)
+			}
+			tokens = append(tokens, Token{Kind: "string", Spelling: source[start:i], Text: value.String(), Position: position})
+			continue
+		}
+		symbol := ""
+		if i+1 < len(source) && wordIn("+= -= *= /= %= ^= == <= >= != ++ -- && || >>", source[i:i+2]) {
+			symbol = source[i : i+2]
+		} else if strings.ContainsRune("+-*/%^!><?:=()[]{},;$", rune(c)) {
+			symbol = source[i : i+1]
+		}
+		if symbol == "" {
+			panic(SyntaxIssue{position})
+		}
+		tokens = append(tokens, Token{Kind: "symbol", Spelling: symbol, Position: position})
+		i += len(symbol)
+		column += len(symbol)
+	}
+	return append(tokens, Token{Kind: "end", Position: Position{strings.Count(source, "\n") + 1, 1}})
+}
+	Kind, Name, Op     string
+	Position           Position
+	Value              Value
+	Left, Right, Third *Expr
+	Args               []*Expr
+	Binding            Binding
+	Function           *Item
+	Prefix             bool
+}
+type Statement struct {
+	Kind             string
+	Position         Position
+	Exprs            []*Expr
+	Body, Else       *Statement
+	Statements       []*Statement
+	Variable, Array  *Expr
+	Redirect         *Expr
+	RedirectMode     string
+	RedirectPosition Position
+	WholeDelete      bool
+}
+type Item struct {
+	Kind, Name, Flavor          string
+	Position, NamePosition      Position
+	Parameters                  []*Expr
+	ParameterNames              map[string]bool
+	Body                        *Statement
+	Patterns                    []*Expr
+	Count, Calls, Active, Depth int
+	Inside                      bool
+}
+type Parser struct {
+	Tokens       []Token
+	Index, Loops int
+	Function     bool
+	Phase        string
+}
+
+func (p *Parser) peek() Token { return p.Tokens[p.Index] }
+func (p *Parser) take() Token {
+	token := p.peek()
+	p.Index++
+	return token
+}
+func (p *Parser) fail() { panic(SyntaxIssue{p.peek().Position}) }
+func (p *Parser) accept(spelling string) bool {
+	if p.peek().Spelling != spelling {
+		return false
+	}
+	p.Index++
+	return true
+}
+func (p *Parser) expect(spelling string) Token {
+	if p.peek().Spelling != spelling {
+		p.fail()
+	}
+	return p.take()
+}
+func (p *Parser) newlines() {
+	for p.accept("\n") {
+	}
+}
+func (p *Parser) name() *Expr {
+	if p.peek().Kind != "name" {
+		p.fail()
+	}
+	token := p.take()
+	return &Expr{Kind: "name", Name: token.Spelling, Position: token.Position}
+}
+func lvalue(e *Expr) bool { return e.Kind == "name" || e.Kind == "array" || e.Kind == "field" }
+func (p *Parser) parse() []*Item {
+	items := []*Item{}
+	for p.peek().Kind != "end" {
+		if p.accept("\n") || p.accept(";") {
+			continue
+		}
+		start := p.peek()
+		if p.accept("function") {
+		}
+		flavor := ""
+		patterns := []*Expr{}
+		if start.Spelling == "BEGIN" || start.Spelling == "END" {
+			flavor = p.take().Spelling
+		} else if start.Spelling == "{" {
+			flavor = "all"
+		} else {
+		p.Phase = flavor
+		var body *Statement
+		if flavor == "BEGIN" || flavor == "END" || flavor == "all" || p.peek().Spelling == "{" {
+			body = p.block()
+		} else if p.peek().Spelling != "\n" && p.peek().Spelling != ";" && p.peek().Kind != "end" {
+			p.fail()
+		}
+		p.Phase = ""
+		items = append(items, &Item{Kind: "rule", Flavor: flavor, Position: start.Position, Patterns: patterns, Body: body})
+	}
+	return items
+}
+func (p *Parser) block() *Statement {
+	opening := p.expect("{")
+	out := &Statement{Kind: "block", Position: opening.Position}
+	for p.peek().Spelling != "}" {
+		if p.accept("\n") || p.accept(";") {
+			continue
+		}
+		out.Statements = append(out.Statements, p.statement())
+	}
+	p.expect("}")
+	return out
+}
+func (p *Parser) terminator() {
+	if p.accept(";") || p.accept("\n") {
+		return
+	}
+	if p.peek().Spelling != "}" {
+		p.fail()
+	}
+}
+func (p *Parser) statement() *Statement {
+	token := p.peek()
+	kind := token.Spelling
+	if kind == "{" {
+		return p.block()
+	}
+	if p.accept(";") {
+		return &Statement{Kind: "empty", Position: token.Position}
+	}
+	out := &Statement{Kind: kind, Position: token.Position}
+	switch kind {
+	case "if":
+		p.take()
+		out.Exprs = []*Expr{p.condition()}
+		p.newlines()
+	case "print", "printf":
+		p.take()
+		p.output(out)
+	default:
+		out.Kind = "expression"
+		out.Exprs = []*Expr{p.expression(true)}
+	}
+	p.terminator()
+	return out
+}
+func (p *Parser) parenthesizedOutput() bool {
+	if p.peek().Spelling != "(" {
+		return false
+func (p *Parser) output(out *Statement) {
+	if p.parenthesizedOutput() {
+		p.expect("(")
+		out.Exprs = p.expressionList(true)
+		p.expect(")")
+	} else if p.peek().Spelling != "\n" && !wordIn("; } > >>", p.peek().Spelling) {
+		out.Exprs = p.expressionList(false)
+	}
+	if out.Kind == "printf" && len(out.Exprs) == 0 {
+		p.fail()
+	}
+}
+func (p *Parser) expressionList(greater bool) []*Expr {
+	out := []*Expr{p.expression(greater)}
+	for p.accept(",") {
+		p.newlines()
+		out = append(out, p.expression(greater))
+	}
+	return out
+}
+func (p *Parser) expression(greater bool) *Expr {
+	left := p.conditional(greater)
+	if lvalue(left) && wordIn("= += -= *= /= %= ^=", p.peek().Spelling) {
+		op := p.take()
+		return &Expr{Kind: "assignment", Op: op.Spelling, Position: op.Position, Left: left, Right: p.expression(greater)}
+	}
+	return left
+}
+func (p *Parser) conditional(greater bool) *Expr {
+	condition := p.logical(0, greater)
+	if !p.accept("?") {
+		return condition
+	}
+}
+func (p *Parser) logical(level int, greater bool) *Expr {
+	if level == 2 {
+		return p.membership(greater)
+	}
+	op := "||"
+	if level == 1 {
+		op = "&&"
+	}
+	left := p.logical(level+1, greater)
+	for p.peek().Spelling == op {
+	}
+	return left
+}
+func (p *Parser) membership(greater bool) *Expr {
+	left := p.comparison(greater)
+	for p.peek().Spelling == "in" {
+	}
+	return left
+}
+func (p *Parser) comparison(greater bool) *Expr {
+	left := p.concatenation()
+	for wordIn("< <= == != >= >", p.peek().Spelling) && (greater || p.peek().Spelling != ">") {
+	}
+	return left
+}
+func (p *Parser) concatenation() *Expr {
+	left := p.additive()
+	for wordIn("number string name function_name builtin", p.peek().Kind) || wordIn("$ ( ++ --", p.peek().Spelling) {
+	}
+	return left
+}
+func (p *Parser) additive() *Expr {
+	left := p.multiplicative()
+	for p.peek().Spelling == "+" || p.peek().Spelling == "-" {
+	}
+	return left
+}
+func (p *Parser) multiplicative() *Expr {
+	left := p.unary()
+	for wordIn("* / %", p.peek().Spelling) {
+	}
+	return left
+}
+func (p *Parser) unary() *Expr {
+	if wordIn("! - +", p.peek().Spelling) {
+	}
+	left := p.postfix()
+	if p.peek().Spelling == "^" {
+	}
+	return left
+}
+func (p *Parser) postfix() *Expr {
+	if p.peek().Spelling == "++" || p.peek().Spelling == "--" {
+		return p.prefix()
+	}
+	left := p.atom()
+	if lvalue(left) && (p.peek().Spelling == "++" || p.peek().Spelling == "--") {
+	}
+	return left
+}
+func (p *Parser) location() *Expr {
+	if p.peek().Kind == "name" {
+		name := p.name()
+		if p.accept("[") {
+		}
+		return name
+	}
+	if p.accept("$") {
+		position := p.Tokens[p.Index-1].Position
+		var index *Expr
+		if p.peek().Spelling == "++" || p.peek().Spelling == "--" {
+		} else {
+			index = p.atom()
+		}
+		return &Expr{Kind: "field", Position: position, Left: index}
+	}
+	p.fail()
+	return nil
+}
+func (p *Parser) atom() *Expr {
+	token := p.peek()
+	if token.Kind == "number" || token.Kind == "string" {
+		p.take()
+		value := numeric(token.Number)
+		if token.Kind == "string" {
+			value = stringValue(token.Text)
+		}
+		return &Expr{Kind: token.Kind, Position: token.Position, Value: value}
+	}
+	if token.Kind == "name" || token.Spelling == "$" {
+		return p.location()
+	}
+type Value struct {
+	Kind   string
+	Number int64
+	Text   string
+}
+
+func numeric(n int64) Value      { return Value{Kind: "number", Number: n} }
+func stringValue(s string) Value { return Value{Kind: "string", Text: s} }
+func whitespace(c byte) bool     { return c == ' ' || c == '\t' || c == '\n' }
+func numericPrefix(text string) (int64, int, bool) {
+	i := 0
+	for i < len(text) && whitespace(text[i]) {
+		i++
+	}
+	sign := int64(1)
+	if i < len(text) && (text[i] == '+' || text[i] == '-') {
+		if text[i] == '-' {
+			sign = -1
+		}
+		i++
+	}
+	start := i
+	for i < len(text) && digit(text[i]) {
+		i++
+	}
+	if start == i {
+		return 0, i, false
+	}
+	return sign * decimal(text[start:i]), i, true
+}
+func inputValue(text string) Value {
+	n, end, ok := numericPrefix(text)
+	for end < len(text) && whitespace(text[end]) {
+		end++
+	}
+	if ok && end == len(text) {
+		return Value{Kind: "strnum", Number: n, Text: text}
+	}
+	return stringValue(text)
+}
+func (v Value) number() int64 {
+	if v.Kind == "number" || v.Kind == "strnum" {
+		return v.Number
+	}
+	n, _, _ := numericPrefix(v.Text)
+	return n
+}
+func (v Value) text() string {
+	if v.Kind == "number" {
+		return strconv.FormatInt(v.Number, 10)
+	}
+	return v.Text
+}
+func splitPieces(text, separator string) []string {
+	if text == "" {
+		return []string{}
+	}
+	if separator == " " {
+	if separator == "" {
+		out := []string{}
+		for i := 0; i < len(text); i++ {
+			out = append(out, text[i:i+1])
+		}
+		return out
+	}
+	return strings.Split(text, separator)
+}
+
+type Record struct {
+	Zero   Value
+	Fields []Value
+	Global func(string) Value
+}
+
+func (r *Record) set(text string) {
+	r.Zero = inputValue(text)
+	r.Fields = nil
+	for _, piece := range splitPieces(text, r.Global("FS").text()) {
+		r.Fields = append(r.Fields, inputValue(piece))
+	}
+}
+func (r *Record) read(index int) Value {
+	if index == 0 {
+		return r.Zero
+	}
+	if index > len(r.Fields) {
+		return Value{}
+	}
+	return r.Fields[index-1]
+}
+func (r *Record) rebuild() {
+	parts := []string{}
+	for _, v := range r.Fields {
+		parts = append(parts, v.text())
+	}
+	r.Zero = inputValue(strings.Join(parts, r.Global("OFS").text()))
+}
+func (r *Record) resize(n int) {
+	if n < len(r.Fields) {
+		r.Fields = r.Fields[:n]
+	}
+	for len(r.Fields) < n {
+		r.Fields = append(r.Fields, stringValue(""))
+	}
+	r.rebuild()
+}
+func (r *Record) write(index int, value Value) {
+	if index == 0 {
+		r.set(value.text())
+		return
+	}
+	for len(r.Fields) < index {
+		r.Fields = append(r.Fields, stringValue(""))
+	}
+	r.Fields[index-1] = value
+	r.rebuild()
+}
+func escapedString(text string) string {
+	var out strings.Builder
+	out.WriteByte('"')
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch c {
+		case '\\':
+			out.WriteString("\\\\")
+		case '"':
+			out.WriteString("\\\"")
+		case '\n':
+			out.WriteString("\\n")
+		case '\t':
+			out.WriteString("\\t")
+		default:
+			if c >= 32 && c <= 126 {
+				out.WriteByte(c)
+			} else {
+				out.WriteString(fmt.Sprintf("\\%03o", c))
+			}
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
+}
+func describe(v Value) string {
+	switch v.Kind {
+	case "number":
+		return v.text()
+	case "string":
+		return escapedString(v.Text)
+	case "strnum":
+		return escapedString(v.Text) + " (strnum)"
+	}
+	return "(uninitialized)"
+}
+type Option struct{ Name, Value string }
+type Operand struct {
+	Kind, Name, Value string
+	Records           int
+}
+
+func parseArguments(lines []string) ([]Option, []*Operand) {
+	options := []Option{}
+	operands := []*Operand{}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "-F ") {
+			options = append(options, Option{"FS", line[3:]})
+			continue
+		}
+		if strings.HasPrefix(line, "-v ") {
+			a := strings.SplitN(line[3:], "=", 2)
+			options = append(options, Option{a[0], a[1]})
+			continue
+		}
+		if k := strings.IndexByte(line, '='); k >= 0 && validName(line[:k]) {
+			operands = append(operands, &Operand{Kind: "assignment", Name: line[:k], Value: line[k+1:]})
+		} else {
+			operands = append(operands, &Operand{Kind: "file", Name: line})
+		}
+	}
+	return options, operands
+}
+func readText(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+func textLines(text string) []string {
+	if text == "" {
+		return []string{}
+	}
+	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+}
+func readRecords(name string) []string { return textLines(readText("input/" + name)) }
+
+type OutputStream struct {
+	Parts  []string
+	Open   bool
+	Writes int
+}
+
+func (s *OutputStream) content() string { return strings.Join(s.Parts, "") }
+type Streams struct {
+	Stdout      OutputStream
+	Outputs     map[string]*OutputStream
+	OutputOrder []string
+	Inputs      map[string]*GetlineInput
+	InputOrder  []string
+}
+
+func newStreams() *Streams {
+	return &Streams{Outputs: map[string]*OutputStream{}, Inputs: map[string]*GetlineInput{}}
+}
+func (s *Streams) write(text, name, mode string, position Position) {
+	if name == "" && mode == "" {
+		s.Stdout.Parts = append(s.Stdout.Parts, text)
+		s.Stdout.Writes++
+		return
+	}
+func writeFile(path, text string) {
+	if err := os.WriteFile(path, []byte(text), 0644); err != nil {
+		panic(err)
+	}
+}
+func (s *Streams) save() {
+	if err := os.MkdirAll("output", 0755); err != nil {
+		panic(err)
+	}
+	writeFile("output/stdout.txt", s.Stdout.content())
+	for _, name := range s.OutputOrder {
+		writeFile("output/"+name, s.Outputs[name].content())
+	}
+}
+var specialNames = []string{"FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"}
+	Expressions             []*Expr
+	Statements              []*Statement
+	Lines                   map[int]bool
+	Errors                  []StaticIssue
+}
+
+func newAnalysis(items []*Item) *Analysis {
+	a := &Analysis{Items: items, FunctionTable: map[string]*Item{}, Globals: map[string]bool{}, Arrays: map[Binding]bool{}, Lines: map[int]bool{}}
+	for _, name := range specialNames {
+		a.Globals[name] = true
+	}
+	for _, item := range items {
+		if item.Kind == "function" {
+			a.Functions = append(a.Functions, item)
+		} else {
+			a.Rules = append(a.Rules, item)
+		}
+	}
+	return a
+}
+func (a *Analysis) expression(e *Expr, function *Item) {
+	if e == nil {
+		return
+	}
+	a.Expressions = append(a.Expressions, e)
+	if e.Kind == "name" || e.Kind == "array" || e.Kind == "parameter" {
+		e.Binding = Binding{Name: e.Name}
+		if function != nil && function.ParameterNames[e.Name] {
+			e.Binding.Function = function
+		} else {
+			a.Globals[e.Name] = true
+		}
+		if a.FunctionTable[e.Name] != nil {
+			a.issue(e.Position, 2, "function "+e.Name+" used as variable")
+		}
+	} else if e.Kind == "call" {
+	a.expression(e.Left, function)
+	a.expression(e.Right, function)
+	a.expression(e.Third, function)
+	for _, argument := range e.Args {
+		a.expression(argument, function)
+	}
+}
+func (a *Analysis) statement(s *Statement, function *Item) {
+	if s == nil {
+		return
+	}
+	a.Statements = append(a.Statements, s)
+	if s.Kind != "block" && s.Kind != "empty" {
+		a.Lines[s.Position.Line] = true
+	}
+	for _, e := range s.Exprs {
+		a.expression(e, function)
+	}
+	a.expression(s.Variable, function)
+	a.expression(s.Array, function)
+	a.expression(s.Redirect, function)
+	for _, child := range s.Statements {
+		a.statement(child, function)
+	}
+	a.statement(s.Body, function)
+	a.statement(s.Else, function)
+}
+func (a *Analysis) prepare() {
+	for _, item := range a.Items {
+		var function *Item
+		if item.Kind == "function" {
+			function = item
+		}
+		for _, parameter := range item.Parameters {
+			a.expression(parameter, function)
+		}
+		for _, pattern := range item.Patterns {
+			a.expression(pattern, function)
+		}
+		a.statement(item.Body, function)
+	}
+	if len(a.Errors) > 0 {
+		sort.SliceStable(a.Errors, func(i, j int) bool {
+			x, y := a.Errors[i], a.Errors[j]
+			if x.Position.Line != y.Position.Line {
+				return x.Position.Line < y.Position.Line
+			}
+			if x.Position.Column != y.Position.Column {
+				return x.Position.Column < y.Position.Column
+			}
+			return x.Priority < y.Priority
+		})
+		panic(a.Errors[0])
+	}
+
+type Engine struct {
+	Analysis                 *Analysis
+	Options                  []Option
+	Operands                 []*Operand
+	Globals                  map[string]*Cell
+	Locals                   []map[string]*Cell
+	Record                   *Record
+	Streams                  *Streams
+	Lines                    map[int]int
+	Phase                    string
+	ExitStatus               int64
+	Error                    *RuntimeIssue
+	OperandIndex, InputIndex int
+	Current                  *Operand
+	InputLines               []string
+}
+
+func newEngine(a *Analysis, options []Option, operands []*Operand) *Engine {
+	e := &Engine{Analysis: a, Options: options, Operands: operands, Globals: map[string]*Cell{}, Streams: newStreams(), Lines: map[int]int{}, Phase: "BEGIN"}
+	for name := range a.Globals {
+		cell := &Cell{}
+		if a.Arrays[Binding{Name: name}] {
+			cell.Array = map[string]Value{}
+		}
+		e.Globals[name] = cell
+	}
+	for _, name := range specialNames {
+		e.Globals[name].Value = numeric(0)
+	}
+	e.Globals["FILENAME"].Value = stringValue("")
+	e.Globals["FS"].Value = stringValue(" ")
+	e.Globals["OFS"].Value = stringValue(" ")
+	e.Globals["ORS"].Value = stringValue("\n")
+	e.Globals["SUBSEP"].Value = stringValue(string(byte(28)))
+	for line := range a.Lines {
+		e.Lines[line] = 0
+	}
+	e.Record = &Record{Zero: stringValue(""), Global: e.global}
+	return e
+}
+func (e *Engine) cell(binding Binding) *Cell {
+	if binding.Function != nil {
+		return e.Locals[len(e.Locals)-1][binding.Name]
+	}
+	return e.Globals[binding.Name]
+}
+func (e *Engine) global(name string) Value {
+	if name == "NF" {
+		return numeric(int64(len(e.Record.Fields)))
+	}
+	return e.Globals[name].Value
+func (e *Engine) location(node *Expr) Location {
+	switch node.Kind {
+	case "name":
+		return Location{Kind: "variable", Cell: e.cell(node.Binding), NF: node.Binding.Function == nil && node.Name == "NF"}
+	case "array":
+	index := e.evaluate(node.Left).number()
+	if index < 0 {
+		runtimeError(node.Position, "negative field index")
+	}
+	return Location{Kind: "field", Index: int(index)}
+}
+func (e *Engine) read(location Location) Value {
+	switch location.Kind {
+	case "field":
+		return e.Record.read(location.Index)
+	if location.NF {
+		return numeric(int64(len(e.Record.Fields)))
+	}
+	return location.Cell.Value
+}
+func (e *Engine) store(location Location, value Value, position Position) {
+	switch location.Kind {
+	case "field":
+		e.Record.write(location.Index, value)
+	default:
+		if location.NF {
+			n := value.number()
+			if n < 0 {
+				runtimeError(position, "negative NF")
+			}
+			e.Record.resize(int(n))
+		} else {
+			location.Cell.Value = value
+		}
+	}
+}
+func (e *Engine) evaluate(node *Expr) Value {
+	switch node.Kind {
+	case "number", "string":
+		return node.Value
+	case "name", "array", "field":
+		return e.read(e.location(node))
+	case "paren":
+		return e.evaluate(node.Left)
+	case "assignment":
+		location := e.location(node.Left)
+		value := e.evaluate(node.Right)
+		if node.Op != "=" {
+			value = arithmetic(node.Op[:1], e.read(location), value, node.Position)
+		}
+		e.store(location, value, node.Position)
+		return e.read(location)
+func (e *Engine) output(node *Statement) {
+	values := []Value{}
+	for _, arg := range node.Exprs {
+		values = append(values, e.evaluate(arg))
+	}
+	text := ""
+	if node.Kind == "print" {
+		if len(values) == 0 {
+			values = append(values, e.Record.Zero)
+		}
+		parts := []string{}
+		for _, value := range values {
+			parts = append(parts, value.text())
+		}
+		text = strings.Join(parts, e.global("OFS").text()) + e.global("ORS").text()
+	}
+	name := ""
+	if node.Redirect != nil {
+		name = e.evaluate(node.Redirect).text()
+	}
+	e.Streams.write(text, name, node.RedirectMode, node.RedirectPosition)
+}
+func (e *Engine) statement(node *Statement) {
+	if node.Kind == "block" {
+		for _, child := range node.Statements {
+			e.statement(child)
+		}
+		return
+	}
+	if node.Kind == "empty" {
+		return
+	}
+	e.Lines[node.Position.Line]++
+	switch node.Kind {
+	case "expression":
+		e.evaluate(node.Exprs[0])
+	case "print", "printf":
+		e.output(node)
+func (e *Engine) nextRecord() (string, bool) {
+	for {
+		if e.InputIndex < len(e.InputLines) {
+			line := e.InputLines[e.InputIndex]
+			e.InputIndex++
+			e.Current.Records++
+			e.Globals["NR"].Value = numeric(e.global("NR").number() + 1)
+			e.Globals["FNR"].Value = numeric(e.global("FNR").number() + 1)
+			return line, true
+		}
+		if e.OperandIndex == len(e.Operands) {
+			return "", false
+		}
+		operand := e.Operands[e.OperandIndex]
+		e.OperandIndex++
+		if operand.Kind == "assignment" {
+			e.assignInput(operand.Name, operand.Value)
+		} else {
+			e.Current = operand
+			e.InputLines = readRecords(operand.Name)
+			e.InputIndex = 0
+			e.Globals["FILENAME"].Value = stringValue(operand.Name)
+			e.Globals["FNR"].Value = numeric(0)
+		}
+	}
+}
+func (e *Engine) actions(phase string) {
+	e.Phase = phase
+	for _, rule := range e.Analysis.Rules {
+		if rule.Flavor == phase {
+			rule.Count++
+			e.statement(rule.Body)
+		}
+	}
+}
+func (e *Engine) matches(rule *Item) bool {
+	if rule.Flavor == "all" {
+		return true
+	}
+func (e *Engine) records() {
+	any := false
+	for _, rule := range e.Analysis.Rules {
+		any = any || rule.Flavor != "BEGIN"
+	}
+	if !any {
+		return
+	}
+	e.Phase = "records"
+	for {
+		line, found := e.nextRecord()
+		if !found {
+			return
+		}
+		e.Record.set(line)
+		transfer := trap(func() {
+			for _, rule := range e.Analysis.Rules {
+				if rule.Flavor == "BEGIN" || rule.Flavor == "END" {
+					continue
+				}
+				if e.matches(rule) {
+					rule.Count++
+					if rule.Body == nil {
+						e.Streams.write(e.Record.Zero.text()+e.global("ORS").text(), "", "", Position{})
+					} else {
+						e.statement(rule.Body)
+					}
+				}
+			}
+		})
+func (e *Engine) execute() {
+	defer func() {
+		if failure := recover(); failure != nil {
+			if issue, ok := failure.(RuntimeIssue); ok {
+				e.Error = &issue
+			} else {
+				panic(failure)
+			}
+		}
+	}()
+	for _, option := range e.Options {
+		e.assignInput(option.Name, option.Value)
+	}
+	transfer := trap(func() {
+		e.actions("BEGIN")
+		e.records()
+	})
+func (e *Engine) statistics() []string {
+	status := fmt.Sprintf("status: exit %d", e.ExitStatus)
+	if e.Error != nil {
+		status = "status: runtime error at " + e.Error.Position.String() + ": " + e.Error.Message
+	}
+	out := []string{status, "[inputs]"}
+	for _, operand := range e.Operands {
+		if operand.Kind == "file" {
+			out = append(out, fmt.Sprintf("%s records=%d", operand.Name, operand.Records))
+		}
+	}
+	out = append(out, "[rules]")
+	for _, rule := range e.Analysis.Rules {
+		out = append(out, fmt.Sprintf("%s %s count=%d", rule.Position.String(), rule.Flavor, rule.Count))
+	}
+	out = append(out, "[outputs]", fmt.Sprintf("stdout.txt writes=%d bytes=%d", e.Streams.Stdout.Writes, len(e.Streams.Stdout.content())))
+	lineNumbers := []int{}
+	for line := range e.Lines {
+		lineNumbers = append(lineNumbers, line)
+	}
+	sort.Ints(lineNumbers)
+	out = append(out, "[lines]")
+	for _, line := range lineNumbers {
+		out = append(out, fmt.Sprintf("%d count=%d", line, e.Lines[line]))
+	}
+	globalNames := []string{}
+	for name := range e.Globals {
+		globalNames = append(globalNames, name)
+	}
+	sort.Strings(globalNames)
+	out = append(out, "[globals]")
+	for _, name := range globalNames {
+		text := describe(e.global(name))
+		out = append(out, name+" = "+text)
+	}
+	return out
+}
+func process(options []Option, operands []*Operand, source string) (streams *Streams, statistics []string) {
+	streams = newStreams()
+	parser := Parser{Tokens: tokenize(source)}
+	analysis := newAnalysis(parser.parse())
+	analysis.prepare()
+	engine := newEngine(analysis, options, operands)
+	engine.execute()
+	return engine.Streams, engine.statistics()
+}
+func main() {
+	options, operands := parseArguments(textLines(readText("input/args.txt")))
+	streams, statistics := process(options, operands, readText("input/program.awk"))
+	streams.save()
+	writeFile("output/stats.txt", strings.Join(statistics, "\n")+"\n")
+}

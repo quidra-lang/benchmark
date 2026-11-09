@@ -1,0 +1,181 @@
+function Server.new()
+    local settings, motd, traffic, line_counts = {}, {}, {}, {}
+    local integers = {NICKLEN = true, CHANNELLEN = true, TOPICLEN = true, MAXCHANNELS = true,
+        BUCKET = true, REFILL = true, QUEUE = true, PINGFREQ = true, TIMEOUT = true}
+    for line in io.lines('input/server.txt') do
+        local key, value = line:match('^(%S+) (.*)$')
+        if key == 'MOTD' then motd[#motd + 1] = value
+        else settings[key] = integers[key] and tonumber(value) or value end
+    end
+    for line in io.lines('input/traffic.txt') do
+        local time, identifier, body = line:match('^(%d+) ([a-z0-9]+) (.*)$')
+        local kind, host = 'messages', body:match('^CONNECT ([%w.%-]+)$')
+        if host and #host <= 63 then kind = 'connect'
+        elseif body == 'DISCONNECT' then kind = 'disconnect' end
+        traffic[#traffic + 1] = {time = tonumber(time), identifier = identifier, kind = kind, body = body}
+        add(line_counts, kind)
+    end
+    return setmetatable({settings = settings, motd = motd, traffic = traffic, finish = traffic[#traffic].time,
+        time = 0, clients = {}, client_by_id = {}, channels = {}, channel_by_name = {}, sent = {},
+        commands = {}, numerics = {}, line_counts = line_counts, statistics = {}, disconnects = {}, gone = {},
+        peak_connections = {0, 0}, peak_registered = {0, 0}}, Server)
+end
+function Server:send(client, line)
+    self.sent[#self.sent + 1] = self.time .. ' ' .. client.identifier .. ' ' .. line
+    client.sent = client.sent + 1
+end
+function Server:disconnect(client, reason, kind)
+    if kind ~= 'closed' then
+        self:send(client, 'ERROR :Closing Link: ' .. client:addressee() .. '[' .. client.hostname .. '] (' .. reason .. ')')
+        add(self.statistics, 'errors')
+    end
+    if client.registered then self:send_peers(client, ':' .. client:prefix() .. ' QUIT :' .. reason) end
+    for _, channel in ipairs({table.unpack(client.channels)}) do self:remove_member(client, channel) end
+    add(self.statistics, 'discarded', #client.queue)
+    client.queue = {}
+    self.client_by_id[client.identifier], client.active = nil, false
+    self.gone[#self.gone + 1] = {self.time, client.identifier, client:addressee(), reason}
+    add(self.disconnects, kind)
+end
+function Server:arrival(record)
+    if record.kind == 'connect' then
+        local client = Client.new(record.identifier, record.body:sub(9), self.time, self.settings.BUCKET)
+        self.clients[#self.clients + 1], self.client_by_id[record.identifier] = client, client
+        local present = self:present()
+        if #present > self.peak_connections[1] then self.peak_connections = {#present, self.time} end
+        return
+    end
+    local client = self.client_by_id[record.identifier]
+    if record.kind == 'disconnect' then
+        if client then self:disconnect(client, 'Remote host closed the connection', 'closed') end
+        return
+    end
+    if not client then add(self.statistics, 'dropped'); return end
+    client.received, client.last_received, client.ping_sent = client.received + 1, self.time, nil
+    if #client.queue == 0 and client.tokens >= 1 then
+        self:use_token(client); self:process(client, record.body)
+    elseif #client.queue >= self.settings.QUEUE then
+        add(self.statistics, 'discarded'); self:disconnect(client, 'Excess Flood', 'flood')
+    else
+        client.queue[#client.queue + 1] = record.body; add(self.statistics, 'queued')
+    end
+end
+function Server:run()
+    local position = 1
+    for time = 0, self.finish do
+        self.time = time
+        for _, client in ipairs(self:present()) do
+            client:refill(time, self.settings.BUCKET, self.settings.REFILL)
+            while client.active and #client.queue > 0 and client.tokens >= 1 do
+                self:use_token(client)
+                local raw = table.remove(client.queue, 1)
+                self:process(client, raw)
+            end
+        end
+        while self.traffic[position] and self.traffic[position].time == time do
+            self:arrival(self.traffic[position]); position = position + 1
+        end
+        for _, client in ipairs(self:present()) do
+            if client.ping_sent ~= nil then
+                if time - client.ping_sent >= self.settings.TIMEOUT then
+                    self:disconnect(client, 'Ping timeout: ' .. (time - client.last_received) .. ' seconds', 'timeout')
+                end
+            elseif time - client.last_received >= self.settings.PINGFREQ then
+                self:send(client, 'PING :' .. self.settings.NAME); add(self.statistics, 'pings'); client.ping_sent = time
+            end
+        end
+    end
+end
+function Server:process(client, raw)
+    add(self.statistics, 'processed')
+    local command, parameters = protocol.parse(raw)
+    if command == '' then add(self.statistics, 'empty'); return end
+    add(self.commands, command)
+    if not client.registered and not unregistered_commands[command] then self:numeric(client, 451); return end
+    if command == 'PRIVMSG' or command == 'NOTICE' then self:message(client, parameters, command)
+    elseif self.handlers[command] then self.handlers[command](self, client, parameters)
+    else self:numeric(client, 421, {command = command}) end
+end
+function Server:client_report()
+    local lines, registered, invisible, away = {}, 0, 0, 0
+    local clients = self:present()
+    for _, client in ipairs(clients) do
+        local joined, invites = self:joined_channels(client, ','), {}
+        for _, channel in ipairs(client.invites) do invites[#invites + 1] = channel.name end
+        lines[#lines + 1] = 'CLIENT ' .. client.identifier .. ' ' .. client:addressee() .. ' ' .. (client.username or '*') .. ' ' .. client.hostname
+            .. ' ' .. client:mode() .. ' connected ' .. client.connection_time .. ' signon ' .. (client.registered and client.registration_time or '-')
+            .. ' received ' .. client.received .. ' sent ' .. client.sent .. ' tokens ' .. client.tokens .. ' queue ' .. #client.queue
+            .. ' channels ' .. (joined ~= '' and joined or 'none') .. ' invites ' .. (#invites > 0 and table.concat(invites, ',') or 'none')
+        if client.away ~= '' then lines[#lines + 1] = 'AWAY ' .. client.identifier .. ' ' .. client.away; away = away + 1 end
+        if client.registered then registered = registered + 1 end
+        if client.invisible then invisible = invisible + 1 end
+    end
+    lines[#lines + 1] = 'TOTAL clients ' .. #clients .. ' registered ' .. registered .. ' invisible ' .. invisible .. ' away ' .. away
+    return lines
+end
+function Server:statistics_report()
+    local c, pending = self.statistics, 0
+    for _, client in ipairs(self:present()) do pending = pending + #client.queue end
+    local lines = {'END ' .. self.finish,
+        'LINES total ' .. #self.traffic .. ' connect ' .. count(self.line_counts, 'connect') .. ' disconnect ' .. count(self.line_counts, 'disconnect') .. ' messages ' .. count(self.line_counts, 'messages'),
+        'MESSAGES dropped ' .. count(c, 'dropped') .. ' queued ' .. count(c, 'queued') .. ' processed ' .. count(c, 'processed') .. ' discarded ' .. count(c, 'discarded') .. ' pending ' .. pending .. ' empty ' .. count(c, 'empty'),
+        'SENT lines ' .. #self.sent .. ' numerics ' .. sum(self.numerics) .. ' pings ' .. count(c, 'pings') .. ' errors ' .. count(c, 'errors')}
+    for _, command in ipairs(sorted_keys(self.commands)) do lines[#lines + 1] = 'COMMAND ' .. command .. ' ' .. self.commands[command] end
+    for _, number in ipairs(sorted_keys(self.numerics)) do lines[#lines + 1] = 'NUMERIC ' .. string.format('%03d', number) .. ' ' .. self.numerics[number] end
+    lines[#lines + 1] = 'PEAK connections ' .. self.peak_connections[1] .. ' at ' .. self.peak_connections[2]
+    lines[#lines + 1] = 'PEAK registered ' .. self.peak_registered[1] .. ' at ' .. self.peak_registered[2]
+    local kinds = {}
+    for _, kind in ipairs({'quit', 'closed', 'flood', 'timeout'}) do kinds[#kinds + 1] = kind .. ' ' .. count(self.disconnects, kind) end
+    lines[#lines + 1] = 'DISCONNECTS ' .. table.concat(kinds, ' ')
+    for _, record in ipairs(self.gone) do lines[#lines + 1] = 'GONE ' .. table.concat(record, ' ') end
+    return lines
+end
+function Server:write_outputs()
+    os.execute('mkdir -p output')
+    local outputs = {['sent.txt'] = self.sent, ['channels.txt'] = self:channel_report(),
+        ['clients.txt'] = self:client_report(), ['stats.txt'] = self:statistics_report()}
+    for filename, lines in pairs(outputs) do
+        local file = assert(io.open('output/' .. filename, 'w'))
+        file:write(table.concat(lines, '\n'), #lines > 0 and '\n' or '')
+        file:close()
+    end
+end
+function Client:use_token(time, capacity, interval)
+    if self.tokens == capacity then self.refill_time = time + interval end
+    self.tokens = self.tokens - 1
+end
+function Client:refill(time, capacity, interval)
+    if self.refill_time == time then
+        self.tokens = self.tokens + 1
+        self.refill_time = self.tokens < capacity and time + interval or nil
+    end
+end
+function protocol.parse(raw)
+    local position = 1
+    if raw:sub(1, 1) == ':' then
+        position = raw:find(' ', 1, true)
+        if not position then
+            return '', {}
+        end
+    end
+    while raw:sub(position, position) == ' ' do position = position + 1 end
+    local start = position
+    while position <= #raw and raw:sub(position, position) ~= ' ' do position = position + 1 end
+    local command, parameters = raw:sub(start, position - 1):upper(), {}
+    while position <= #raw do
+        while raw:sub(position, position) == ' ' do position = position + 1 end
+        if position > #raw then break end
+        if raw:sub(position, position) == ':' then
+            parameters[#parameters + 1] = raw:sub(position + 1)
+            break
+        end
+        if #parameters == 14 then
+            parameters[#parameters + 1] = raw:sub(position)
+            break
+        end
+        start = position
+        while position <= #raw and raw:sub(position, position) ~= ' ' do position = position + 1 end
+        parameters[#parameters + 1] = raw:sub(start, position - 1)
+    end
+    return command, parameters
+end

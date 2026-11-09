@@ -1,0 +1,155 @@
+import * as fs from 'node:fs';
+
+interface Station { id: string; zone: number; name: string; transfer: number; closed: boolean; walks: Map<string, number> }
+interface Line { id: string; first: number; last: number; headway: number; stops: string[]; offsets: number[]; delay: number; suspended: boolean }
+interface Direction { line: Line; order: number; stops: string[]; offsets: number[] }
+interface Ride { kind: 'ride'; line: string; terminal: string; from: string; departure: number; to: string; arrival: number; stops: number }
+interface Walk { kind: 'walk'; from: string; departure: number; to: string; arrival: number }
+interface Stay { kind: 'stay'; station: string; departure: number; arrival: number }
+type Leg = Ride | Walk | Stay;
+interface Label { time: number; journey: Leg[] }
+interface Tariff { discount: number; window: number; prices: number[] }
+const stations = new Map<string, Station>();
+const lines = new Map<string, Line>();
+const closed = new Set<string>();
+const output: string[] = [];
+let tariff: Tariff | null = null;
+function fail(message: string): never { throw new Error(`ERROR ${message}`); }
+function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+function time(word: string): number { const [h, m] = word.split(':').map(Number); return h * 60 + m; }
+function pair(a: string, b: string): string { return a < b ? `${a}-${b}` : `${b}-${a}`; }
+function station(id: string): Station {
+    const result = stations.get(id);
+    if (!result) fail(`unknown station ${id}`);
+    return result;
+}
+function openStation(id: string): void { if (stations.get(id)!.closed) fail(`station ${id} is closed`); }
+function common(origin: string, destination: string): void {
+    station(origin); station(destination);
+    if (origin === destination) fail('origin and destination are the same');
+    openStation(origin); openStation(destination);
+}
+function orderedLines(): Line[] { return [...lines.values()].sort((a, b) => compare(a.id, b.id)); }
+function directions(item: Line): Direction[] {
+    const total = item.offsets[item.offsets.length - 1];
+    return [{ line: item, order: 0, stops: item.stops, offsets: item.offsets },
+        { line: item, order: 1, stops: [...item.stops].reverse(), offsets: [...item.offsets].reverse().map(offset => total - offset) }];
+}
+function trips(item: Line): number { return Math.floor((item.last - item.first) / item.headway) + 1; }
+function nextTrain(direction: Direction, at: number, ready: number): number | null {
+    const item = direction.line;
+    const q = Math.max(0, Math.ceil((ready - item.first - item.delay - direction.offsets[at]) / item.headway));
+    return q < trips(item) ? q : null;
+}
+function trainTime(direction: Direction, q: number, at: number): number {
+    return direction.line.first + direction.line.delay + q * direction.line.headway + direction.offsets[at];
+}
+function ride(direction: Direction, boarding: number, alighting: number, q: number): Ride {
+    return { kind: 'ride', line: direction.line.id, terminal: direction.stops[direction.stops.length - 1],
+        from: direction.stops[boarding], departure: trainTime(direction, q, boarding),
+        to: direction.stops[alighting], arrival: trainTime(direction, q, alighting), stops: alighting - boarding };
+}
+function update(labels: Map<string, Label>, id: string, candidate: Label): boolean {
+    const old = labels.get(id);
+    if (!old || old.time > candidate.time) { labels.set(id, candidate); return true; }
+    return false;
+}
+function earliest(origin: string, departure: number): Map<string, Label> {
+    const labels = new Map<string, Label>([[origin, { time: departure, journey: [] }]]), settled = new Set<string>();
+    const service = orderedLines();
+    while (true) {
+        const choices = [...labels.keys()].filter(id => !settled.has(id));
+        if (!choices.length) return labels;
+        choices.sort((a, b) => labels.get(a)!.time - labels.get(b)!.time || compare(a, b));
+        const u = choices[0], label = labels.get(u)!, s = stations.get(u)!;
+        settled.add(u);
+        const ready = label.time + (u === origin ? 0 : s.transfer);
+        for (const item of service) if (!item.suspended && item.stops.includes(u)) {
+            for (const direction of directions(item)) {
+                const i = direction.stops.indexOf(u), last = direction.stops.length - 1;
+                if (i === last) continue;
+                const q = nextTrain(direction, i, ready);
+                if (q === null) continue;
+                for (let j = i + 1; j <= last; j++) {
+                    const v = direction.stops[j];
+                    if (closed.has(pair(direction.stops[j - 1], v))) break;
+                    if (stations.get(v)!.closed) continue;
+                    const leg = ride(direction, i, j, q);
+                    update(labels, v, { time: leg.arrival, journey: [...label.journey, leg] });
+                }
+            }
+        }
+        for (const v of [...s.walks.keys()].sort()) {
+            const arrival = label.time + s.walks.get(v)!;
+            if (!stations.get(v)!.closed && arrival <= 1440) {
+                const leg: Walk = { kind: 'walk', from: u, departure: label.time, to: v, arrival };
+                update(labels, v, { time: arrival, journey: [...label.journey, leg] });
+            }
+        }
+    }
+}
+function printFare(origin: string, destination: string, word: string, fareClass: string, label: Label): void {
+    const tickets: string[] = [];
+    let total = 0, previous: Ride | null = null;
+    const half = (value: number): number => Math.ceil(value / 20) * 10;
+    for (const leg of label.journey) if (leg.kind === 'ride') {
+        const item = lines.get(leg.line)!, direction = directions(item).find(d => d.stops[d.stops.length - 1] === leg.terminal)!;
+        const start = direction.stops.indexOf(leg.from), end = direction.stops.indexOf(leg.to);
+        const zones = new Set(direction.stops.slice(start, end + 1).map(id => stations.get(id)!.zone)).size;
+        const base = tariff!.prices[Math.min(zones, tariff!.prices.length) - 1], price = fareClass === 'CHILD' ? half(base) : base;
+        const cap = fareClass === 'CHILD' ? half(tariff!.discount) : tariff!.discount;
+        const discount = previous && leg.departure - previous.arrival <= tariff!.window ? Math.min(cap, price) : 0;
+        const payment = price - discount;
+        total += payment;
+        tickets.push(`TICKET ${leg.line} ${leg.from} ${leg.to} zones ${zones} price ${price} discount ${discount} pay ${payment}`);
+        previous = leg;
+    }
+    output.push(`FARE ${origin} ${destination} ${word} ${fareClass} rides ${tickets.length} total ${total}`, ...tickets);
+}
+function execute(commandLine: string): void {
+    const [command, ...args] = commandLine.split(' '), a = args[0], b = args[1];
+    switch (command) {
+        case 'STATION':
+            if (stations.has(a)) fail(`station ${a} already exists`);
+            stations.set(a, { id: a, zone: Number(b), name: args[2], transfer: 0, closed: false, walks: new Map() });
+        case 'LINE': {
+            if (lines.has(a)) fail(`line ${a} already exists`);
+            const stops: string[] = [], offsets = [0];
+            for (let i = 4; i < args.length; i += 2) stops.push(args[i]);
+            for (const id of stops) station(id);
+            const seen = new Set<string>();
+            for (const id of stops) { if (seen.has(id)) fail(`station ${id} appears twice on line ${a}`); seen.add(id); }
+            for (let i = 5; i < args.length; i += 2) offsets.push(offsets[offsets.length - 1] + Number(args[i]));
+            const first = time(b), last = time(args[2]), headway = Number(args[3]), total = offsets[offsets.length - 1];
+            if (first > last) fail(`line ${a} first departure is after last departure`);
+            if (last + total > 1440) fail(`line ${a} runs past 24:00`);
+            const item: Line = { id: a, first, last, headway, stops, offsets, delay: 0, suspended: false };
+            lines.set(a, item);
+        case 'WALK': {
+            const x = station(a), y = station(b), duration = Number(args[2]);
+            if (a === b) fail(`walk from ${a} to itself`);
+            x.walks.set(b, duration); y.walks.set(a, duration);
+        case 'TARIFF': {
+            const prices = args.slice(2).map(Number);
+            if (prices.some((price, i) => i > 0 && price < prices[i - 1])) fail('tariff prices must not decrease');
+            tariff = { discount: Number(a), window: Number(b), prices };
+        case 'ROUTE': case 'FEWEST': case 'PARETO': case 'FARE': case 'LASTTRAIN': case 'ARRIVEBY': case 'PROFILE': {
+            common(a, b);
+            if (command === 'FARE') {
+                if (args[3] !== 'ADULT' && args[3] !== 'CHILD') fail(`unknown fare class ${args[3]}`);
+                if (!tariff) fail('no tariff');
+            }
+            } else {
+                const departure = time(args[2]), label = earliest(a, departure).get(b);
+                if (!label) output.push(`${command} ${a} ${b} ${args[2]}${command === 'FARE' ? ` ${args[3]}` : ''} unreachable`);
+                else if (command === 'FARE') printFare(a, b, args[2], args[3], label);
+            }
+            break;
+        }
+}
+const input = fs.readFileSync(0, 'utf8').split(/\r?\n/), count = Number(input[0]);
+for (const command of input.slice(1, count + 1)) {
+    try { execute(command); }
+    catch (error) { output.push((error as Error).message); }
+}
+if (output.length) process.stdout.write(output.join('\n') + '\n');

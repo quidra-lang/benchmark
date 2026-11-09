@@ -1,0 +1,244 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
+const Error = Allocator.Error || Writer.Error || error{Invalid};
+const Counts = std.StringHashMapUnmanaged(usize);
+const WordSet = std.StringHashMapUnmanaged(void);
+const max_document_number = 999;
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+fn printLine(out: *Writer, comptime pattern: []const u8, args: anytype) Writer.Error!void {
+    try out.print(pattern ++ "\n", args);
+fn isWord(text: []const u8) bool {
+    if (text.len < 1 or text.len > 30) return false;
+    for (text) |c| {
+        if (!std.ascii.isAlphabetic(c)) return false;
+    }
+    return true;
+fn stemmingSteps(gpa: Allocator, word: []const u8) Allocator.Error!Stemming {
+    var changes: std.ArrayList(StepChange) = .empty;
+    var current = word;
+    if (word.len > 2) {
+    }
+    return .{ .stem = current, .changes = changes.items };
+fn porterStem(gpa: Allocator, word: []const u8) Allocator.Error![]const u8 {
+    return (try stemmingSteps(gpa, word)).stem;
+const Token = struct {
+    text: []const u8,
+    form: []const u8,
+    stem: []const u8,
+    line: usize,
+    position: usize,
+    start: usize,
+const Document = struct {
+    number: usize,
+    lines: std.ArrayList([]const u8) = .empty,
+    tokens: std.ArrayList(Token) = .empty,
+
+    fn addLine(document: *Document, gpa: Allocator, text: []const u8) Allocator.Error![]const Token {
+        try document.lines.append(gpa, text);
+        const first = document.tokens.items.len;
+        var index: usize = 0;
+        while (index < text.len) {
+            if (!std.ascii.isAlphabetic(text[index])) {
+                index += 1;
+                continue;
+            }
+            const start = index;
+            while (index < text.len and std.ascii.isAlphabetic(text[index])) index += 1;
+            const form = try std.ascii.allocLowerString(gpa, text[start..index]);
+            try document.tokens.append(gpa, .{
+                .text = text[start..index],
+                .form = form,
+                .stem = try porterStem(gpa, form),
+                .line = document.lines.items.len,
+                .position = document.tokens.items.len + 1,
+                .start = start,
+            });
+        }
+const Occurrence = struct {
+    document: *const Document,
+    token: Token,
+
+    pub fn format(occurrence: Occurrence, out: *Writer) Writer.Error!void {
+        const token = occurrence.token;
+        try out.print("{d}:{d}:{d}", .{ occurrence.document.number, token.line, token.position });
+const OccurrenceMap = std.StringHashMapUnmanaged(std.ArrayList(Occurrence));
+
+const Command = enum {
+    STEM,
+    STEPS,
+    MEASURE,
+    INDEX,
+    SEARCH,
+    PHRASE,
+    NEAR,
+    STOP,
+    UNSTOP,
+    fn arity(command: Command) struct { usize, usize } {
+        return switch (command) {
+            .PHRASE => .{ 2, 10 },
+            .STEPS, .MEASURE, .SEARCH, .KWIC, .DF, .VARIANTS, .INFO, .STOP, .UNSTOP, .DELETE => .{ 1, 1 },
+        };
+fn splitArguments(gpa: Allocator, command: Command, rest: []const u8) Allocator.Error![]const []const u8 {
+    switch (command) {
+        else => {
+            var parts: std.ArrayList([]const u8) = .empty;
+            var pieces = std.mem.splitScalar(u8, rest, ' ');
+            while (pieces.next()) |piece| try parts.append(gpa, piece);
+            return parts.items;
+        },
+    }
+const Engine = struct {
+    gpa: Allocator,
+    scratch: Allocator,
+    out: *Writer,
+    stopwords: WordSet = .empty,
+    documents: std.ArrayList(*Document) = .empty,
+    problem: []const u8 = "",
+
+    fn fail(engine: *Engine, comptime pattern: []const u8, args: anytype) Error {
+        engine.problem = std.fmt.allocPrint(engine.scratch, pattern, args) catch return error.OutOfMemory;
+        return error.Invalid;
+    }
+
+    fn addDocument(engine: *Engine, number: usize) Allocator.Error!*Document {
+        const document = try engine.gpa.create(Document);
+        document.* = .{ .number = number };
+        var index: usize = 0;
+        while (index < engine.documents.items.len and engine.documents.items[index].number < number) {
+            index += 1;
+        }
+        try engine.documents.insert(engine.gpa, index, document);
+        return document;
+    fn isStopword(engine: *const Engine, word: []const u8) bool {
+        return engine.stopwords.contains(word);
+    }
+
+    fn isIndexed(engine: *const Engine, token: Token) bool {
+        return !engine.isStopword(token.form);
+    fn occurrenceMap(engine: *const Engine) Allocator.Error!OccurrenceMap {
+        var occurrences: OccurrenceMap = .empty;
+        for (engine.documents.items) |document| {
+            for (document.tokens.items) |token| {
+                if (!engine.isIndexed(token)) continue;
+                const entry = try occurrences.getOrPut(engine.scratch, token.stem);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.append(engine.scratch, .{ .document = document, .token = token });
+            }
+        }
+        return occurrences;
+    fn formCount(engine: *const Engine, form: []const u8) usize {
+        var count: usize = 0;
+        for (engine.documents.items) |document| {
+            for (document.tokens.items) |token| {
+                if (equal(token.form, form)) count += 1;
+            }
+        }
+        return count;
+    }
+
+    fn tokenMatches(engine: *const Engine, token: Token, target: []const u8) bool {
+        return equal(target, "?") or (engine.isIndexed(token) and equal(token.stem, target));
+    }
+
+    fn phraseMatches(engine: *const Engine, tokens: []const Token, targets: []const []const u8) bool {
+        for (tokens, targets) |token, target| {
+            if (!engine.tokenMatches(token, target)) return false;
+        }
+        return true;
+    fn wordArgument(engine: *Engine, text: []const u8) Error![]const u8 {
+        if (!isWord(text)) return engine.fail("BAD WORD {s}", .{text});
+        return std.ascii.allocLowerString(engine.scratch, text);
+    fn phrase(engine: *Engine, arguments: []const []const u8) Error!void {
+        const words = try engine.scratch.alloc([]const u8, arguments.len);
+        for (arguments, words) |argument, *word| word.* = try engine.wordArgument(argument);
+        var only_stopwords = true;
+        for (words) |word| {
+            if (!engine.isStopword(word)) only_stopwords = false;
+        }
+        if (only_stopwords) return engine.fail("STOPWORDS ONLY", .{});
+        const targets = try engine.scratch.alloc([]const u8, words.len);
+        for (words, targets) |word, *target| {
+            target.* = if (engine.isStopword(word)) "?" else try porterStem(engine.scratch, word);
+        }
+        var matches: std.ArrayList(Occurrence) = .empty;
+        for (engine.documents.items) |document| {
+            const tokens = document.tokens.items;
+            if (tokens.len < targets.len) continue;
+            for (0..tokens.len - targets.len + 1) |start| {
+                if (engine.phraseMatches(tokens[start..][0..targets.len], targets)) {
+                    try matches.append(engine.scratch, .{ .document = document, .token = tokens[start] });
+                }
+            }
+        }
+        const phrase_text = try std.mem.join(engine.scratch, " ", targets);
+        try engine.out.print("PHRASE \"{s}\" matches={d}", .{ phrase_text, matches.items.len });
+        for (matches.items) |occurrence| try engine.out.print(" {f}", .{occurrence});
+        try engine.out.writeByte('\n');
+    fn stop(engine: *Engine, arguments: []const []const u8) Error!void {
+        const word = try engine.wordArgument(arguments[0]);
+        if (engine.isStopword(word)) return engine.fail("ALREADY STOPWORD {s}", .{word});
+        try engine.stopwords.put(engine.gpa, try engine.gpa.dupe(u8, word), {});
+        try printLine(engine.out, "STOP {s} unindexed={d}", .{ word, engine.formCount(word) });
+    }
+
+    fn unstop(engine: *Engine, arguments: []const []const u8) Error!void {
+        const word = try engine.wordArgument(arguments[0]);
+        if (!engine.isStopword(word)) return engine.fail("NOT STOPWORD {s}", .{word});
+        _ = engine.stopwords.remove(word);
+        try printLine(engine.out, "UNSTOP {s} indexed={d}", .{ word, engine.formCount(word) });
+    fn execute(engine: *Engine, line: []const u8) Error!void {
+        const space = std.mem.findScalar(u8, line, ' ');
+        const name = line[0 .. space orelse line.len];
+        const command = std.meta.stringToEnum(Command, name) orelse
+            return engine.fail("UNKNOWN COMMAND {s}", .{name});
+        const arguments: []const []const u8 = if (space) |index|
+            try splitArguments(engine.scratch, command, line[index + 1 ..])
+        else
+            &.{};
+        const minimum, const maximum = command.arity();
+        if (arguments.len < minimum or arguments.len > maximum) {
+            return engine.fail("BAD ARGUMENTS {s}", .{name});
+        }
+        switch (command) {
+            .PHRASE => try engine.phrase(arguments),
+            .STOP => try engine.stop(arguments),
+            .UNSTOP => try engine.unstop(arguments),
+        }
+pub fn main(init: std.process.Init) !void {
+    var storage = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer storage.deinit();
+    const gpa = storage.allocator();
+    var input_buffer: [4096]u8 = undefined;
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output_buffer: [4096]u8 = undefined;
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const text = try input.interface.allocRemaining(gpa, .unlimited);
+    var lines: std.ArrayList([]const u8) = .empty;
+    var pieces = std.mem.splitScalar(u8, text, '\n');
+    while (pieces.next()) |piece| try lines.append(gpa, piece);
+
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    var engine: Engine = .{ .gpa = gpa, .scratch = scratch.allocator(), .out = &output.interface };
+    var stopwords = std.mem.tokenizeScalar(u8, lines.items[0], ' ');
+    _ = stopwords.next();
+    while (stopwords.next()) |word| try engine.stopwords.put(gpa, word, {});
+    var index: usize = 1;
+    while (std.mem.startsWith(u8, lines.items[index], "DOC ")) : (index += 1) {
+        const document = try engine.addDocument(try std.fmt.parseInt(usize, lines.items[index][4..], 10));
+        index += 1;
+        while (!equal(lines.items[index], "ENDDOC")) : (index += 1) {
+            _ = try document.addLine(gpa, lines.items[index]);
+        }
+    }
+    for (lines.items[index..]) |line| {
+        if (equal(line, "END")) break;
+        _ = scratch.reset(.retain_capacity);
+        engine.execute(line) catch |err| {
+            if (err != error.Invalid) return err;
+            try printLine(&output.interface, "ERROR {s}", .{engine.problem});
+        };
+    }
+    try output.interface.flush();

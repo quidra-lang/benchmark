@@ -1,0 +1,419 @@
+func sum(values []float64) float64 {
+	out := 0.0
+	for _, v := range values {
+		out += v
+	}
+	return out
+}
+func normalize(values []float64) []float64 {
+	total := sum(values)
+	out := make([]float64, len(values))
+	for i, v := range values {
+		out[i] = v / total
+	}
+	return out
+}
+func matrix(rows, columns int) [][]float64 {
+	out := make([][]float64, rows)
+	for i := range out {
+		out[i] = make([]float64, columns)
+	}
+	return out
+}
+func newModel(name string, template *Model, initial []float64, transition, emission [][]float64) *Model {
+	out := &Model{Name: name, States: template.States, Symbols: template.Symbols, Missing: template.Missing, Initial: normalize(initial)}
+	for _, row := range transition {
+		out.Transition = append(out.Transition, normalize(row))
+	}
+	for _, row := range emission {
+		out.Emission = append(out.Emission, normalize(row))
+	}
+	return out
+}
+func reals(values []string) []float64 {
+	out := make([]float64, len(values))
+	for i, s := range values {
+		out[i] = parseReal(s)
+	}
+	return out
+}
+func readInputs() RawInputs {
+	lines := readLines("input/model.txt")
+	template := &Model{States: strings.Split(lines[0], " ")[1:], Symbols: strings.Split(lines[1], " ")[1:], Missing: strings.Split(lines[2], " ")[1]}
+	k := len(template.States)
+	initial := reals(strings.Split(lines[3], " ")[1:])
+	transition, emission := [][]float64{}, [][]float64{}
+	for i := 0; i < k; i++ {
+		transition = append(transition, reals(strings.Split(lines[4+i], " ")[2:]))
+		emission = append(emission, reals(strings.Split(lines[4+k+i], " ")[2:]))
+	}
+	out := RawInputs{Initial: newModel("INITIAL", template, initial, transition, emission), Params: map[string][]string{}}
+	for i, line := range readLines("input/sequences.txt") {
+		f := strings.Split(line, " ")
+		out.Sequences = append(out.Sequences, RawRecord{Name: f[0], Observation: f[1], Line: i + 1})
+	}
+	lines = readLines("input/labeled.txt")
+	for i := 0; i < len(lines); i += 2 {
+		f := strings.Split(lines[i], " ")
+		out.Labeled = append(out.Labeled, RawRecord{f[0], f[1], f[2], lines[i+1], i + 1})
+	}
+	for _, line := range readLines("input/params.txt") {
+		f := strings.Split(line, " ")
+		out.Params[f[0]] = f[1:]
+	}
+	return out
+}
+func maximumIndex(values []float64) int {
+	best := 0
+	for i := 1; i < len(values); i++ {
+		if values[i] > values[best] {
+			best = i
+		}
+	}
+	return best
+}
+func emissionFactors(model *Model, observation int, logarithm bool) []float64 {
+	out := make([]float64, len(model.States))
+	for i := range out {
+		if observation < 0 {
+			if !logarithm {
+				out[i] = 1
+			}
+		} else {
+			out[i] = model.Emission[i][observation]
+			if logarithm {
+				out[i] = math.Log(out[i])
+			}
+		}
+	}
+	return out
+}
+
+type Forward struct {
+	Values, Emissions [][]float64
+	Scales            []float64
+	Loglik            float64
+}
+
+func scaledForward(model *Model, observations []int) Forward {
+	k := len(model.States)
+	out := Forward{}
+	for t, observation := range observations {
+		factors := emissionFactors(model, observation, false)
+		out.Emissions = append(out.Emissions, factors)
+		values := make([]float64, k)
+		for state := 0; state < k; state++ {
+			if t == 0 {
+				values[state] = model.Initial[state] * factors[state]
+			} else {
+				total := 0.0
+				for previous := 0; previous < k; previous++ {
+					total += out.Values[t-1][previous] * model.Transition[previous][state]
+				}
+				values[state] = total * factors[state]
+			}
+		}
+		scale := sum(values)
+		out.Scales = append(out.Scales, scale)
+		for i := range values {
+			values[i] /= scale
+		}
+		out.Values = append(out.Values, values)
+		out.Loglik += math.Log(scale)
+	}
+	return out
+}
+
+type ForwardBackward struct {
+	Forward             Forward
+	Backward, Posterior [][]float64
+}
+
+func forwardBackward(model *Model, observations []int) ForwardBackward {
+	forward := scaledForward(model, observations)
+	k, length := len(model.States), len(observations)
+	backward := matrix(length, k)
+	for i := 0; i < k; i++ {
+		backward[length-1][i] = 1
+	}
+	for t := length - 2; t >= 0; t-- {
+		for i := 0; i < k; i++ {
+			total := 0.0
+			for j := 0; j < k; j++ {
+				total += model.Transition[i][j] * forward.Emissions[t+1][j] * backward[t+1][j]
+			}
+			backward[t][i] = total / forward.Scales[t+1]
+		}
+	}
+	posterior := matrix(length, k)
+	for t := range observations {
+		for i := 0; i < k; i++ {
+			posterior[t][i] = forward.Values[t][i] * backward[t][i]
+		}
+	}
+	return ForwardBackward{forward, backward, posterior}
+}
+func viterbi(model *Model, observations []int) ([]int, float64) {
+	k := len(model.States)
+	transition := matrix(k, k)
+	for i := 0; i < k; i++ {
+		for j := 0; j < k; j++ {
+			transition[i][j] = math.Log(model.Transition[i][j])
+		}
+	}
+	factors := emissionFactors(model, observations[0], true)
+	scores := make([]float64, k)
+	for i := range scores {
+		scores[i] = math.Log(model.Initial[i]) + factors[i]
+	}
+	predecessors := make([][]int, len(observations))
+	predecessors[0] = make([]int, k)
+	for t := 1; t < len(observations); t++ {
+		factors = emissionFactors(model, observations[t], true)
+		next := make([]float64, k)
+		predecessors[t] = make([]int, k)
+		for state := 0; state < k; state++ {
+			candidates := make([]float64, k)
+			for previous := 0; previous < k; previous++ {
+				candidates[previous] = scores[previous] + transition[previous][state]
+			}
+			previous := maximumIndex(candidates)
+			predecessors[t][state] = previous
+			next[state] = candidates[previous] + factors[state]
+		}
+		scores = next
+	}
+	path := make([]int, len(observations))
+	path[len(path)-1] = maximumIndex(scores)
+	logprob := scores[path[len(path)-1]]
+	for t := len(path) - 1; t > 0; t-- {
+		path[t-1] = predecessors[t][path[t]]
+	}
+	return path, logprob
+}
+
+type Decoding struct {
+	Viterbi, Posterior []int
+	ViterbiLogprob     float64
+	Confidence         []float64
+	FB                 ForwardBackward
+}
+
+func decode(model *Model, observations []int) Decoding {
+	fb := forwardBackward(model, observations)
+	path, logprob := viterbi(model, observations)
+	out := Decoding{Viterbi: path, ViterbiLogprob: logprob, FB: fb}
+	for _, row := range fb.Posterior {
+		state := maximumIndex(row)
+		out.Posterior = append(out.Posterior, state)
+		out.Confidence = append(out.Confidence, row[state])
+	}
+	return out
+}
+func intMatrix(rows, columns int) [][]int {
+	out := make([][]int, rows)
+	for i := range out {
+		out[i] = make([]int, columns)
+	}
+	return out
+}
+func correctCount(a, b []int) int {
+	count := 0
+	for i, v := range a {
+		if v == b[i] {
+			count++
+		}
+	}
+	return count
+}
+func addConfusion(table [][]int, truth, prediction []int) {
+	for i, state := range truth {
+		table[state][prediction[i]]++
+	}
+}
+func encode(indices []int, names []string) string {
+	out := []string{}
+	for _, i := range indices {
+		out = append(out, names[i])
+	}
+	return strings.Join(out, "")
+}
+func validate(raws []RawRecord, labeled bool, model *Model, p Params) ([]Record, []string) {
+	seen := map[string]bool{}
+	accepted := []Record{}
+	rejected := []string{}
+	for _, raw := range raws {
+		reason := ""
+		if seen[raw.Name] {
+			reason = "duplicate name"
+		}
+		seen[raw.Name] = true
+		upper := strings.ToUpper(raw.Observation)
+		observations := []int{}
+		missing := 0
+		if reason == "" {
+			for i := range len(upper) {
+				letter := upper[i : i+1]
+				index := slices.Index(model.Symbols, letter)
+				if index < 0 && letter != model.Missing {
+					reason = fmt.Sprintf("invalid symbol %s at position %d", letter, i+1)
+					break
+				}
+				observations = append(observations, index)
+				if index < 0 {
+					missing++
+				}
+			}
+		}
+		path := []int{}
+		if reason == "" && labeled {
+			for i := range len(raw.Labels) {
+				letter := raw.Labels[i : i+1]
+				index := slices.Index(model.States, letter)
+				if index < 0 {
+					reason = fmt.Sprintf("invalid label %s at position %d", letter, i+1)
+					break
+				}
+				path = append(path, index)
+			}
+		}
+		if reason == "" && labeled && len(upper) != len(raw.Labels) {
+			reason = fmt.Sprintf("length mismatch %d %d", len(upper), len(raw.Labels))
+		}
+		if reason == "" && len(upper) < p.MinLength {
+			reason = fmt.Sprintf("too short %d", len(upper))
+		}
+		if reason == "" && 100*missing > p.MaxMissing*len(upper) {
+			reason = fmt.Sprintf("too many missing %d", missing)
+		}
+		if reason != "" {
+			file := "sequences.txt"
+			if labeled {
+				file = "labeled.txt"
+			}
+			rejected = append(rejected, fmt.Sprintf("REJECT %s line %d %s %s", file, raw.Line, raw.Name, reason))
+		} else {
+			accepted = append(accepted, Record{raw.Name, raw.Role, upper, observations, path, missing})
+		}
+	}
+	return accepted, rejected
+}
+func validateInputs(raw RawInputs, p Params) Validated {
+	unlabeled, reject1 := validate(raw.Sequences, false, raw.Initial, p)
+	labeled, reject2 := validate(raw.Labeled, true, raw.Initial, p)
+	out := Validated{Unlabeled: unlabeled, Rejections: append(reject1, reject2...), UnlabeledRejected: len(reject1), LabeledRejected: len(reject2)}
+	for _, record := range labeled {
+		if record.Role == "TRAIN" {
+			out.Train = append(out.Train, record)
+		} else {
+			out.Test = append(out.Test, record)
+		}
+	}
+	return out
+}
+func evaluateModel(model *Model, testing []Record, p Params) ModelEvaluation {
+	out := ModelEvaluation{}
+	for _, record := range testing {
+		out.Decodings = append(out.Decodings, decode(model, record.Observations))
+	}
+	for decoder := 0; decoder < 2; decoder++ {
+		name := "VITERBI"
+		if decoder == 1 {
+			name = "POSTERIOR"
+		}
+		table := intMatrix(len(model.States), len(model.States))
+		predictedRegions, trueRegionCount, matchedPredictedRegions, matchedTrueRegions := 0, 0, 0, 0
+		predictedBoundaries, trueBoundaryCount, matchedPredictedBoundaries, matchedTrueBoundaries := 0, 0, 0, 0
+		calibration, calibrationCorrect := [10]int{}, [10]int{}
+		recordLines := []string{}
+		for i, record := range testing {
+			d := out.Decodings[i]
+			path := d.Viterbi
+			if decoder == 1 {
+				path = d.Posterior
+			}
+			correct := correctCount(record.Path, path)
+			out.Correct[decoder] += correct
+			addConfusion(table, record.Path, path)
+			predicted, truth := segments(path, p), trueRegions(record.Path, p.Target)
+			a, b := regionMatches(predicted, truth)
+			predictedRegions += len(predicted)
+			trueRegionCount += len(truth)
+			matchedPredictedRegions += a
+			matchedTrueRegions += b
+			predictedB, truthB := boundaries(path), boundaries(record.Path)
+			a, b = boundaryMatches(predictedB, truthB, p.BoundaryTolerance)
+			predictedBoundaries += len(predictedB)
+			trueBoundaryCount += len(truthB)
+			matchedPredictedBoundaries += a
+			matchedTrueBoundaries += b
+			if decoder == 1 {
+				for t, confidence := range d.Confidence {
+					bin := min(9, int(math.Floor(10*confidence)))
+					calibration[bin]++
+					if path[t] == record.Path[t] {
+						calibrationCorrect[bin]++
+					}
+				}
+			}
+			recordLines = append(recordLines, fmt.Sprintf("RECORD %s length %d correct %d", record.Name, len(record.Path), correct))
+		}
+		lines := []string{"EVALUATION " + model.Name + " " + name}
+		lines = append(lines, confusionLines(table, model.States)...)
+		lines = append(lines, metricsLines(table, model.States)...)
+		lines = append(lines, fmt.Sprintf("REGIONS %s predicted %d true %d precision %s recall %s", model.States[p.Target],
+			predictedRegions, trueRegionCount, fraction(int64(matchedPredictedRegions), int64(predictedRegions)),
+			fraction(int64(matchedTrueRegions), int64(trueRegionCount))), fmt.Sprintf("BOUNDARIES predicted %d true %d precision %s recall %s",
+			predictedBoundaries, trueBoundaryCount, fraction(int64(matchedPredictedBoundaries), int64(predictedBoundaries)),
+			fraction(int64(matchedTrueBoundaries), int64(trueBoundaryCount))))
+		if decoder == 1 {
+			for bin, count := range calibration {
+				if count == 0 {
+					continue
+				}
+				interval := fmt.Sprintf("0.%d-0.%d", bin, bin+1)
+				if bin == 9 {
+					interval = "0.9-1.0"
+				}
+				lines = append(lines, fmt.Sprintf("CALIBRATION %s positions %d correct %d accuracy %s", interval,
+					count, calibrationCorrect[bin], fraction(int64(calibrationCorrect[bin]), int64(count))))
+			}
+		}
+		lines = append(lines, recordLines...)
+		out.Blocks = append(out.Blocks, lines)
+	}
+	return out
+}
+func evaluationFile(models []*Model, evaluations []ModelEvaluation, supervised SupervisedTraining, training, testing []Record, p Params) []string {
+	blocks := [][]string{}
+	for _, evaluation := range evaluations {
+		blocks = append(blocks, evaluation.Blocks...)
+	}
+func annotationFiles(records []Record, model *Model, decodings []Decoding, p Params) ([]string, []string) {
+	decodingLines := []string{}
+	segmentLines := []string{"sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"}
+	rng := Minstd{p.PosteriorSeed}
+	for i, record := range records {
+		d := decodings[i]
+		decodingLines = append(decodingLines, fmt.Sprintf("SEQUENCE %s length %d loglik %s viterbi %s differences %d uncertain %d expected_segments %s",
+			record.Name, len(record.Observations), number(d.FB.Forward.Loglik), number(d.ViterbiLogprob),
+			differences, uncertain, number(float64(totalSegments)/float64(p.PosteriorSamples))),
+			"VITERBI "+encode(d.Viterbi, model.States), "POSTERIOR "+encode(d.Posterior, model.States),
+			"CONFIDENT "+string(confident), "IMPUTED "+string(imputed))
+	raw := readInputs()
+	p := interpretParams(raw.Params, raw.Initial)
+	input := validateInputs(raw, p)
+	models := []*Model{raw.Initial, bw.Model, vt.Model, supervised.Model}
+	evaluations := []ModelEvaluation{}
+	allDecodings := [][]Decoding{}
+	for _, model := range models {
+		evaluations = append(evaluations, evaluateModel(model, input.Test, p))
+		decodings := []Decoding{}
+		for _, record := range input.Unlabeled {
+			decodings = append(decodings, decode(model, record.Observations))
+		}
+		allDecodings = append(allDecodings, decodings)
+	}
+	decodingLines, segmentLines := annotationFiles(input.Unlabeled, bw.Model, allDecodings[1], p)
+	writeLines("decodings.txt", decodingLines)
+	writeLines("evaluation.txt", evaluationFile(models, evaluations, supervised, input.Train, input.Test, p))

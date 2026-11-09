@@ -1,0 +1,392 @@
+MISSING = "?"
+class Attribute:
+    def __init__(self, index, name, kind, values):
+        self.index = index
+        self.name = name
+        self.integer = kind == "INT"
+        self.values = values
+        self.positions = {value: position for position, value in enumerate(values)}
+    def parse(self, text):
+        if text == MISSING:
+            return None
+        if self.integer:
+            return int(text)
+        return self.positions[text]
+class Row:
+    def __init__(self, ident, values, label):
+        self.ident = ident
+        self.values = values
+        self.label = label
+    def value(self, attribute):
+        return self.values[attribute.index]
+    def missing_count(self):
+        return sum(value is None for value in self.values)
+class Settings:
+    def __init__(self, entries):
+        self.max_depth = int(entries["MAX_DEPTH"][0])
+        self.min_samples_split = int(entries["MIN_SAMPLES_SPLIT"][0])
+        self.min_samples_leaf = int(entries["MIN_SAMPLES_LEAF"][0])
+        self.max_surrogates = int(entries["MAX_SURROGATES"][0])
+def read_lines(path):
+    with open(path) as file:
+        return file.read().splitlines()
+def read_schema(path):
+    attributes = []
+    target = None
+    classes = []
+    for line in read_lines(path):
+        keyword, name, *rest = line.split(" ")
+        if keyword == "ATTRIBUTE":
+            attributes.append(Attribute(len(attributes), name, rest[0], rest[1:]))
+        else:
+            target = name
+            classes = rest
+    return attributes, target, classes
+def read_rows(path, attributes, classes):
+    positions = {name: index for index, name in enumerate(classes)}
+    rows = []
+    for line in read_lines(path)[1:]:
+        fields = line.split(",")
+        values = [attribute.parse(text) for attribute, text in zip(attributes, fields[1:-1])]
+        rows.append(Row(fields[0], values, positions[fields[-1]]))
+    return rows
+def read_settings(path):
+    entries = {}
+    for line in read_lines(path):
+        keyword, *values = line.split(" ")
+        entries[keyword] = values
+    return Settings(entries)
+def load_dataset(directory):
+    attributes, target, classes = read_schema(os.path.join(directory, "schema.txt"))
+    train = read_rows(os.path.join(directory, "train.csv"), attributes, classes)
+    validation = read_rows(os.path.join(directory, "validation.csv"), attributes, classes)
+    test = read_rows(os.path.join(directory, "test.csv"), attributes, classes)
+    settings = read_settings(os.path.join(directory, "params.txt"))
+    return Dataset(attributes, target, classes, train, validation, test, settings)
+def class_counts(rows, class_count):
+    counts = [0] * class_count
+    for row in rows:
+        counts[row.label] += 1
+    return counts
+def square_sum(counts):
+    return sum(count * count for count in counts)
+def majority(counts):
+    return counts.index(max(counts))
+def error_count(counts):
+    return sum(counts) - max(counts)
+def evaluation_value(left_counts, right_counts):
+    left_size = sum(left_counts)
+    right_size = sum(right_counts)
+    numerator = square_sum(left_counts) * right_size + square_sum(right_counts) * left_size
+    return numerator, left_size * right_size
+def is_greater(first, second):
+    return first[0] * second[1] > second[0] * first[1]
+def improves(value, counts):
+    return value[0] * sum(counts) > square_sum(counts) * value[1]
+LEFT = "left"
+RIGHT = "right"
+class Split:
+    def __init__(self, attribute, point):
+        self.attribute = attribute
+        self.point = point
+    def goes_left(self, value):
+        if self.attribute.integer:
+            return 2 * value <= self.point
+        return value == self.point
+class Surrogate:
+    def __init__(self, split, direction, score):
+        self.split = split
+        self.direction = direction
+        self.score = score
+    def goes_left(self, value):
+        return self.split.goes_left(value) == (self.direction == LEFT)
+class Candidate:
+    def __init__(self, split, left_counts, right_counts):
+        self.split = split
+        self.left_counts = left_counts
+        self.right_counts = right_counts
+        self.left_size = sum(left_counts)
+        self.right_size = sum(right_counts)
+    def value(self):
+        return evaluation_value(self.left_counts, self.right_counts)
+class Node:
+    def __init__(self, number, depth, counts):
+        self.number = number
+        self.depth = depth
+        self.counts = counts
+        self.size = sum(counts)
+        self.prediction = majority(counts)
+        self.errors = error_count(counts)
+        self.split = None
+        self.surrogates = []
+        self.default = None
+        self.left = None
+        self.right = None
+def candidates(attribute, rows, labels, label_count):
+    groups = {}
+    total = [0] * label_count
+    for row, label in zip(rows, labels):
+        value = row.value(attribute)
+        if value not in groups:
+            groups[value] = [0] * label_count
+        groups[value][label] += 1
+        total[label] += 1
+    found = []
+    if attribute.integer:
+        ordered = sorted(groups)
+        left = [0] * label_count
+        for lower, upper in zip(ordered, ordered[1:]):
+            left = [a + b for a, b in zip(left, groups[lower])]
+            right = [a - b for a, b in zip(total, left)]
+            found.append(Candidate(Split(attribute, lower + upper), left, right))
+    elif len(groups) > 1:
+        for value in range(len(attribute.values)):
+            if value in groups:
+                right = [a - b for a, b in zip(total, groups[value])]
+                found.append(Candidate(Split(attribute, value), groups[value], right))
+    return found
+class TreeBuilder:
+    def __init__(self, attributes, class_count, settings):
+        self.attributes = attributes
+        self.class_count = class_count
+        self.max_depth = settings.max_depth
+        self.min_samples_split = settings.min_samples_split
+        self.min_samples_leaf = settings.min_samples_leaf
+        self.max_surrogates = settings.max_surrogates
+    def valid(self, candidate):
+        return (
+            candidate.left_size >= self.min_samples_leaf
+            and candidate.right_size >= self.min_samples_leaf
+        )
+    def best_split(self, rows, attributes):
+        labels = [row.label for row in rows]
+        best = None
+        for attribute in attributes:
+            for candidate in candidates(attribute, rows, labels, self.class_count):
+                if not self.valid(candidate):
+                    continue
+                if best is None or is_greater(candidate.value(), best.value()):
+                    best = candidate
+        return best
+    def find_surrogates(self, rows, split):
+        directions = [0 if split.goes_left(row.value(split.attribute)) else 1 for row in rows]
+        size = len(rows)
+        left_size = directions.count(0)
+        limit = max(left_size, size - left_size)
+        chosen = []
+        for attribute in self.attributes:
+            if attribute is split.attribute:
+                continue
+            best = None
+            for candidate in candidates(attribute, rows, directions, 2):
+                agreement = candidate.left_counts[0] + candidate.right_counts[1]
+                if agreement >= size - agreement:
+                    surrogate = Surrogate(candidate.split, LEFT, agreement)
+                else:
+                    surrogate = Surrogate(candidate.split, RIGHT, size - agreement)
+                if best is None or surrogate.score > best.score:
+                    best = surrogate
+            if best is not None and best.score > limit:
+                chosen.append(best)
+        chosen.sort(key=lambda surrogate: -surrogate.score)
+        return chosen[:self.max_surrogates]
+    def grow(self, rows):
+        return self.grow_node(rows, 1, 0)
+    def grow_node(self, rows, number, depth):
+        node = Node(number, depth, class_counts(rows, self.class_count))
+        if max(node.counts) == node.size:
+            return node
+        if depth == self.max_depth or node.size < self.min_samples_split:
+            return node
+        best = self.best_split(rows, self.attributes)
+        if best is None or not improves(best.value(), node.counts):
+            return node
+        split = best.split
+        left_rows = [row for row in rows if split.goes_left(row.value(split.attribute))]
+        right_rows = [row for row in rows if not split.goes_left(row.value(split.attribute))]
+        node.split = split
+        node.surrogates = self.find_surrogates(rows, split)
+        node.default = LEFT if len(left_rows) >= len(right_rows) else RIGHT
+        node.left = self.grow_node(left_rows, 2 * number, depth + 1)
+        node.right = self.grow_node(right_rows, 2 * number + 1, depth + 1)
+        return node
+PRIMARY = "primary"
+SURROGATE = "surrogate"
+DEFAULT = "default"
+def direction(node, row):
+    value = row.value(node.split.attribute)
+    if value is not None:
+        return node.split.goes_left(value), PRIMARY
+    for surrogate in node.surrogates:
+        value = row.value(surrogate.split.attribute)
+        if value is not None:
+            return surrogate.goes_left(value), SURROGATE
+    return node.default == LEFT, DEFAULT
+class PrunedTree:
+    def __init__(self, root, cut=None):
+        self.root = root
+        self.cut = set() if cut is None else cut
+    def is_leaf(self, node):
+        return node.split is None or node.number in self.cut
+    def route(self, row):
+        node = self.root
+        path = [node]
+        methods = []
+        while not self.is_leaf(node):
+            left, method = direction(node, row)
+            node = node.left if left else node.right
+            path.append(node)
+            methods.append(method)
+        return path, methods
+    def leaf_of(self, row):
+        path, methods = self.route(row)
+        return path[-1]
+    def predict(self, row):
+        return self.leaf_of(row).prediction
+    def correct_count(self, rows):
+        return sum(self.predict(row) == row.label for row in rows)
+def confusion_matrix(actual, predicted, class_count):
+    matrix = [[0] * class_count for _ in range(class_count)]
+    for label, prediction in zip(actual, predicted):
+        matrix[label][prediction] += 1
+    return matrix
+def classification_lines(title, class_names, actual, predicted):
+    matrix = confusion_matrix(actual, predicted, len(class_names))
+    correct = sum(matrix[index][index] for index in range(len(class_names)))
+    total = len(actual)
+    lines = [
+        f"confusion {title} correct {correct}/{total} accuracy {fraction_text(correct, total)}",
+        "actual\\predicted " + " ".join(class_names),
+    ]
+    for name, counts in zip(class_names, matrix):
+        lines.append(name + " " + " ".join(str(count) for count in counts))
+    f1_values = []
+    for index, name in enumerate(class_names):
+        hits = matrix[index][index]
+        predicted_total = sum(counts[index] for counts in matrix)
+        support = sum(matrix[index])
+        if predicted_total + support > 0:
+            f1_values.append(2 * hits / (predicted_total + support))
+        lines.append(
+            f"class {name} precision {fraction_text(hits, predicted_total)}"
+            f" recall {fraction_text(hits, support)}"
+            f" f1 {fraction_text(2 * hits, predicted_total + support)} support {support}"
+        )
+    lines.append(f"macro_f1 {real_text(average(f1_values))}")
+    return lines
+def reached_rows(tree, rows):
+    reached = {}
+    for row in rows:
+        path, methods = tree.route(row)
+        for node in path:
+            reached.setdefault(node.number, []).append(row)
+    return reached
+def decide(node, reached, decisions, cut):
+    rows = reached.get(node.number, [])
+    leaf_error = sum(row.label != node.prediction for row in rows)
+    if node.split is None:
+        return leaf_error
+    subtree_error = decide(node.left, reached, decisions, cut)
+    subtree_error += decide(node.right, reached, decisions, cut)
+    pruned = leaf_error <= subtree_error
+    decisions.append(Decision(node, len(rows), leaf_error, subtree_error, pruned))
+    if pruned:
+        cut.add(node.number)
+        return leaf_error
+    return subtree_error
+def reduced_error_pruning(root, rows):
+    reached = reached_rows(PrunedTree(root), rows)
+    decisions = []
+    cut = set()
+    decide(root, reached, decisions, cut)
+    return PrunedTree(root, cut), decisions
+INPUT_DIRECTORY = "input"
+OUTPUT_DIRECTORY = "output"
+    def __init__(self, data):
+        self.data = data
+        self.attributes = data.attributes
+        self.classes = data.classes
+        self.settings = data.settings
+        self.train = data.train
+        self.validation = data.validation
+        self.test = data.test
+        self.builder = TreeBuilder(data.attributes, len(data.classes), data.settings)
+        self.grown = PrunedTree(self.builder.grow(self.train))
+        self.pruned, self.decisions = reduced_error_pruning(self.grown.root, self.validation)
+        self.predictions = self.model_predictions()
+    def class_name(self, label):
+        return self.classes[label]
+    def accuracy(self, tree, rows):
+        return ratio_text(tree.correct_count(rows), len(rows))
+    def model_predictions(self):
+        models = {
+            "grown": self.grown,
+            "pruned": self.pruned,
+            "depth": self.selected_depth.tree,
+            "cost_complexity": self.sequence[self.selected_index].tree,
+        }
+        predictions = {
+            name: [tree.predict(row) for row in self.test] for name, tree in models.items()
+        }
+        predictions["bagging"] = [majority(votes) for votes in self.test_votes]
+        return predictions
+    def predictions_file(self):
+        lines = ["id,predicted,actual,grown,leaf,path,missing"]
+        for row in self.test:
+            path, methods = self.pruned.route(row)
+            leaf = path[-1]
+            fields = [
+                row.ident,
+                self.class_name(leaf.prediction),
+                self.class_name(row.label),
+                self.class_name(self.grown.predict(row)),
+                str(leaf.number),
+                "-".join(str(node.number) for node in path),
+                str(sum(method != PRIMARY for method in methods)),
+            ]
+            lines.append(",".join(fields))
+        return lines
+    def model_evaluation(self, model):
+        labels = [row.label for row in self.test]
+        return classification_lines(
+            f"{model} test", self.classes, labels, self.predictions[model]
+        )
+    def routing_lines(self):
+        internal = self.pruned.internal_nodes()
+        tallies = {node.number: {PRIMARY: 0, SURROGATE: 0, DEFAULT: 0} for node in internal}
+        for row in self.test:
+            path, methods = self.pruned.route(row)
+            for node, method in zip(path, methods):
+                tallies[node.number][method] += 1
+        lines = ["routing pruned test"]
+        for node in internal:
+            tally = tallies[node.number]
+            rows = tally[PRIMARY] + tally[SURROGATE] + tally[DEFAULT]
+            lines.append(
+                f"node {node.number} rows {rows} primary {tally[PRIMARY]}"
+                f" surrogate {tally[SURROGATE]} default {tally[DEFAULT]}"
+            )
+        complete = [row for row in self.test if row.missing_count() == 0]
+        incomplete = [row for row in self.test if row.missing_count() > 0]
+        lines.append(
+            f"complete rows {len(complete)} correct {self.accuracy(self.pruned, complete)}"
+        )
+        lines.append(
+            f"incomplete rows {len(incomplete)} correct {self.accuracy(self.pruned, incomplete)}"
+        )
+        return lines
+    def evaluation_file(self):
+        return join_sections([
+            self.data_lines(),
+            [self.summary_line("grown", self.grown), self.summary_line("pruned", self.pruned)],
+            self.model_evaluation("grown"),
+            self.model_evaluation("pruned"),
+            self.routing_lines(),
+        ])
+def write_lines(name, lines):
+    with open(os.path.join(OUTPUT_DIRECTORY, name), "w") as file:
+        file.write("\n".join(lines) + "\n")
+def main():
+    analysis = Analysis(load_dataset(INPUT_DIRECTORY))
+    write_lines("predictions.csv", analysis.predictions_file())
+    write_lines("evaluation.txt", analysis.evaluation_file())

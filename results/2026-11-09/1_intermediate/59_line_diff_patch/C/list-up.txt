@@ -1,0 +1,108 @@
+static bool parse_number(const char *text, size_t length, int *value)
+{
+    if (length < 1 || length > 4) {
+        return false;
+    }
+    int result = 0;
+    for (size_t i = 0; i < length; i++) {
+        if (!isdigit((unsigned char)text[i])) {
+            return false;
+        }
+        result = result * 10 + (text[i] - '0');
+    }
+    *value = result;
+    return true;
+}
+static bool parse_number_pair(const char *text, size_t length, int *first, int *second,
+                              bool *has_second)
+{
+    const char *comma = memchr(text, ',', length);
+    *has_second = comma != NULL;
+    if (comma == NULL) {
+        return parse_number(text, length, first);
+    }
+    size_t first_length = (size_t)(comma - text);
+    return parse_number(text, first_length, first) &&
+           parse_number(comma + 1, length - first_length - 1, second);
+}
+static bool parse_range(const char *text, char sign, int *start, int *count)
+{
+    bool has_count;
+    if (text[0] != sign || !parse_number_pair(text + 1, strlen(text + 1), start, count, &has_count)) {
+        return false;
+    }
+    if (!has_count) {
+        *count = 1;
+    }
+    return *start != 0 || *count == 0;
+}
+static bool parse_hunk_header(const char *line, int line_number, PatchHunk *hunk)
+{
+    char buffer[LINE_CAPACITY];
+    char *parts[5];
+    snprintf(buffer, sizeof buffer, "%s", line);
+    int count = split_words(buffer, parts, 5);
+    if (count != 4 || strcmp(parts[0], "@@") != 0 || strcmp(parts[3], "@@") != 0) {
+        return false;
+    }
+    hunk->line_number = line_number;
+    hunk->body_count = 0;
+    return parse_range(parts[1], '-', &hunk->old_start, &hunk->old_count) &&
+           parse_range(parts[2], '+', &hunk->new_start, &hunk->new_count);
+}
+static bool hunk_has_changes(const PatchHunk *hunk)
+{
+    for (int i = 0; i < hunk->body_count; i++) {
+        if (hunk->body[i].kind != ' ') {
+            return true;
+        }
+    }
+    return false;
+static const char *parse_patch(Span patch, PatchHunk *hunks, int *hunk_count, int *error_line)
+{
+    int index = 0;
+    while (index < patch.count && strncmp(patch.items[index], "@@", 2) != 0) {
+        index++;
+    }
+    *error_line = 0;
+    if (index == patch.count) {
+        return "no hunks";
+    }
+    *hunk_count = 0;
+    while (index < patch.count) {
+        PatchHunk *hunk = &hunks[(*hunk_count)++];
+        if (!parse_hunk_header(patch.items[index], index + 1, hunk)) {
+            *error_line = index + 1;
+            return "bad hunk header";
+        }
+        index++;
+        int old_seen = 0, new_seen = 0;
+        while (old_seen < hunk->old_count || new_seen < hunk->new_count) {
+            if (index == patch.count) {
+                *error_line = hunk->line_number;
+                return "truncated hunk";
+            }
+            char *line = patch.items[index];
+            char kind = line[0];
+            bool in_old = kind == ' ' || kind == '-';
+            bool in_new = kind == ' ' || kind == '+';
+            if (strlen(line) < 2 || !(in_old || in_new) || (in_old && old_seen == hunk->old_count) ||
+                (in_new && new_seen == hunk->new_count)) {
+                *error_line = index + 1;
+                return "bad hunk line";
+            }
+            hunk->body[hunk->body_count++] = (BodyLine){kind, line + 1};
+            if (in_old) {
+                old_seen++;
+            }
+            if (in_new) {
+                new_seen++;
+            }
+            index++;
+        }
+        if (!hunk_has_changes(hunk)) {
+            *error_line = hunk->line_number;
+            return "no changes";
+        }
+    }
+    return NULL;

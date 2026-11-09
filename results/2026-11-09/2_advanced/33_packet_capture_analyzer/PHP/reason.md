@@ -1,0 +1,7 @@
+The IPv4 payload operation is array_slice($bytes, $header, $length - $header). IHL=6 gives 6*4=24 bytes of IPv4 header, including options. Total IP length40 makes the payload16 bytes: zero-based offsets[24,40) relative to the Ethernet payload / IPv4 datagram. The Ethernet operation first removes14 bytes, so the same bytes occupy whole-packet zero-based offsets[38,54), i.e. bytes38 through53 inclusive. The end is limited by IP total length, so Ethernet padding after packet offset54 is excluded.
+
+array_slice takes offset and length, so the third argument16 selects zero-based bytes24 through39.
+
+Evidence: link_network.php: 46, 51–52, 67, 76, 83, 100. The selected complete lines contain the decision and its necessary data dependencies. The IHL calculation, total-length read, final payload slice, and Ethernet offset are all necessary to derive both coordinate frames. Unrelated address/checksum fields and packet reporting do not affect these boundaries; they were excluded after checking the dissector path.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 217 tokenizer tokens. The full selected source file(s) would be 1791 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

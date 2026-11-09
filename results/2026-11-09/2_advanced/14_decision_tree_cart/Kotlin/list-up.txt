@@ -1,0 +1,270 @@
+data class Attribute(val index: Int, val name: String, val integer: Boolean, val values: List<String>) {
+    fun parse(text: String): Int = if (text == "?") -1 else if (integer) text.toInt() else values.indexOf(text)
+}
+data class Row(val id: String, val values: IntArray, val label: Int) {
+    fun value(attribute: Attribute): Int = values[attribute.index]
+    fun missingCount(): Int = values.count { it < 0 }
+data class Settings(
+    val maxDepth: Int, val minSplit: Int, val minLeaf: Int, val maxSurrogates: Int, val folds: Int,
+    val curve: List<Int>, val bagTrees: Int, val bagSeed: Long, val repeats: Int, val permutationSeed: Long
+)
+        private fun lines(path: String): List<String> = File(path).readLines(Charsets.US_ASCII)
+        private fun rows(path: String, attributes: List<Attribute>, classes: List<String>): List<Row> =
+            lines(path).drop(1).map { line ->
+                val fields = line.split(',')
+                Row(fields[0], attributes.map { it.parse(fields[it.index + 1]) }.toIntArray(), classes.indexOf(fields.last()))
+            }
+        fun load(directory: String): Dataset {
+            val schema = lines("$directory/schema.txt").map { it.split(' ') }
+            val attributes = schema.dropLast(1).mapIndexed { index, fields ->
+                Attribute(index, fields[1], fields[2] == "INT", fields.drop(3))
+            }
+            val target = schema.last()[1]
+            val classes = schema.last().drop(2)
+            val entries = lines("$directory/params.txt").associate { line ->
+                val fields = line.split(' ')
+                fields[0] to fields.drop(1).map { it.toInt() }
+            }
+            fun get(key: String): Int = entries.getValue(key).first()
+            val settings = Settings(get("MAX_DEPTH"), get("MIN_SAMPLES_SPLIT"), get("MIN_SAMPLES_LEAF"),
+                get("MAX_SURROGATES"), get("FOLDS"), entries.getValue("CURVE"), get("BAG_TREES"),
+                get("BAG_SEED").toLong(), get("PERMUTATION_REPEATS"), get("PERMUTATION_SEED").toLong())
+            return Dataset(attributes, target, classes, rows("$directory/train.csv", attributes, classes),
+                rows("$directory/validation.csv", attributes, classes), rows("$directory/test.csv", attributes, classes), settings)
+        }
+data class Fraction(val numerator: Long, val denominator: Long) : Comparable<Fraction> {
+    override fun compareTo(other: Fraction): Int = (numerator * other.denominator).compareTo(other.numerator * denominator)
+}
+object Impurity {
+    fun counts(rows: List<Row>, classes: Int): IntArray = IntArray(classes).also { counts ->
+        for (row in rows) counts[row.label]++
+    }
+    fun squareSum(counts: IntArray): Long = counts.sumOf { it.toLong() * it }
+    fun majority(counts: IntArray): Int {
+        var best = 0
+        for (i in 1 until counts.size) if (counts[i] > counts[best]) best = i
+        return best
+    }
+    fun errors(counts: IntArray): Int = counts.sum() - counts[majority(counts)]
+    fun quality(left: IntArray, right: IntArray): Fraction {
+        val leftSize = left.sum().toLong()
+        val rightSize = right.sum().toLong()
+        return Fraction(squareSum(left) * rightSize + squareSum(right) * leftSize, leftSize * rightSize)
+    }
+    fun improves(value: Fraction, counts: IntArray): Boolean =
+        value.numerator * counts.sum() > squareSum(counts) * value.denominator
+data class Split(val attribute: Attribute, val point: Int) {
+    fun goesLeft(value: Int): Boolean = if (attribute.integer) 2 * value <= point else value == point
+data class Surrogate(val split: Split, val left: Boolean, val score: Int) {
+    fun goesLeft(value: Int): Boolean = split.goesLeft(value) == left
+}
+data class Candidate(val split: Split, val leftCounts: IntArray, val rightCounts: IntArray) {
+    val leftSize: Int get() = leftCounts.sum()
+    val rightSize: Int get() = rightCounts.sum()
+    fun quality(): Fraction = Impurity.quality(leftCounts, rightCounts)
+}
+class Node(val number: Int, val depth: Int, val counts: IntArray) {
+    val size = counts.sum()
+    val prediction = Impurity.majority(counts)
+    val errors = Impurity.errors(counts)
+    var split: Split? = null
+    var surrogates = emptyList<Surrogate>()
+    var defaultLeft = false
+    lateinit var left: Node
+    lateinit var right: Node
+}
+class TreeBuilder(private val attributes: List<Attribute>, private val classes: Int, private val settings: Settings) {
+    fun candidates(attribute: Attribute, rows: List<Row>, labels: List<Int>, classCount: Int): List<Candidate> {
+        val groups = sortedMapOf<Int, IntArray>()
+        val total = IntArray(classCount)
+        for (i in rows.indices) {
+            groups.getOrPut(rows[i].value(attribute)) { IntArray(classCount) }[labels[i]]++
+            total[labels[i]]++
+        }
+        val found = mutableListOf<Candidate>()
+        if (groups.size < 2) return found
+        val values = groups.keys.toList()
+        if (attribute.integer) {
+            val left = IntArray(classCount)
+            for (i in 0 until values.lastIndex) {
+                for (k in 0 until classCount) left[k] += groups.getValue(values[i])[k]
+                val right = IntArray(classCount) { total[it] - left[it] }
+                found += Candidate(Split(attribute, values[i] + values[i + 1]), left.copyOf(), right)
+            }
+        } else for (value in values) {
+            val left = groups.getValue(value)
+            found += Candidate(Split(attribute, value), left, IntArray(classCount) { total[it] - left[it] })
+        }
+        return found
+    }
+    fun bestSplit(rows: List<Row>, considered: List<Attribute>): Candidate? {
+        var best: Candidate? = null
+        val labels = rows.map { it.label }
+        for (attribute in considered)
+            for (candidate in candidates(attribute, rows, labels, classes))
+                if (candidate.leftSize >= settings.minLeaf && candidate.rightSize >= settings.minLeaf
+                    && (best == null || candidate.quality() > best.quality())) best = candidate
+        return best
+    }
+    private fun findSurrogates(rows: List<Row>, primary: Split): List<Surrogate> {
+        val directions = rows.map { if (primary.goesLeft(it.value(primary.attribute))) 0 else 1 }
+        val leftSize = directions.count { it == 0 }
+        val baseline = maxOf(leftSize, rows.size - leftSize)
+        val found = mutableListOf<Surrogate>()
+        for (attribute in attributes) {
+            if (attribute.index == primary.attribute.index) continue
+            var best: Surrogate? = null
+            for (candidate in candidates(attribute, rows, directions, 2)) {
+                val agreement = candidate.leftCounts[0] + candidate.rightCounts[1]
+                val surrogate = Surrogate(candidate.split, agreement >= rows.size - agreement, maxOf(agreement, rows.size - agreement))
+                if (best == null || surrogate.score > best.score) best = surrogate
+            }
+            if (best != null && best.score > baseline) found += best
+        }
+        return found.sortedWith(compareByDescending<Surrogate> { it.score }.thenBy { it.split.attribute.index }).take(settings.maxSurrogates)
+    }
+    fun grow(rows: List<Row>): Node = growNode(rows, 1, 0)
+    private fun growNode(rows: List<Row>, number: Int, depth: Int): Node {
+        val node = Node(number, depth, Impurity.counts(rows, classes))
+        if (node.errors == 0 || depth == settings.maxDepth || node.size < settings.minSplit) return node
+        val best = bestSplit(rows, attributes) ?: return node
+        if (!Impurity.improves(best.quality(), node.counts)) return node
+        val split = best.split
+        val (left, right) = rows.partition { split.goesLeft(it.value(split.attribute)) }
+        node.split = split
+        node.surrogates = findSurrogates(rows, split)
+        node.defaultLeft = left.size >= right.size
+        node.left = growNode(left, 2 * number, depth + 1)
+        node.right = growNode(right, 2 * number + 1, depth + 1)
+        return node
+    }
+}
+data class Step(val node: Node, val left: Boolean, val method: String)
+data class Route(val path: List<Node>, val steps: List<Step>) {
+    val leaf: Node get() = path.last()
+}
+class PrunedTree(val root: Node, cut: Set<Int> = emptySet()) {
+    val cut = cut.toSet()
+    fun isLeaf(node: Node): Boolean = node.split == null || node.number in cut
+    fun route(row: Row): Route {
+        var node = root
+        val path = mutableListOf(node)
+        val steps = mutableListOf<Step>()
+        while (!isLeaf(node)) {
+            val split = requireNotNull(node.split)
+            var left = node.defaultLeft
+            var method = "default"
+            val value = row.value(split.attribute)
+            if (value >= 0) { left = split.goesLeft(value); method = "primary" }
+            else for (surrogate in node.surrogates)
+                if (row.value(surrogate.split.attribute) >= 0) {
+                    left = surrogate.goesLeft(row.value(surrogate.split.attribute))
+                    method = "surrogate"
+                    break
+                }
+            steps += Step(node, left, method)
+            node = if (left) node.left else node.right
+            path += node
+        }
+        return Route(path, steps)
+    }
+    fun leafOf(row: Row): Node = route(row).leaf
+    fun predict(row: Row): Int = leafOf(row).prediction
+    fun correct(rows: List<Row>): Int = rows.count { predict(it) == it.label }
+    fun classification(title: String, classes: List<String>, rows: List<Row>, predictions: List<Int>): List<String> {
+        val size = classes.size
+        val matrix = Array(size) { IntArray(size) }
+        for (i in rows.indices) matrix[rows[i].label][predictions[i]]++
+        val correct = classes.indices.sumOf { matrix[it][it] }
+        val lines = mutableListOf("confusion $title correct $correct/${rows.size} accuracy ${fraction(correct, rows.size)}",
+            "actual\\predicted " + classes.joinToString(" "))
+        for (i in classes.indices) lines += classes[i] + " " + matrix[i].joinToString(" ")
+        var total = 0.0
+        var available = 0
+        for (i in classes.indices) {
+            val hits = matrix[i][i]
+            val predicted = matrix.sumOf { it[i] }
+            val support = matrix[i].sum()
+            if (predicted + support > 0) { total += (2 * hits).toDouble() / (predicted + support); available++ }
+            lines += "class ${classes[i]} precision ${fraction(hits, predicted)} recall ${fraction(hits, support)} f1 ${fraction(2 * hits, predicted + support)} support $support"
+        }
+        lines += "macro_f1 ${real(total / available)}"
+        return lines
+    }
+    fun reducedError(root: Node, rows: List<Row>): PruningResult {
+        val reached = mutableMapOf<Int, IntArray>()
+        val tree = PrunedTree(root)
+        for (row in rows)
+            for (node in tree.route(row).path) {
+                val tally = reached.getOrPut(node.number) { IntArray(2) }
+                tally[0]++
+                if (node.prediction != row.label) tally[1]++
+            }
+        val decisions = mutableListOf<Decision>()
+        val cut = mutableSetOf<Int>()
+        fun decide(node: Node): Int {
+            val tally = reached[node.number] ?: IntArray(2)
+            val leafError = tally[1]
+            if (node.split == null) return leafError
+            val subtreeError = decide(node.left) + decide(node.right)
+            val pruned = leafError <= subtreeError
+            decisions += Decision(node, tally[0], leafError, subtreeError, pruned)
+            if (pruned) cut += node.number
+            return if (pruned) leafError else subtreeError
+        }
+        decide(root)
+        return PruningResult(PrunedTree(root, cut), decisions)
+    }
+class Analysis(private val data: Dataset) {
+    private val attributes = data.attributes
+    private val classes = data.classes
+    private val settings = data.settings
+    private val train = data.train
+    private val validation = data.validation
+    private val test = data.test
+    private val builder = TreeBuilder(attributes, classes.size, settings)
+    val grown = PrunedTree(builder.grow(train))
+    private val pruning = Pruning.reducedError(grown.root, validation)
+    val pruned = pruning.tree
+    private val decisions = pruning.decisions
+        val models = mapOf("grown" to grown, "pruned" to pruned, "depth" to selectedDepth.tree,
+            "cost_complexity" to sequence[selectedIndex].tree)
+        predictions = models.mapValues { (_, tree) -> test.map { tree.predict(it) } } +
+            ("bagging" to testVotes.map { Impurity.majority(it) })
+    private fun accuracy(tree: PrunedTree, rows: List<Row>): String = ratio(tree.correct(rows), rows.size)
+    fun predictionsFile(): List<String> = buildList {
+        add("id,predicted,actual,grown,leaf,path,missing")
+        for (row in test) {
+            val route = pruned.route(row)
+            val path = route.path.joinToString("-") { it.number.toString() }
+            val missing = route.steps.count { it.method != "primary" }
+            add("${row.id},${classes[route.leaf.prediction]},${classes[row.label]},${classes[grown.predict(row)]},${route.leaf.number},$path,$missing")
+        }
+    }
+    private fun modelEvaluation(model: String): List<String> =
+        Evaluation.classification("$model test", classes, test, predictions.getValue(model))
+    private fun routingLines(): List<String> = buildList {
+        val tallies = grown.preorder().associate { it.number to IntArray(3) }
+        val methods = listOf("primary", "surrogate", "default")
+        for (row in test) for (step in pruned.route(row).steps) tallies.getValue(step.node.number)[methods.indexOf(step.method)]++
+        add("routing pruned test")
+        for (node in pruned.internalNodes()) {
+            val counts = tallies.getValue(node.number)
+            add("node ${node.number} rows ${counts.sum()} primary ${counts[0]} surrogate ${counts[1]} default ${counts[2]}")
+        }
+        for (complete in listOf(true, false)) {
+            val rows = test.filter { (it.missingCount() == 0) == complete }
+            add("${if (complete) "complete" else "incomplete"} rows ${rows.size} correct ${accuracy(pruned, rows)}")
+        }
+    }
+    fun evaluationFile(): List<String> = sections(dataLines(), listOf(summary("grown", grown), summary("pruned", pruned)),
+        modelEvaluation("grown"), modelEvaluation("pruned"), routingLines(), crossValidationLines(), depthLines(),
+        complexityLines(), baggingLines(), mcnemarLines(), aucLines(), learningLines())
+    val analysis = Analysis(Dataset.load("input"))
+    val files = mapOf(
+        "tree.txt" to sections(analysis.rootCandidates(), analysis.treeLines(analysis.grown), analysis.surrogateLines()),
+        "pruned_tree.txt" to analysis.prunedTreeFile(), "predictions.csv" to analysis.predictionsFile(),
+        "rules.txt" to analysis.rulesFile(), "evaluation.txt" to analysis.evaluationFile(),
+        "importance.txt" to sections(analysis.impurityLines("grown", analysis.grown), analysis.impurityLines("pruned", analysis.pruned), analysis.permutationLines())
+    )
+    for ((name, lines) in files) File("output", name).writeText(lines.joinToString("\n") + "\n", Charsets.US_ASCII)

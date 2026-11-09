@@ -1,0 +1,542 @@
+Model makeModel(RawModel raw) {
+  final m = Model(raw);
+  if (m.error != null) return m;
+  final index = <String, int>{};
+  void register(List<Term> terms) {
+    for (final term in terms) {
+      if (!index.containsKey(term.name)) {
+        index[term.name] = m.variables.length;
+        m.variables.add(term.name);
+      }
+    }
+  }
+
+  register(raw.objective);
+  for (final c in m.constraints) {
+    register(c.terms);
+  }
+  final n = m.variables.length;
+  m.cost = List.filled(n, zero);
+  m.lower = List<Fraction?>.filled(n, zero);
+  m.upper = List<Fraction?>.filled(n, null);
+  m.integer = List.filled(n, false);
+  for (final term in raw.objective) {
+    final j = index[term.name]!;
+    m.cost[j] = m.cost[j].add(term.coefficient);
+  }
+  for (final c in m.constraints) {
+    c.coefficients = List.filled(n, zero);
+    for (final term in c.terms) {
+      final j = index[term.name]!;
+      c.coefficients[j] = c.coefficients[j].add(term.coefficient);
+    }
+  }
+  return m;
+  List<Fraction> originalValues(List<Fraction> columns, bool direction) {
+    final values = List.filled(maps.length, zero);
+    for (var j = 0; j < maps.length; j++) {
+      final mapping = maps[j];
+      if (!direction) values[j] = mapping.offset;
+      for (final k in mapping.columns) {
+        values[j] = values[j].add(columns[k].mul(Fraction(directions[k])));
+      }
+    }
+    return values;
+  }
+
+  List<Fraction> solution() {
+    final values = List.filled(columns.length, zero);
+    for (var i = 0; i < tableau.basis.length; i++) {
+      values[tableau.basis[i]] = tableau.beta[i];
+    }
+    return originalValues(values, false);
+  }
+}
+Standard standardForm(Model m, List<Fraction?> lower, List<Fraction?> upper) {
+  final s = Standard(m.direction == 'maximize' ? -1 : 1);
+  int addVariableColumn(String name, int j, int direction) {
+    final k = s.columns.length;
+    s.columns.add(name);
+    s.columnVariable.add(j);
+    s.directions.add(direction);
+    s.artificial.add(false);
+    return k;
+  }
+
+  for (var j = 0; j < m.variables.length; j++) {
+    final name = m.variables[j], lo = lower[j], up = upper[j];
+    VariableMap mapping;
+    if (lo != null) {
+      mapping = VariableMap('shift', lo, [addVariableColumn(name, j, 1)]);
+    }
+    s.constant = s.constant.add(m.cost[j].mul(mapping.offset));
+    s.maps.add(mapping);
+  }
+  final decisionColumns = s.columns.length, t = s.tableau;
+  for (final c in m.constraints) {
+    final row = List.filled(decisionColumns, zero, growable: true);
+    var rhs = c.rhs;
+    for (var j = 0; j < s.maps.length; j++) {
+      final mapping = s.maps[j];
+      rhs = rhs.sub(c.coefficients[j].mul(mapping.offset));
+      for (final k in mapping.columns) {
+        row[k] = c.coefficients[j].mul(Fraction(s.directions[k]));
+      }
+    }
+    t.t.add(row);
+    t.beta.add(rhs);
+    s.rows.add(c.name);
+    s.comparisons.add(c.comparison);
+  }
+  for (var j = 0; j < s.maps.length; j++) {
+    final mapping = s.maps[j], up = upper[j];
+    if (mapping.kind == 'shift' && up != null) {
+  }
+  for (var i = 0; i < s.rows.length; i++) {
+    var sigma = 1;
+    if (t.beta[i].n < 0) {
+    }
+    s.sigma.add(sigma);
+    s.slack.add(-1);
+    s.initial.add(-1);
+  }
+  int addExtra(String name, int row, Fraction value, bool artificial) {
+    final k = s.columns.length;
+    s.columns.add(name);
+    s.columnVariable.add(-1);
+    s.directions.add(0);
+    s.artificial.add(artificial);
+    for (final r in t.t) {
+      r.add(zero);
+    }
+    t.t[row][k] = value;
+    return k;
+  }
+
+  for (var i = 0; i < s.rows.length; i++) {
+    final comparison = s.comparisons[i];
+    if (comparison != '=') {
+  }
+  for (var i = 0; i < s.rows.length; i++) {
+    if (s.comparisons[i] != '<=')
+      s.initial[i] = addExtra('a:${s.rows[i]}', i, one, true);
+  }
+  s.costs1 = List.filled(s.columns.length, zero);
+  s.costs2 = List.filled(s.columns.length, zero);
+  for (var k = 0; k < s.columns.length; k++) {
+    final j = s.columnVariable[k];
+    if (j >= 0) s.costs2[k] = m.cost[j].mul(Fraction(s.sign * s.directions[k]));
+    if (s.artificial[k]) s.costs1[k] = one;
+  }
+  t.basis = List.of(s.initial);
+  return s;
+}
+class LPResult {
+  String status = '';
+  Fraction objective = zero, w = zero, rate = zero;
+  final Standard standard;
+  List<Fraction> solution = [], farkas = [], ray = [];
+  int phase1 = 0, phase2 = 0, drives = 0, redundant = 0;
+  final List<String> log = [];
+  int get pivots => phase1 + phase2 + drives;
+  LPResult(this.standard);
+}
+LPResult solveLP(
+  Model m,
+  List<Fraction?> lower,
+  List<Fraction?> upper,
+  int number,
+  int level,
+) {
+  final s = standardForm(m, lower, upper),
+      r = LPResult(s),
+      artificials = s.artificial.where((a) => a).length;
+  void emit(int required, String line) {
+    if (required <= level) r.log.add(line);
+  }
+
+  void display(String heading, List<Fraction> cost, bool firstPhase) {
+    if (level < 2) return;
+    r.log.addAll(
+      s.tableau.display(
+        heading,
+        s.columns,
+        s.rows,
+        cost,
+        firstPhase ? zero : s.constant,
+        firstPhase ? 1 : s.sign,
+      ),
+    );
+  }
+
+  emit(
+    0,
+    'SOLVE node $number rows ${s.rows.length} columns ${s.columns.length} artificials $artificials',
+  );
+  for (var j = 0; j < s.maps.length; j++) {
+    final mapping = s.maps[j];
+    var line = 'MAP ${m.variables[j]} ${mapping.kind}';
+    if (mapping.kind != 'split') line += ' ${mapping.offset}';
+    if (mapping.kind == 'shift' && upper[j] != null)
+      line += ' upper ${upper[j]}';
+    emit(1, line);
+  }
+  for (var i = 0; i < s.sigma.length; i++) {
+    if (s.sigma[i] < 0) emit(1, 'FLIP ${s.rows[i]}');
+  }
+  final all = List.filled(s.columns.length, true),
+      real = [for (final art in s.artificial) !art];
+  LPResult finish() {
+    emit(
+      0,
+      'RESULT ${r.status} objective ${r.status == 'OPTIMAL' ? r.objective : '-'} phase1 ${r.phase1} phase2 ${r.phase2} drives ${r.drives} redundant ${r.redundant}',
+    );
+    return r;
+  }
+
+  if (artificials > 0) {
+    emit(1, 'PHASE 1');
+    display('phase 1 start', s.costs1, true);
+    final p = phase(s.tableau, s.costs1, all, s.columns, s.rows, (v) => v);
+    r.phase1 = p.iterations;
+    for (final line in p.lines) {
+      emit(1, line);
+    }
+    final (reduced, w) = s.tableau.reduced(s.costs1);
+    r.w = w;
+    emit(1, 'PHASE 1 END objective $w iterations ${r.phase1}');
+    if (w.n > 0) {
+      r.status = 'INFEASIBLE';
+      for (var i = 0; i < s.initial.length; i++) {
+        final k = s.initial[i];
+        r.farkas.add(s.costs1[k].sub(reduced[k]).mul(Fraction(s.sigma[i])));
+      }
+      display('final', s.costs1, true);
+      return finish();
+    }
+    for (var i = 0; i < s.tableau.basis.length; i++) {
+      final k = s.tableau.basis[i];
+      if (!s.artificial[k]) continue;
+      var q = -1;
+      for (var column = 0; column < s.columns.length; column++) {
+        if (!s.artificial[column] && s.tableau.t[i][column].n != 0) {
+          q = column;
+          break;
+        }
+      }
+      if (q < 0) {
+        r.redundant++;
+        emit(1, 'REDUNDANT row ${s.rows[i]}');
+      } else {
+        emit(
+          1,
+          'DRIVE row ${s.rows[i]} enter ${s.columns[q]} leave ${s.columns[k]}',
+        );
+        s.tableau.pivot(i, q);
+        r.drives++;
+      }
+    }
+  }
+  Fraction objective(Fraction v) => s.constant.add(v.mul(Fraction(s.sign)));
+  emit(1, 'PHASE 2');
+  display('phase 2 start', s.costs2, false);
+  final p = phase(s.tableau, s.costs2, real, s.columns, s.rows, objective);
+  r.phase2 = p.iterations;
+  for (final line in p.lines) {
+    emit(1, line);
+  }
+  final (_, z) = s.tableau.reduced(s.costs2);
+  r.objective = objective(z);
+  r.solution = s.solution();
+  r.status = 'OPTIMAL';
+  if (p.entering >= 0) {
+    r.status = 'UNBOUNDED';
+    emit(1, 'UNBOUNDED enter ${s.columns[p.entering]}');
+    final delta = List.filled(s.columns.length, zero);
+    delta[p.entering] = one;
+    for (var i = 0; i < s.tableau.basis.length; i++) {
+      delta[s.tableau.basis[i]] = s.tableau.t[i][p.entering].neg();
+    }
+    r.ray = s.originalValues(delta, true);
+    for (var j = 0; j < r.ray.length; j++) {
+      r.rate = r.rate.add(m.cost[j].mul(r.ray[j]));
+    }
+  }
+  emit(1, 'PHASE 2 END objective ${r.objective} iterations ${r.phase2}');
+  display('final', s.costs2, false);
+  return finish();
+}
+void writeLines(String path, List<String> lines) => File(
+  'output/$path',
+).writeAsStringSync(lines.isEmpty ? '' : '${lines.join('\n')}\n');
+void main() {
+  final settings = readSettings(),
+      iterations = <String>[],
+      solutions = <String>[],
+      sensitivities = <String>[],
+      tree = <String>[],
+      summary = ['model,status,objective,approx,relaxation,nodes,pivots'],
+      statuses = <String, int>{},
+      models = readModels();
+  var solves = 0,
+      p1 = 0,
+      p2 = 0,
+      drives = 0,
+  for (final raw in models) {
+    final m = makeModel(raw), error = m.error;
+    final level = settings.logs[m.name] ?? settings.level,
+        limit = settings.limits[m.name] ?? settings.limit;
+    iterations.add('MODEL ${m.name} level $level');
+    LPResult solve(List<Fraction?> lower, List<Fraction?> upper, int number) =>
+        solveLP(m, lower, upper, number, level);
+    ModelResult result;
+    final integerVariables = integerCount(m);
+    if (integerVariables > 0) {
+    } else {
+      final root = solve(m.lower, m.upper, 1);
+      result = ModelResult();
+      result.status = root.status;
+      result.root = root;
+      result.solves.add(root);
+      if (root.status == 'OPTIMAL') {
+        result.hasSolution = true;
+        result.objective = root.objective;
+        result.solution = List.of(root.solution);
+      }
+    }
+    var pivots = 0;
+    for (final lp in result.solves) {
+      iterations.addAll(lp.log);
+      solves++;
+      p1 += lp.phase1;
+      p2 += lp.phase2;
+      drives += lp.drives;
+      pivots += lp.pivots;
+    }
+    statuses[result.status] = (statuses[result.status] ?? 0) + 1;
+    solutions.addAll([
+      'MODEL ${m.name} ${m.direction} variables ${m.variables.length} constraints ${m.constraints.length} integers $integerVariables',
+      'STATUS ${result.status}',
+    ]);
+    var objective = '-', approx = '-', relaxation = '-';
+    if (result.hasSolution) {
+      objective = '${result.objective}';
+      approx = result.objective.approx();
+      solutions.add('OBJECTIVE $objective approx $approx');
+    }
+    final root = result.root;
+    if (root.status == 'OPTIMAL') {
+      relaxation = '${root.objective}';
+    if (result.hasSolution || result.status == 'UNBOUNDED') {
+      final values = result.hasSolution ? result.solution : root.solution;
+      for (var j = 0; j < values.length; j++) {
+        solutions.add('VALUE ${m.variables[j]} ${values[j]}');
+      }
+    }
+    solutions.add('PIVOTS $pivots');
+    summary.add(
+      '${m.name},${result.status},$objective,$approx,$relaxation,${result.solves.length},$pivots',
+    );
+  }
+  iterations.add(
+    'TOTAL solves $solves phase1 $p1 phase2 $p2 drives $drives pivots ${p1 + p2 + drives}',
+  );
+  Directory('output').createSync(recursive: true);
+  writeLines('iterations.txt', iterations);
+  writeLines('solutions.txt', solutions);
+  writeLines('summary.csv', summary);
+  final out = <Term>[];
+  var position = 0, sign = 1;
+  if (words.isNotEmpty && words.first == '-') {
+    position++;
+    sign = -1;
+  }
+  while (position < words.length) {
+    var coefficient = readNumber(words[position], false), name = '';
+    if (coefficient != null) {
+      if (position + 1 == words.length || !isName(words[position + 1]))
+        return null;
+      name = words[position + 1];
+      position += 2;
+    } else if (isName(words[position])) {
+      coefficient = one;
+      name = words[position++];
+    } else {
+      return null;
+    }
+    out.add(Term(name, coefficient.mul(Fraction(sign))));
+    if (position == words.length) return out;
+    if (words[position] != '+' && words[position] != '-') return null;
+    sign = words[position] == '-' ? -1 : 1;
+    position++;
+  }
+  return null;
+}
+
+(String, List<Term>)? namedExpression(List<String> words) {
+  if (words.length < 2 || !words.first.endsWith(':')) return null;
+  final name = words.first.substring(0, words.first.length - 1);
+  if (!isName(name)) return null;
+  final terms = parseExpression(words.sublist(1));
+  return terms == null ? null : (name, terms);
+}
+
+Constraint? parseConstraint(List<String> words, int line) {
+  if (words.length < 4 || !wordIn('<= >= =', words[words.length - 2]))
+    return null;
+  final rhs = readNumber(words.last, true),
+      named = namedExpression(words.sublist(0, words.length - 2));
+  return rhs == null || named == null
+      ? null
+      : Constraint(named.$1, words[words.length - 2], line, named.$2, rhs);
+}
+RawModel parseBlock(String name, List<Record> body, int endLine) {
+  final m = RawModel(name);
+  var state = 'A';
+  for (final record in body) {
+    final words = record.text.split(' ');
+    var accepted = false;
+    switch (state) {
+      case 'A':
+        if (record.text == 'maximize' || record.text == 'minimize') {
+          m.direction = record.text;
+          state = 'B';
+          accepted = true;
+        }
+        break;
+      case 'B':
+        final named = namedExpression(words);
+        if (named != null) {
+          m.objective = named.$2;
+          state = 'C';
+          accepted = true;
+        }
+        break;
+      case 'C':
+        if (record.text == 'subject to') {
+          state = 'D';
+          accepted = true;
+        }
+        break;
+      case 'D':
+      case 'E':
+        if (state == 'E' && wordIn('bounds integer binary', record.text)) {
+          state = {'bounds': 'F', 'integer': 'G', 'binary': 'H'}[record.text]!;
+          accepted = true;
+        } else {
+          final c = parseConstraint(words, record.line);
+          if (c != null) {
+            m.constraints.add(c);
+            state = 'E';
+            accepted = true;
+          }
+        }
+    }
+    if (!accepted) {
+      m.error = ModelError(record.line, 'syntax error');
+      return m;
+    }
+  }
+  if (wordIn('A B C D', state)) m.error = ModelError(endLine, 'syntax error');
+  return m;
+}
+
+List<RawModel> readModels() {
+  final out = <RawModel>[],
+      body = <Record>[],
+      lines = File('input/models.lp').readAsLinesSync();
+  var name = '';
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i];
+    if (line.isEmpty || line.startsWith('#')) continue;
+    if (name.isEmpty) {
+      name = line.split(' ')[1];
+      body.clear();
+    } else if (line == 'end') {
+      out.add(parseBlock(name, body, i + 1));
+      name = '';
+    } else {
+      body.add(Record(i + 1, line));
+    }
+  }
+  return out;
+}
+}
+
+PhaseResult phase(
+  Tableau tableau,
+  List<Fraction> cost,
+  List<bool> candidates,
+  List<String> columns,
+  List<String> rows,
+  Fraction Function(Fraction) objective,
+) {
+  final result = PhaseResult();
+  while (true) {
+    final (reduced, _) = tableau.reduced(cost);
+    var q = -1;
+    for (var k = 0; k < reduced.length; k++) {
+      if (candidates[k] && reduced[k].n < 0) {
+        q = k;
+        break;
+      }
+    }
+    if (q < 0) return result;
+    var p = -1, ratio = zero;
+    for (var i = 0; i < tableau.t.length; i++) {
+      final row = tableau.t[i];
+      if (row[q].n <= 0) continue;
+      final value = tableau.beta[i].div(row[q]);
+      if (p < 0 ||
+          value.cmp(ratio) < 0 ||
+          value.cmp(ratio) == 0 && tableau.basis[i] < tableau.basis[p]) {
+        p = i;
+        ratio = value;
+      }
+    }
+    if (p < 0) {
+      result.entering = q;
+      return result;
+    }
+    final leave = tableau.basis[p], before = reduced[q];
+    tableau.pivot(p, q);
+    result.iterations++;
+    final (_, z) = tableau.reduced(cost);
+    result.lines.add(
+      'PIVOT ${result.iterations} enter ${columns[q]} reduced $before leave ${columns[leave]} row ${rows[p]} ratio $ratio objective ${objective(z)}',
+    );
+  }
+}
+class Tableau {
+  final List<List<Fraction>> t = [];
+  final List<Fraction> beta = [];
+  List<int> basis = [];
+  (List<Fraction>, Fraction) reduced(List<Fraction> cost) {
+    final r = List<Fraction>.of(cost);
+    var z = zero;
+    for (var i = 0; i < basis.length; i++) {
+      final basic = basis[i];
+      z = z.add(cost[basic].mul(beta[i]));
+      for (var k = 0; k < r.length; k++) {
+        r[k] = r[k].sub(cost[basic].mul(t[i][k]));
+      }
+    }
+    return (r, z);
+  }
+
+  void pivot(int p, int q) {
+    final factor = t[p][q];
+    for (var k = 0; k < t[p].length; k++) {
+      t[p][k] = t[p][k].div(factor);
+    }
+    beta[p] = beta[p].div(factor);
+    for (var i = 0; i < t.length; i++) {
+      if (i == p) continue;
+      final f = t[i][q];
+      for (var k = 0; k < t[i].length; k++) {
+        t[i][k] = t[i][k].sub(f.mul(t[p][k]));
+      }
+      beta[i] = beta[i].sub(f.mul(beta[p]));
+    }
+    basis[p] = q;
+  }

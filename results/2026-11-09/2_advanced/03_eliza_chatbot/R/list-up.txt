@@ -1,0 +1,414 @@
+TEXT_DIRECTIVES <- c("INITIAL", "FINAL", "DEFAULT", "QUESTION", "REPEAT")
+GLOBAL_DIRECTIVES <- c(TEXT_DIRECTIVES, "QUIT", "STOP", "MEMSIZE", "PERSIST", "PRE", "POST", "SYNON")
+RULE_DIRECTIVES <- c("DECOMP", "MEMORY")
+ITEM_DIRECTIVES <- c("REASM", "GOTO", "NEWKEY", "RESTATE")
+MOVE_DIRECTIVES <- c("GOTO", "NEWKEY", "RESTATE")
+words_of <- function(text) {
+  parts <- strsplit(text, " ", fixed = TRUE)[[1L]]
+  parts[nzchar(parts)]
+}
+is_word <- function(text) grepl("^[a-z0-9]([a-z0-9']*[a-z0-9])?$", text)
+is_reference <- function(text) grepl("^\\([0-9]\\)$", text)
+is_element <- function(text) text %in% c("*", "#") | is_word(text) | grepl("^@[a-z0-9]([a-z0-9']*[a-z0-9])?$", text)
+is_number <- function(text) grepl("^[0-9]{1,2}$", text)
+well_formed <- function(name, args) {
+  count <- length(args)
+  if (name %in% c(TEXT_DIRECTIVES, "REASM")) return(count >= 1L)
+  if (name %in% c("QUIT", "STOP")) return(count >= 1L && all(is_word(args)))
+  if (name == "KEY") return(count == 2L && is_word(args[1L]) && is_number(args[2L]))
+  if (name %in% RULE_DIRECTIVES) return(count >= 1L && all(is_element(args)))
+}
+load_script <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  script <- list(lines = lines, texts = setNames(rep(list(character()), length(TEXT_DIRECTIVES)), TEXT_DIRECTIVES),
+                 quit_words = character(), stop_words = character(), memsize = 3L, persist = character(),
+                 pres = list(), posts = list(), pre_table = list(), post_table = list(), groups = list(),
+                 group_words = list(), keywords = list(), keyword_map = integer(), rules = list(),
+                 items = list(), diagnostics = list())
+  current_keyword <- current_rule <- 0L
+  ignoring <- FALSE
+  first_lines <- integer()
+  for (line_number in seq_along(lines)) {
+    line <- lines[line_number]
+    if (!nzchar(line) || startsWith(line, "#")) next
+    parts <- words_of(line)
+    name <- parts[1L]
+    args <- parts[-1L]
+    text <- if (length(args)) substring(line, nchar(name) + 2L) else ""
+    if (name %in% c(GLOBAL_DIRECTIVES, "KEY")) {
+      current_keyword <- current_rule <- 0L
+      ignoring <- FALSE
+    } else if (name %in% c(RULE_DIRECTIVES, ITEM_DIRECTIVES)) {
+      if (ignoring) next
+      if (name %in% RULE_DIRECTIVES) current_rule <- 0L
+    }
+    unique_key <- if (name == "MEMSIZE") name else if (name %in% c("KEY", "SYNON", "PRE", "POST", "PERSIST")) paste(name, args[1L]) else NULL
+    code <- message <- NULL
+    if (!name %in% c(GLOBAL_DIRECTIVES, "KEY", RULE_DIRECTIVES, ITEM_DIRECTIVES)) {
+      code <- "SYNTAX"
+      message <- paste("unknown directive", name)
+    } else if (!well_formed(name, args)) {
+      code <- "SYNTAX"
+      message <- paste("bad arguments for", name)
+    } else if (name %in% RULE_DIRECTIVES && current_keyword == 0L) {
+      code <- "ORPHAN"
+      message <- paste(name, "without KEY")
+    } else if (name == "REASM" && current_rule == 0L) {
+      code <- "ORPHAN"
+      message <- "REASM without DECOMP or MEMORY"
+    } else if (name %in% MOVE_DIRECTIVES && (current_rule == 0L || script$rules[[current_rule]]$kind == "MEMORY")) {
+      code <- "ORPHAN"
+      message <- paste(name, "without DECOMP")
+    } else if (!is.null(unique_key) && unique_key %in% names(first_lines)) {
+      code <- "DUPLICATE"
+      message <- paste(unique_key, "first defined at line", first_lines[[unique_key]])
+      if (name == "KEY") ignoring <- TRUE
+    }
+    if (!is.null(code)) {
+      script$diagnostics[[length(script$diagnostics) + 1L]] <- list(line = line_number, code = code, message = message)
+      next
+    }
+    if (!is.null(unique_key)) first_lines[unique_key] <- line_number
+    if (name %in% TEXT_DIRECTIVES) {
+      script$texts[[name]] <- c(script$texts[[name]], text)
+    } else if (name == "QUIT") {
+      script$quit_words <- union(script$quit_words, args)
+    } else if (name == "KEY") {
+      current_keyword <- length(script$keywords) + 1L
+      script$keyword_map[args[1L]] <- current_keyword
+      script$keywords[[current_keyword]] <- list(word = args[1L], rank = as.integer(args[2L]), line = line_number,
+                                                 memories = integer(), decomps = integer())
+    } else if (name %in% RULE_DIRECTIVES) {
+      current_rule <- length(script$rules) + 1L
+      script$rules[[current_rule]] <- list(kind = name, pattern = args, line = line_number, items = integer())
+      field <- if (name == "MEMORY") "memories" else "decomps"
+      script$keywords[[current_keyword]][[field]] <- c(script$keywords[[current_keyword]][[field]], current_rule)
+    } else {
+      item_id <- length(script$items) + 1L
+      script$items[[item_id]] <- list(kind = name, text = text, arguments = args, line = line_number)
+      script$rules[[current_rule]]$items <- c(script$rules[[current_rule]]$items, item_id)
+    }
+  }
+  script
+}
+word_fits <- function(element, word, groups) {
+  if (element == "#") return(TRUE)
+  if (startsWith(element, "@")) return(word %in% groups[[substring(element, 2L)]])
+  element == word
+}
+match_pattern <- function(pattern, words, groups) {
+  search <- function(position, start, bindings) {
+    if (position > length(pattern)) return(if (start > length(words)) bindings else NULL)
+    element <- pattern[position]
+    if (element == "*") {
+    } else if (start <= length(words) && word_fits(element, words[start], groups)) {
+      return(search(position + 1L, start + 1L, bindings))
+    }
+    NULL
+  }
+  search(1L, 1L, list())
+}
+build_reply <- function(template, bindings, reflections) {
+  pieces <- character()
+  position <- 1L
+  while (position <= nchar(template)) {
+    chunk <- substr(template, position, position + 2L)
+    if (is_reference(chunk)) {
+      number <- as.integer(substr(chunk, 2L, 2L))
+      pieces <- c(pieces, paste(reflect_words(binding(bindings, number), reflections), collapse = " "))
+      position <- position + 3L
+    } else {
+      pieces <- c(pieces, substr(template, position, position))
+      position <- position + 1L
+    }
+  }
+  reply <- paste(words_of(paste(pieces, collapse = "")), collapse = " ")
+  if (nchar(reply)) substr(reply, 1L, 1L) <- toupper(substr(reply, 1L, 1L))
+  reply
+}
+eliza_lines <- function(text) {
+  words <- words_of(text)
+  lines <- paste0("ELIZA: ", words[1L])
+  for (word in words[-1L]) {
+    last <- length(lines)
+    if (nchar(lines[last]) + 1L + nchar(word) <= 72L) lines[last] <- paste(lines[last], word)
+    else lines <- c(lines, paste0("       ", word))
+  }
+  lines
+}
+log_prefix <- function(bot) paste(bot$state$session$name, bot$state$session$turns)
+memory_store <- function(bot, keyword, text) {
+  prefix <- log_prefix(bot)
+  if (text %in% bot$state$memory$texts) {
+    bot$state$memory$log <- c(bot$state$memory$log, paste(prefix, "SKIP", keyword, text))
+    return(invisible(NULL))
+  }
+  if (length(bot$state$memory$texts) == bot$state$memory$capacity) {
+    bot$state$memory$log <- c(bot$state$memory$log, paste(prefix, "DROP", bot$state$memory$texts[1L]))
+    bot$state$memory$texts <- bot$state$memory$texts[-1L]
+  }
+  bot$state$memory$texts <- c(bot$state$memory$texts, text)
+  bot$state$memory$log <- c(bot$state$memory$log, paste(prefix, "STORE", keyword, text))
+  bot$state$session$stored <- bot$state$session$stored + 1L
+  invisible(NULL)
+}
+SOURCES <- c("keyword", "memory", "question", "default", "repeat")
+NO_ARGUMENT_COMMANDS <- c(":keys", ":why", ":history", ":memory", ":forget", ":reset", ":unused", ":stats", ":undo")
+TEXT_COMMANDS <- c(":prepare", ":reflect", ":say", ":explain")
+SINGLE_ARGUMENT_COMMANDS <- c(":groups", ":find", ":script", ":cycles", ":coverage")
+KEYWORD_COMMANDS <- c(":script", ":cycles", ":coverage", ":test")
+normalize <- function(text) {
+  parts <- strsplit(tolower(text), "[,.?!;]")[[1L]]
+  clauses <- lapply(parts, function(part) {
+    words <- words_of(gsub("[^a-z0-9']", " ", part))
+    words <- gsub("^'+|'+$", "", words)
+    words[nzchar(words)]
+  })
+  clauses[lengths(clauses) > 0L]
+}
+all_words <- function(clauses) unlist(clauses, use.names = FALSE)
+pre_substitute <- function(script, clauses) {
+  lapply(clauses, function(clause) {
+    unlist(lapply(clause, function(word) {
+      replacement <- script$pre_table[[word]]
+      if (is.null(replacement)) word else replacement
+    }), use.names = FALSE)
+  })
+}
+is_quit <- function(script, text) {
+  words <- all_words(normalize(text))
+  length(words) == 1L && words[1L] %in% script$quit_words
+}
+select_clause <- function(script, clauses) {
+  for (i in seq_along(clauses)) if (any(clauses[[i]] %in% names(script$keyword_map))) return(i)
+  0L
+}
+keyword_list <- function(script, words) {
+  ids <- unique(unname(script$keyword_map[words[words %in% names(script$keyword_map)]]))
+  ranks <- vapply(ids, function(id) script$keywords[[id]]$rank, integer(1L))
+  ids[order(-ranks, seq_along(ids), method = "radix")]
+}
+increment_count <- function(counts, word) {
+  if (!word %in% names(counts)) counts[word] <- 0L
+  counts[word] <- counts[word] + 1L
+  counts
+}
+take_item <- function(bot, rule_id) {
+  items <- bot$script$rules[[rule_id]]$items
+  position <- bot$state$positions[rule_id]
+  id <- items[position]
+  bot$state$item_uses[id] <- bot$state$item_uses[id] + 1L
+  bot$state$positions[rule_id] <- position %% length(items) + 1L
+  list(number = position, item = bot$script$items[[id]])
+}
+find_rule <- function(script, rules, words) {
+  for (number in seq_along(rules)) {
+    id <- rules[number]
+    bindings <- match_pattern(script$rules[[id]]$pattern, words, script$group_words)
+    if (!is.null(bindings)) return(list(number = number, id = id, bindings = bindings))
+  }
+  NULL
+}
+keyword_reply <- function(bot, clauses) {
+  script <- bot$script
+  selected <- select_clause(script, clauses)
+  if (!selected) return(list(reply = NULL, trace = "CLAUSE none"))
+  original <- clauses[[selected]]
+  keys <- keyword_list(script, original)
+  trace <- c(paste("CLAUSE", selected, paste(original, collapse = " ")),
+             paste("KEYS", paste(vapply(keys, function(id) script$keywords[[id]]$word, character(1L)), collapse = " ")))
+  first <- script$keywords[[keys[1L]]]
+  found <- find_rule(script, first$memories, original)
+  if (!is.null(found)) {
+    trace <- c(trace, paste("MEMORY", first$word, found$number))
+    bot$state$hits[found$id] <- bot$state$hits[found$id] + 1L
+    if (length(script$rules[[found$id]]$items)) {
+      item <- take_item(bot, found$id)$item
+      memory_store(bot, first$word, build_reply(item$text, found$bindings, script$post_table))
+    }
+  }
+  entered <- integer()
+  for (key_id in keys) {
+    if (key_id %in% entered) next
+    trace <- c(trace, paste("ENTER", script$keywords[[key_id]]$word))
+    words <- original
+    repeat {
+      entered <- c(entered, key_id)
+      keyword <- script$keywords[[key_id]]
+      bot$state$keyword_uses[key_id] <- bot$state$keyword_uses[key_id] + 1L
+      found <- find_rule(script, keyword$decomps, words)
+      if (is.null(found)) {
+        trace <- c(trace, paste("NOMATCH", keyword$word))
+        break
+      }
+      bot$state$hits[found$id] <- bot$state$hits[found$id] + 1L
+      if (!length(script$rules[[found$id]]$items)) {
+        trace <- c(trace, paste("DECOMP", keyword$word, found$number, 0L))
+        break
+      }
+      taken <- take_item(bot, found$id)
+      item <- taken$item
+      trace <- c(trace, paste("DECOMP", keyword$word, found$number, taken$number))
+      if (item$kind == "REASM") {
+        bot$state$keyword_replies[key_id] <- bot$state$keyword_replies[key_id] + 1L
+        bot$state$session$topics <- increment_count(bot$state$session$topics, keyword$word)
+        return(list(reply = build_reply(item$text, found$bindings, script$post_table), trace = trace))
+      }
+    }
+  }
+  list(reply = NULL, trace = trace)
+}
+decide <- function(bot, text) {
+  clauses <- normalize(text)
+  if (length(bot$script$texts$REPEAT) && length(clauses) && identical(clauses, bot$state$session$previous)) {
+    trace <- "REPEAT"
+    reply <- take_text(bot, "REPEAT")
+    source <- "repeat"
+  } else {
+    result <- keyword_reply(bot, pre_substitute(bot$script, clauses))
+    reply <- result$reply
+    trace <- result$trace
+    source <- "keyword"
+    if (is.null(reply)) {
+      if (length(bot$state$memory$texts)) {
+        reply <- memory_recall(bot)
+        source <- "memory"
+      } else if (endsWith(text, "?") && length(bot$script$texts$QUESTION)) {
+        reply <- take_text(bot, "QUESTION")
+        source <- "question"
+      } else {
+        reply <- take_text(bot, "DEFAULT")
+        source <- "default"
+      }
+    }
+  }
+  bot$state$session$previous <- clauses
+  bot$state$session$sources[source] <- bot$state$session$sources[source] + 1L
+  if (source %in% c("question", "default")) bot$state$session$unrecognized <- c(bot$state$session$unrecognized, bot$state$session$turns)
+  list(reply = reply, trace = c(trace, paste("REPLY", source)))
+}
+source_line <- function(turns, sources) {
+  paste0("turns=", turns, " ", paste(paste0(SOURCES, "=", sources[SOURCES]), collapse = " "))
+}
+ranked_counts <- function(counts) {
+  if (!length(counts)) return("none")
+  keys <- sort(names(counts), method = "radix")
+  keys <- head(keys[order(-counts[keys], seq_along(keys), method = "radix")], 5L)
+  paste(paste(keys, counts[keys]), collapse = ", ")
+}
+arguments_fit <- function(name, text, args) {
+  if (name %in% NO_ARGUMENT_COMMANDS) return(!length(args))
+  if (name %in% TEXT_COMMANDS) return(nzchar(text))
+  if (name %in% SINGLE_ARGUMENT_COMMANDS) return(length(args) == 1L)
+  if (name == ":trace") return(length(args) == 1L && args[1L] %in% c("on", "off"))
+  length(args) >= 2L
+}
+debug_command <- function(bot, line) {
+  parts <- words_of(line)
+  name <- parts[1L]
+  args <- parts[-1L]
+  text <- if (length(args)) substring(line, nchar(name) + 2L) else ""
+  if (!name %in% c(NO_ARGUMENT_COMMANDS, TEXT_COMMANDS, SINGLE_ARGUMENT_COMMANDS, ":trace", ":test")) return(paste("unknown command", name))
+  if (!arguments_fit(name, text, args)) return("bad arguments")
+  script <- bot$script
+  if (name %in% KEYWORD_COMMANDS && !args[1L] %in% names(script$keyword_map)) return(paste("unknown keyword", args[1L]))
+  if (name == ":undo") {
+    snapshot <- bot$state$session$undo
+    if (is.null(snapshot)) return("nothing to undo")
+    bot$state <- snapshot
+    return(paste("undone turn", bot$state$session$turns + 1L))
+  }
+  if (is_quit(script, text)) return("would quit")
+  saved <- bot$state
+  result <- decide(bot, text)
+  bot$state <- saved
+  if (name == ":say") result$reply else result$trace
+}
+new_session <- function(name) {
+  list(name = name, turns = 0L, sources = setNames(integer(length(SOURCES)), SOURCES),
+       previous = NULL, history = character(), last_trace = NULL, trace_on = FALSE,
+       topics = integer(), words = integer(), stored = 0L, recalled = 0L,
+       unrecognized = integer(), undo = NULL)
+}
+write_notes <- function(bot) {
+  session <- bot$state$session
+  unrecognized <- if (length(session$unrecognized)) paste(session$unrecognized, collapse = " ") else "none"
+  notes <- c(source_line(session$turns, session$sources), paste0("topics: ", ranked_counts(session$topics)),
+             paste0("words: ", ranked_counts(session$words)),
+             paste0("memory: stored=", session$stored, " recalled=", session$recalled, " pending=", length(bot$state$memory$texts)),
+             paste0("unrecognized: ", unrecognized))
+  bot$transcript <- c(bot$transcript, paste("NOTES", session$name), paste0("  ", notes))
+  bot$total_turns <- bot$total_turns + session$turns
+  bot$total_sources <- bot$total_sources + session$sources
+}
+run_session <- function(bot, number, name, lines) {
+  script <- bot$script
+  bot$state$session <- new_session(name)
+  greeting <- script$texts$INITIAL[(number - 1L) %% length(script$texts$INITIAL) + 1L]
+  bot$transcript <- c(bot$transcript, paste("SESSION", name), eliza_lines(greeting))
+  for (line in lines) {
+    if (startsWith(line, ":")) {
+      bot$transcript <- c(bot$transcript, line)
+      output <- debug_command(bot, line)
+      if (length(output)) bot$transcript <- c(bot$transcript, paste0("  ", output))
+      next
+    }
+    bot$transcript <- c(bot$transcript, paste0("YOU: ", line))
+    if (is_quit(script, line)) {
+      farewell <- script$texts$FINAL[(number - 1L) %% length(script$texts$FINAL) + 1L]
+      bot$transcript <- c(bot$transcript, eliza_lines(farewell))
+      break
+    }
+    snapshot <- bot$state
+    snapshot$session$undo <- NULL
+    bot$state$session$undo <- snapshot
+    bot$state$session$turns <- bot$state$session$turns + 1L
+    for (word in all_words(normalize(line))) if (!word %in% script$stop_words) {
+      bot$state$session$words <- increment_count(bot$state$session$words, word)
+    }
+    bot$state$session$history <- c(bot$state$session$history, paste0(bot$state$session$turns, ": ", line))
+    result <- decide(bot, line)
+    bot$transcript <- c(bot$transcript, eliza_lines(result$reply))
+    bot$state$session$last_trace <- result$trace
+    if (bot$state$session$trace_on) bot$transcript <- c(bot$transcript, paste0("  ", result$trace))
+  }
+  write_notes(bot)
+}
+keyword_stats <- function(bot) {
+  script <- bot$script
+  keys <- sort(names(script$keyword_map), method = "radix")
+  ids <- unname(script$keyword_map[keys])
+  ids <- ids[order(-bot$state$keyword_uses[ids], seq_along(ids), method = "radix")]
+  rows <- vapply(ids, function(id) {
+    keyword <- script$keywords[[id]]
+    hits <- if (length(keyword$decomps)) paste(bot$state$hits[keyword$decomps], collapse = "/") else "-"
+    paste(keyword$word, keyword$rank, bot$state$keyword_uses[id], bot$state$keyword_replies[id], hits, sep = ",")
+  }, character(1L))
+  c("keyword,rank,uses,replies,decomposition_hits", rows)
+}
+main <- function() {
+  script <- load_script("input/script.txt")
+  bot <- new.env(parent = emptyenv())
+  bot$script <- script
+  bot$state <- list(positions = rep.int(1L, length(script$rules)), hits = integer(length(script$rules)),
+                    item_uses = integer(length(script$items)), keyword_uses = integer(length(script$keywords)),
+                    keyword_replies = integer(length(script$keywords)),
+                    list_positions = setNames(rep.int(1L, 3L), c("DEFAULT", "QUESTION", "REPEAT")),
+                    memory = list(capacity = script$memsize, texts = character(), log = character()), session = NULL)
+  bot$transcript <- character()
+  bot$total_turns <- 0L
+  bot$total_sources <- setNames(integer(length(SOURCES)), SOURCES)
+  lines <- readLines("input/dialogue.txt", warn = FALSE)
+  starts <- which(startsWith(lines, "SESSION "))
+  ends <- c(starts[-1L] - 1L, length(lines))
+  for (number in seq_along(starts)) {
+    start <- starts[number]
+    run_session(bot, number, substring(lines[start], 9L), lines[seq.int(start + 1L, ends[number])])
+  }
+  bot$transcript <- c(bot$transcript, "", paste("SUMMARY", paste0("sessions=", length(starts)), source_line(bot$total_turns, bot$total_sources)))
+  dir.create("output", showWarnings = FALSE)
+  writeLines(bot$transcript, "output/transcript.txt", useBytes = TRUE)
+  writeLines(keyword_stats(bot), "output/keyword_stats.csv", useBytes = TRUE)
+  writeLines(bot$state$memory$log, "output/memory_log.txt", useBytes = TRUE)
+}
+main()

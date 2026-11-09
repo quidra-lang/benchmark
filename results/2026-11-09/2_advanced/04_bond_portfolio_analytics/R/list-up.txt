@@ -1,0 +1,452 @@
+BUSINESS_DAY_RULES <- c("FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED")
+is_leap <- function(year) year %% 4L == 0L && (year %% 100L != 0L || year %% 400L == 0L)
+year_length <- function(year) if (is_leap(year)) 366L else 365L
+
+month_length <- function(year, month) {
+  if (month == 2L && is_leap(year)) return(29L)
+  c(31L, 28L, 31L, 30L, 31L, 30L, 31L, 31L, 30L, 31L, 30L, 31L)[month]
+}
+
+split_date <- function(text) as.integer(strsplit(text, "-", fixed = TRUE)[[1L]])
+
+valid_date <- function(text) {
+  date <- split_date(text)
+  date[1L] >= 2001L && date[1L] <= 2099L && date[2L] >= 1L && date[2L] <= 12L &&
+    date[3L] >= 1L && date[3L] <= month_length(date[1L], date[2L])
+}
+
+day_number <- function(year, month, day) {
+  number <- day - 1L
+  if (year > 2000L) for (prior in seq.int(2000L, year - 1L)) number <- number + year_length(prior)
+  if (month > 1L) for (prior in seq_len(month - 1L)) number <- number + month_length(year, prior)
+  number
+}
+
+parse_date <- function(text) {
+  date <- split_date(text)
+  day_number(date[1L], date[2L], date[3L])
+}
+
+civil_date <- function(number) {
+  year <- 2000L
+  while (number >= year_length(year)) {
+    number <- number - year_length(year)
+    year <- year + 1L
+  }
+  month <- 1L
+  while (number >= month_length(year, month)) {
+    number <- number - month_length(year, month)
+    month <- month + 1L
+  }
+  c(year, month, number + 1L)
+}
+
+format_date <- function(number) {
+  date <- civil_date(number)
+  sprintf("%04d-%02d-%02d", date[1L], date[2L], date[3L])
+}
+
+business_day <- function(day, holidays) (day + 5L) %% 7L < 5L && !day %in% holidays
+
+business_days <- function(day, count, holidays, direction = 1L) {
+  while (count > 0L) {
+    day <- day + direction
+    if (business_day(day, holidays)) count <- count - 1L
+  }
+  day
+}
+
+adjust_date <- function(day, convention, holidays) {
+  if (convention == "UNADJUSTED") return(day)
+  direction <- if (convention == "PRECEDING") -1L else 1L
+  adjusted <- day
+  while (!business_day(adjusted, holidays)) adjusted <- adjusted + direction
+  if (convention == "MODIFIED_FOLLOWING" && civil_date(adjusted)[2L] != civil_date(day)[2L]) {
+    adjusted <- day
+    while (!business_day(adjusted, holidays)) adjusted <- adjusted - 1L
+  }
+  adjusted
+}
+DAY_COUNTS <- c("30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT")
+
+year_fraction <- function(convention, start, end) {
+  first <- civil_date(start)
+  last <- civil_date(end)
+  if (convention == "30/360") {
+    first_february <- first[2L] == 2L && first[3L] == month_length(first[1L], 2L)
+    last_february <- last[2L] == 2L && last[3L] == month_length(last[1L], 2L)
+    if (first_february && last_february) last[3L] <- 30L
+    if (first_february) first[3L] <- 30L
+    if (last[3L] == 31L && first[3L] >= 30L) last[3L] <- 30L
+    if (first[3L] == 31L) first[3L] <- 30L
+  } else {
+    first[3L] <- min(first[3L], 30L)
+    last[3L] <- min(last[3L], 30L)
+  }
+  c(360L * (last[1L] - first[1L]) + 30L * (last[2L] - first[2L]) + last[3L] - first[3L], 360L)
+}
+BASIS_POINT <- 0.0001
+
+bisection <- function(f, low, high, target) {
+  for (iteration in seq_len(80L)) {
+    middle <- (low + high) / 2
+    if (f(middle) > target) low <- middle else high <- middle
+  }
+  (low + high) / 2
+}
+
+present_values <- function(pricer, rate) {
+  first <- 1 + pricer$fraction * rate / pricer$frequency
+  growth <- 1 + rate / pricer$frequency
+  factor <- 1
+  values <- numeric(length(pricer$flows))
+  for (i in seq_along(values)) {
+    values[i] <- pricer$flows[i] / (first * factor)
+    factor <- factor * growth
+  }
+  values
+}
+
+dirty_price <- function(pricer, rate) {
+  total <- 0
+  for (value in present_values(pricer, rate)) total <- total + value
+  total * 100 / pricer$outstanding
+}
+
+yield_to_maturity <- function(pricer, target) bisection(function(rate) dirty_price(pricer, rate), 0, 1, target)
+
+yield_risk <- function(pricer, rate) {
+  values <- present_values(pricer, rate)
+  total <- weighted <- curvature <- 0
+  for (i in seq_along(values)) {
+    years <- (i - 1L + pricer$fraction) / pricer$frequency
+    total <- total + values[i]
+    weighted <- weighted + years * values[i]
+    curvature <- curvature + years * (years + 1 / pricer$frequency) * values[i]
+  }
+  growth <- 1 + rate / pricer$frequency
+  macaulay <- weighted / total
+  list(macaulay = macaulay, modified = macaulay / growth, convexity = curvature / (total * growth * growth),
+       dv01 = (dirty_price(pricer, rate - BASIS_POINT) - dirty_price(pricer, rate + BASIS_POINT)) / 2)
+}
+coupon_schedule <- function(issue, maturity, frequency, end_of_month = FALSE, long_stub = FALSE) {
+  date <- civil_date(maturity)
+  eom <- end_of_month && date[3L] == month_length(date[1L], date[2L])
+  step <- 12L %/% frequency
+  dates <- integer()
+  boundary <- maturity
+  while (boundary > issue) {
+    dates <- c(dates, boundary)
+    index <- 12L * date[1L] + date[2L] - 1L - step * length(dates)
+    year <- index %/% 12L
+    month <- index %% 12L + 1L
+    day <- if (eom) month_length(year, month) else min(date[3L], month_length(year, month))
+    boundary <- day_number(year, month, day)
+  }
+  if (long_stub && boundary != issue && length(dates) >= 2L) dates <- head(dates, -1L)
+  c(issue, rev(dates))
+}
+zero_rate <- function(curve, day) {
+  count <- length(curve$days)
+  if (day <= curve$days[1L]) return(curve$rates[1L])
+  if (day >= curve$days[count]) return(curve$rates[count])
+  index <- which(curve$days >= day)[1L]
+  if (day == curve$days[index]) return(curve$rates[index])
+  low <- index - 1L
+  curve$rates[low] + (curve$rates[index] - curve$rates[low]) * ((day - curve$days[low]) / (curve$days[index] - curve$days[low]))
+}
+discount_factor <- function(curve, day, spread = 0) {
+  rate <- zero_rate(curve, day) + spread
+  years <- as.integer(day %/% 365L)
+  remainder <- day %% 365L
+  growth <- 1
+  for (year in seq_len(years)) growth <- growth * (1 + rate)
+  1 / (growth * (1 + rate * remainder / 365))
+}
+curve_value <- function(curve, flows, spread = 0) {
+  total <- 0
+  for (i in seq_len(nrow(flows))) total <- total + flows[i, 2L] * discount_factor(curve, flows[i, 1L], spread)
+  total
+}
+bootstrap <- function(settlement, pillars) {
+  curve <- list(days = integer(), rates = numeric())
+  for (pillar in pillars) {
+    dates <- coupon_schedule(settlement, pillar$maturity, pillar$frequency)
+    flows <- matrix(0, nrow = length(dates) - 1L, ncol = 2L)
+    for (i in seq_len(nrow(flows))) {
+      fraction <- year_fraction("30/360", dates[i], dates[i + 1L])
+      flows[i, ] <- c(dates[i + 1L] - settlement, pillar$coupon * fraction[1L] / (10000 * fraction[2L]))
+    }
+    flows[nrow(flows), 2L] <- flows[nrow(flows), 2L] + 1
+    curve$days <- c(curve$days, pillar$maturity - settlement)
+    rate <- bisection(function(trial) curve_value(list(days = curve$days, rates = c(curve$rates, trial)), flows), 0, 1, 1)
+    curve$rates <- c(curve$rates, rate)
+  }
+  curve
+}
+z_spread <- function(curve, flows, target) bisection(function(spread) curve_value(curve, flows, spread), -0.5, 0.5, target)
+BUCKET_NAMES <- c("0-1Y", "1-3Y", "3-5Y", "5-10Y", "10Y+")
+OPTION_KEYS <- list(FIXED = c("EOM", "LONG", "CALL"), ZERO = c("EOM", "LONG"),
+                    AMORT = c("EOM", "LONG", "SINK"), FRN = c("EOM", "LONG", "LAG", "CAP", "FLOOR"))
+
+input_error <- function(reason) stop(structure(list(message = reason, call = NULL), class = c("input_error", "error", "condition")))
+
+integer_divide <- function(a, b) {
+  quotient <- floor(a / b)
+  while (quotient * b > a) quotient <- quotient - 1
+  while ((quotient + 1) * b <= a) quotient <- quotient + 1
+  quotient
+}
+
+round_half_up <- function(a, b) integer_divide(2 * a + b, 2 * b)
+integer_text <- function(value) sprintf("%.0f", value)
+hundredths <- function(value) {
+  if (value < 0) return(paste0("-", hundredths(-value)))
+  whole <- integer_divide(value, 100)
+  paste0(integer_text(whole), ".", sprintf("%02d", as.integer(value - whole * 100)))
+}
+
+decimals <- function(value, digits) {
+  negative <- value < 0
+  if (negative) value <- -value
+  scale <- 1
+  for (i in seq_len(digits)) scale <- scale * 10
+  rounded <- floor(value * scale + 0.5)
+  whole <- integer_divide(rounded, scale)
+  fraction <- as.integer(rounded - whole * scale)
+  paste0(if (negative && rounded > 0) "-" else "", integer_text(whole), ".", sprintf(paste0("%0", digits, "d"), fraction))
+}
+
+percent <- function(value) decimals(value * 100, 4L)
+amount <- function(cents) decimals(cents / 100, 2L)
+thousandths <- function(price) as.integer(gsub(".", "", price, fixed = TRUE))
+read_lines <- function(name) readLines(file.path("input", name), warn = FALSE)
+read_rows <- function(name) {
+  lines <- read_lines(name)
+  lapply(seq.int(2L, length(lines)), function(number) list(line = number, fields = strsplit(lines[number], ",", fixed = TRUE)[[1L]]))
+}
+validate_rows <- function(rows, file, key_index, parser, errors) {
+  seen <- character()
+  valid <- list()
+  for (row in rows) {
+    key <- row$fields[key_index]
+    record <- tryCatch(parser(row$fields, seen), input_error = function(error) {
+      errors$lines <- c(errors$lines, paste0(file, ":", row$line, ": ", key, ": ", conditionMessage(error)))
+      NULL
+    })
+    seen <- c(seen, key)
+    if (!is.null(record)) valid[[length(valid) + 1L]] <- record
+  }
+  valid
+}
+read_params <- function() {
+  params <- list(scenarios = list(), limits = list())
+  lines <- read_lines("params.txt")
+  for (number in seq_along(lines)) {
+    words <- strsplit(lines[number], " ", fixed = TRUE)[[1L]]
+    kind <- words[1L]
+    if (kind == "valuation_date") params$valuation_date <- parse_date(words[2L])
+    else if (kind == "settlement_days") params$settlement_days <- as.integer(words[2L])
+    else if (kind == "scenario") {
+      params$scenarios[[length(params$scenarios) + 1L]] <- list(line = number, name = words[2L], shifts = as.integer(words[-c(1L, 2L)]))
+    } else params$limits[[length(params$limits) + 1L]] <- words[-1L]
+  }
+  params
+}
+parse_pillar <- function(fields, seen, settlement) {
+  if (fields[1L] %in% seen) input_error("duplicate pillar")
+  if (!valid_date(fields[1L])) input_error("invalid date")
+  maturity <- parse_date(fields[1L])
+  if (maturity <= settlement) input_error("pillar not after settlement")
+  frequency <- as.integer(fields[3L])
+  if (!frequency %in% FREQUENCIES) input_error("invalid frequency")
+  list(maturity = maturity, coupon = as.integer(fields[2L]), frequency = frequency)
+}
+parse_options <- function(kind, text) {
+  options <- list(end_of_month = FALSE, long_stub = FALSE, lag = NULL, cap = NULL, floor = NULL, sinks = list(), calls = list())
+  seen <- character()
+  items <- if (text == "-") character() else strsplit(text, ";", fixed = TRUE)[[1L]]
+  for (item in items) {
+    separator <- regexpr("=", item, fixed = TRUE)[1L]
+    key <- if (separator < 0L) item else substr(item, 1L, separator - 1L)
+    value <- if (separator < 0L) "" else substring(item, separator + 1L)
+    if (!key %in% OPTION_KEYS[[kind]] || (key %in% seen && !key %in% c("SINK", "CALL"))) input_error("invalid option")
+    seen <- c(seen, key)
+    if (key == "EOM") options$end_of_month <- TRUE
+    else if (key == "LONG") options$long_stub <- TRUE
+    else if (key %in% c("LAG", "CAP", "FLOOR")) options[[tolower(key)]] <- as.integer(value)
+    else {
+      parts <- strsplit(value, ":", fixed = TRUE)[[1L]]
+      if (key == "SINK") options$sinks[[length(options$sinks) + 1L]] <- list(date = parts[1L], amount = as.numeric(parts[2L]))
+      else options$calls[[length(options$calls) + 1L]] <- list(date = parts[1L], price = thousandths(parts[2L]))
+    }
+  }
+  if (kind == "FRN") {
+    cap <- if (is.null(options$cap)) 1200L else options$cap
+    if (is.null(options$lag) || !options$lag %in% 1L:5L || cap > 1200L || (!is.null(options$floor) && options$floor > cap)) input_error("invalid option")
+  }
+  options
+}
+build_periods <- function(bond, holidays, fixings) {
+  opening <- bond$face
+  count <- length(bond$schedule) - 1L
+  periods <- vector("list", count)
+  for (number in seq_len(count)) {
+    start <- bond$schedule[number]
+    end <- bond$schedule[number + 1L]
+    fraction <- year_fraction(bond$daycount, start, end)
+    rate <- if (bond$kind == "ZERO") 0L else bond$coupon
+    if (bond$kind == "FRN") {
+      reset <- business_days(adjust_date(start, bond$bdc, holidays), bond$options$lag, holidays, -1L)
+      index <- findInterval(reset, fixings$dates)
+      if (!index) input_error("missing fixing")
+      rate <- fixings$rates[index] + bond$coupon
+      if (!is.null(bond$options$floor)) rate <- max(rate, bond$options$floor)
+      if (!is.null(bond$options$cap)) rate <- min(rate, bond$options$cap)
+    }
+    principal <- if (number == count) opening else if (as.character(end) %in% names(bond$sinks)) bond$sinks[[as.character(end)]] else 0
+    coupon <- round_half_up(opening * rate * fraction[1L], 10000 * fraction[2L])
+    periods[[number]] <- list(number = number, start = start, end = end, payment = adjust_date(end, bond$bdc, holidays),
+                              numerator = fraction[1L], denominator = fraction[2L], rate = rate, opening = opening,
+                              coupon = coupon, principal = principal, cash_flow = coupon + principal)
+    opening <- opening - principal
+  }
+  periods
+}
+parse_bond <- function(fields, seen, holidays, fixings) {
+  code <- fields[1L]
+  kind <- fields[2L]
+  if (code %in% seen) input_error("duplicate id")
+  if (!kind %in% BOND_TYPES) input_error("unknown type")
+  if (!valid_date(fields[3L]) || !valid_date(fields[4L])) input_error("invalid date")
+  issue <- parse_date(fields[3L])
+  maturity <- parse_date(fields[4L])
+  if (maturity <= issue) input_error("maturity not after issue")
+  frequency <- as.integer(fields[6L])
+  if (!frequency %in% FREQUENCIES) input_error("invalid frequency")
+  if (!fields[7L] %in% DAY_COUNTS) input_error("unknown day count")
+  if (!fields[8L] %in% BUSINESS_DAY_RULES) input_error("unknown business day rule")
+  face <- as.numeric(fields[9L])
+  if (face %% 100000 != 0 || face > 10000000) input_error("invalid face")
+  coupon <- as.integer(fields[5L])
+  if (coupon > 1200L || (kind == "ZERO" && coupon != 0L)) input_error("invalid coupon")
+  options <- parse_options(kind, fields[10L])
+  schedule <- coupon_schedule(issue, maturity, frequency, options$end_of_month, options$long_stub)
+  sink_days <- schedule_days(options$sinks, schedule, "invalid sinking fund")
+  sink_amounts <- vapply(options$sinks, function(item) item$amount, numeric(1L))
+  if (any(sink_amounts == 0) || (kind == "AMORT" && (sum(sink_amounts) == 0 || sum(sink_amounts) >= face))) input_error("invalid sinking fund")
+  call_days <- schedule_days(options$calls, schedule, "invalid call schedule")
+  calls <- lapply(seq_along(call_days), function(i) {
+    price <- options$calls[[i]]$price
+    if (price < 100000L || price > 110000L) input_error("invalid call schedule")
+    list(day = call_days[i], price = price)
+  })
+  bond <- list(code = code, kind = kind, issue = issue, maturity = maturity, coupon = coupon,
+                frequency = frequency, daycount = fields[7L], bdc = fields[8L], face = face, options = options,
+                schedule = schedule, sinks = setNames(as.list(sink_amounts), as.character(sink_days)), calls = calls)
+  bond$periods <- build_periods(bond, holidays, fixings)
+  bond
+}
+make_valuation <- function(bond, clean, settlement) {
+  index <- which(vapply(bond$periods, function(period) period$end > settlement, logical(1L)))[1L]
+  remaining <- bond$periods[seq.int(index, length(bond$periods))]
+  current <- remaining[[1L]]
+  outstanding <- current$opening
+  fraction <- year_fraction(bond$daycount, current$start, settlement)
+  accrued <- current$rate * fraction[1L] / (100 * fraction[2L])
+  accrued_amount <- round_half_up(outstanding * current$rate * fraction[1L], 10000 * fraction[2L])
+  clean_amount <- round_half_up(outstanding * clean, 100000)
+  cash_flows <- Filter(function(period) period$cash_flow >= 1, remaining)
+  flows <- do.call(rbind, lapply(cash_flows, function(period) c(period$payment - settlement, period$cash_flow)))
+  fraction <- year_fraction(bond$daycount, settlement, current$end)
+  pricer <- list(flows = vapply(remaining, function(period) period$cash_flow, numeric(1L)),
+                 fraction = bond$frequency * fraction[1L] / fraction[2L], frequency = bond$frequency, outstanding = outstanding)
+  list(bond = bond, clean = clean, remaining = remaining, cash_flows = cash_flows, flows = flows,
+       outstanding = outstanding, accrued = accrued, accrued_amount = accrued_amount, clean_amount = clean_amount,
+       unit_value = clean_amount + accrued_amount, target = clean / 1000 + accrued, pricer = pricer,
+       next_payment = cash_flows[[1L]]$payment, workout = bond$maturity)
+}
+parse_price <- function(fields, seen, bonds, settlement) {
+  code <- fields[1L]
+  if (!code %in% names(bonds)) input_error("unknown bond")
+  if (code %in% seen) input_error("duplicate price")
+  bond <- bonds[[code]]
+  if (!(bond$issue <= settlement && settlement < bond$maturity)) input_error("not outstanding")
+  valuation <- make_valuation(bond, thousandths(fields[2L]), settlement)
+  if (!(dirty_price(valuation$pricer, 0) > valuation$target && valuation$target > dirty_price(valuation$pricer, 1))) input_error("yield out of range")
+  valuation
+}
+analyze_valuation <- function(valuation, curve, settlement) {
+  valuation$ytm <- yield_to_maturity(valuation$pricer, valuation$target)
+  valuation$risk <- yield_risk(valuation$pricer, valuation$ytm)
+  valuation$ytw <- valuation$ytm
+  for (call in valuation$bond$calls) {
+    if (call$day <= settlement) next
+    flows <- numeric()
+    for (period in valuation$remaining) {
+      flows <- c(flows, period$coupon)
+      if (period$end == call$day) {
+        flows[length(flows)] <- flows[length(flows)] + round_half_up(period$opening * call$price, 100000)
+        break
+      }
+    }
+    pricer <- valuation$pricer
+    pricer$flows <- flows
+    call_yield <- yield_to_maturity(pricer, valuation$target)
+    if (call_yield < valuation$ytw) {
+      valuation$ytw <- call_yield
+      valuation$workout <- call$day
+    }
+  }
+  principal_days <- 0
+  for (i in seq_along(valuation$cash_flows)) principal_days <- principal_days + valuation$cash_flows[[i]]$principal * valuation$flows[i, 1L]
+  valuation$wal <- principal_days / (365 * valuation$outstanding)
+  valuation$curve_clean <- curve_value(curve, valuation$flows) * 100 / valuation$outstanding - valuation$accrued
+  valuation$zspread <- z_spread(curve, valuation$flows, valuation$unit_value)
+  valuation
+}
+cashflow_lines <- function(bonds) {
+  lines <- "bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"
+  for (code in sort(names(bonds), method = "radix")) for (period in bonds[[code]]$periods) {
+    if (period$cash_flow < 1) next
+    lines <- c(lines, paste(code, period$number, format_date(period$start), format_date(period$end), format_date(period$payment),
+                            decimals(period$numerator / period$denominator, 6L), period$rate, integer_text(period$opening),
+                            integer_text(period$coupon), integer_text(period$principal), sep = ","))
+  }
+  lines
+}
+analytics_lines <- function(valuations) {
+  lines <- "bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"
+  for (code in sort(names(valuations), method = "radix")) {
+    value <- valuations[[code]]
+    lines <- c(lines, paste(code, decimals(value$clean / 1000, 6L), decimals(value$accrued, 6L), decimals(value$target, 6L),
+                            percent(value$ytm), percent(value$ytw), format_date(value$workout), format_date(value$next_payment),
+                            decimals(value$wal, 4L), decimals(value$risk$macaulay, 4L), decimals(value$risk$modified, 4L),
+                            decimals(value$risk$convexity, 4L), decimals(value$risk$dv01, 6L), decimals(value$curve_clean, 6L), percent(value$zspread), sep = ","))
+  }
+  lines
+}
+main <- function() {
+  params <- read_params()
+  holidays <- vapply(read_lines("calendar.txt"), parse_date, integer(1L))
+  fixing_rows <- read_rows("fixings.csv")
+  fixings <- list(dates = vapply(fixing_rows, function(row) parse_date(row$fields[1L]), integer(1L)),
+                  rates = vapply(fixing_rows, function(row) as.integer(row$fields[2L]), integer(1L)))
+  settlement <- business_days(params$valuation_date, params$settlement_days, holidays)
+  errors <- new.env(parent = emptyenv())
+  errors$lines <- character()
+  pillars <- validate_rows(read_rows("curve_quotes.csv"), "curve_quotes.csv", 1L, function(fields, seen) parse_pillar(fields, seen, settlement), errors)
+  pillars <- pillars[order(vapply(pillars, function(pillar) pillar$maturity, integer(1L)))]
+  scenarios <- validate_scenarios(params$scenarios, length(pillars), errors)
+  bonds <- validate_rows(read_rows("bonds.csv"), "bonds.csv", 1L, function(fields, seen) parse_bond(fields, seen, holidays, fixings), errors)
+  names(bonds) <- vapply(bonds, function(bond) bond$code, character(1L))
+  valuations <- validate_rows(read_rows("prices.csv"), "prices.csv", 1L, function(fields, seen) parse_price(fields, seen, bonds, settlement), errors)
+  names(valuations) <- vapply(valuations, function(value) value$bond$code, character(1L))
+  curve <- bootstrap(settlement, pillars)
+  valuations <- lapply(valuations, analyze_valuation, curve = curve, settlement = settlement)
+  dir.create("output", showWarnings = FALSE)
+  writeLines(errors$lines, "output/errors.txt", useBytes = TRUE)
+  writeLines(cashflow_lines(bonds), "output/cashflows.csv", useBytes = TRUE)
+  writeLines(analytics_lines(valuations), "output/analytics.csv", useBytes = TRUE)
+  writeLines(curve_lines(params$valuation_date, settlement, pillars, curve), "output/curve.txt", useBytes = TRUE)
+

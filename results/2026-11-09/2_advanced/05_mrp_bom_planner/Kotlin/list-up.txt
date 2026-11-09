@@ -1,0 +1,281 @@
+data class Item(val id: String, val leadTime: Int, val rule: String, val parameters: List<Long>, val safety: Long, val onHand: Long, val material: Long, val labor: Long, val description: String) {
+    fun lotLabel() = when (rule) { "LFL" -> rule; "MIN" -> "MIN ${parameters[0]}/${parameters[1]}"; else -> "$rule ${parameters[0]}" }
+}
+fun lotParameters(rule: String, text: String): List<Long>? {
+    val values = text.split('/').map(String::toLong)
+    val valid = when (rule) { "LFL" -> values.size == 1 && values[0] == 0L; "MIN" -> values.size == 2 && values.all { it >= 1L }; else -> values.size == 1 && values[0] >= 1L }
+    return if (valid) values else null
+}
+fun readItems(errors: MutableList<String>): Map<String, Item> {
+    val items = sortedMapOf<String, Item>()
+    for ((line, fields) in csvRows("items.csv")) {
+        val id = fields[0]
+        val rule = fields[2]
+        val reason = when { id in items -> "duplicate item $id"; rule !in setOf("LFL", "FOQ", "POQ", "MIN") -> "unknown lot rule $rule"; lotParameters(rule, fields[3]) == null -> "bad lot parameter ${fields[3]} for $rule"; else -> null }
+        if (reason != null) errors += "items.csv line $line: $reason"
+        else items[id] = Item(id, fields[1].toInt(), rule, lotParameters(rule, fields[3])!!, fields[4].toLong(), fields[5].toLong(), fields[6].toLong(), fields[7].toLong(), fields[8])
+    }
+    return items
+}
+data class BomRow(val parent: String, val child: String, val quantity: Long, val scrap: Long) {
+    fun need(parentQuantity: Long) = (parentQuantity * quantity * (100L + scrap) + 99L) / 100L
+}
+class Bom(items: Map<String, Item>) {
+    val children = items.keys.associateWith { mutableListOf<BomRow>() }
+    val parents = items.keys.associateWith { mutableListOf<BomRow>() }
+    fun manufactured(id: String) = children.getValue(id).isNotEmpty()
+    fun add(row: BomRow) {
+        children.getValue(row.parent).add(row)
+        children.getValue(row.parent).sortBy { it.child }
+        parents.getValue(row.child).add(row)
+        parents.getValue(row.child).sortBy { it.parent }
+    }
+    fun lowLevelCodes(): Map<String, Int> {
+        val codes = mutableMapOf<String, Int>()
+        fun code(id: String): Int {
+            codes[id]?.let { return it }
+            val value = parents.getValue(id).maxOfOrNull { code(it.parent) + 1 } ?: 0
+            codes[id] = value
+            return value
+        }
+        for (id in children.keys) code(id)
+        return codes
+    }
+fun readBom(items: Map<String, Item>, errors: MutableList<String>): Bom {
+    val bom = Bom(items)
+    for ((line, fields) in csvRows("bom.csv")) {
+        val parent = fields[0]
+        val child = fields[1]
+        val quantity = fields[2].toLong()
+        val scrap = fields[3].toLong()
+        var reason = when { parent !in items -> "unknown item $parent"; child !in items -> "unknown item $child"; quantity < 1 -> "bad quantity $quantity"; scrap > 50 -> "bad scrap $scrap"; parent == child -> "cycle $parent -> $parent"; bom.children.getValue(parent).any { it.child == child } -> "duplicate $parent -> $child"; else -> null }
+        if (reason == null) bom.path(child, parent)?.let { reason = "cycle $parent -> ${it.joinToString(" -> ")}" }
+        if (reason != null) errors += "bom.csv line $line: $reason"
+        else bom.add(BomRow(parent, child, quantity, scrap))
+    }
+    return bom
+}
+data class WorkCenter(val id: String, val minutes: Long, val efficiency: Long, val description: String) { val available get() = minutes * efficiency / 100L }
+data class Operation(val item: String, val number: Int, val center: String, val setup: Long, val run: Long) { fun minutes(quantity: Long) = setup + quantity * run }
+fun readCenters(errors: MutableList<String>): Map<String, WorkCenter> {
+    val centers = sortedMapOf<String, WorkCenter>()
+    for ((line, fields) in csvRows("workcenters.csv")) {
+        val id = fields[0]
+        val efficiency = fields[2].toLong()
+        val reason = when { id in centers -> "duplicate center $id"; efficiency !in 50L..150L -> "bad efficiency $efficiency"; else -> null }
+        if (reason != null) errors += "workcenters.csv line $line: $reason"
+        else centers[id] = WorkCenter(id, fields[1].toLong(), efficiency, fields[3])
+    }
+    return centers
+}
+fun readRoutings(items: Map<String, Item>, centers: Map<String, WorkCenter>, bom: Bom, errors: MutableList<String>): Map<String, List<Operation>> {
+    val routings = mutableMapOf<String, MutableList<Operation>>()
+    for ((line, fields) in csvRows("routings.csv")) {
+        val id = fields[0]
+        val number = fields[1].toInt()
+        val center = fields[2]
+        val run = fields[4].toLong()
+        val reason = when { id !in items -> "unknown item $id"; center !in centers -> "unknown center $center"; !bom.manufactured(id) -> "purchased item $id"; run < 1 -> "bad run time $run"; routings[id].orEmpty().any { it.number == number } -> "duplicate $id operation $number"; else -> null }
+        if (reason != null) errors += "routings.csv line $line: $reason"
+        else routings.getOrPut(id) { mutableListOf() }.add(Operation(id, number, center, fields[3].toLong(), run))
+    }
+    return routings.mapValues { it.value.sortedBy { operation -> operation.number } }
+}
+fun operationWeek(receipt: Int, leadTime: Int, index: Int, count: Int) = maxOf(1, receipt - leadTime + index * leadTime / count)
+fun lotSize(item: Item, week: Int, projected: Long, receipts: LongArray, gross: LongArray, horizon: Int): Long {
+    val net = item.safety - projected
+    return when (item.rule) {
+        "LFL" -> net
+data class WeeklyQuantity(val item: String, val week: Int, val quantity: Long, val line: Int)
+data class Inquiry(val id: String, val item: String, val quantity: Long, val week: Int, val line: Int)
+data class Placement(val inquiry: Inquiry, val week: Int)
+data class Demand(val item: String, val week: Int, val kind: String, val quantity: Long, val line: Int = 0, val orderId: String = "", val parent: String = "", val parentOrder: Int = 0)
+data class PlannedOrder(val item: String, val number: Int, val receipt: Int, val quantity: Long, val originalRelease: Int, val release: Int)
+class ItemPlan(val demands: List<Demand>, horizon: Int) {
+    val gross = LongArray(horizon + 1)
+    val receipts = LongArray(horizon + 1)
+    val onHand = LongArray(horizon + 1)
+    val net = LongArray(horizon + 1)
+    val plannedReceipts = LongArray(horizon + 1)
+    val plannedReleases = LongArray(horizon + 1)
+    val orders = mutableListOf<PlannedOrder>()
+    fun pastDue() = orders.filter { it.originalRelease < 1 }.sumOf { it.quantity }
+}
+data class Plan(val items: Map<String, ItemPlan>, val loads: Map<String, LongArray>)
+class Planner(val items: Map<String, Item>, val bom: Bom, val centers: Map<String, WorkCenter>, val routings: Map<String, List<Operation>>, val mps: List<WeeklyQuantity>, val receipts: List<WeeklyQuantity>, val horizon: Int) {
+    val codes = bom.lowLevelCodes()
+    val cumulative = bom.cumulativeLeadTimes(items)
+    val order = items.keys.sortedWith(compareBy<String> { codes.getValue(it) }.thenBy { it })
+    val receiptsByItem = receipts.groupBy { it.item }.mapValues { it.value.sortedWith(compareBy<WeeklyQuantity> { receipt -> receipt.week }.thenBy { receipt -> receipt.line }) }
+    fun run(placements: List<Placement>): Plan {
+        val demands = items.keys.associateWith { mutableListOf<Demand>() }
+        for (row in mps) demands.getValue(row.item).add(Demand(row.item, row.week, "MPS", row.quantity, row.line))
+        for ((inquiry, week) in placements) demands.getValue(inquiry.item).add(Demand(inquiry.item, week, "ORDER", inquiry.quantity, inquiry.line, inquiry.id))
+        val plans = mutableMapOf<String, ItemPlan>()
+        for (id in order) {
+            val item = items.getValue(id)
+            val plan = ItemPlan(demands.getValue(id).toList(), horizon)
+            for (demand in plan.demands) plan.gross[demand.week] += demand.quantity
+            for (receipt in receiptsByItem[id].orEmpty()) plan.receipts[receipt.week] += receipt.quantity
+            plan.onHand[0] = item.onHand
+            for (week in 1..horizon) {
+                val available = plan.onHand[week - 1] + plan.receipts[week] - plan.gross[week]
+                if (available < item.safety) {
+                    plan.net[week] = item.safety - available
+                    val quantity = lotSize(item, week, available, plan.receipts, plan.gross, horizon)
+                    val original = week - item.leadTime
+                    val release = maxOf(1, original)
+                    val planned = PlannedOrder(id, plan.orders.size + 1, week, quantity, original, release)
+                    plan.orders += planned
+                    plan.plannedReceipts[week] = quantity
+                    plan.plannedReleases[release] += quantity
+                }
+                plan.onHand[week] = available + plan.plannedReceipts[week]
+            }
+            plans[id] = plan
+            for (planned in plan.orders) for (row in bom.children.getValue(id)) demands.getValue(row.child).add(Demand(row.child, planned.release, "DEPENDENT", row.need(planned.quantity), parent = id, parentOrder = planned.number))
+        }
+        val loads = centers.keys.associateWith { LongArray(horizon + 1) }
+        for (id in order) for (planned in plans.getValue(id).orders) {
+            val operations = routings[id].orEmpty()
+            for ((index, operation) in operations.withIndex()) {
+                val week = operationWeek(planned.receipt, items.getValue(id).leadTime, index, operations.size)
+                loads.getValue(operation.center)[week] += operation.minutes(planned.quantity)
+            }
+        }
+        return Plan(plans, loads)
+    }
+    fun promise(inquiries: List<Inquiry>): Triple<Plan, Plan, List<Promise>> {
+        val base = run(emptyList())
+        var current = base
+        val placements = mutableListOf<Placement>()
+        val promises = mutableListOf<Promise>()
+        for (inquiry in inquiries) {
+            var promised: Int? = null
+            var material: Int? = null
+            var firstReason = ""
+            for (week in inquiry.week..horizon) {
+                val trial = run(placements + Placement(inquiry, week))
+                var reason = order.firstOrNull { trial.items.getValue(it).pastDue() > current.items.getValue(it).pastDue() }
+                if (reason == null) {
+                    if (material == null) material = week
+                    loop@ for (center in centers.keys.sorted()) for (period in 1..horizon) {
+                        val available = centers.getValue(center).available
+                        if (maxOf(0L, trial.loads.getValue(center)[period] - available) > maxOf(0L, current.loads.getValue(center)[period] - available)) {
+                            reason = "$center week $period"
+                            break@loop
+                        }
+                    }
+                }
+                if (week == inquiry.week) firstReason = reason ?: ""
+                if (reason == null) {
+                    promised = week
+                    placements += Placement(inquiry, week)
+                    current = trial
+                    break
+                }
+            }
+            promises += Promise(inquiry, promised, material, firstReason)
+        }
+        return Triple(base, current, promises)
+    }
+}
+data class Promise(val inquiry: Inquiry, val promised: Int?, val material: Int?, val reason: String)
+fun gridReport(planner: Planner, plan: Plan): List<String> {
+    val lines = mutableListOf<String>()
+    for (id in planner.order) {
+        val item = planner.items.getValue(id)
+        val p = plan.items.getValue(id)
+        lines += "ITEM $id LLC ${planner.codes.getValue(id)} LT ${item.leadTime} LOT ${item.lotLabel()} SS ${item.safety} OH ${item.onHand} ${item.description}"
+        for ((label, values) in listOf("WEEK" to (1..planner.horizon).map(Int::toLong), "GROSS" to p.gross.drop(1), "RECEIPTS" to p.receipts.drop(1), "ON_HAND" to p.onHand.drop(1), "NET" to p.net.drop(1), "PLAN_RCPT" to p.plannedReceipts.drop(1), "PLAN_REL" to p.plannedReleases.drop(1))) lines += tableRow(label, values, 6)
+        lines += "TOTAL gross ${p.gross.sum()} receipts ${p.receipts.sum()} planned ${p.plannedReceipts.sum()} orders ${p.orders.size} ending ${p.onHand.last()}"
+    }
+    return lines
+}
+fun capacityReport(planner: Planner, plan: Plan): List<String> {
+    val lines = mutableListOf<String>()
+    val totals = planner.centers.keys.associateWith { plan.loads.getValue(it).sum() }
+    for (id in planner.centers.keys.sorted()) {
+        val center = planner.centers.getValue(id)
+        val loads = plan.loads.getValue(id)
+        val leveled = leveledLoads(loads, center.available)
+        lines += "CENTER $id minutes ${center.minutes} efficiency ${center.efficiency} available ${center.available} ${center.description}"
+        for ((label, values) in listOf("WEEK" to (1..planner.horizon).map(Int::toLong), "LOAD" to loads.drop(1), "UTIL" to loads.drop(1).map { percent(it, center.available) }, "OVER" to loads.drop(1).map { maxOf(0L, it - center.available) }, "LEVELED" to leveled.drop(1))) lines += tableRow(label, values, 7)
+        var peak = 0
+        for (week in 1..planner.horizon) if (loads[week] > loads[peak]) peak = week
+        lines += "TOTAL load ${totals.getValue(id)} available ${center.available * planner.horizon.toLong()} utilization ${percent(totals.getValue(id), center.available * planner.horizon.toLong())} overloaded ${loads.drop(1).count { it > center.available }} peak $peak backlog ${maxOf(0L, leveled[1] - center.available)}"
+    }
+    return lines
+}
+fun promiseReport(planner: Planner, base: Plan, finalPlan: Plan, promises: List<Promise>, pegging: Pegging): List<String> {
+    val lines = mutableListOf<String>()
+    var onTime = 0
+    var late = 0
+    var rejected = 0
+    for (promise in promises) {
+        val inquiry = promise.inquiry
+        val header = "ORDER ${inquiry.id} ${inquiry.item} quantity ${inquiry.quantity} requested ${inquiry.week}"
+        when {
+            promise.promised == null -> { rejected++; lines += "$header rejected material ${promise.material ?: "none"} reason ${promise.reason}" }
+            promise.promised == inquiry.week -> { onTime++; lines += "$header promised ${promise.promised}" }
+            else -> { late++; lines += "$header promised ${promise.promised} late ${promise.promised - inquiry.week} material ${promise.material} reason ${promise.reason}" }
+        }
+        if (promise.promised != null) for (id in planner.order) for (order in finalPlan.items.getValue(id).orders) if (pegging.roots(OrderKey(id, order.number)).any { it.kind == "ORDER" && it.orderId == inquiry.id }) lines += "  SUPPLY $id order ${order.number} receipt ${order.receipt} release ${order.release} quantity ${order.quantity}"
+    }
+    for (id in planner.order) {
+        val before = base.items.getValue(id)
+        val after = finalPlan.items.getValue(id)
+        val first = (1..planner.horizon).firstOrNull { before.plannedReceipts[it] != after.plannedReceipts[it] }
+        if (first != null) lines += "CHANGE $id from $first planned ${before.plannedReceipts.sum()} -> ${after.plannedReceipts.sum()} orders ${before.orders.size} -> ${after.orders.size}"
+    }
+    lines += "SUMMARY orders ${promises.size} on_time $onTime late $late rejected $rejected"
+    return lines
+}
+fun readWeekly(name: String, items: Map<String, Item>, horizon: Int, unique: Boolean, errors: MutableList<String>): List<WeeklyQuantity> {
+    val result = mutableListOf<WeeklyQuantity>()
+    val seen = mutableSetOf<Pair<String, Int>>()
+    for ((line, fields) in csvRows(name)) {
+        val id = fields[0]
+        val week = fields[1].toInt()
+        val quantity = fields[2].toLong()
+        val reason = when { id !in items -> "unknown item $id"; week !in 1..horizon -> "week $week outside horizon"; quantity < 1 -> "bad quantity $quantity"; unique && (id to week) in seen -> "duplicate $id week $week"; else -> null }
+        if (reason != null) errors += "$name line $line: $reason"
+        else { result += WeeklyQuantity(id, week, quantity, line); seen += id to week }
+    }
+    return result
+}
+fun readInquiries(items: Map<String, Item>, horizon: Int, errors: MutableList<String>): List<Inquiry> {
+    val result = mutableListOf<Inquiry>()
+    val seen = mutableSetOf<String>()
+    for ((line, fields) in csvRows("orders.csv")) {
+        val id = fields[0]
+        val item = fields[1]
+        val quantity = fields[2].toLong()
+        val week = fields[3].toInt()
+        val reason = when { id in seen -> "duplicate order $id"; item !in items -> "unknown item $item"; week !in 1..horizon -> "week $week outside horizon"; quantity < 1 -> "bad quantity $quantity"; else -> null }
+        if (reason != null) errors += "orders.csv line $line: $reason"
+        else { result += Inquiry(id, item, quantity, week, line); seen += id }
+    }
+    return result
+}
+fun csvRows(name: String) = File("input/$name").readLines().drop(1).mapIndexed { index, line -> index + 2 to line.split(',') }
+fun main() {
+    val parameters = File("input/params.txt").readLines().map { it.split(' ') }
+    val horizon = parameters.first { it[0] == "horizon" }[1].toInt()
+    val peg = parameters.first { it[0] == "peg" }.drop(1)
+    val treeQuantity = parameters.first { it[0] == "tree_quantity" }[1].toLong()
+    val errors = mutableListOf<String>()
+    val items = readItems(errors)
+    val bom = readBom(items, errors)
+    val centers = readCenters(errors)
+    val routings = readRoutings(items, centers, bom, errors)
+    val mps = readWeekly("mps.csv", items, horizon, true, errors)
+    val receipts = readWeekly("receipts.csv", items, horizon, false, errors)
+    val inquiries = readInquiries(items, horizon, errors)
+    val planner = Planner(items, bom, centers, routings, mps, receipts, horizon)
+    val (base, finalPlan, promises) = planner.promise(inquiries)
+    writeReport("mrp_grid.txt", gridReport(planner, finalPlan))
+    writeReport("capacity.txt", capacityReport(planner, finalPlan))
+    writeReport("promises.txt", promiseReport(planner, base, finalPlan, promises, pegging))
+fun tableRow(label: String, values: List<Long>, width: Int) = label.padEnd(10) + values.joinToString("") { it.toString().padStart(width) }
+fun writeReport(name: String, lines: List<String>) { File("output").mkdirs(); File("output/$name").writeText(if (lines.isEmpty()) "" else lines.joinToString("\n", postfix = "\n")) }

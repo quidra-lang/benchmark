@@ -1,0 +1,5 @@
+years = [1900, 1988, 2000, 2019, 2024, 2026, 2032, 2100]
+years.each do |year|
+  leap = (year % 400).zero? || ((year % 4).zero? && !(year % 100).zero?)
+  puts "#{year}: #{leap ? 'leap year' : 'common year'}"
+end

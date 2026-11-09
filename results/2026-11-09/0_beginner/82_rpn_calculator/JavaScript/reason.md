@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Each expression gets an empty operand stack. Numeric tokens push; operators first guard for two operands, pop right operand b before left a, then apply a op b and push one result. Expression 2 pushes -17,5, truncates -17/5 toward zero to -3, pushes 4,-3, multiplies to -12 and computes -3-(-12)=9. Underflow stops before pops; zero-divisor failure is checked after the two pops and stops before any result push or later token update. Final stack length other than one reports leftover operands. PHP returns errors immediately; JS/TS records an error and breaks. The selected input case, reset/token loop, guards, arithmetic updates and final-result handling establish the logical operation; other expression literals are omitted where source line boundaries permit.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

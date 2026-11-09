@@ -1,0 +1,426 @@
+  def self.reverse_complement(sequence) = sequence.tr('ACGTN', 'TGCAN').reverse
+  def self.read_fasta(path)
+    records = []
+    name, bases, masked = nil, +'', 0
+    File.foreach(path, chomp: true) do |line|
+      if line.start_with?('>')
+        records << Reference.new(name, bases, masked) if name
+        name, bases, masked = line[1..].split(' ', 2).first, +'', 0
+      else
+        masked += line.count('a-z')
+        bases << line.upcase
+      end
+    end
+    records << Reference.new(name, bases, masked) if name
+    records
+  end
+  def self.read_fastq(path)
+    File.readlines(path, chomp: true).each_slice(4).map do |name, bases, _, quality|
+      Read.new(name[1..], bases, quality)
+    end
+  end
+  def self.read_inputs
+    params = File.readlines('input/params.txt', chomp: true).to_h do |line|
+      name, *values = line.split
+      [name, values.map(&:to_i)]
+    end
+    [read_fasta('input/reference.fasta'), read_fastq('input/reads.fastq'), params]
+  end
+  def initialize(text, suffixes, occurrence_interval, sample_interval = nil)
+    @size, @interval = text.size, occurrence_interval
+    @bwt = suffixes.map { |position| text[position - 1] }.join
+    frequencies = Hash.new(0).merge(text.chars.tally)
+    offset = 0
+    @c_array = SuffixArray::SYMBOLS.chars.to_h do |symbol|
+      value = offset
+      offset += frequencies[symbol]
+      [symbol, value]
+    end
+    counts = Array.new(6, 0)
+    @checkpoints = [counts.dup]
+    @bwt.each_char.with_index(1) do |symbol, position|
+      counts[SuffixArray::SYMBOL_NUMBER.fetch(symbol)] += 1
+      @checkpoints << counts.dup if (position % @interval).zero?
+    end
+    @samples = if sample_interval
+                 suffixes.each_with_index.filter_map { |position, row| [row, position] if (position % sample_interval).zero? }.to_h
+               end
+  end
+
+  def occurrence(symbol, position)
+    checkpoint = position / @interval
+    start = checkpoint * @interval
+    @checkpoints[checkpoint][SuffixArray::SYMBOL_NUMBER.fetch(symbol)] + @bwt[start...position].count(symbol)
+  end
+  def lf(row)
+    symbol = @bwt[row]
+    @c_array.fetch(symbol) + occurrence(symbol, row)
+  end
+  def extend_interval(lower, upper, base)
+    return [0, 0] if base == 'N'
+    [@c_array.fetch(base) + occurrence(base, lower), @c_array.fetch(base) + occurrence(base, upper)]
+  end
+  def locate(row)
+    steps = 0
+    until @samples.key?(row)
+      row = lf(row)
+      steps += 1
+    end
+    [@samples.fetch(row) + steps, steps]
+  def backward_search(sequence)
+    lower, upper = 0, @size
+    sequence.reverse.each_char do |base|
+      lower, upper = extend_interval(lower, upper, base)
+      break if lower >= upper
+    end
+    [lower, upper]
+  end
+  def self.lower_bounds(sequence, reverse_index)
+    lower, upper, mismatches = 0, reverse_index.size, 0
+    sequence.chars.map do |base|
+      lower, upper = reverse_index.extend_interval(lower, upper, base)
+      if lower >= upper
+        mismatches += 1
+        lower, upper = 0, reverse_index.size
+      end
+      mismatches
+    end
+  end
+  def self.backtrack(sequence, maximum, forward_index, reverse_index)
+    bounds = lower_bounds(sequence, reverse_index)
+    stack = [[sequence.size - 1, maximum, 0, forward_index.size]]
+    nodes, leaves = 0, []
+    until stack.empty?
+      position, remaining, lower, upper = stack.pop
+      nodes += 1
+      next if remaining < (position >= 0 ? bounds[position] : 0)
+      if position == -1
+        leaves << [lower, upper, maximum - remaining]
+        next
+      end
+      'TGCA'.each_char do |base|
+        first, last = forward_index.extend_interval(lower, upper, base)
+        next if first >= last
+        mismatch = base == sequence[position] ? 0 : 1
+        stack << [position - 1, remaining - mismatch, first, last] if mismatch.zero? || remaining >= 1
+      end
+    end
+    [nodes, leaves, leaves.sum { |lower, upper, _| upper - lower }]
+  end
+    def initialize(references)
+      @references = references
+      offset = 0
+      @offsets = references.map do |reference|
+        start = offset
+        offset += reference.bases.size + 1
+        start
+      end
+      @text = references.map(&:bases).join('#') + '$'
+      @reverse = @text[0...-1].reverse + '$'
+    end
+    def position(position)
+      reference = (@offsets.bsearch_index { |offset| offset > position } || @offsets.size) - 1
+      return nil if reference < 0
+      offset = position - @offsets[reference]
+      offset < @references[reference].bases.size ? [reference, offset] : nil
+    end
+  def runs(operations)
+    operations.chars.chunk(&:itself).map { |operation, group| [operation, group.size] }
+  end
+  def describe(reference, position, strand, operations, core, trimmed, references)
+    oriented = strand == '+' ? core : SequenceIO.reverse_complement(core)
+    sequence = references[reference].bases
+    cigar, md, pairs = [], [], []
+    i, j, matches, nm = 0, position, 0, 0
+    runs(operations).each do |operation, count|
+      cigar << "#{count}#{operation}"
+      case operation
+      when 'I'
+        i += count
+        nm += count
+      when 'D'
+        md << "#{matches}^#{sequence[j, count]}"
+        matches = 0
+        j += count
+        nm += count
+      else
+        count.times do
+          pairs << [i, j]
+          if oriented[i] == sequence[j]
+            matches += 1
+          else
+            md << "#{matches}#{sequence[j]}"
+            matches = 0
+            nm += 1
+          end
+          i += 1
+          j += 1
+        end
+      end
+    end
+    md << matches.to_s
+    unless trimmed.zero?
+      strand == '+' ? cigar.push("#{trimmed}S") : cigar.unshift("#{trimmed}S")
+    end
+    { reference: reference, position: position, strand: strand, operations: operations,
+      oriented: oriented, pairs: pairs, cigar: cigar.join, nm: nm, md: md.join }
+  end
+    def initialize(reference_text, forward_index, reverse_index, params)
+      @reference_text, @references = reference_text, reference_text.references
+      @forward, @reverse, @params = forward_index, reverse_index, params
+      @search_counts, @seed_counts = Hash.new(0), Hash.new(0)
+    end
+    def value(name) = @params.fetch(name).first
+    def locate(row) = @reference_text.position(@forward.locate(row).first)
+    def alignment(reference, position, strand, operations, result)
+      Aligner.describe(reference, position, strand, operations, result[:core], result[:trimmed], @references)
+    end
+    def map_read(read)
+      qualities = read.quality.bytes.map { |code| code - 33 }
+      length = read.bases.size
+      length -= 1 while length > 0 && qualities[length - 1] < value('TRIM_QUALITY')
+      core = read.bases[0, length]
+      result = { read: read, core: core, qualities: qualities, length: length,
+                 trimmed: read.bases.size - length, mapped: false, reason: 'SHORT' }
+      return result if length < value('MIN_READ_LENGTH')
+      oriented = [core, SequenceIO.reverse_complement(core)]
+      exact = oriented.map { |sequence| @forward.backward_search(sequence) }
+      maximum = exact.any? { |lower, upper| lower < upper } ? 1 : value('MAX_MISMATCHES')
+      hits = []
+      oriented.each_with_index do |sequence, strand|
+        nodes, leaves, positions = Search.backtrack(sequence, maximum, @forward, @reverse)
+        @search_counts[:calls] += 1
+        @search_counts[:nodes] += nodes
+        @search_counts[:leaves] += leaves.size
+        @search_counts[:positions] += positions
+        leaves.each do |lower, upper, mismatches|
+          (lower...upper).each do |row|
+            reference, offset = locate(row)
+            hits << [mismatches, reference, offset, strand]
+          end
+        end
+      end
+      hits.empty? ? seed_and_extend(result, oriented) : finish_search(result, hits.sort)
+      result
+    end
+    def finish_search(result, hits)
+      best = hits.first[0]
+      n1 = hits.count { |hit| hit[0] == best }
+      n2 = hits.count { |hit| hit[0] == best + 1 }
+      alignments = hits.take_while { |hit| hit[0] <= best + 1 }.map do |_, reference, offset, strand|
+        alignment(reference, offset, '+-'[strand], 'M' * result[:length], result)
+      end
+      mapq = if n1 >= 2
+               0
+             elsif n2.zero?
+               60 - 12 * best
+             else
+               [30 - 12 * best - 3 * n2, 1].max
+             end
+      match, mismatch = @params['SCORES']
+      targets = hits.select { |hit| hit[0] == best }.map { |hit| hit[1] }.uniq.sort
+      result.merge!(mapped: true, primary: alignments.first, others: alignments.drop(1),
+                    method: best.zero? ? 'EXACT' : 'MISMATCH', score: (result[:length] - best) * match - best * mismatch,
+                    mapq: mapq, x0: n1, x1: n2, targets: targets)
+    end
+  def coverage_and_variants(results, references, params)
+    depths = references.map { |reference| Array.new(reference.bases.size, 0) }
+    starts = references.map { |reference| Array.new(reference.bases.size, 0) }
+    pileups = references.map { |reference| Array.new(reference.bases.size) { Array.new(4) { [0, 0] } } }
+    min_depth, min_quality, min_alt, hom_percent = params['VARIANTS']
+    minimum_mapq = params['COVERAGE_MIN_MAPQ'][0]
+    results.each do |result|
+      next unless result[:mapped]
+      alignment = result[:primary]
+      reference, position = alignment.values_at(:reference, :position)
+      strand = alignment[:strand] == '+' ? 0 : 1
+      starts[reference][position] += 1 if result[:mapq].zero?
+      next if result[:mapq] < minimum_mapq
+      alignment[:pairs].each do |i, offset|
+        depths[reference][offset] += 1
+        base = alignment[:oriented][i]
+        cycle = strand.zero? ? i + 1 : result[:length] - i
+        pileups[reference][offset][BASES.index(base)][strand] += 1 if base != 'N' && result[:qualities][cycle - 1] >= min_quality
+      end
+    end
+    window = params['COVERAGE_WINDOW'][0]
+    coverage = ["window #{window} min_mapq #{minimum_mapq}"]
+    variants = ["min_depth #{min_depth} min_base_quality #{min_quality} min_alt_percent #{min_alt} hom_percent #{hom_percent}"]
+    callable_count = variant_count = heterozygous = homozygous = 0
+    references.each_with_index do |reference, number|
+      length, depth = reference.bases.size, depths[number]
+      covered = depth.count(&:positive?)
+      histogram = Hash.new(0).merge(depth.tally)
+      coverage << "reference #{reference.name} length #{length} covered #{covered} breadth #{ratio(covered, length)} mean_depth #{ratio(depth.sum, length)} max_depth #{depth.max}"
+      coverage << 'depth_histogram ' + (0..depth.max).map { |value| "#{value}:#{histogram[value]}" }.join(' ')
+      0.step(length - 1, window) do |first|
+        last = [first + window, length].min
+        size = last - first
+        values, sequence = depth[first...last], reference.bases[first...last]
+        total = values.sum
+        coverage << "#{reference.name} #{first + 1} #{last} gc #{ratio(sequence.count('GC'), size)} sum #{total} mean #{ratio(total, size)} max #{values.max} zero #{values.count(0)} mapq0 #{starts[number][first...last].sum} |#{'#' * (10 * total / size)}"
+      end
+      pileups[number].each_with_index do |strand_counts, offset|
+        counts = strand_counts.map(&:sum)
+        dp = counts.sum
+        next if dp < min_depth
+        callable_count += 1
+        reference_base = reference.bases[offset]
+        alternative = (0...4).reject { |base| BASES[base] == reference_base }.max_by { |base| [counts[base], -base] }
+        n_alt = counts[alternative]
+        next if n_alt < 2 || 100 * n_alt < min_alt * dp
+        hom = 100 * n_alt >= hom_percent * dp
+        if hom
+          homozygous += 1
+        else
+          heterozygous += 1
+        end
+        variant_count += 1
+        plus, minus = strand_counts[alternative]
+        variants << "#{reference.name} #{offset + 1} #{reference_base}>#{BASES[alternative]} depth #{dp} alt #{n_alt} fraction #{ratio(n_alt, dp)} genotype #{hom ? '1/1' : '0/1'} strands #{plus} #{minus} counts #{counts.join(' ')}"
+      end
+    end
+    variants << "callable #{callable_count} variants #{variant_count} heterozygous #{heterozygous} homozygous #{homozygous}"
+    [coverage, variants]
+  end
+  def error_statistics(results, references)
+    maximum_cycle = results.map { |result| result[:read].bases.size }.max
+    cycles = Array.new(maximum_cycle + 1) { [0, 0] }
+    substitutions = Array.new(4) { Array.new(5, 0) }
+    quality_counts, quality_sums = [0, 0], [0, 0]
+    quality_bins = Array.new(5) { [0, 0] }
+    operations, events, indel_bases = Hash.new(0), Hash.new(0), Hash.new(0)
+    results.each do |result|
+      next unless result[:mapped]
+      alignment = result[:primary]
+      alignment[:operations].each_char { |operation| operations[operation] += 1 }
+      operations['S'] += result[:trimmed]
+      next unless result[:x0] == 1
+      sequence = references[alignment[:reference]].bases
+      alignment[:pairs].each do |i, offset|
+        observed, reference = alignment[:oriented][i], sequence[offset]
+        mismatch = observed == reference ? 0 : 1
+        cycle = alignment[:strand] == '+' ? i + 1 : result[:length] - i
+        quality = result[:qualities][cycle - 1]
+        cycles[cycle][0] += 1
+        cycles[cycle][1] += mismatch
+        substitutions[BASES.index(reference)]['ACGTN'.index(observed)] += 1
+        quality_counts[mismatch] += 1
+        quality_sums[mismatch] += quality
+        bin = [quality / 10, 4].min
+        quality_bins[bin][0] += 1
+        quality_bins[bin][1] += mismatch
+      end
+      runs(alignment[:operations]).each do |operation, count|
+        next unless 'ID'.include?(operation)
+        events[operation] += 1
+        indel_bases[operation] += count
+      end
+    end
+    aligned, mismatches = quality_counts.sum, quality_counts[1]
+    lines = ["error_profile aligned_bases #{aligned} mismatches #{mismatches} rate #{ratio(mismatches, aligned)}", 'substitutions', 'ref A C G T N']
+    BASES.chars.zip(substitutions).each { |base, counts| lines << base + ' ' + counts.join(' ') }
+    lines << 'mismatch_by_cycle'
+    1.upto(maximum_cycle) do |cycle|
+      count, errors = cycles[cycle]
+      lines << "cycle #{cycle} aligned #{count} mismatches #{errors} rate #{ratio(errors, count)}"
+    end
+    lines << "quality matched #{quality_counts[0]} mean #{ratio(quality_sums[0], quality_counts[0])} mismatched #{quality_counts[1]} mean #{ratio(quality_sums[1], quality_counts[1])}"
+    lines << 'quality_bins'
+    %w[0-9 10-19 20-29 30-39 40-].zip(quality_bins).each do |name, (count, errors)|
+      lines << "#{name} aligned #{count} mismatches #{errors} rate #{ratio(errors, count)}"
+    end
+    lines << 'cigar ' + 'MIDS'.chars.map { |operation| "#{operation} #{operations[operation]}" }.join(' ')
+    lines << "indels insertions #{events['I']} #{indel_bases['I']} deletions #{events['D']} #{indel_bases['D']}"
+    lines
+  end
+  def mapping_statistics(results, references, search_counts, seed_counts)
+    total = results.size
+    mapped = results.select { |result| result[:mapped] }
+    unique = mapped.count { |result| result[:x0] == 1 }
+    reasons = Hash.new(0).merge(results.reject { |result| result[:mapped] }.map { |result| result[:reason] }.tally)
+    methods = Hash.new(0).merge(mapped.map { |result| result[:method] }.tally)
+    strands = Hash.new(0).merge(mapped.map { |result| result[:primary][:strand] }.tally)
+    lines = ["reads total #{total} trimmed #{results.count { |result| result[:trimmed] > 0 }} trimmed_bases #{results.sum { |result| result[:trimmed] }} short #{reasons['SHORT']}",
+             "mapped #{mapped.size} rate #{ratio(mapped.size, total)} unique #{unique} multi #{mapped.size - unique} unmapped #{total - mapped.size}",
+             "unmapped short #{reasons['SHORT']} nohit #{reasons['NOHIT']}",
+             "method exact #{methods['EXACT']} mismatch #{methods['MISMATCH']} seed #{methods['SEED']}",
+             "strand forward #{strands['+']} reverse #{strands['-']}"]
+    references.each_with_index do |reference, number|
+      on_reference = mapped.select { |result| result[:primary][:reference] == number }
+      forward = on_reference.count { |result| result[:primary][:strand] == '+' }
+      lines << "reference #{reference.name} mapped #{on_reference.size} unique #{on_reference.count { |result| result[:x0] == 1 }} forward #{forward} reverse #{on_reference.size - forward}"
+    end
+    lines << 'length_bins'
+    minimum, maximum = results.map { |result| result[:length] }.minmax
+    (minimum / 10 * 10).step(maximum / 10 * 10, 10) do |lower|
+      in_bin = results.select { |result| result[:length].between?(lower, lower + 9) }
+      mapped_bin = in_bin.select { |result| result[:mapped] }
+      lines << "#{lower}-#{lower + 9} reads #{in_bin.size} mapped #{mapped_bin.size} unique #{mapped_bin.count { |result| result[:x0] == 1 }}"
+    end
+    with_n = results.select { |result| result[:read].bases.include?('N') }
+    lines << "n_reads #{with_n.size} n_bases #{with_n.sum { |result| result[:read].bases.count('N') }} mapped #{with_n.count { |result| result[:mapped] }}"
+    target_counts = Hash.new(0)
+    mapped.each do |result|
+      next unless result[:x0] >= 2
+      target_counts[result[:targets].map { |reference| references[reference].name }.join('+')] += 1
+    end
+    lines << 'multi_targets'
+    if target_counts.empty?
+      lines << 'none'
+    else
+      target_counts.sort.each { |names, count| lines << "#{names} #{count}" }
+    end
+    mapq_counts = mapped.map { |result| result[:mapq] }.tally
+    nm_counts = mapped.map { |result| result[:primary][:nm] }.tally
+    lines << 'mapq_histogram'
+    mapq_counts.keys.sort.reverse_each { |value| lines << "#{value} #{mapq_counts[value]}" }
+    lines << 'nm_histogram'
+    nm_counts.sort.each { |value, count| lines << "#{value} #{count}" }
+    lines.concat(error_statistics(results, references))
+    lines << "search dfs_calls #{search_counts[:calls]} dfs_nodes #{search_counts[:nodes]} dfs_leaves #{search_counts[:leaves]} dfs_positions #{search_counts[:positions]}"
+    lines << 'seeds ' + %i[reads seeds with_n repetitive without_hit candidates passing].map { |key| "#{key} #{seed_counts[key]}" }.join(' ')
+    lines
+  end
+  def main
+    references, reads, params = SequenceIO.read_inputs
+    reference_text = ReferenceText.new(references)
+    suffixes, classes = SuffixArray.build(reference_text.text)
+    reverse_suffixes, reverse_classes = SuffixArray.build(reference_text.reverse)
+    interval = params['OCC_INTERVAL'][0]
+    forward = FMIndex.new(reference_text.text, suffixes, interval, params['SA_SAMPLE_INTERVAL'][0])
+    reverse = FMIndex.new(reference_text.reverse, reverse_suffixes, interval)
+    index_lines = index_statistics(reference_text, suffixes, classes, forward, reverse_suffixes, reverse_classes, reverse, params)
+    mapper = Mapper.new(reference_text, forward, reverse, params)
+    results = reads.map { |read| mapper.map_read(read) }
+    sam_lines = SAMWriter.header(references) + results.map { |result| SAMWriter.record(result, references, params['MAX_ALT_HITS'][0]) }
+    coverage_lines, variant_lines = coverage_and_variants(results, references, params)
+    summary_lines = mapping_statistics(results, references, mapper.search_counts, mapper.seed_counts)
+    FileUtils.mkdir_p('output')
+    { 'alignments.sam' => sam_lines, 'coverage.txt' => coverage_lines, 'variants.txt' => variant_lines,
+      'index_stats.txt' => index_lines, 'summary.txt' => summary_lines }.each do |filename, lines|
+      SAMWriter.write_lines(File.join('output', filename), lines)
+    end
+  end
+  def self.record(result, references, maximum_alternatives)
+    read = result[:read]
+    unless result[:mapped]
+      return [read.name, 4, '*', 0, 0, '*', '*', 0, 0, read.bases, read.quality, 'YM:Z:' + result[:reason]].join("\t")
+    end
+    alignment = result[:primary]
+    reverse = alignment[:strand] == '-'
+    fields = [read.name, reverse ? 16 : 0, references[alignment[:reference]].name,
+              alignment[:position] + 1, result[:mapq], alignment[:cigar], '*', 0, 0,
+              reverse ? SequenceIO.reverse_complement(read.bases) : read.bases,
+              reverse ? read.quality.reverse : read.quality,
+              "NM:i:#{alignment[:nm]}", "MD:Z:#{alignment[:md]}", "AS:i:#{result[:score]}",
+              "X0:i:#{result[:x0]}", "X1:i:#{result[:x1]}", "YM:Z:#{result[:method]}"]
+    others = result[:others]
+    if others.size.between?(1, maximum_alternatives)
+      alternatives = others.map do |item|
+        "#{references[item[:reference]].name},#{item[:strand]}#{item[:position] + 1},#{item[:cigar]},#{item[:nm]};"
+      end.join
+      fields << 'XA:Z:' + alternatives
+    end
+    fields.join("\t")
+  end

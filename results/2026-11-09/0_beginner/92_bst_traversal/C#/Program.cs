@@ -1,0 +1,82 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+static Node Insert(Node? node, int key)
+{
+    if (node is null) return new Node(key);
+    if (key < node.Key) node.Left = Insert(node.Left, key);
+    else node.Right = Insert(node.Right, key);
+    return node;
+}
+
+static Node? Delete(Node? node, int key)
+{
+    if (node is null) return null;
+    if (key < node.Key)
+    {
+        node.Left = Delete(node.Left, key);
+    }
+    else if (key > node.Key)
+    {
+        node.Right = Delete(node.Right, key);
+    }
+    else
+    {
+        if (node.Left is null) return node.Right;
+        if (node.Right is null) return node.Left;
+        Node successor = node.Right;
+        while (successor.Left is not null) successor = successor.Left;
+        node.Key = successor.Key;
+        node.Right = Delete(node.Right, successor.Key);
+    }
+    return node;
+}
+
+static void Traverse(Node? node, int mode, List<int> order)
+{
+    if (node is null) return;
+    if (mode == 1) order.Add(node.Key);
+    Traverse(node.Left, mode, order);
+    if (mode == 0) order.Add(node.Key);
+    Traverse(node.Right, mode, order);
+    if (mode == 2) order.Add(node.Key);
+}
+
+static int Height(Node? node) => node is null ? 0 : 1 + Math.Max(Height(node.Left), Height(node.Right));
+
+Node? root = null;
+foreach (int key in new[] { 50, 27, 74, 13, 39, 62, 88, 6, 31, 45, 70, 34 }) root = Insert(root, key);
+string[] labels = { "inorder", "preorder", "postorder" };
+for (int mode = 0; mode < 3; mode++)
+{
+    var order = new List<int>();
+    Traverse(root, mode, order);
+    Console.WriteLine($"{labels[mode]}: {string.Join(" ", order)}");
+}
+var queue = new Queue<Node>();
+var level = new List<int>();
+queue.Enqueue(root!);
+while (queue.Count > 0)
+{
+    Node node = queue.Dequeue();
+    level.Add(node.Key);
+    if (node.Left is not null) queue.Enqueue(node.Left);
+    if (node.Right is not null) queue.Enqueue(node.Right);
+}
+Console.WriteLine($"levelorder: {string.Join(" ", level)}");
+Console.WriteLine($"height: {Height(root)}");
+root = Delete(root, 6);
+root = Delete(root, 27);
+var after = new List<int>();
+Traverse(root, 1, after);
+Console.WriteLine($"preorder after deletions: {string.Join(" ", after)}");
+Console.WriteLine($"height after deletions: {Height(root)}");
+
+class Node(int key)
+{
+    public int Key = key;
+    public Node? Left, Right;
+}

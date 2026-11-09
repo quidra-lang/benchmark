@@ -1,0 +1,374 @@
+const TEXT_DIRECTIVES = ['INITIAL', 'FINAL', 'DEFAULT', 'QUESTION', 'REPEAT'];
+const GLOBAL_DIRECTIVES = ['INITIAL', 'FINAL', 'QUIT', 'STOP', 'DEFAULT', 'QUESTION', 'REPEAT', 'MEMSIZE', 'PERSIST', 'PRE', 'POST', 'SYNON'];
+const RULE_DIRECTIVES = ['DECOMP', 'MEMORY'];
+const ITEM_DIRECTIVES = ['REASM', 'GOTO', 'NEWKEY', 'RESTATE'];
+function read_lines(string $path): array {
+    $lines = explode("\n", file_get_contents($path));
+    array_pop($lines);
+    return $lines;
+}
+function is_word(string $word): bool {
+    return $word !== '' && $word[0] !== "'" && $word[strlen($word) - 1] !== "'"
+        && strspn($word, "abcdefghijklmnopqrstuvwxyz0123456789'") === strlen($word);
+}
+function reference_number(string $word): ?int {
+    return preg_match('/^\([0-9]\)$/D', $word) ? (int)$word[1] : null;
+}
+function is_number(string $word): bool {
+    return preg_match('/^[0-9]{1,2}$/D', $word) === 1;
+}
+function is_element(string $word): bool {
+    return $word === '*' || $word === '#' || ($word[0] === '@' ? is_word(substr($word, 1)) : is_word($word));
+}
+function well_formed(string $name, array $args): bool {
+    $count = count($args);
+    if (in_array($name, [...TEXT_DIRECTIVES, 'REASM'], true)) return $count > 0;
+    if (in_array($name, ['QUIT', 'STOP'], true)) return $count > 0 && count(array_filter($args, 'is_word')) === $count;
+    if ($name === 'KEY') return $count === 2 && is_word($args[0]) && is_number($args[1]);
+    if (in_array($name, RULE_DIRECTIVES, true)) return $count > 0 && count(array_filter($args, 'is_element')) === $count;
+}
+function load_script(string $path): array {
+    $script = ['lines' => read_lines($path), 'texts' => array_fill_keys(TEXT_DIRECTIVES, []), 'quit' => [], 'stop' => [],
+        'capacity' => 3, 'persist' => [], 'pres' => [], 'posts' => [], 'pre' => [], 'post' => [], 'groups' => [],
+        'group_words' => [], 'keywords' => [], 'keyword_map' => [], 'rules' => [], 'items' => [], 'diagnostics' => []];
+    $keyword = $rule = null;
+    $ignoring = false;
+    $first = [];
+    foreach ($script['lines'] as $index => $line) {
+        if ($line === '' || $line[0] === '#') continue;
+        $parts = explode(' ', $line, 2);
+        $name = $parts[0];
+        $text = $parts[1] ?? '';
+        $args = $text === '' ? [] : explode(' ', $text);
+        $isRule = in_array($name, RULE_DIRECTIVES, true);
+        $isItem = in_array($name, ITEM_DIRECTIVES, true);
+        if (in_array($name, GLOBAL_DIRECTIVES, true) || $name === 'KEY') {
+            $keyword = $rule = null;
+            $ignoring = false;
+        } elseif ($isRule || $isItem) {
+            if ($ignoring) continue;
+            if ($isRule) $rule = null;
+        }
+        $definition = $name === 'MEMSIZE' ? $name
+            : (in_array($name, ['KEY', 'SYNON', 'PRE', 'POST', 'PERSIST'], true) && count($args) > 0 ? "$name $args[0]" : null);
+        $problem = null;
+        if (!in_array($name, GLOBAL_DIRECTIVES, true) && $name !== 'KEY' && !$isRule && !$isItem) $problem = ['SYNTAX', "unknown directive $name"];
+        elseif (!well_formed($name, $args)) $problem = ['SYNTAX', "bad arguments for $name"];
+        elseif ($isRule && $keyword === null) $problem = ['ORPHAN', "$name without KEY"];
+        elseif ($name === 'REASM' && $rule === null) $problem = ['ORPHAN', 'REASM without DECOMP or MEMORY'];
+        elseif (in_array($name, ['GOTO', 'NEWKEY', 'RESTATE'], true) && ($rule === null || $script['rules'][$rule]['kind'] === 'MEMORY')) $problem = ['ORPHAN', "$name without DECOMP"];
+        elseif ($definition !== null && isset($first[$definition])) $problem = ['DUPLICATE', "$definition first defined at line $first[$definition]"];
+        $number = $index + 1;
+        if ($problem !== null) {
+            $script['diagnostics'][] = [$number, ...$problem];
+            if ($name === 'KEY' && $problem[0] === 'DUPLICATE') $ignoring = true;
+            continue;
+        }
+        if ($definition !== null) $first[$definition] = $number;
+        if (in_array($name, TEXT_DIRECTIVES, true)) $script['texts'][$name][] = $text;
+        elseif ($name === 'QUIT' || $name === 'STOP') foreach ($args as $word) $script[strtolower($name)][$word] = true;
+        } elseif ($name === 'KEY') {
+            $keyword = count($script['keywords']);
+            $script['keyword_map'][$args[0]] = $keyword;
+            $script['keywords'][] = ['word' => $args[0], 'rank' => (int)$args[1], 'line' => $number, 'memories' => [], 'decomps' => []];
+        } elseif ($isRule) {
+            $rule = count($script['rules']);
+            $script['rules'][] = ['kind' => $name, 'pattern' => $args, 'line' => $number, 'items' => []];
+            $script['keywords'][$keyword][$name === 'MEMORY' ? 'memories' : 'decomps'][] = $rule;
+        } else {
+            $id = count($script['items']);
+            $script['items'][] = ['kind' => $name, 'text' => $text, 'arguments' => $args, 'line' => $number];
+            $script['rules'][$rule]['items'][] = $id;
+        }
+    }
+    return $script;
+}
+function memory_store(array &$memory, int $capacity, string $prefix, string $keyword, string $text): bool {
+    if (in_array($text, $memory['texts'], true)) {
+        $memory['log'][] = "$prefix SKIP $keyword $text";
+        return false;
+    }
+    if (count($memory['texts']) === $capacity) $memory['log'][] = "$prefix DROP " . array_shift($memory['texts']);
+    $memory['texts'][] = $text;
+    $memory['log'][] = "$prefix STORE $keyword $text";
+    return true;
+}
+function build_reply(string $template, array $bindings, array $replacements): string {
+    $text = '';
+    for ($index = 0; $index < strlen($template);) {
+        $number = reference_number(substr($template, $index, 3));
+        if ($number !== null) {
+            $text .= implode(' ', reflect_words($bindings[$number - 1] ?? [], $replacements));
+            $index += 3;
+        } else $text .= $template[$index++];
+    }
+    return ucfirst(implode(' ', array_values(array_filter(explode(' ', $text), fn($word) => $word !== ''))));
+}
+function eliza_lines(string $text): array {
+    $words = explode(' ', $text);
+    $lines = ['ELIZA: ' . array_shift($words)];
+    foreach ($words as $word) {
+        $last = count($lines) - 1;
+        if (strlen($lines[$last]) + strlen($word) + 1 <= 72) $lines[$last] .= " $word";
+        else $lines[] = "       $word";
+    }
+    return $lines;
+}
+function word_fits(string $element, string $word, array $groups): bool {
+    if ($element === '#') return true;
+    return $element[0] === '@' ? isset($groups[substr($element, 1)][$word]) : $element === $word;
+}
+function match_pattern(array $pattern, array $words, array $groups): ?array {
+    $search = function ($position, $start, $bindings) use (&$search, $pattern, $words, $groups) {
+        if ($position === count($pattern)) return $start === count($words) ? $bindings : null;
+        $element = $pattern[$position];
+        if ($element === '*') $ends = range($start, count($words));
+        elseif ($start < count($words) && word_fits($element, $words[$start], $groups)) $ends = [$start + 1];
+        else return null;
+        foreach ($ends as $end) {
+            $next = $bindings;
+            $result = $search($position + 1, $end, $next);
+            if ($result !== null) return $result;
+        }
+        return null;
+    };
+    return $search(0, 0, []);
+}
+const SOURCES = ['keyword', 'memory', 'question', 'default', 'repeat'];
+const NO_ARGUMENT = [':keys', ':why', ':history', ':memory', ':forget', ':reset', ':unused', ':stats', ':undo'];
+const TEXT_ARGUMENT = [':prepare', ':reflect', ':say', ':explain'];
+const ONE_ARGUMENT = [':groups', ':find', ':script', ':cycles', ':coverage'];
+function normalize(string $text): array {
+    $clauses = [];
+    foreach (preg_split('/[,.?!;]/', strtolower($text)) as $part) {
+        preg_match_all("/[a-z0-9']+/", $part, $matches);
+        $words = array_values(array_filter(array_map(fn($word) => trim($word, "'"), $matches[0]), fn($word) => $word !== ''));
+        if ($words) $clauses[] = $words;
+    }
+    return $clauses;
+}
+function count_line(array $session): string {
+    $parts = ['turns=' . $session['turns']];
+    foreach (SOURCES as $source) $parts[] = "$source=" . $session['sources'][$source];
+    return implode(' ', $parts);
+}
+function leaders(array $counts): string {
+    uksort($counts, fn($a, $b) => ($counts[$b] <=> $counts[$a]) ?: strcmp((string)$a, (string)$b));
+    $parts = [];
+    foreach (array_slice($counts, 0, 5, true) as $word => $count) if ($count > 0) $parts[] = "$word $count";
+    return $parts ? implode(', ', $parts) : 'none';
+}
+class Chatbot {
+    public array $state;
+    public array $transcript = [];
+    private int $sessions = 0;
+    private array $totals;
+    public function __construct(private array $script) {
+        $this->state = ['positions' => array_fill(0, count($script['rules']), 0), 'hits' => array_fill(0, count($script['rules']), 0),
+            'item_uses' => array_fill(0, count($script['items']), 0), 'keyword_uses' => array_fill(0, count($script['keywords']), 0),
+            'keyword_replies' => array_fill(0, count($script['keywords']), 0), 'cycles' => array_fill_keys(['DEFAULT', 'QUESTION', 'REPEAT'], 0),
+            'memory' => ['texts' => [], 'log' => []], 'session' => []];
+        $this->totals = ['turns' => 0, 'sources' => array_fill_keys(SOURCES, 0)];
+    }
+    private function prefix(): string { return $this->state['session']['name'] . ' ' . $this->state['session']['turns']; }
+    private function takeItem(int $rule): array {
+        $position = $this->state['positions'][$rule];
+        $item = $this->script['rules'][$rule]['items'][$position];
+        $this->state['positions'][$rule] = ($position + 1) % count($this->script['rules'][$rule]['items']);
+        $this->state['item_uses'][$item]++;
+        return [$position + 1, $item];
+    }
+    private function prepared(array $clauses): array {
+        $result = [];
+        foreach ($clauses as $clause) {
+            $words = [];
+            foreach ($clause as $word) array_push($words, ...($this->script['pre'][$word] ?? [$word]));
+            $result[] = $words;
+        }
+        return $result;
+    }
+    private function isQuit(array $clauses): bool {
+        $words = array_merge([], ...$clauses);
+        return count($words) === 1 && isset($this->script['quit'][$words[0]]);
+    }
+    private function selectClause(array $clauses): ?array {
+        foreach ($clauses as $index => $words) {
+            $ids = [];
+            foreach ($words as $word) if (isset($this->script['keyword_map'][$word])) {
+                $id = $this->script['keyword_map'][$word];
+                if (!in_array($id, $ids, true)) $ids[] = $id;
+            }
+            if (!$ids) continue;
+            usort($ids, fn($a, $b) => $this->script['keywords'][$b]['rank'] <=> $this->script['keywords'][$a]['rank']);
+            return [$index + 1, $words, $ids];
+        }
+        return null;
+    }
+    private function findRule(array $rules, array $words): ?array {
+        foreach ($rules as $index => $id) {
+            $bindings = match_pattern($this->script['rules'][$id]['pattern'], $words, $this->script['group_words']);
+            if ($bindings !== null) return [$index + 1, $id, $bindings];
+        }
+        return null;
+    }
+    private function applyMemory(int $keyword, array $words, array &$trace): void {
+        $found = $this->findRule($this->script['keywords'][$keyword]['memories'], $words);
+        if ($found === null) return;
+        [$number, $rule, $bindings] = $found;
+        $word = $this->script['keywords'][$keyword]['word'];
+        $trace[] = "MEMORY $word $number";
+        $this->state['hits'][$rule]++;
+        if (!$this->script['rules'][$rule]['items']) return;
+        [, $item] = $this->takeItem($rule);
+        $text = build_reply($this->script['items'][$item]['text'], $bindings, $this->script['post']);
+        $memory = $this->state['memory'];
+        if (memory_store($memory, $this->script['capacity'], $this->prefix(), $word, $text)) $this->state['session']['stored']++;
+        $this->state['memory'] = $memory;
+    }
+    private function keywordReply(array $clauses, array &$trace): ?string {
+        $selected = $this->selectClause($clauses);
+        if ($selected === null) { $trace[] = 'CLAUSE none'; return null; }
+        [$number, $words, $keywords] = $selected;
+        $trace[] = "CLAUSE $number " . implode(' ', $words);
+        $trace[] = 'KEYS ' . implode(' ', array_map(fn($id) => $this->script['keywords'][$id]['word'], $keywords));
+        $this->applyMemory($keywords[0], $words, $trace);
+        $entered = [];
+        foreach ($keywords as $initial) {
+            if (isset($entered[$initial])) continue;
+            $trace[] = 'ENTER ' . $this->script['keywords'][$initial]['word'];
+            $keyword = $initial;
+            $current = $words;
+            while (true) {
+                $entered[$keyword] = true;
+                $this->state['keyword_uses'][$keyword]++;
+                $word = $this->script['keywords'][$keyword]['word'];
+                $found = $this->findRule($this->script['keywords'][$keyword]['decomps'], $current);
+                if ($found === null) { $trace[] = "NOMATCH $word"; break; }
+                [$number, $rule, $bindings] = $found;
+                $this->state['hits'][$rule]++;
+                if (!$this->script['rules'][$rule]['items']) { $trace[] = "DECOMP $word $number 0"; break; }
+                [$itemNumber, $itemId] = $this->takeItem($rule);
+                $item = $this->script['items'][$itemId];
+                $trace[] = "DECOMP $word $number $itemNumber";
+                if ($item['kind'] === 'REASM') {
+                    $this->state['keyword_replies'][$keyword]++;
+                    $this->state['session']['topics'][$word] = ($this->state['session']['topics'][$word] ?? 0) + 1;
+                    return build_reply($item['text'], $bindings, $this->script['post']);
+                }
+            }
+        }
+        return null;
+    }
+    private function decide(string $text): array {
+        $clauses = normalize($text);
+        $trace = [];
+        if ($this->script['texts']['REPEAT'] && $clauses && $clauses === $this->state['session']['previous']) {
+            $trace[] = 'REPEAT';
+            $reply = $this->takeText('REPEAT');
+            $source = 'repeat';
+        } else {
+            $reply = $this->keywordReply($this->prepared($clauses), $trace);
+            if ($reply !== null) $source = 'keyword';
+            elseif ($this->state['memory']['texts']) {
+                $memory = $this->state['memory'];
+                $reply = memory_recall($memory, $this->prefix());
+                $this->state['memory'] = $memory;
+                $this->state['session']['recalled']++;
+                $source = 'memory';
+            } elseif (str_ends_with($text, '?') && $this->script['texts']['QUESTION']) { $reply = $this->takeText('QUESTION'); $source = 'question'; }
+            else { $reply = $this->takeText('DEFAULT'); $source = 'default'; }
+        }
+        $trace[] = "REPLY $source";
+        $this->state['session']['previous'] = $clauses;
+        $this->state['session']['sources'][$source]++;
+        if ($source === 'question' || $source === 'default') $this->state['session']['unrecognized'][] = $this->state['session']['turns'];
+        return [$reply, $trace];
+    }
+    private function respond(string $text): void {
+        $snapshot = $this->state;
+        $snapshot['session']['undo'] = null;
+        $this->state['session']['undo'] = $snapshot;
+        $this->state['session']['turns']++;
+        foreach (normalize($text) as $clause) foreach ($clause as $word) if (!isset($this->script['stop'][$word])) $this->state['session']['words'][$word] = ($this->state['session']['words'][$word] ?? 0) + 1;
+        $this->state['session']['history'][] = $this->state['session']['turns'] . ": $text";
+        [$reply, $trace] = $this->decide($text);
+        array_push($this->transcript, ...eliza_lines($reply));
+        $this->state['session']['last_trace'] = $trace;
+        if ($this->state['session']['trace_on']) foreach ($trace as $line) $this->transcript[] = "  $line";
+    }
+    private function command(string $line): array {
+        $parts = explode(' ', $line, 2);
+        $name = $parts[0]; $text = $parts[1] ?? ''; $args = $text === '' ? [] : explode(' ', $text);
+        if (!in_array($name, [...NO_ARGUMENT, ...TEXT_ARGUMENT, ...ONE_ARGUMENT, ':trace', ':test'], true)) return ["unknown command $name"];
+        if ((in_array($name, NO_ARGUMENT, true) && $args) || (in_array($name, TEXT_ARGUMENT, true) && $text === '')
+            || (in_array($name, ONE_ARGUMENT, true) && count($args) !== 1) || ($name === ':trace' && (count($args) !== 1 || !in_array($args[0], ['on', 'off'], true)))
+            || ($name === ':test' && count($args) < 2)) return ['bad arguments'];
+        $keyword = $this->script['keyword_map'][$args[0] ?? ''] ?? null;
+        if (in_array($name, [':script', ':cycles', ':coverage', ':test'], true) && $keyword === null) return ["unknown keyword $args[0]"];
+        if ($name === ':say' || $name === ':explain') {
+            if ($this->isQuit(normalize($text))) return ['would quit'];
+            $saved = $this->state;
+            [$reply, $trace] = $this->decide($text);
+            $this->state = $saved;
+            return $name === ':say' ? [$reply] : $trace;
+        }
+        $snapshot = $this->state['session']['undo'];
+        if ($snapshot === null) return ['nothing to undo'];
+        $this->state = $snapshot;
+        return ['undone turn ' . ($this->state['session']['turns'] + 1)];
+    }
+    private function notes(): void {
+        $session = $this->state['session'];
+        array_push($this->transcript, 'NOTES ' . $session['name'], '  ' . count_line($session), '  topics: ' . leaders($session['topics']),
+            '  words: ' . leaders($session['words']), '  memory: stored=' . $session['stored'] . ' recalled=' . $session['recalled'] . ' pending=' . count($this->state['memory']['texts']),
+            '  unrecognized: ' . ($session['unrecognized'] ? implode(' ', $session['unrecognized']) : 'none'));
+        $this->totals['turns'] += $session['turns'];
+        foreach (SOURCES as $source) $this->totals['sources'][$source] += $session['sources'][$source];
+    }
+    public function run(array $lines): void {
+        foreach ($lines as $line) {
+            if (str_starts_with($line, 'SESSION ')) {
+                $name = substr($line, 8);
+                $this->sessions++;
+                $this->state['session'] = ['name' => $name, 'turns' => 0, 'sources' => array_fill_keys(SOURCES, 0), 'previous' => null,
+                    'history' => [], 'last_trace' => null, 'trace_on' => false, 'topics' => [], 'words' => [], 'stored' => 0, 'recalled' => 0, 'unrecognized' => [], 'undo' => null];
+                $this->transcript[] = $line;
+                $texts = $this->script['texts']['INITIAL'];
+                array_push($this->transcript, ...eliza_lines($texts[($this->sessions - 1) % count($texts)]));
+            } elseif ($line[0] === ':') {
+                $this->transcript[] = $line;
+                foreach ($this->command($line) as $text) $this->transcript[] = "  $text";
+            } else {
+                $this->transcript[] = "YOU: $line";
+                if ($this->isQuit(normalize($line))) {
+                    $texts = $this->script['texts']['FINAL'];
+                    array_push($this->transcript, ...eliza_lines($texts[($this->sessions - 1) % count($texts)]));
+                    $this->notes();
+                } else $this->respond($line);
+            }
+        }
+        $this->transcript[] = '';
+        $this->transcript[] = "SUMMARY sessions=$this->sessions " . count_line($this->totals);
+    }
+    public function keywordStats(): array {
+        $ids = array_keys($this->script['keywords']);
+        usort($ids, fn($a, $b) => ($this->state['keyword_uses'][$b] <=> $this->state['keyword_uses'][$a]) ?: strcmp($this->script['keywords'][$a]['word'], $this->script['keywords'][$b]['word']));
+        $lines = ['keyword,rank,uses,replies,decomposition_hits'];
+        foreach ($ids as $id) {
+            $key = $this->script['keywords'][$id];
+            $hits = $key['decomps'] ? implode('/', array_map(fn($rule) => $this->state['hits'][$rule], $key['decomps'])) : '-';
+            $lines[] = implode(',', [$key['word'], $key['rank'], $this->state['keyword_uses'][$id], $this->state['keyword_replies'][$id], $hits]);
+        }
+        return $lines;
+    }
+}
+function write_lines(string $name, array $lines): void {
+    file_put_contents("output/$name", $lines ? implode("\n", $lines) . "\n" : '');
+}
+$script = load_script('input/script.txt');
+if (!is_dir('output')) mkdir('output', 0777, true);
+$chatbot = new Chatbot($script);
+$chatbot->run(read_lines('input/dialogue.txt'));
+write_lines('transcript.txt', $chatbot->transcript);
+write_lines('keyword_stats.csv', $chatbot->keywordStats());
+write_lines('memory_log.txt', $chatbot->state['memory']['log']);

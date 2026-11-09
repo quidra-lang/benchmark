@@ -1,0 +1,383 @@
+static void *allocate(size_t bytes) {
+    void *p = calloc(1, bytes ? bytes : 1);
+    return p;
+}
+#define VECTOR(Type, Name)                                                                         \
+    typedef struct {                                                                               \
+        Type *data;                                                                                \
+        size_t count, capacity;                                                                    \
+    } Name
+#define ADD(vector, value)                                                                         \
+    do {                                                                                           \
+        (vector).data[(vector).count++] = (value);                                                 \
+    } while (0)
+typedef struct {
+    char *data;
+    size_t length, capacity;
+} String;
+VECTOR(char *, Strings);
+static void append_n(String *s, const char *text, size_t length) {
+    memcpy(s->data + s->length, text, length);
+    s->length += length;
+    s->data[s->length] = 0;
+}
+static void append(String *s, const char *text) {
+    append_n(s, text, strlen(text));
+}
+static void character(String *s, char ch) {
+    append_n(s, &ch, 1);
+}
+static char *finish(String s) {
+    return s.data ? s.data : "";
+}
+static char *slice(const char *text, size_t start, size_t end) {
+    char *result = allocate(end - start + 1);
+    memcpy(result, text + start, end - start);
+    return result;
+}
+static char *decimal(size_t value) {
+    char buffer[32];
+    snprintf(buffer, sizeof buffer, "%zu", value);
+    return slice(buffer, 0, strlen(buffer));
+}
+static const char *toc_marker = "\001toc\002";
+static int starts(const char *text, const char *prefix) {
+    return strncmp(text, prefix, strlen(prefix)) == 0;
+}
+static int alphanumeric(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+static int label_character(char c) {
+    return alphanumeric(c) || c == '-' || c == '_';
+}
+static int whitespace(char c) {
+    return c == ' ' || c == '\n';
+}
+static char *lower(const char *text) {
+    char *result = slice(text, 0, strlen(text));
+    for (size_t i = 0; result[i]; i++)
+        result[i] = (char)tolower((unsigned char)result[i]);
+    return result;
+}
+static char *trim(const char *text) {
+    size_t first = 0, end = strlen(text);
+    while (first < end && text[first] == ' ')
+        first++;
+    while (end > first && text[end - 1] == ' ')
+        end--;
+    return slice(text, first, end);
+}
+static char *left_trim(const char *text) {
+    while (*text == ' ')
+        text++;
+    return (char *)text;
+}
+static char *join(Strings values, const char *separator) {
+    String result = {0};
+    for (size_t i = 0; i < values.count; i++) {
+        if (i)
+            append(&result, separator);
+        append(&result, values.data[i]);
+    }
+    return finish(result);
+}
+static void escape_into(String *html, const char *text) {
+    for (; *text; text++) {
+        switch (*text) {
+        default:
+            character(html, *text);
+            break;
+        }
+    }
+}
+static char *escape_html(const char *text) {
+    String result = {0};
+    escape_into(&result, text);
+    return finish(result);
+}
+static char *strip_tags(const char *text) {
+    String result = {0};
+    for (size_t at = 0; text[at];) {
+        const char *end = text[at] == '<' ? strchr(text + at, '>') : NULL;
+        if (end)
+            at = (size_t)(end - text) + 1;
+        else
+            character(&result, text[at++]);
+    }
+    return finish(result);
+}
+typedef enum { HEADING, PARAGRAPH, RULE, CODE, QUOTE, ALERT, LIST, TABLE, TOC } Kind;
+typedef struct Block Block;
+VECTOR(Block *, Blocks);
+struct Block {
+    Kind kind;
+    char *text;
+    int number, ordered;
+    Blocks children;
+};
+static Block *block(Kind kind, char *text, int number) {
+    Block *b = allocate(sizeof(Block));
+    b->kind = kind;
+    b->text = text ? text : "";
+    b->number = number;
+    return b;
+}
+static Block *atx_heading(const char *line) {
+    size_t n = 0;
+    while (line[n] == '#')
+        n++;
+    if (!n || n > 6 || (line[n] && line[n] != ' '))
+        return NULL;
+    char *text = trim(line + n);
+    size_t end = strlen(text);
+    while (end && text[end - 1] == '#')
+        end--;
+    if (!end || text[end - 1] == ' ')
+        text = trim(slice(text, 0, end));
+    return block(HEADING, text, (int)n);
+}
+static Blocks parse(Parser *p, Strings lines) {
+    Blocks blocks = {0};
+    size_t at = 0;
+    while (at < lines.count) {
+        char *line = lines.data[at];
+        if (!*line) {
+            at++;
+            continue;
+        }
+        if (line[0] != ' ') {
+            Block *heading = atx_heading(line);
+            if (heading) {
+                ADD(blocks, heading);
+                at++;
+                continue;
+            }
+            if (line[0] == '>') {
+                Strings content = {0};
+                while (at < lines.count && lines.data[at][0] == '>') {
+                    char *row = lines.data[at++] + 1;
+                    if (*row == ' ')
+                        row++;
+                    ADD(content, row);
+                }
+                Block *quote = block(QUOTE, NULL, 0);
+                quote->children = parse(p, content);
+                ADD(blocks, quote);
+                continue;
+            }
+        Strings text = {0};
+        ADD(text, left_trim(line));
+        at++;
+        int level = 0;
+        while (at < lines.count && *lines.data[at]) {
+        }
+        char *combined = join(text, "\n");
+        ADD(blocks, block(level                        ? HEADING
+                          : !strcmp(combined, "[TOC]") ? TOC
+                                                       : PARAGRAPH,
+                          combined, level));
+    }
+    return blocks;
+}
+typedef struct {
+    char *html;
+    char delimiter;
+    size_t length;
+    int can_open, can_close;
+} Piece;
+VECTOR(Piece, Pieces);
+static void emphasis_into(String *html, Pieces pieces, size_t begin, size_t end) {
+    for (size_t at = begin; at < end; at++) {
+        Piece piece = pieces.data[at];
+        if (!piece.delimiter) {
+            append(html, piece.html);
+            continue;
+        }
+    }
+}
+typedef struct Heading Heading;
+VECTOR(Heading *, Headings);
+struct Heading {
+    int level;
+    char *id, *label;
+    Headings children;
+};
+typedef struct {
+    Parser *parser;
+    Strings used_ids;
+    Headings headings;
+    NumberedNotes notes;
+} Renderer;
+static int string_in(Strings strings, const char *text) {
+    for (size_t i = 0; i < strings.count; i++)
+        if (!strcmp(strings.data[i], text))
+            return 1;
+    return 0;
+}
+static char *inline_html(Renderer *r, const char *text, int links, int notes) {
+    Pieces pieces = {0};
+    size_t at = 0;
+    while (text[at]) {
+        ADD(pieces, ((Piece){escape_html(slice(text, at, at + 1)), 0, 0, 0, 0}));
+        at++;
+    }
+    String html = {0};
+    emphasis_into(&html, pieces, 0, pieces.count);
+    return finish(html);
+}
+static char *render_blocks(Renderer *r, Blocks blocks) {
+    String html = {0};
+    for (size_t i = 0; i < blocks.count; i++) {
+        append(&html, render(r, blocks.data[i]));
+        character(&html, '\n');
+    }
+    return finish(html);
+}
+static char *render_heading(Renderer *r, Block *b) {
+    char *text = b->text, *id = NULL;
+    const char *last = NULL, *cursor = text;
+    while ((cursor = strstr(cursor, " {#"))) {
+        last = cursor;
+        cursor++;
+    }
+    size_t length = strlen(text);
+    if (length && text[length - 1] == '}' && last) {
+        char *candidate = slice(last, 3, strlen(last) - 1);
+        int valid = *candidate != 0;
+        for (size_t i = 0; candidate[i]; i++)
+            if (!label_character(candidate[i]))
+                valid = 0;
+        if (valid) {
+            id = candidate;
+            text = slice(text, 0, (size_t)(last - text));
+            size_t end = strlen(text);
+            while (end && text[end - 1] == ' ')
+                text[--end] = 0;
+        }
+    }
+    if (!id) {
+        String slug = {0};
+        for (char *p = lower(text); *p; p++) {
+            if (label_character(*p))
+                character(&slug, *p);
+            else if (whitespace(*p))
+                character(&slug, '-');
+        }
+        char *base = slug.length ? finish(slug) : "heading";
+        id = base;
+        for (size_t suffix = 1; string_in(r->used_ids, id); suffix++) {
+            String value = {0};
+            append(&value, base);
+            character(&value, '-');
+            append(&value, decimal(suffix));
+            id = finish(value);
+        }
+    }
+    ADD(r->used_ids, id);
+    char *content = inline_html(r, text, 1, 1);
+    Heading *heading = allocate(sizeof(Heading));
+    heading->level = b->number;
+    heading->id = id;
+    heading->label = strip_tags(content);
+    ADD(r->headings, heading);
+    String html = {0};
+    append(&html, "<h");
+    append(&html, decimal((size_t)b->number));
+    append(&html, " id=\"");
+    append(&html, id);
+    append(&html, "\">");
+    append(&html, content);
+    append(&html, "</h");
+    append(&html, decimal((size_t)b->number));
+    character(&html, '>');
+    return finish(html);
+}
+static char *render(Renderer *r, Block *b) {
+    String html = {0};
+    switch (b->kind) {
+    case HEADING:
+        return render_heading(r, b);
+    case QUOTE:
+        append(&html, "<blockquote>\n");
+        append(&html, render_blocks(r, b->children));
+        append(&html, "</blockquote>");
+        break;
+    case TOC:
+        return (char *)toc_marker;
+    }
+    return finish(html);
+}
+static char *toc_list(Headings entries) {
+    String html = {0};
+    append(&html, "<ul>\n");
+    for (size_t i = 0; i < entries.count; i++) {
+        Heading *h = entries.data[i];
+        append(&html, "<li><a href=\"#");
+        append(&html, h->id);
+        append(&html, "\">");
+        append(&html, h->label);
+        append(&html, "</a>");
+        if (h->children.count) {
+            character(&html, '\n');
+            append(&html, toc_list(h->children));
+            character(&html, '\n');
+        }
+        append(&html, "</li>\n");
+    }
+    append(&html, "</ul>");
+    return finish(html);
+}
+static char *table_of_contents(Renderer *r) {
+    Headings roots = {0}, parents = {0};
+    for (size_t i = 0; i < r->headings.count; i++) {
+        Heading *h = r->headings.data[i];
+        while (parents.count && parents.data[parents.count - 1]->level >= h->level)
+            parents.count--;
+        if (parents.count)
+            ADD(parents.data[parents.count - 1]->children, h);
+        else
+            ADD(roots, h);
+        ADD(parents, h);
+    }
+    String html = {0};
+    append(&html, "<nav class=\"toc\">\n");
+    append(&html, toc_list(roots));
+    append(&html, "\n</nav>");
+    return finish(html);
+}
+static char *document(Renderer *r, Blocks blocks) {
+    char *body = render_blocks(r, blocks);
+    char *toc = table_of_contents(r);
+    String html = {0};
+    size_t marker_length = strlen(toc_marker);
+    while (*body) {
+        const char *found = strstr(body, toc_marker);
+        if (!found) {
+            append(&html, body);
+            break;
+        }
+        append_n(&html, body, (size_t)(found - body));
+        append(&html, toc);
+        body = (char *)found + marker_length;
+    }
+    return finish(html);
+}
+int main(void) {
+    Strings lines = {0};
+    int ch;
+    while (1) {
+        String line = {0};
+        while ((ch = getchar()) != EOF && ch != '\n')
+            character(&line, (char)ch);
+        if (line.length && line.data[line.length - 1] == '\r')
+            line.data[--line.length] = 0;
+        if (!strcmp(finish(line), "@@END@@") || (ch == EOF && !line.length))
+            break;
+        ADD(lines, finish(line));
+        if (ch == EOF)
+            break;
+    }
+    Parser parser = {0};
+    Blocks blocks = parse(&parser, lines);
+    Renderer renderer = {.parser = &parser};
+    fputs(document(&renderer, blocks), stdout);

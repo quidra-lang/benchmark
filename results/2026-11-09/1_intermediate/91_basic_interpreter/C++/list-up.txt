@@ -1,0 +1,358 @@
+using Value = std::variant<int, std::string>;
+[[noreturn]] void syntax() {
+    throw SyntaxError{};
+}
+
+[[noreturn]] void fault(const std::string& message) {
+    throw BasicError(message);
+}
+char name_type(const std::string& name) {
+    return name.back() == '$' ? 'S' : 'I';
+}
+const std::map<std::string, std::vector<std::string>> signatures = {
+    {"SQR", {"I"}}, {"RND", {"I"}}, {"LEN", {"S"}},
+};
+struct Token {
+    char kind;
+    std::string text;
+    Value value;
+};
+
+bool digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+bool upper(char c) {
+    return c >= 'A' && c <= 'Z';
+}
+
+std::vector<Token> tokenize(const std::string& source) {
+    std::vector<Token> result;
+    std::size_t pos = 0;
+    while (pos < source.size()) {
+        char c = source[pos];
+        if (c == ' ') {
+            ++pos;
+        } else if (c == '"') {
+            auto end = source.find('"', pos + 1);
+            if (end == std::string::npos) syntax();
+            result.push_back({'S', source.substr(pos, end - pos + 1),
+                              source.substr(pos + 1, end - pos - 1)});
+            pos = end + 1;
+        } else if (digit(c)) {
+            auto start = pos;
+            while (pos < source.size() && digit(source[pos])) ++pos;
+            std::string word = source.substr(start, pos - start);
+            long long value = 0;
+            for (char letter : word) {
+                value = value * 10 + letter - '0';
+                if (value > 32767) syntax();
+            }
+            result.push_back({'I', word, static_cast<int>(value)});
+        } else if (upper(c)) {
+            auto start = pos;
+            while (pos < source.size() && (upper(source[pos]) || digit(source[pos]))) ++pos;
+            if (pos < source.size() && source[pos] == '$') ++pos;
+            std::string word = source.substr(start, pos - start);
+            result.push_back({'W', word, word});
+        } else {
+            std::string word(1, c);
+            if (pos + 1 < source.size()) {
+                std::string pair = source.substr(pos, 2);
+                if (pair == "<>" || pair == "<=" || pair == ">=") word = pair;
+            }
+            if (std::string("+-*/^=<>() ,;:").find(c) == std::string::npos) syntax();
+            result.push_back({'P', word, word});
+            pos += word.size();
+        }
+    }
+    result.push_back({'E', "", std::string("")});
+    return result;
+}
+
+struct Expression;
+using Expr = std::shared_ptr<Expression>;
+
+struct Expression {
+    std::string kind;
+    char type;
+    Value value;
+    std::vector<Expr> args;
+};
+
+Expr expression_node(std::string kind, char type, Value value = std::string(""),
+                     std::vector<Expr> args = {}) {
+    return std::make_shared<Expression>(
+        Expression{std::move(kind), type, std::move(value), std::move(args)});
+}
+struct PrintItem {
+    std::string kind;
+    Expr expr;
+};
+struct Statement {
+    std::string kind;
+    int line = 0;
+    Statement* next = nullptr;
+    std::vector<PrintItem> items;
+class Parser {
+    std::vector<Token> tokens;
+    std::size_t pos = 0;
+
+    const Token& current() const {
+        return tokens[pos];
+    }
+
+    bool at(const std::string& word) const {
+        return (current().kind == 'P' || current().kind == 'W')
+            && current().text == word;
+    }
+
+    bool take(const std::string& word) {
+        if (!at(word)) return false;
+        ++pos;
+        return true;
+    }
+
+    void expect(const std::string& word) {
+        if (!take(word)) syntax();
+    }
+    Expr integer(int level = 0) {
+        Expr value = expression(level);
+        if (value->type != 'I') syntax();
+        return value;
+    }
+    Expr primary() {
+        const Token& token = current();
+        if (token.kind == 'I' || token.kind == 'S') {
+            ++pos;
+            return expression_node("constant", token.kind, token.value);
+        }
+        if (take("(")) {
+            Expr value = expression();
+            expect(")");
+            return value;
+        }
+        if (token.kind == 'W' && signatures.contains(token.text)) {
+            std::string name = token.text;
+            ++pos;
+            expect("(");
+            std::vector<Expr> args{expression()};
+            while (take(",")) args.push_back(expression());
+            expect(")");
+            std::string types;
+            for (auto& e : args) types += e->type;
+            auto& expected = signatures.at(name);
+            if (std::find(expected.begin(), expected.end(), types) == expected.end()) syntax();
+            return expression_node("call", name_type(name), name, std::move(args));
+        }
+        syntax();
+    }
+
+    Expr expression(int level = 0) {
+        if (level == 2 && take("NOT"))
+            return expression_node("unary", 'I', std::string("NOT"), {integer(2)});
+        if (level == 6 && take("-"))
+            return expression_node("unary", 'I', std::string("-"), {integer(6)});
+        if (level == 8) return primary();
+        Expr left = expression(level + 1);
+        const std::vector<std::vector<std::string>> ops = {
+            {"OR"}, {"AND"}, {}, {"=", "<>", "<", ">", "<=", ">="},
+            {"+", "-"}, {"*", "/", "MOD"}, {}, {"^"}
+        };
+        while (std::find(ops[level].begin(), ops[level].end(), current().text) != ops[level].end()) {
+            std::string op = tokens[pos++].text;
+            Expr right = expression(level == 7 ? 6 : level + 1);
+            if (left->type != right->type ||
+                (left->type == 'S' && level != 3 && op != "+")) syntax();
+            left = expression_node("binary", level == 3 ? 'I' : left->type,
+                                   op, {left, right});
+            if (level == 7) break;
+        }
+        return left;
+    }
+    std::vector<Stmt> list(bool in_clause = false) {
+        std::vector<Stmt> result{statement(in_clause)};
+        while (take(":")) result.push_back(statement(in_clause));
+        return result;
+    }
+
+    Stmt statement(bool in_clause) {
+        std::string word = current().text;
+        if (in_clause && std::set<std::string>{"IF", "FOR", "NEXT", "WHILE", "WEND", "DATA"}.contains(word))
+            syntax();
+        Stmt s = std::make_shared<Statement>();
+        s->kind = word;
+        if (take("PRINT")) {
+            bool value_last = false;
+            while (current().kind != 'E' && !at(":") && !at("ELSE")) {
+                if (take(";")) {
+                    s->items.push_back({";", nullptr});
+                    value_last = false;
+                } else if (take(",")) {
+                    s->items.push_back({",", nullptr});
+                    value_last = false;
+                } else {
+                    std::string mode = at("TAB") ? "TAB" : at("SPC") ? "SPC" : "value";
+                    if (mode == "value" && value_last) syntax();
+                    Expr value;
+                    if (mode == "value") {
+                        value = expression();
+                    s->items.push_back({mode, value});
+                    value_last = mode == "value";
+                }
+            }
+            return s;
+        }
+    explicit Parser(std::vector<Token> source) : tokens(std::move(source)) {}
+
+    std::vector<Stmt> parse() {
+        auto result = list();
+        if (current().kind != 'E') syntax();
+        return result;
+    }
+    std::int64_t random_state = 1;
+    int handler = 0;
+    bool handling = false;
+    std::string buffer;
+    std::vector<std::string> output;
+    void end_line() {
+        while (!buffer.empty() && buffer.back() == ' ') buffer.pop_back();
+        output.push_back(buffer);
+        buffer.clear();
+    }
+
+    void message(const std::string& text) {
+        if (!buffer.empty()) end_line();
+        output.push_back(text);
+    }
+
+    int checked(std::int64_t value) {
+        if (value < -32768 || value > 32767) fault("OVERFLOW");
+        return static_cast<int>(value);
+    }
+    Value evaluate(const Expr& expression) {
+        const Value& op = expression->value;
+        if (expression->kind == "constant") return op;
+        if (expression->kind == "unary") {
+            int number = std::get<int>(evaluate(expression->args[0]));
+            return std::get<std::string>(op) == "NOT" ? ~number : checked(-static_cast<std::int64_t>(number));
+        }
+        std::vector<Value> args;
+        for (auto& part : expression->args) args.push_back(evaluate(part));
+        if (expression->kind == "call") return call(std::get<std::string>(op), args);
+        const std::string& operation = std::get<std::string>(op);
+        const Value& a = args[0];
+        const Value& b = args[1];
+        int x = std::get<int>(a), y = std::get<int>(b);
+        if (operation == "/") {
+            if (y == 0) fault("DIVISION BY ZERO");
+            return checked(static_cast<std::int64_t>(x) / y);
+        }
+        if (operation == "MOD") {
+            if (y == 0) fault("DIVISION BY ZERO");
+            return x % y;
+        }
+        if (operation == "AND") return x & y;
+        if (operation == "OR") return x | y;
+        syntax();
+    }
+
+    Value call(const std::string& name, const std::vector<Value>& args) {
+        int n = std::holds_alternative<int>(args[0]) ? std::get<int>(args[0]) : 0;
+        if (name == "RND") {
+            if (n < 1) fault("ILLEGAL FUNCTION CALL");
+            random_state = (48271 * random_state) % 2147483647;
+            return static_cast<int>(random_state % n) + 1;
+        }
+    Statement* execute(Statement* s) {
+        Statement* next = s->next;
+        } else if (s->kind == "PRINT") {
+            for (auto& item : s->items) {
+                if (item.kind == ",") {
+                    buffer.append(10 - buffer.size() % 10, ' ');
+                } else if (item.kind != ";") {
+                    Value v = evaluate(item.expr);
+                    if (item.kind == "value") {
+                        buffer += std::holds_alternative<std::string>(v) ?
+                                  std::get<std::string>(v) :
+                                  std::to_string(std::get<int>(v));
+                }
+            }
+            if (s->items.empty() ||
+                (s->items.back().kind != ";" && s->items.back().kind != ","))
+                end_line();
+        return next;
+    void connect(const std::vector<Stmt>& body, Statement* after, int number) {
+        Statement* next = after;
+        for (auto it = body.rbegin(); it != body.rend(); ++it) {
+            Statement* s = it->get();
+            s->line = number;
+            s->next = next;
+            next = s;
+        }
+    }
+
+    std::vector<std::string> finish() {
+        if (!buffer.empty()) end_line();
+        output.push_back("READY");
+        return output;
+    }
+
+public:
+    explicit Machine(std::vector<std::string> input) : inputs(std::move(input)) {}
+
+    std::vector<std::string> run(const std::map<int, std::string>& source) {
+        std::vector<std::pair<int, std::vector<Stmt>>> parsed;
+        for (auto& [number, text] : source) {
+            try {
+                parsed.push_back({number, Parser(tokenize(text)).parse()});
+            } catch (const SyntaxError&) {
+                message("ERROR IN LINE " + std::to_string(number) + ": SYNTAX ERROR");
+                return finish();
+            }
+        }
+        Statement* after = nullptr;
+        for (auto it = parsed.rbegin(); it != parsed.rend(); ++it) {
+            connect(it->second, after, it->first);
+            entries[it->first] = it->second.front().get();
+            after = it->second.front().get();
+        }
+        Statement* position = after;
+        while (position != nullptr) {
+            Statement* statement = position;
+            try {
+                position = execute(statement);
+            } catch (const BasicError& error) {
+                if (handler != 0 && !handling) {
+                } else {
+                    message("ERROR IN LINE " + std::to_string(statement->line) +
+                            ": " + error.what());
+                    position = nullptr;
+                }
+            }
+        }
+        return finish();
+    }
+int main() {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    int sessions;
+    if (!(std::cin >> sessions)) return 0;
+    std::string line;
+    std::getline(std::cin, line);
+    static const std::regex entry(R"(([0-9]+)(?: +(.*))?)");
+    for (int session = 0; session < sessions; ++session) {
+        std::map<int, std::string> source;
+        while (std::getline(std::cin, line) && line != "RUN") {
+            std::smatch match;
+            if (!std::regex_match(line, match, entry)) continue;
+            int number = std::stoi(match[1].str());
+            if (match[2].matched) source[number] = match[2].str();
+            else source.erase(number);
+        }
+        std::vector<std::string> input;
+        while (std::getline(std::cin, line) && line != "END") input.push_back(line);
+        for (auto& output : Machine(std::move(input)).run(source))
+            std::cout << output << '\n';
+    }
+}

@@ -1,0 +1,561 @@
+module DatesCalendar
+
+leap(year) = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+yearlength(year) = leap(year) ? 366 : 365
+monthlength(year, month) = month == 2 && leap(year) ? 29 : (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month]
+parts(text) = (parse(Int, text[1:4]), parse(Int, text[6:7]), parse(Int, text[9:10]))
+
+function valid(text)
+    year, month, day = parts(text)
+    return 2001 <= year <= 2099 && 1 <= month <= 12 && 1 <= day <= monthlength(year, month)
+end
+
+function number(year, month, day)
+    result = day - 1
+    for previous in 2000:year - 1
+        result += yearlength(previous)
+    end
+    for previous in 1:month - 1
+        result += monthlength(year, previous)
+    end
+    return result
+end
+
+parsedate(text) = number(parts(text)...)
+
+function civil(day)
+    year, month = 2000, 1
+    while day >= yearlength(year)
+        day -= yearlength(year)
+        year += 1
+    end
+    while day >= monthlength(year, month)
+        day -= monthlength(year, month)
+        month += 1
+    end
+    return year, month, day + 1
+end
+
+function formatdate(day)
+    year, month, date = civil(day)
+    return lpad(string(year), 4, '0') * "-" * lpad(string(month), 2, '0') * "-" * lpad(string(date), 2, '0')
+end
+
+struct Calendar
+    holidays::Set{Int}
+end
+
+business(calendar, day) = mod(day + 5, 7) < 5 && day ∉ calendar.holidays
+
+function move(calendar, day, count)
+    step = count < 0 ? -1 : 1
+    remaining = count < 0 ? -count : count
+    while remaining > 0
+        day += step
+        business(calendar, day) && (remaining -= 1)
+    end
+    return day
+end
+
+function adjust(calendar, day, rule)
+    rule == "UNADJUSTED" && return day
+    step = rule == "PRECEDING" ? -1 : 1
+    result = day
+    while !business(calendar, result)
+        result += step
+    end
+    if rule == "MODIFIED_FOLLOWING" && civil(result)[2] != civil(day)[2]
+        return adjust(calendar, day, "PRECEDING")
+    end
+    return result
+end
+
+end
+module Daycount
+const CONVENTIONS = ("30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT")
+function fraction(convention, start, finish)
+    y1, m1, d1 = civil(start)
+    y2, m2, d2 = civil(finish)
+    if convention == "30/360"
+        february = m1 == 2 && d1 == monthlength(y1, m1)
+        february && m2 == 2 && d2 == monthlength(y2, m2) && (d2 = 30)
+        february && (d1 = 30)
+        d2 == 31 && d1 >= 30 && (d2 = 30)
+        d1 == 31 && (d1 = 30)
+    elseif convention == "30E/360"
+    end
+    return 360 * (y2 - y1) + 30 * (m2 - m1) + d2 - d1, 360
+end
+end
+module Pricing
+
+function bisect(functionvalue, low, high, target)
+    for _ in 1:80
+        middle = (low + high) / 2
+        if functionvalue(middle) > target
+            low = middle
+        else
+            high = middle
+        end
+    end
+    return (low + high) / 2
+end
+
+struct YieldPricer
+    flows::Vector{Int}
+    fraction::Float64
+    frequency::Int
+    outstanding::Int
+end
+
+function presentvalues(pricer, rate)
+    first = 1 + pricer.fraction * rate / pricer.frequency
+    growth = 1 + rate / pricer.frequency
+    factor = 1.0
+    values = Float64[]
+    for cashflow in pricer.flows
+        push!(values, cashflow / (first * factor))
+        factor *= growth
+    end
+    return values
+end
+
+function dirty(pricer, rate)
+    total = 0.0
+    for value in presentvalues(pricer, rate)
+        total += value
+    end
+    return total * 100 / pricer.outstanding
+end
+
+solve(pricer, target) = bisect(rate -> dirty(pricer, rate), 0.0, 1.0, target)
+
+struct Risk
+    macaulay::Float64
+    modified::Float64
+    convexity::Float64
+    dv01::Float64
+end
+
+function risk(pricer, rate)
+    total, weighted, curvature = 0.0, 0.0, 0.0
+    growth = 1 + rate / pricer.frequency
+    for (index, value) in enumerate(presentvalues(pricer, rate))
+        years = (index - 1 + pricer.fraction) / pricer.frequency
+        total += value
+        weighted += years * value
+        curvature += years * (years + 1 / pricer.frequency) * value
+    end
+    macaulay = weighted / total
+    dv01 = (dirty(pricer, rate - 0.0001) - dirty(pricer, rate + 0.0001)) / 2
+    return Risk(macaulay, macaulay / growth, curvature / (total * growth * growth), dv01)
+end
+
+end
+module Schedule
+
+using ..DatesCalendar: civil, number, monthlength
+
+function build(issue, maturity, frequency, eom=false, long=false)
+    year, month, day = civil(maturity)
+    endrule = eom && day == monthlength(year, month)
+    dates = Int[]
+    boundary = maturity
+    while boundary > issue
+        push!(dates, boundary)
+        index = year * 12 + month - 1 - (12 ÷ frequency) * length(dates)
+        y, m = index ÷ 12, index % 12 + 1
+        d = endrule ? monthlength(y, m) : min(day, monthlength(y, m))
+        boundary = number(y, m, d)
+    end
+    long && boundary != issue && length(dates) >= 2 && pop!(dates)
+    push!(dates, issue)
+    return reverse!(dates)
+end
+
+end
+struct Pillar
+    maturity::Int
+    coupon::Int
+    frequency::Int
+end
+
+struct ZeroCurve
+    days::Vector{Int}
+    rates::Vector{Float64}
+end
+
+function zerorate(curve, day)
+    day <= first(curve.days) && return first(curve.rates)
+    day >= last(curve.days) && return last(curve.rates)
+    index = findfirst(boundary -> boundary >= day, curve.days)
+    curve.days[index] == day && return curve.rates[index]
+    return curve.rates[index - 1] + (curve.rates[index] - curve.rates[index - 1]) * ((day - curve.days[index - 1]) / (curve.days[index] - curve.days[index - 1]))
+end
+function discount(curve, day, spread=0.0)
+    rate = zerorate(curve, day) + spread
+    years, remainder = divrem(day, 365)
+    growth = 1.0
+    for _ in 1:years
+        growth *= 1 + rate
+    end
+    return 1 / (growth * (1 + rate * remainder / 365))
+end
+function presentvalue(curve, flows, spread=0.0)
+    total = 0.0
+    for (day, value) in flows
+        total += value * discount(curve, day, spread)
+    end
+    return total
+end
+zspread(curve, flows, target) = bisect(spread -> presentvalue(curve, flows, spread), -0.5, 0.5, target)
+function bootstrap(settlement, pillars)
+    days, rates = Int[], Float64[]
+    for pillar in pillars
+        dates = build(settlement, pillar.maturity, pillar.frequency)
+        flows = Tuple{Int,Float64}[]
+        for i in 2:length(dates)
+            n, m = fraction("30/360", dates[i - 1], dates[i])
+            amount = pillar.coupon * n / (10000 * m)
+            i == length(dates) && (amount += 1)
+            push!(flows, (dates[i] - settlement, amount))
+        end
+        push!(days, pillar.maturity - settlement)
+        rate = bisect(trial -> presentvalue(ZeroCurve(days, [rates; trial]), flows), 0.0, 1.0, 1.0)
+        push!(rates, rate)
+    end
+    return ZeroCurve(days, rates)
+end
+const DC = DatesCalendar
+const TYPES = ("FIXED", "ZERO", "AMORT", "FRN")
+const FREQUENCIES = (1, 2, 4, 12)
+const BUSINESS_RULES = ("FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED")
+const BUCKETS = ("0-1Y", "1-3Y", "3-5Y", "5-10Y", "10Y+")
+
+struct InputFault <: Exception
+    message::String
+end
+
+fail(message) = throw(InputFault(message))
+rounded(numerator, denominator) = (2 * numerator + denominator) ÷ (2 * denominator)
+thousandths(text) = parse(Int, replace(text, "." => ""))
+function decimals(value, digits)
+    scale = 1
+    for _ in 1:digits
+        scale *= 10
+    end
+    magnitude = value < 0 ? -value : value
+    integer = trunc(Int, magnitude * scale + 0.5)
+    return (value < 0 && integer != 0 ? "-" : "") * string(integer ÷ scale) * "." * lpad(string(integer % scale), digits, '0')
+end
+percent(value) = decimals(value * 100, 4)
+amount(value) = decimals(value / 100, 2)
+rows(name) = [(number, String.(split(line, ','))) for (number, line) in enumerate(readlines(joinpath("input", name))) if number > 1]
+record!(errors, file, number, key, fault) = push!(errors, "$file:$number: $key: $(fault.message)")
+
+mutable struct Options
+    eom::Bool
+    long::Bool
+    lag::Union{Nothing,Int}
+    cap::Union{Nothing,Int}
+    floor::Union{Nothing,Int}
+    sinks::Vector{Tuple{String,Int}}
+    calls::Vector{Tuple{String,Int}}
+end
+
+Options() = Options(false, false, nothing, nothing, nothing, Tuple{String,Int}[], Tuple{String,Int}[])
+
+struct Period
+    number::Int
+    start::Int
+    finish::Int
+    payment::Int
+    numerator::Int
+    denominator::Int
+    rate::Int
+    opening::Int
+    coupon::Int
+    principal::Int
+end
+
+cashflow(period) = period.coupon + period.principal
+
+mutable struct Bond
+    code::String
+    kind::String
+    issue::Int
+    maturity::Int
+    coupon::Int
+    frequency::Int
+    daycount::String
+    bdc::String
+    face::Int
+    options::Options
+    schedule::Vector{Int}
+    sinks::Dict{Int,Int}
+    calls::Vector{Tuple{Int,Int}}
+    periods::Vector{Period}
+end
+
+function parseoptions(kind, text)
+    options = Options()
+    seen = Set{String}()
+    allowed = kind == "FIXED" ? ("EOM", "LONG", "CALL") : kind == "AMORT" ? ("EOM", "LONG", "SINK") : kind == "FRN" ? ("EOM", "LONG", "LAG", "CAP", "FLOOR") : ("EOM", "LONG")
+    for item in text == "-" ? String[] : split(text, ';')
+        pieces = split(item, '='; limit=2)
+        key = String(pieces[1])
+        (key ∉ allowed || key in seen && key ∉ ("SINK", "CALL")) && fail("invalid option")
+        push!(seen, key)
+        value = length(pieces) == 2 ? String(pieces[2]) : ""
+        if key == "EOM"
+            options.eom = true
+        elseif key == "LONG"
+            options.long = true
+        elseif key == "LAG"
+            options.lag = parse(Int, value)
+        elseif key == "CAP"
+            options.cap = parse(Int, value)
+        elseif key == "FLOOR"
+            options.floor = parse(Int, value)
+        else
+            date, number = String.(split(value, ':'))
+            push!(key == "SINK" ? options.sinks : options.calls, (date, key == "SINK" ? parse(Int, number) : thousandths(number)))
+        end
+    end
+    if kind == "FRN"
+        cap = isnothing(options.cap) ? 1200 : options.cap
+        (isnothing(options.lag) || !(1 <= options.lag <= 5) || cap > 1200 || !isnothing(options.floor) && options.floor > cap) && fail("invalid option")
+    end
+    return options
+end
+function scheduledays(items, schedule, message)
+    days = Int[]
+    for (text, _) in items
+        !DC.valid(text) && fail(message)
+        day = DC.parsedate(text)
+        (day ∉ schedule[2:end - 1] || !isempty(days) && day <= last(days)) && fail(message)
+        push!(days, day)
+    end
+    return days
+end
+function parsebond(fields, seen, calendar, fixings)
+    code, kind, issue_text, maturity_text, coupon_text, frequency_text, convention, bdc, face_text, option_text = fields
+    code in seen && fail("duplicate id")
+    kind ∉ TYPES && fail("unknown type")
+    (!DC.valid(issue_text) || !DC.valid(maturity_text)) && fail("invalid date")
+    issue, maturity = DC.parsedate(issue_text), DC.parsedate(maturity_text)
+    maturity <= issue && fail("maturity not after issue")
+    coupon, frequency, face = parse(Int, coupon_text), parse(Int, frequency_text), parse(Int, face_text)
+    frequency ∉ FREQUENCIES && fail("invalid frequency")
+    convention ∉ Daycount.CONVENTIONS && fail("unknown day count")
+    bdc ∉ BUSINESS_RULES && fail("unknown business day rule")
+    (face % 100000 != 0 || face > 10000000) && fail("invalid face")
+    (coupon > 1200 || kind == "ZERO" && coupon != 0) && fail("invalid coupon")
+    options = parseoptions(kind, option_text)
+    dates = Schedule.build(issue, maturity, frequency, options.eom, options.long)
+    sinkdays = scheduledays(options.sinks, dates, "invalid sinking fund")
+    total = 0
+    for (_, cents) in options.sinks
+        cents == 0 && fail("invalid sinking fund")
+        total += cents
+    end
+    kind == "AMORT" && (total == 0 || total >= face) && fail("invalid sinking fund")
+    sinks = Dict(day => value for (day, (_, value)) in zip(sinkdays, options.sinks))
+    calldays = scheduledays(options.calls, dates, "invalid call schedule")
+    any(entry -> !(100000 <= last(entry) <= 110000), options.calls) && fail("invalid call schedule")
+    calls = [(day, value) for (day, (_, value)) in zip(calldays, options.calls)]
+    periods = Period[]
+    opening = face
+    for i in 2:length(dates)
+        start, finish = dates[i - 1], dates[i]
+        rate = kind == "ZERO" ? 0 : coupon
+        if kind == "FRN"
+            fixing = DC.move(calendar, DC.adjust(calendar, start, bdc), -options.lag)
+            found = findlast(entry -> first(entry) <= fixing, fixings)
+            isnothing(found) && fail("missing fixing")
+            rate = last(fixings[found]) + coupon
+            !isnothing(options.floor) && (rate = max(rate, options.floor))
+            !isnothing(options.cap) && (rate = min(rate, options.cap))
+        end
+        n, m = Daycount.fraction(convention, start, finish)
+        principal = i == length(dates) ? opening : get(sinks, finish, 0)
+        interest = rounded(opening * rate * n, 10000 * m)
+        push!(periods, Period(i - 1, start, finish, DC.adjust(calendar, finish, bdc), n, m, rate, opening, interest, principal))
+        opening -= principal
+    end
+    return Bond(code, kind, issue, maturity, coupon, frequency, convention, bdc, face, options, dates, sinks, calls, periods)
+end
+
+mutable struct Valuation
+    bond::Bond
+    clean::Int
+    remaining::Vector{Period}
+    cashflows::Vector{Period}
+    flows::Vector{Tuple{Int,Float64}}
+    outstanding::Int
+    accrued::Float64
+    accruedamount::Int
+    cleanamount::Int
+    unitvalue::Int
+    target::Float64
+    fraction::Float64
+    pricer::Pricing.YieldPricer
+    ytm::Float64
+    ytw::Float64
+    risk::Pricing.Risk
+    workout::Int
+    wal::Float64
+    nextpayment::Int
+    curveclean::Float64
+    zspread::Float64
+end
+
+function Valuation(bond, clean, settlement)
+    index = findfirst(period -> period.finish > settlement, bond.periods)
+    remaining = bond.periods[index:end]
+    current = first(remaining)
+    outstanding = current.opening
+    n, m = Daycount.fraction(bond.daycount, current.start, settlement)
+    accrued = current.rate * n / (100 * m)
+    accruedamount = rounded(outstanding * current.rate * n, 10000 * m)
+    cleanamount = rounded(outstanding * clean, 100000)
+    target = clean / 1000 + accrued
+    n, m = Daycount.fraction(bond.daycount, settlement, current.finish)
+    fraction = bond.frequency * n / m
+    cashflows = filter(period -> cashflow(period) >= 1, remaining)
+    flows = [(period.payment - settlement, Float64(cashflow(period))) for period in cashflows]
+    pricer = Pricing.YieldPricer(cashflow.(remaining), fraction, bond.frequency, outstanding)
+    return Valuation(bond, clean, remaining, cashflows, flows, outstanding, accrued, accruedamount, cleanamount,
+        cleanamount + accruedamount, target, fraction, pricer, 0.0, 0.0, Pricing.Risk(0, 0, 0, 0), bond.maturity, 0.0, first(cashflows).payment, 0.0, 0.0)
+end
+function analyze!(value, curve, settlement)
+    value.ytm = Pricing.solve(value.pricer, value.target)
+    value.risk = Pricing.risk(value.pricer, value.ytm)
+    value.ytw = value.ytm
+    for (day, price) in value.bond.calls
+        day <= settlement && continue
+        flows = Int[]
+        for period in value.remaining
+            push!(flows, period.coupon)
+            if period.finish == day
+                flows[end] += rounded(period.opening * price, 100000)
+                break
+            end
+        end
+        rate = Pricing.solve(Pricing.YieldPricer(flows, value.fraction, value.bond.frequency, value.outstanding), value.target)
+        if rate < value.ytw
+            value.ytw, value.workout = rate, day
+        end
+    end
+    principal_days = 0
+    for period in value.cashflows
+        principal_days += period.principal * (period.payment - settlement)
+    end
+    value.wal = principal_days / (365 * value.outstanding)
+    value.curveclean = Curve.presentvalue(curve, value.flows) * 100 / value.outstanding - value.accrued
+    value.zspread = Curve.zspread(curve, value.flows, value.unitvalue)
+end
+function inputdata()
+    valuation, settlement_days = 0, 0
+    scenario_lines = Tuple{Int,String,Vector{Int}}[]
+    limits = Vector{String}[]
+    for (number, line) in enumerate(readlines("input/params.txt"))
+        fields = String.(split(line, ' '))
+        if fields[1] == "valuation_date"
+            valuation = DC.parsedate(fields[2])
+        elseif fields[1] == "settlement_days"
+            settlement_days = parse(Int, fields[2])
+        elseif fields[1] == "scenario"
+            push!(scenario_lines, (number, fields[2], parse.(Int, fields[3:end])))
+        else
+            push!(limits, fields[2:end])
+        end
+    end
+    calendar = DC.Calendar(Set(DC.parsedate.(readlines("input/calendar.txt"))))
+    settlement = DC.move(calendar, valuation, settlement_days)
+    fixings = [(DC.parsedate(fields[1]), parse(Int, fields[2])) for (_, fields) in rows("fixings.csv")]
+    errors = String[]
+    pillars, seen = Curve.Pillar[], Set{String}()
+    for (number, fields) in rows("curve_quotes.csv")
+        try
+            fields[1] in seen && fail("duplicate pillar")
+            !DC.valid(fields[1]) && fail("invalid date")
+            maturity = DC.parsedate(fields[1])
+            maturity <= settlement && fail("pillar not after settlement")
+            frequency = parse(Int, fields[3])
+            frequency ∉ FREQUENCIES && fail("invalid frequency")
+            push!(pillars, Curve.Pillar(maturity, parse(Int, fields[2]), frequency))
+        catch fault
+            fault isa InputFault || rethrow()
+            record!(errors, "curve_quotes.csv", number, fields[1], fault)
+        end
+        push!(seen, fields[1])
+    end
+    sort!(pillars; by=pillar -> pillar.maturity)
+    bonds = Dict{String,Bond}()
+    empty!(seen)
+    for (number, fields) in rows("bonds.csv")
+        try
+            bond = parsebond(fields, seen, calendar, fixings)
+            bonds[bond.code] = bond
+        catch fault
+            fault isa InputFault || rethrow()
+            record!(errors, "bonds.csv", number, fields[1], fault)
+        end
+        push!(seen, fields[1])
+    end
+    values = Dict{String,Valuation}()
+    empty!(seen)
+    for (number, fields) in rows("prices.csv")
+        code = fields[1]
+        try
+            !haskey(bonds, code) && fail("unknown bond")
+            code in seen && fail("duplicate price")
+            bond = bonds[code]
+            !(bond.issue <= settlement < bond.maturity) && fail("not outstanding")
+            value = Valuation(bond, thousandths(fields[2]), settlement)
+            !(Pricing.dirty(value.pricer, 0.0) > value.target > Pricing.dirty(value.pricer, 1.0)) && fail("yield out of range")
+            values[code] = value
+        catch fault
+            fault isa InputFault || rethrow()
+            record!(errors, "prices.csv", number, code, fault)
+        end
+        push!(seen, code)
+    end
+    return (; valuation, settlement, pillars, scenarios, bonds, values, positions, errors, limits)
+end
+function cashflowlines(bonds)
+    output = ["bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"]
+    for code in sort!(collect(keys(bonds))), period in bonds[code].periods
+        cashflow(period) == 0 && continue
+        push!(output, join((code, period.number, DC.formatdate(period.start), DC.formatdate(period.finish), DC.formatdate(period.payment), decimals(period.numerator / period.denominator, 6), period.rate, period.opening, period.coupon, period.principal), ","))
+    end
+    return output
+end
+function analyticslines(values)
+    output = ["bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"]
+    for code in sort!(collect(keys(values)))
+        value = values[code]
+        push!(output, join((code, decimals(value.clean / 1000, 6), decimals(value.accrued, 6), decimals(value.target, 6), percent(value.ytm), percent(value.ytw), DC.formatdate(value.workout), DC.formatdate(value.nextpayment), decimals(value.wal, 4), decimals(value.risk.macaulay, 4), decimals(value.risk.modified, 4), decimals(value.risk.convexity, 4), decimals(value.risk.dv01, 6), decimals(value.curveclean, 6), percent(value.zspread)), ","))
+    end
+    return output
+end
+function writefile(name, lines)
+    open(joinpath("output", name), "w") do file
+        for line in lines
+            println(file, line)
+        end
+    end
+end
+function main()
+    data = inputdata()
+    curve = Curve.bootstrap(data.settlement, data.pillars)
+    for value in Base.values(data.values)
+        analyze!(value, curve, data.settlement)
+    end
+    mkpath("output")
+    writefile("errors.txt", data.errors)
+    writefile("cashflows.csv", cashflowlines(data.bonds))
+    writefile("analytics.csv", analyticslines(data.values))
+    writefile("curve.txt", curvelines(data, curve))
+end

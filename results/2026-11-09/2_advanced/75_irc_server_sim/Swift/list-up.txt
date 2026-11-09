@@ -1,0 +1,243 @@
+    init() throws {
+        var settings: [String: String] = [:], motd: [String] = []
+        for line in try String(contentsOfFile: "input/server.txt", encoding: .ascii).split(separator: "\n") {
+            let pieces = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(pieces[0]), value = String(pieces[1])
+            if key == "MOTD" { motd.append(value) } else { settings[key] = value }
+        }
+        self.settings = settings
+        self.motd = motd
+        traffic = try String(contentsOfFile: "input/traffic.txt", encoding: .ascii)
+            .split(separator: "\n").map { line in
+                let pieces = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+                let body = String(pieces[2])
+                var kind = TrafficKind.messages
+                if body == "DISCONNECT" {
+                    kind = .disconnect
+                } else if body.hasPrefix("CONNECT ") {
+                    let host = body.dropFirst(8)
+                    if (1...63).contains(host.count) && host.utf8.allSatisfy({
+                        (65...90).contains($0) || (97...122).contains($0)
+                            || (48...57).contains($0) || $0 == 46 || $0 == 45
+                    }) { kind = .connect }
+                }
+                return Traffic(time: Int(pieces[0])!, identifier: String(pieces[1]), kind: kind, body: body)
+            }
+        end = traffic.last!.time
+        for record in traffic { lineCounts[record.kind, default: 0] += 1 }
+    }
+    func send(_ client: Client, _ line: String) {
+        sent.append("\(time) \(client.identifier) \(line)")
+        client.sent += 1
+    }
+    func disconnect(_ client: Client, reason: String, kind: String) {
+        if kind != "closed" {
+            send(client, "ERROR :Closing Link: \(client.addressee)[\(client.hostname)] (\(reason))")
+            counts["errors", default: 0] += 1
+        }
+        if client.registered { sendPeers(client, ":\(client.prefix) QUIT :\(reason)") }
+        for channel in client.channels { removeMember(client, channel) }
+        counts["discarded", default: 0] += client.queue.count
+        client.queue.removeAll()
+        clientByID.removeValue(forKey: client.identifier)
+        client.active = false
+        gone.append((time, client.identifier, client.addressee, reason))
+        disconnects[kind, default: 0] += 1
+    }
+    func arrival(_ record: Traffic) {
+        if record.kind == .connect {
+            let client = Client(record.identifier, hostname: String(record.body.dropFirst(8)),
+                                time: time, capacity: integer("BUCKET"))
+            clients.append(client)
+            clientByID[record.identifier] = client
+            if clientByID.count > peakConnections.0 { peakConnections = (clientByID.count, time) }
+            return
+        }
+        guard let client = clientByID[record.identifier] else {
+            if record.kind == .messages { counts["dropped", default: 0] += 1 }
+            return
+        }
+        if record.kind == .disconnect {
+            disconnect(client, reason: "Remote host closed the connection", kind: "closed")
+            return
+        }
+        client.received += 1
+        client.lastReceived = time
+        client.pingSent = nil
+        if client.queue.isEmpty && client.tokens >= 1 {
+            useToken(client)
+            process(client, record.body)
+        } else if client.queue.count >= integer("QUEUE") {
+            counts["discarded", default: 0] += 1
+            disconnect(client, reason: "Excess Flood", kind: "flood")
+        } else {
+            client.queue.append(record.body)
+            counts["queued", default: 0] += 1
+        }
+    }
+    func run() {
+        var position = 0
+        for currentTime in 0...end {
+            time = currentTime
+            for client in activeClients {
+                client.refill(time: time, capacity: integer("BUCKET"), interval: integer("REFILL"))
+                while client.active && !client.queue.isEmpty && client.tokens >= 1 {
+                    useToken(client)
+                    let raw = client.queue.removeFirst()
+                    process(client, raw)
+                }
+            }
+            while position < traffic.count && traffic[position].time == time {
+                arrival(traffic[position])
+                position += 1
+            }
+            for client in activeClients {
+                if let pingTime = client.pingSent {
+                    if time - pingTime >= integer("TIMEOUT") {
+                        disconnect(client, reason: "Ping timeout: \(time - client.lastReceived) seconds", kind: "timeout")
+                    }
+                } else if time - client.lastReceived >= integer("PINGFREQ") {
+                    send(client, "PING :\(name)")
+                    counts["pings", default: 0] += 1
+                    client.pingSent = time
+                }
+            }
+        }
+    }
+    func process(_ client: Client, _ raw: String) {
+        counts["processed", default: 0] += 1
+        let (command, p) = parseMessage(raw)
+        if command.isEmpty {
+            counts["empty", default: 0] += 1
+            return
+        }
+        commands[command, default: 0] += 1
+        if !client.registered && !["NICK", "USER", "PING", "PONG", "QUIT"].contains(command) {
+            numeric(client, 451)
+            return
+        }
+        switch command {
+        case "NICK": nick(client, p)
+        case "USER":
+            if client.username != nil { numeric(client, 462); return }
+            guard require(client, p, 4, command) else { return }
+            client.username = p[0]
+            client.realname = p[3]
+            client.invisible = digits(p[1]) && p[1].count <= 3 && (Int(p[1])! / 8) % 2 == 1
+            completeRegistration(client)
+        case "PING":
+            if p.isEmpty || p[0].isEmpty { numeric(client, 409) }
+            else { send(client, ":\(name) PONG \(name) :\(p[0])") }
+        case "PONG": break
+        case "QUIT":
+            let reason = !p.isEmpty && !p[0].isEmpty ? "Quit: " + p[0] : "Client Quit"
+            disconnect(client, reason: reason, kind: "quit")
+        case "JOIN": join(client, p)
+        case "PART": part(client, p)
+        case "PRIVMSG", "NOTICE": message(client, p, command)
+        case "TOPIC": topic(client, p)
+        case "NAMES":
+            if p.isEmpty { numeric(client, 366, x: "*"); return }
+            for name in p[0].components(separatedBy: ",") {
+                if let channel = findChannel(name) { namesReply(client, channel) }
+                else { numeric(client, 366, x: name) }
+            }
+        case "WHOIS": whois(client, p)
+        case "AWAY":
+            client.away = p.first ?? ""
+            numeric(client, client.away.isEmpty ? 305 : 306)
+        case "INVITE": invite(client, p)
+        case "KICK": kick(client, p)
+        case "MODE":
+            guard require(client, p, 1, command) else { return }
+            if p[0].hasPrefix("#") { channelMode(client, p) } else { userMode(client, p) }
+        default: numeric(client, 421, x: command)
+        }
+    }
+    func clientReport() -> [String] {
+        let clients = activeClients
+        var lines: [String] = []
+        for client in clients {
+            let signon = client.registrationTime.map(String.init) ?? "-"
+            let joined = client.channels.isEmpty ? "none" : joinedChannels(client, separator: ",")
+            let invites = client.invites.isEmpty ? "none" : client.invites.map(\.name).joined(separator: ",")
+            lines.append("CLIENT \(client.identifier) \(client.addressee) \(client.username ?? "*") "
+                + "\(client.hostname) \(client.mode) connected \(client.connectionTime) signon \(signon) "
+                + "received \(client.received) sent \(client.sent) tokens \(client.tokens) "
+                + "queue \(client.queue.count) channels \(joined) invites \(invites)")
+            if !client.away.isEmpty { lines.append("AWAY \(client.identifier) \(client.away)") }
+        }
+        lines.append("TOTAL clients \(clients.count) registered \(clients.filter(\.registered).count) "
+            + "invisible \(clients.filter(\.invisible).count) away \(clients.filter { !$0.away.isEmpty }.count)")
+        return lines
+    }
+    func statisticsReport() -> [String] {
+        let pending = activeClients.reduce(0) { $0 + $1.queue.count }
+        var lines = ["END \(end)",
+            "LINES total \(traffic.count) connect \(lineCounts[.connect, default: 0]) "
+                + "disconnect \(lineCounts[.disconnect, default: 0]) messages \(lineCounts[.messages, default: 0])",
+            "MESSAGES dropped \(counts["dropped", default: 0]) queued \(counts["queued", default: 0]) "
+                + "processed \(counts["processed", default: 0]) discarded \(counts["discarded", default: 0]) "
+                + "pending \(pending) empty \(counts["empty", default: 0])",
+            "SENT lines \(sent.count) numerics \(numerics.values.reduce(0, +)) "
+                + "pings \(counts["pings", default: 0]) errors \(counts["errors", default: 0])"]
+        for command in commands.keys.sorted() { lines.append("COMMAND \(command) \(commands[command]!)") }
+        for number in numerics.keys.sorted() {
+            lines.append("NUMERIC \(String(format: "%03d", number)) \(numerics[number]!)")
+        }
+        lines.append("PEAK connections \(peakConnections.0) at \(peakConnections.1)")
+        lines.append("PEAK registered \(peakRegistered.0) at \(peakRegistered.1)")
+        lines.append("DISCONNECTS " + ["quit", "closed", "flood", "timeout"].map {
+            "\($0) \(disconnects[$0, default: 0])"
+        }.joined(separator: " "))
+        for (time, id, addressee, reason) in gone { lines.append("GONE \(time) \(id) \(addressee) \(reason)") }
+        return lines
+    }
+    func writeOutputs() throws {
+        try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+        let outputs = [("sent.txt", sent), ("channels.txt", channelReport()),
+                       ("clients.txt", clientReport()), ("stats.txt", statisticsReport())]
+        for (filename, lines) in outputs {
+            let text = lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n")
+            try text.write(toFile: "output/" + filename, atomically: true, encoding: .ascii)
+        }
+    }
+    func useToken(time: Int, capacity: Int, interval: Int) {
+        if tokens == capacity { refillTime = time + interval }
+        tokens -= 1
+    }
+    func refill(time: Int, capacity: Int, interval: Int) {
+        if refillTime == time {
+            tokens += 1
+            refillTime = tokens < capacity ? time + interval : nil
+        }
+    }
+func parseMessage(_ raw: String) -> (String, [String]) {
+    let bytes = Array(raw.utf8)
+    var position = 0
+    if bytes.first == 58 {
+        guard let space = bytes.firstIndex(of: 32) else { return ("", []) }
+        position = space
+    }
+    while position < bytes.count && bytes[position] == 32 { position += 1 }
+    let start = position
+    while position < bytes.count && bytes[position] != 32 { position += 1 }
+    let command = String(bytes: bytes[start..<position], encoding: .ascii)!.uppercased()
+    var parameters: [String] = []
+    while position < bytes.count {
+        while position < bytes.count && bytes[position] == 32 { position += 1 }
+        if position == bytes.count { break }
+        if bytes[position] == 58 {
+            parameters.append(String(bytes: bytes[(position + 1)...], encoding: .ascii)!)
+            break
+        }
+        if parameters.count == 14 {
+            parameters.append(String(bytes: bytes[position...], encoding: .ascii)!)
+            break
+        }
+        let start = position
+        while position < bytes.count && bytes[position] != 32 { position += 1 }
+        parameters.append(String(bytes: bytes[start..<position], encoding: .ascii)!)
+    }
+    return (command, parameters)
+}

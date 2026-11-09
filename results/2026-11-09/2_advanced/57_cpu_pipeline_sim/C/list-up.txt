@@ -1,0 +1,226 @@
+    Input out = {0};
+    out.trace = read_lines("input/trace.txt");
+    Lines rows = read_lines("input/config.txt");
+    for (int i = 0; i < rows.count; ++i) {
+        char key[20];
+        sscanf(rows.data[i], "%19s", key);
+        const char *text = rows.data[i] + strlen(key) + 1;
+        } else if (strcmp(key, "VARIANT") == 0) {
+            Variant *v = &out.config.variants[out.config.variant_count++];
+            char forward[4], stage[3];
+            sscanf(text, "%16s %3s %2s %d", v->name, forward, stage, &v->latency);
+            v->forwarding = strcmp(forward, "ON") == 0;
+            v->id = strcmp(stage, "ID") == 0;
+        } else if (strcmp(key, "PRIMARY") == 0)
+            sscanf(text, "%16s %16s", out.config.primary_variant, out.config.primary_predictor);
+        else if (strcmp(key, "WINDOW") == 0)
+            sscanf(text, "%d %d", &out.config.start, &out.config.end);
+int parse_register(const char *text) {
+    if (strcmp(text, "-") == 0)
+        return -1;
+    const size_t length = strlen(text);
+    if (length < 2 || length > 3 || text[0] != 'r' || (length == 3 && text[1] == '0'))
+        return -2;
+    int out = 0;
+    for (size_t i = 1; i < length; ++i) {
+        if (text[i] < '0' || text[i] > '9')
+            return -2;
+        out = 10 * out + text[i] - '0';
+    }
+    return out <= 31 ? out : -2;
+}
+bool control(Instruction instruction) {
+    return instruction.kind == BRANCH || instruction.kind == JUMP;
+}
+Sources *dependencies(const Instruction *instructions, int count) {
+    Sources *out = allocate((size_t)count, sizeof(*out));
+    int last[32];
+    for (int i = 0; i < 32; ++i)
+        last[i] = -1;
+    for (int i = 0; i < count; ++i) {
+        const Instruction instruction = instructions[i];
+        out[i].producer[0] = instruction.rs1 > 0 ? last[instruction.rs1] : -1;
+        out[i].producer[1] = instruction.rs2 > 0 ? last[instruction.rs2] : -1;
+        if (instruction.rd > 0)
+            last[instruction.rd] = i;
+    }
+    return out;
+}
+bool id_resolved(Instruction instruction, Variant variant) {
+    return (instruction.kind == JUMP && instruction.rs1 < 0) ||
+           (control(instruction) && variant.id);
+}
+int ready_cycle(Instruction consumer, Instruction producer, Timing time, Variant variant) {
+    return !variant.forwarding
+               ? time.w + 1
+               : (producer.kind == LOAD ? time.w : time.m) + id_resolved(consumer, variant);
+Run simulate(const Instruction *instructions, const Sources *sources, int count, Variant variant,
+             const bool *flags) {
+    Run out = {0};
+    out.timings = allocate((size_t)count, sizeof(*out.timings));
+    out.records = allocate((size_t)count * 4 + 1, sizeof(*out.records));
+    for (int i = 0; i < count; ++i) {
+        Timing *time = &out.timings[i];
+        int execute = instructions[i].kind == MUL ? variant.latency : 1;
+        if (i == 0) {
+            time->f = 1;
+            time->d = 2;
+            time->x = 3;
+        } else {
+            Timing previous = out.timings[i - 1];
+            time->f =
+                flags[i - 1] ? previous.x + !id_resolved(instructions[i - 1], variant) : previous.d;
+            time->d = time->f + 1 > previous.x ? time->f + 1 : previous.x;
+            int ideal = previous.x + 1;
+            int bound[4] = {time->d + 1, previous.m, ideal, ideal}, producer[4] = {-1, -1, -1, -1};
+            for (int j = 0; j < 2; ++j) {
+                int p = sources[i].producer[j];
+                if (p < 0)
+                    continue;
+                int cause = instructions[p].kind == LOAD ? 2 : 3;
+                int ready = ready_cycle(instructions[i], instructions[p], out.timings[p], variant);
+                if (ready > bound[cause]) {
+                    bound[cause] = ready;
+                    producer[cause] = p;
+                }
+            }
+            time->x = ideal;
+            for (int cause = 0; cause < 4; ++cause)
+                if (bound[cause] > time->x) {
+                    out.records[out.count++] = (Record){cause, bound[cause] - time->x,
+                                                        cause < 2 ? i - 1 : i, i, producer[cause]};
+                    time->x = bound[cause];
+                }
+        }
+        time->m = time->x + execute;
+        time->w = time->m + 1;
+    }
+    for (int i = 0; i < out.count; ++i) {
+        Record record = out.records[i];
+        out.stalls[record.cause] += record.cycles;
+        ++out.events[record.cause];
+    }
+    out.cycles = out.timings[count - 1].w;
+    return out;
+const char *classes[7] = {"ALU", "MUL", "LOAD", "STORE", "BRANCH", "JUMP", "NOP"};
+const char *causes[4] = {"control", "structural", "load_use", "raw"};
+const char *misses[3] = {"direction", "btb_miss", "wrong_target"};
+static const char *check(char *text, Trace *trace, Instruction *out) {
+    char *fields[8];
+    int count = 1;
+    fields[0] = text;
+    for (char *p = text; *p; ++p)
+        if (*p == ' ') {
+            *p = '\0';
+            if (count < 8)
+                fields[count] = p + 1;
+            ++count;
+        }
+    if (!parse_hex(fields[0], &out->pc) || out->pc % 4)
+        return "pc";
+    out->kind = -1;
+    for (int i = 0; i < 7; ++i)
+        if (strcmp(fields[1], classes[i]) == 0)
+            out->kind = i;
+    int registers[3] = {parse_register(fields[2]), parse_register(fields[3]),
+                        parse_register(fields[4])};
+    out->rd = registers[0];
+    out->rs1 = registers[1];
+    out->rs2 = registers[2];
+    out->next = out->taken ? out->target : out->pc + 4;
+    return NULL;
+    for (int i = 0; i < lines.count; ++i) {
+        Instruction instruction = {0};
+        char *copy = format("%s", lines.data[i]);
+        const char *error = check(copy, &out, &instruction);
+        if (error) {
+            out.rejected[out.rejected_count++] = (Rejection){i + 1, error};
+            continue;
+        }
+        instruction.line = i + 1;
+        Static *group = &out.statics[instruction.static_id];
+    line(&out.lines, "pipeline variant=%s predictor=%s cycles %d-%d", variant.name,
+         config.primary_predictor, config.start, config.end);
+    for (int i = 0; i < run->count; ++i) {
+        Record r = run->records[i];
+        if (r.waiting >= 0)
+            annotations[r.waiting] =
+                joined(annotations[r.waiting], format(" %s %d", causes[r.cause], r.cycles));
+    }
+    for (int i = 0; i < count; ++i) {
+        Timing t = run->timings[i];
+        Instruction instruction = instructions[i];
+        const char *annotation = annotations[i];
+        CellSegment correct[] = {{t.f, t.f, 'F', 0},     {t.f + 1, t.d - 1, '*', 0},
+                                 {t.d, t.d, 'D', 1},     {t.d + 1, t.x - 1, '*', 1},
+                                 {t.x, t.m - 1, 'X', 2}, {t.m, t.m, 'M', 3},
+                                 {t.w, t.w, 'W', 4}};
+        add_row(&out, config, i + 1, instruction.pc, classes[instruction.kind], correct, 7,
+                annotation);
+int main(void) {
+    Input input = read_inputs();
+    Config config = input.config;
+    Trace trace = validate(input.trace);
+    Instruction *instructions = trace.instructions;
+    int n = trace.count;
+    Sources *sources = dependencies(instructions, n);
+    for (int v = 0; v < config.variant_count; ++v)
+        if (strcmp(config.variants[v].name, config.primary_variant) == 0)
+            primary_variant = v;
+    Combination combinations[64];
+    int combination_count = 0, table[8][8] = {0};
+    Run primary = {0};
+    for (int v = 0; v < config.variant_count; ++v)
+        for (int p = 0; p < config.predictor_count; ++p) {
+            Run run = simulate(instructions, sources, n, config.variants[v], predictions[p].flags);
+            if (v == primary_variant && p == primary_predictor)
+                primary = run;
+            else
+                free_run(&run);
+        }
+    Variant variant = config.variants[primary_variant];
+    Prediction prediction = predictions[primary_predictor];
+    int cycles = primary.cycles;
+    Diagram picture = diagram(instructions, n, &primary, variant, &prediction, config);
+    save("pipeline.txt", picture.lines);
+    line(&stats, "timing variant=%s predictor=%s", variant.name, config.primary_predictor);
+    line(&stats, "forwarding %s branch_stage %s mul_latency %d", variant.forwarding ? "on" : "off",
+         variant.id ? "ID" : "EX", variant.latency);
+    line(&stats, "cycles %d", cycles);
+    line(&stats, "cpi %s %s", fraction(cycles, n), decimal(cycles, n));
+    line(&stats, "ipc %s", decimal(n, cycles));
+    I total_stalls = sum4(primary.stalls);
+    line(&stats, "stall_cycles total %lld control %lld structural %lld load_use %lld raw %lld",
+         total_stalls, primary.stalls[0], primary.stalls[1], primary.stalls[2], primary.stalls[3]);
+    line(&stats, "stall_events control %lld structural %lld load_use %lld raw %lld",
+         primary.events[0], primary.events[1], primary.events[2], primary.events[3]);
+    save("stats.txt", stats);
+    for (int a = 0; a < n;) {
+        int b = a;
+        while (b < n - 1 && !control(instructions[b]))
+            ++b;
+        ProfileSegment *group = &segments[instructions[a].static_id];
+        group->pc = instructions[a].pc;
+        ++group->instances;
+        group->instructions += b - a + 1;
+        group->cycles += primary.timings[b].w - (a ? primary.timings[a - 1].w : 0);
+        a = b + 1;
+    }
+    int segment_count = 0;
+    for (int i = 0; i < trace.static_count; ++i)
+        if (segments[i].instances)
+            segments[segment_count++] = segments[i];
+    qsort(segments, (size_t)segment_count, sizeof(ProfileSegment), compare_segment);
+    line(&profile, "");
+    line(&profile, "segments total %d", segment_count);
+    for (int i = 0; i < segment_count && i < config.top; ++i) {
+        ProfileSegment r = segments[i];
+        line(&profile, "%d %s instances %lld instructions %lld cycles %lld cpi %s", i + 1,
+             hexadecimal(r.pc), r.instances, r.instructions, r.cycles,
+        Static group = trace.statics[statics[s].id];
+        Instruction r = instructions[group.first];
+        line(&profile, "%s %s %s %s %s executions %lld stall_cycles %lld", hexadecimal(r.pc),
+             classes[r.kind], register_name(r.rd), register_name(r.rs1), register_name(r.rs2),
+             group.count, sum4(group.stalls));
+    }
+    save("profile.txt", profile);

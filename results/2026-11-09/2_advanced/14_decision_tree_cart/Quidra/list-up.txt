@@ -1,0 +1,339 @@
+int position(string[] names, string wanted)
+    for: i < int(#names)
+        if names[i] == wanted
+            return i
+    return -1
+string[] read_lines(string path)
+    source_text := string.from_utf8(file.read_bin(path))
+    string[] lines := source_text.split(NL)
+    if #lines > 0 and lines[-1] == ""
+        lines = lines[0:<#lines - 1]
+    return lines
+class Attribute(int index, string name, bool is_integer, string[] values)
+    int parse(string text)
+        if text == "?"
+            return -1
+        return if is_integer then int(text) else position(values, text)
+class Row(string id, int[] values, int label)
+    int missing_count()
+        return [for value := values[] if value < 0 then 1].sum()
+int[] integer_fields(string line)
+    fields := line.split(" ")
+    return [for value := fields[1:<#fields][] then int(value)]
+class Settings(local string[] lines)
+    int max_depth := integer_fields(lines[0])[0]
+    int min_split := integer_fields(lines[1])[0]
+    int min_leaf := integer_fields(lines[2])[0]
+    int max_surrogates := integer_fields(lines[3])[0]
+Row[] read_rows(string path, Attribute[] attributes, string[] classes)
+    lines := read_lines(path)
+    Row[] rows := []
+    for: 1 <= i < int(#lines)
+        fields := lines[i].split(",")
+        values := [for attribute := attributes[] then attribute.parse(fields[attribute.index + 1])]
+        rows = rows.append(Row(fields[0], values, position(classes, fields[-1])))
+    return rows
+Dataset load()
+    schema := read_lines("input/schema.txt")
+    Attribute[] attributes := []
+    target := ""
+    string[] classes := []
+    for line := schema[]
+        fields := line.split(" ")
+        if fields[0] == "ATTRIBUTE"
+            attributes = attributes.append(Attribute(int(#attributes), fields[1], fields[2] == "INT", fields[3:<#fields]))
+        else
+            target = fields[1]
+            classes = fields[2:<#fields]
+    train := read_rows("input/train.csv", attributes, classes)
+    validation := read_rows("input/validation.csv", attributes, classes)
+    test_rows := read_rows("input/test.csv", attributes, classes)
+    return Dataset(attributes, target, classes, train, validation, test_rows, Settings(read_lines("input/params.txt")))
+class Fraction(int numerator, int denominator)
+    int compare(Fraction other)
+        first := numerator * other.denominator
+        second := other.numerator * denominator
+        return if first < second then -1 elif first > second then 1 else 0
+int[] class_counts(dataset.Row[] rows, int classes)
+    counts := array(nat(classes), fill = 0)
+    for row := rows[]
+        counts[row.label] += 1
+    return counts
+int square_sum(int[] counts)
+    return (counts ^ 2).sum()
+int majority(int[] counts)
+    chosen := 0
+    for: 1 <= i < int(#counts)
+        if counts[i] > counts[chosen]
+            chosen = i
+    return chosen
+int error_count(int[] counts)
+    return counts.sum() - counts[majority(counts)]
+Fraction quality(int[] left, int[] right)
+    left_size := left.sum()
+    right_size := right.sum()
+    return Fraction(square_sum(left) * right_size + square_sum(right) * left_size, left_size * right_size)
+bool improves(Fraction value, int[] counts)
+    return value.numerator * counts.sum() > square_sum(counts) * value.denominator
+class Split(dataset.Attribute attribute, int point)
+    bool goes_left(int value)
+        return if attribute.is_integer then 2 * value <= point else value == point
+class Surrogate(Split split, bool left, int score)
+    bool goes_left(int value)
+        return split.goes_left(value) == left
+class Candidate(Split split, int[] left_counts, int[] right_counts)
+    int left_size := left_counts.sum()
+    int right_size := right_counts.sum()
+    impurity.Fraction quality()
+        return impurity.quality(left_counts, right_counts)
+class Node(int number, int depth, int[] counts)
+    int size := counts.sum()
+    int prediction := impurity.majority(counts)
+    int errors := impurity.error_count(counts)
+    split := Split(dataset.Attribute(-1, "", true, []), 0)
+    Surrogate[] surrogates := []
+    default_left := true
+    left := -1
+    right := -1
+class Tree(Node[] nodes)
+int[] counts_at(map<int, int[]> groups, int value, int classes)
+    match groups.get(value)
+        int[] counts
+            return counts
+        none
+            return array(nat(classes), fill = 0)
+Candidate[] candidates(dataset.Attribute attribute, dataset.Row[] rows, int[] labels, int classes)
+    map<int, int[]> groups
+    total := array(nat(classes), fill = 0)
+    for: i < int(#rows)
+        value := rows[i].values[attribute.index]
+        counts := counts_at(groups, value, classes)
+        counts[labels[i]] += 1
+        .groups.set(value, counts)
+        total[labels[i]] += 1
+    ordered := groups.keys().sorted()
+    Candidate[] result := []
+    if attribute.is_integer
+        left := array(nat(classes), fill = 0)
+        for: i < int(#ordered) - 1
+            left = left + counts_at(groups, ordered[i], classes)
+            result = result.append(Candidate(Split(attribute, ordered[i] + ordered[i + 1]), left, total - left))
+    elif #ordered > 1
+        for value := ordered[]
+            left := counts_at(groups, value, classes)
+            result = result.append(Candidate(Split(attribute, value), left, total - left))
+    return result
+Candidate | none best_split(dataset.Row[] rows, dataset.Attribute[] attributes, int classes, int min_leaf)
+    labels := [for row := rows[] then row.label]
+    Candidate | none best := none
+    for attribute := attributes[]
+        for candidate := candidates(attribute, rows, labels, classes)[]
+            if candidate.left_size < min_leaf or candidate.right_size < min_leaf
+                continue
+            replace := false
+            match best
+                Candidate previous
+                    replace = candidate.quality().compare(previous.quality()) > 0
+                none
+                    replace = true
+            if replace
+                best = candidate
+    return best
+Surrogate[] find_surrogates(dataset.Row[] rows, Split primary, dataset.Attribute[] attributes, int limit)
+    directions := [for row := rows[] then if primary.goes_left(row.values[primary.attribute.index]) then 0 else 1]
+    count := int(#rows)
+    left_size := count - directions.sum()
+    baseline := math.max(left_size, count - left_size)
+    Surrogate[] result := []
+    for attribute := attributes[]
+        if attribute.index == primary.attribute.index
+            continue
+        Surrogate | none best := none
+        for candidate := candidates(attribute, rows, directions, 2)[]
+            agreement := candidate.left_counts[0] + candidate.right_counts[1]
+            value := Surrogate(candidate.split, agreement >= count - agreement, math.max(agreement, count - agreement))
+            replace := false
+            match best
+                Surrogate previous
+                    replace = value.score > previous.score
+                none
+                    replace = true
+            if replace
+                best = value
+        match best
+            Surrogate value
+                if value.score > baseline
+                    position := int(#result)
+                    result = result.append(value)
+                    while position > 0 and result[position - 1].score < value.score
+                        result[position] = result[position - 1]
+                        position -= 1
+                    result[position] = value
+            none
+                continue
+    return result[0:<math.min(limit, int(#result))]
+class Builder(dataset.Attribute[] attributes, int classes, dataset.Settings settings)
+    Node[] nodes := []
+    int .grow_node(dataset.Row[] rows, int number, int depth)
+        node := Node(number, depth, impurity.class_counts(rows, classes))
+        index := int(#nodes)
+        nodes = nodes.append(node)
+        if node.errors == 0 or depth == settings.max_depth or node.size < settings.min_split
+            return index
+        match best_split(rows, attributes, classes, settings.min_leaf)
+            Candidate candidate
+                if not impurity.improves(candidate.quality(), node.counts)
+                    return index
+                split := candidate.split
+                left_rows := [for row := rows[] if split.goes_left(row.values[split.attribute.index]) then row]
+                right_rows := [for row := rows[] if not split.goes_left(row.values[split.attribute.index]) then row]
+                node.split = split
+                node.surrogates = find_surrogates(rows, split, attributes, settings.max_surrogates)
+                node.default_left = #left_rows >= #right_rows
+                node.left = .grow_node(left_rows, 2 * number, depth + 1)
+                node.right = .grow_node(right_rows, 2 * number + 1, depth + 1)
+                nodes[index] = node
+            none
+                return index
+        return index
+Tree grow(dataset.Row[] rows, dataset.Attribute[] attributes, int classes, dataset.Settings settings)
+    builder := Builder(attributes, classes, settings)
+    .builder.grow_node(rows, 1, 0)
+    return Tree(builder.nodes)
+class Direction(bool left, int method)
+class Route(int[] path, int[] methods)
+Direction direction(tree_builder.Node node, dataset.Row row)
+    value := row.values[node.split.attribute.index]
+    if value >= 0
+        return Direction(node.split.goes_left(value), 0)
+    for surrogate := node.surrogates[]
+        value = row.values[surrogate.split.attribute.index]
+        if value >= 0
+            return Direction(surrogate.goes_left(value), 1)
+    return Direction(node.default_left, 2)
+class View(tree_builder.Tree tree, bool[] cut, depth_limit := -1)
+    bool is_leaf(int index)
+        tree_builder.Node node := tree.nodes[index]
+        return node.left < 0 or cut[index] or (depth_limit >= 0 and node.depth >= depth_limit)
+    Route route(dataset.Row row)
+        index := 0
+        path := [index]
+        int[] methods := []
+        while not is_leaf(index)
+            tree_builder.Node node := tree.nodes[index]
+            choice := direction(node, row)
+            index = if choice.left then node.left else node.right
+            path = path.append(index)
+            methods = methods.append(choice.method)
+        return Route(path, methods)
+    tree_builder.Node leaf_of(dataset.Row row)
+        Route result := route(row)
+        return tree.nodes[result.path[-1]]
+    int predict(dataset.Row row)
+        return leaf_of(row).prediction
+    int correct_count(dataset.Row[] rows)
+        return [for row := rows[] if predict(row) == row.label then 1].sum()
+View full_tree(tree_builder.Tree tree)
+    return View(tree, array(#tree.nodes, fill = false))
+int[][] confusion_matrix(int[] actual, int[] predicted, int classes)
+    int[][] matrix := array(nat(classes), fill = array(nat(classes), fill = 0))
+    for: i < int(#actual)
+        matrix[actual[i]][predicted[i]] += 1
+    return matrix
+string[] classification_lines(string title, string[] classes, int[] actual, int[] predicted)
+    count := int(#classes)
+    matrix := confusion_matrix(actual, predicted, count)
+    correct := [for i := matrix.indices()[] then matrix[i][i]].sum()
+    total := int(#actual)
+    lines := ["confusion {title} correct {correct}/{total} accuracy {fraction_text(correct, total)}", "actual\predicted " + classes.join(" ")]
+    for: i < count
+        lines = lines.append(classes[i] + " " + counts_text(matrix[i]))
+    real64[] f1 := []
+    for: k < count
+        hits := matrix[k][k]
+        predicted_total := [for row := matrix[] then row[k]].sum()
+        support := matrix[k].sum()
+        if predicted_total + support > 0
+            f1 = f1.append(real64(2 * hits) / real64(predicted_total + support))
+        lines = lines.append("class {classes[k]} precision {fraction_text(hits, predicted_total)} recall {fraction_text(hits, support)} f1 {fraction_text(2 * hits, predicted_total + support)} support {support}")
+    return lines.append("macro_f1 {real_text(average(f1))}")
+dataset.Row[][] reached_rows(evaluation.View tree, dataset.Row[] rows)
+    dataset.Row[][] result := array(#tree.tree.nodes, fill = [])
+    for row := rows[]
+        for index := tree.route(row).path[]
+            result[index] = result[index].append(row)
+    return result
+int decide(tree_builder.Tree tree, int index, dataset.Row[][] reached, Decision[] &decisions, bool[] &cut)
+    tree_builder.Node node := tree.nodes[index]
+    leaf_error := [for row := reached[index][] if row.label != node.prediction then 1].sum()
+    if node.left < 0
+        return leaf_error
+    subtree_error := decide(tree, node.left, reached, &decisions, &cut)
+    subtree_error += decide(tree, node.right, reached, &decisions, &cut)
+    pruned := leaf_error <= subtree_error
+    decisions = decisions.append(Decision(index, int(#reached[index]), leaf_error, subtree_error, pruned))
+    if pruned
+        cut[index] = true
+        return leaf_error
+    return subtree_error
+Reduced reduced_error(tree_builder.Tree tree, dataset.Row[] rows)
+    grown := evaluation.full_tree(tree)
+    reached := reached_rows(grown, rows)
+    Decision[] decisions := []
+    cut := grown.cut
+    decide(tree, 0, reached, &decisions, &cut)
+    return Reduced(evaluation.View(tree, cut), decisions)
+class Analysis(dataset.Dataset data)
+    dataset.Attribute[] attributes := data.attributes
+    string[] classes := data.classes
+    dataset.Settings settings := data.settings
+    dataset.Row[] train := data.train
+    dataset.Row[] validation := data.validation
+    dataset.Row[] test_rows := data.test_rows
+    class_count := int(#classes)
+    evaluation.View grown := evaluation.full_tree(tree_builder.grow(train, attributes, class_count, settings))
+    local reduced := pruning.reduced_error(grown.tree, validation)
+    evaluation.View pruned := reduced.tree
+    pruning.Decision[] decisions := reduced.decisions
+    evaluation.View[] models := [grown, pruned, depth_results[selected_depth].tree, sequence[selected_index].tree]
+    model_labels := ["grown", "pruned", "depth", "cost_complexity", "bagging"]
+    int[][] predictions := []
+    for model := models[]
+        predictions = predictions.append([for row := test_rows[] then model.predict(row)])
+    string accuracy(evaluation.View tree, dataset.Row[] rows)
+        return evaluation.ratio_text(tree.correct_count(rows), int(#rows))
+    string[] predictions_file()
+        lines := ["id,predicted,actual,grown,leaf,path,missing"]
+        for row := test_rows[]
+            route := pruned.route(row)
+            tree_builder.Node leaf := pruned.tree.nodes[route.path[-1]]
+            path := [for index := route.path[] then "{pruned.tree.nodes[index].number}"].join("-")
+            missing := [for method := route.methods[] if method != 0 then 1].sum()
+            lines = lines.append("{row.id},{classes[leaf.prediction]},{classes[row.label]},{classes[grown.predict(row)]},{leaf.number},{path},{missing}")
+        return lines
+    string[] model_evaluation(int model)
+        labels := [for row := test_rows[] then row.label]
+        return evaluation.classification_lines(model_labels[model] + " test", classes, labels, predictions[model])
+    string[] routing_lines()
+        int[][] tallies := array(#pruned.tree.nodes, fill = [0, 0, 0])
+        for row := test_rows[]
+            route := pruned.route(row)
+            for: i < int(#route.methods)
+                tallies[route.path[i]][route.methods[i]] += 1
+        lines := ["routing pruned test"]
+        for index := pruned.internal_nodes()[]
+            tally := tallies[index]
+            lines = lines.append("node {pruned.tree.nodes[index].number} rows {tally.sum()} primary {tally[0]} surrogate {tally[1]} default {tally[2]}")
+        complete := [for row := test_rows[] if row.missing_count() == 0 then row]
+        incomplete := [for row := test_rows[] if row.missing_count() > 0 then row]
+        lines = lines.append("complete rows {#complete} correct {accuracy(pruned, complete)}")
+        return lines.append("incomplete rows {#incomplete} correct {accuracy(pruned, incomplete)}")
+    string[] evaluation_file()
+        return join_sections([data_lines(), [summary_line("grown", grown), summary_line("pruned", pruned)], model_evaluation(0), model_evaluation(1), routing_lines(), cross_validation_lines(), depth_lines(), cost_complexity_lines(), bagging_lines(), mcnemar_lines(), auc_lines(), learning_curve_lines()])
+void write_lines(string name, string[] lines)
+    writer1 := file.write("output/" + name)
+    .writer1(lines.join(NL) + NL)
+if main
+    analysis := Analysis(dataset.load())
+    write_lines("predictions.csv", analysis.predictions_file())
+    write_lines("evaluation.txt", analysis.evaluation_file())

@@ -1,0 +1,5 @@
+Food items are milk 198*2=396, bread 248, apple 128*4=512 and eggs 268: category subtotal 1424. Its integer tax is 1424*8/100=113, truncating only after category aggregation; separately truncated item taxes would be 31+19+40+21=111. General items total 165*3+437=932 and tax 93. Final payment is 1424+932+113+93=2562, adding each untaxed category subtotal and each tax once. The retained category mapping, aggregation and final expression establish the dependency without unrelated item-line formatting.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

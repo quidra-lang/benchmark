@@ -1,0 +1,342 @@
+function Restrictions:allowed(source, destination, time)
+    if self.states[state_key(destination, time)] then return false end
+    local permanent = self.permanent[destination]
+    if permanent and permanent <= time then return false end
+    return source == destination or not self.moves[move_key(source, destination, time)]
+end
+function Restrictions:arrival(goal)
+    local arrival = 0
+    for _, item in pairs(self.states) do
+        if item.cell == goal then arrival = math.max(arrival, item.time + 1) end
+    end
+    return arrival
+end
+function Low.reserve(restrictions, path, start_time, permanent)
+    start_time = start_time or 0
+    for index, cell in ipairs(path) do
+        local time = start_time + index - 1
+        restrictions:add_state(cell, time)
+        if index > 1 and cell ~= path[index - 1] then restrictions:add_move(cell, path[index - 1], time) end
+    end
+    if permanent then
+        local goal, time = path[#path], start_time + #path - 1
+        restrictions.permanent[goal] = math.min(restrictions.permanent[goal] or time, time)
+    end
+end
+function Low.search(grid, agent, distances, start, t0, restrictions, tmax, budget, window)
+    budget.searches = budget.searches + 1
+    local beginning, insertion, arrival = budget.expansions, 0, restrictions:arrival(agent.goal)
+    local heap = Low.heap(function(a, b)
+        if a.f ~= b.f then return a.f < b.f end
+        if a.g ~= b.g then return a.g > b.g end
+        return a.number < b.number
+    end)
+    heap:push({cell = start, time = t0, f = distances[start], g = 0, number = 0})
+    local generated = {[state_key(start, t0)] = true}
+    while #heap.items > 0 do
+        local state = heap:pop()
+        budget.expansions = budget.expansions + 1
+        if budget.limit and budget.expansions > budget.limit then return nil, budget.expansions - beginning, true end
+        if (state.cell == agent.goal and state.time >= arrival) or (window and state.time == tmax) then
+            local reverse, path = {}, {}
+            while state do reverse[#reverse + 1] = state.cell; state = state.parent end
+            for i = #reverse, 1, -1 do path[#path + 1] = reverse[i] end
+            return path, budget.expansions - beginning, false
+        end
+        if state.time < tmax then
+            local time = state.time + 1
+            for _, destination in ipairs(grid.destinations[state.cell]) do
+                local key = state_key(destination, time)
+                if distances[destination] ~= nil and not generated[key] and restrictions:allowed(state.cell, destination, time) then
+                    insertion = insertion + 1
+                    generated[key] = true
+                    local g = time - t0
+                    heap:push({cell = destination, time = time, g = g, f = g + distances[destination],
+                        number = insertion, parent = state})
+                end
+            end
+        end
+    end
+    return nil, budget.expansions - beginning, false
+end
+function Grid.read()
+    local file = assert(io.open("input/map.txt", "r"))
+    local dimensions = Grid.words(file:read("l"))
+    local width, height = tonumber(dimensions[1]), tonumber(dimensions[2])
+    Grid.width, Grid.area = width, width * height + 1
+    local grid = {width = width, height = height, rows = {}, free = {}, cells = {}, destinations = {}, neighbors = {}}
+    for y = 0, height - 1 do
+        local row = file:read("l")
+        grid.rows[y + 1] = row
+        for x = 0, width - 1 do
+            if row:sub(x + 1, x + 1) == "." then
+                local cell = y * width + x + 1
+                grid.free[cell] = true
+                grid.cells[#grid.cells + 1] = cell
+            end
+        end
+    end
+    file:close()
+    for _, cell in ipairs(grid.cells) do
+        local x, y = Grid.xy(cell)
+        local destinations, neighbors = {}, {}
+        for index, delta in ipairs(actions) do
+            local nx, ny = x + delta[1], y + delta[2]
+            local next_cell = ny * width + nx + 1
+            if nx >= 0 and nx < width and ny >= 0 and ny < height and grid.free[next_cell] then
+                destinations[#destinations + 1] = next_cell
+                if index > 1 then neighbors[#neighbors + 1] = next_cell end
+            end
+        end
+        grid.destinations[cell], grid.neighbors[cell] = destinations, neighbors
+    end
+    return grid
+end
+function Grid.agents()
+    local agents = {}
+    local file = assert(io.open("input/agents.csv", "r"))
+    file:read("l")
+    for line in file:lines() do
+        local fields = {}
+        for value in line:gmatch("%d+") do fields[#fields + 1] = tonumber(value) end
+        agents[#agents + 1] = {id = fields[1], name = string.char(65 + fields[1]),
+            start = fields[3] * Grid.width + fields[2] + 1,
+            goal = fields[5] * Grid.width + fields[4] + 1}
+    end
+    file:close()
+    return agents
+end
+local function parameters(n)
+    local settings = {orders = {{}}, runs = {}, delays = {}}
+    for index = 1, n do append(settings.orders[1], index) end
+    for line in io.lines("input/params.txt") do
+        local f = Grid.words(line)
+        local kind = f[1]
+        if kind == "HORIZON" then settings.horizon = tonumber(f[2])
+        elseif kind == "HL_BUDGET" then settings.hl_budget = tonumber(f[2])
+        elseif kind == "LL_BUDGET" then settings.ll_budget = tonumber(f[2])
+        elseif kind == "WINDOW" then settings.window, settings.step = tonumber(f[2]), tonumber(f[3])
+        elseif kind == "ORDER" then
+            local order = {}
+            for i = 2, #f do append(order, tonumber(f[i]) + 1) end
+            append(settings.orders, order)
+        elseif kind == "RUN" then
+            append(settings.runs, {name = f[2] .. "-" .. f[3], solver = f[2], cost_function = f[3]})
+        elseif kind == "ANIMATE" then settings.animate, settings.frames = f[2], tonumber(f[3])
+        else append(settings.delays, {agent = tonumber(f[2]) + 1, start = tonumber(f[3]), duration = tonumber(f[4])}) end
+    end
+    return settings
+end
+local function solve_pp(run, grid, agents, distances, settings)
+    for order_number, order in ipairs(settings.orders) do
+        run.high_level = run.high_level + 1
+        local beginning = run.budget.expansions
+        local paths, attempts, failure = Prioritized.try_order(grid, agents, distances, settings.horizon, order, run.budget)
+        local names = {}
+        for _, index in ipairs(order) do append(names, Report.agent(index)) end
+        for _, item in ipairs(attempts) do
+            local prefix = string.format("order %d agent %s", order_number, Report.agent(item.agent))
+            append(run.trace, prefix .. (item.path and " cost " .. (#item.path - 1) or " failed") .. " expansions " .. item.expansions)
+        end
+        if failure == "ll_budget" then run.reason = failure; break end
+        local summary = string.format("order %d %s planned %d expansions %d", order_number,
+            table.concat(names), #attempts - (failure and 1 or 0), run.budget.expansions - beginning)
+        if not failure then
+            append(run.specific, summary .. " ok")
+            run.paths, run.status, run.answer_order = paths, "OK", order_number
+            break
+        end
+        append(run.specific, summary .. " failed " .. Report.agent(failure))
+    end
+    if run.status == "OK" then run.ending = "end OK order " .. run.answer_order
+    else run.reason = run.reason or "orders"; run.ending = "end FAIL " .. run.reason end
+end
+local function validate_plan(paths, agents, grid)
+    local result = {start = 0, goal = 0, moves = 0, vertex = 0, edge = 0, follows = 0, conflicts = CBS.conflicts(paths)}
+    local horizon = 0
+    for i, path in ipairs(paths) do
+        if path[1] ~= agents[i].start then result.start = result.start + 1 end
+        if path[#path] ~= agents[i].goal then result.goal = result.goal + 1 end
+        horizon = math.max(horizon, #path - 1)
+        for step = 2, #path do
+            local allowed = false
+            for _, destination in ipairs(grid.destinations[path[step - 1]] or {}) do
+                if destination == path[step] then allowed = true; break end
+            end
+            if not allowed then result.moves = result.moves + 1 end
+        end
+    end
+    for _, conflict in ipairs(result.conflicts) do result[conflict.kind] = result[conflict.kind] + 1 end
+    for time = 1, horizon do
+        for a = 1, #paths do
+            local past_a, next_a = CBS.position(paths[a], time - 1), CBS.position(paths[a], time)
+            if next_a ~= past_a then
+                for b = 1, #paths do
+                    if a ~= b and next_a == CBS.position(paths[b], time - 1) and CBS.position(paths[b], time) ~= past_a then
+                        result.follows = result.follows + 1
+                    end
+                end
+            end
+        end
+    end
+    result.verdict = result.start + result.goal + result.moves + result.vertex + result.edge == 0 and "VALID" or "INVALID"
+    return result
+end
+local function plan_statistics(paths, agents, overview, cost_function)
+    local result = {soc = 0, makespan = 0, agents = {}, sum_extra = 0, max_extra = 0,
+        waits = 0, turns = 0, arrivals = {}, traffic = {}, cell_waits = {}, hotspots = {}}
+    for i, path in ipairs(paths) do
+        local record = path_statistics(path, agents[i].goal, overview.agents[i].shortest)
+        result.agents[i] = record
+        result.soc, result.makespan = result.soc + record.cost, math.max(result.makespan, record.cost)
+        result.sum_extra, result.max_extra = result.sum_extra + record.extra, math.max(result.max_extra, record.extra)
+        result.waits, result.turns = result.waits + record.waits, result.turns + record.turns
+        local visited = {}
+        for step, cell in ipairs(path) do
+            if not visited[cell] then result.traffic[cell] = (result.traffic[cell] or 0) + 1; visited[cell] = true end
+            if step > 1 and cell == path[step - 1] then result.cell_waits[cell] = (result.cell_waits[cell] or 0) + 1 end
+        end
+    end
+    result.cost = cost_function == "SOC" and result.soc or result.makespan
+    result.ratio = Report.fraction(result.cost, cost_function == "SOC" and overview.soc_lower or overview.makespan_lower)
+    for time = 0, result.makespan do
+        local n = 0
+        for _, path in ipairs(paths) do if #path - 1 <= time then n = n + 1 end end
+        append(result.arrivals, n)
+    end
+    for cell in pairs(result.traffic) do append(result.hotspots, cell) end
+    table.sort(result.hotspots, function(a, b)
+        if result.traffic[a] ~= result.traffic[b] then return result.traffic[a] > result.traffic[b] end
+        return a < b
+    end)
+    while #result.hotspots > 5 do table.remove(result.hotspots) end
+    return result
+end
+local function complete_runs(results, agents, grid, overview, settings)
+    for _, run in ipairs(results) do
+        if run.status == "OK" then
+            run.metrics = plan_statistics(run.paths, agents, overview, run.cost_function)
+            run.validation = validate_plan(run.paths, agents, grid)
+            run.execution = delayed_execution(run.paths, settings)
+        end
+    end
+end
+local function successful_run_lines(run, agents)
+    local metrics, execution = run.metrics, run.execution
+    local result = {string.format("run %s solver %s cost_function %s result OK cost %d soc %d makespan %d ratio %s",
+        run.name, run.solver, run.cost_function, metrics.cost, metrics.soc, metrics.makespan, metrics.ratio)}
+    extend(result, run.specific)
+    for i, agent in ipairs(agents) do
+        local record = metrics.agents[i]
+        append(result, string.format("agent %s cost %d extra %d waits %d turns %d arrive %d leave %d moves %s",
+            agent.name, record.cost, record.extra, record.waits, record.turns, record.arrive, record.leave, record.actions))
+    end
+    append(result, "arrivals " .. table.concat(metrics.arrivals, " "))
+    local hotspots = {}
+    for _, cell in ipairs(metrics.hotspots) do append(hotspots, Report.cell(cell) .. ":" .. metrics.traffic[cell]) end
+    append(result, "hotspots " .. table.concat(hotspots, " "))
+    if execution.deadlock ~= nil then append(result, "execution deadlock time " .. execution.deadlock)
+    else append(result, string.format("execution soc %d makespan %d blocked %d finish %s", execution.soc,
+        execution.makespan, execution.blocked, table.concat(execution.finish, " "))) end
+    return result
+end
+local function validation_lines(results, independent, agents, grid, overview)
+    local baseline = validate_plan(independent, agents, grid)
+    baseline.conflicts = overview.independent_conflicts
+    local plans = {{name = "INDEPENDENT", validation = baseline}}
+    extend(plans, results)
+    local lines = {}
+    for _, plan in ipairs(plans) do
+        local v = plan.validation
+        if not v then append(lines, "plan " .. plan.name .. " verdict NONE")
+        else
+            append(lines, string.format("plan %s verdict %s start %d goal %d moves %d vertex %d edge %d follows %d",
+                plan.name, v.verdict, v.start, v.goal, v.moves, v.vertex, v.edge, v.follows))
+            for _, conflict in ipairs(v.conflicts) do
+                append(lines, "  " .. Report.conflict(conflict) .. (plan.name == "INDEPENDENT" and " " .. conflict.class or ""))
+            end
+        end
+    end
+    return lines
+end
+local function animation_lines(results, grid, agents, settings)
+    local selected
+    for _, run in ipairs(results) do if run.name == settings.animate then selected = run; break end end
+    if selected.status ~= "OK" then return {"run " .. selected.name .. " FAIL"} end
+    local paths, metrics = selected.paths, selected.metrics
+    local lines = {string.format("run %s frames %d", selected.name, settings.frames)}
+    for time = 0, settings.frames - 1 do
+        local done, moving, waiting, glyphs = 0, 0, 0, {}
+        for _, agent in ipairs(agents) do glyphs[agent.goal] = agent.name:lower() end
+        for i, path in ipairs(paths) do
+            if time >= #path - 1 then done = done + 1
+            elseif time >= 1 and CBS.position(path, time) ~= CBS.position(path, time - 1) then moving = moving + 1
+            else waiting = waiting + 1 end
+            glyphs[CBS.position(path, time)] = agents[i].name
+        end
+        append(lines, "")
+        append(lines, string.format("frame %d done %d moving %d waiting %d", time, done, moving, waiting))
+        extend(lines, Report.picture(grid, glyphs))
+    end
+    append(lines, "")
+    append(lines, "traffic")
+    extend(lines, count_picture(grid, metrics.traffic))
+    append(lines, "")
+    append(lines, "waits")
+    extend(lines, count_picture(grid, metrics.cell_waits))
+    return lines
+end
+local grid = Grid.read()
+local agents = Grid.agents()
+local settings, distances = parameters(#agents), {}
+for i, agent in ipairs(agents) do distances[i] = Grid.distance(grid, agent.goal) end
+local independent = independent_plan(grid, agents, distances, settings.horizon)
+local overview = instance_overview(grid, agents, distances, independent)
+local results = run_solvers(grid, agents, distances, settings)
+complete_runs(results, agents, grid, overview, settings)
+assert(os.execute("mkdir -p output"))
+Report.save("solutions.txt", solution_lines(grid, agents, overview, results))
+Report.save("stats.csv", stats_lines(results))
+Report.save("validation.txt", validation_lines(results, independent, agents, grid, overview))
+Report.save("trace.txt", trace_lines(results))
+Report.save("frames.txt", animation_lines(results, grid, agents, settings))
+function CBS.position(path, time)
+    return path[math.min(time + 1, #path)]
+end
+function CBS.conflicts(paths)
+    local horizon, result = 0, {}
+    for _, path in ipairs(paths) do horizon = math.max(horizon, #path - 1) end
+    for time = 1, horizon do
+        for a = 1, #paths do
+            for b = a + 1, #paths do
+                local current_a, current_b = CBS.position(paths[a], time), CBS.position(paths[b], time)
+                if current_a == current_b then
+                    result[#result + 1] = {kind = "vertex", time = time, a = a, b = b, cell = current_a}
+                elseif current_a == CBS.position(paths[b], time - 1) and current_b == CBS.position(paths[a], time - 1) then
+                    result[#result + 1] = {kind = "edge", time = time, a = a, b = b,
+                        source = CBS.position(paths[a], time - 1), destination = current_a}
+                end
+            end
+        end
+    end
+    return result
+end
+function CBS.cost(paths, cost_function)
+    local soc, makespan = 0, 0
+    for _, path in ipairs(paths) do soc, makespan = soc + #path - 1, math.max(makespan, #path - 1) end
+    return cost_function == "SOC" and soc or makespan
+end
+function Prioritized.try_order(grid, agents, distances, horizon, order, budget)
+    local restrictions, paths, attempts = Low.restrictions(), {}, {}
+    for _, index in ipairs(order) do
+        local agent = agents[index]
+        local path, expansions, aborted = Low.search(grid, agent, distances[index], agent.start,
+            0, restrictions, horizon, budget, false)
+        if aborted then return nil, attempts, "ll_budget" end
+        attempts[#attempts + 1] = {agent = index, path = path, expansions = expansions}
+        if not path then return nil, attempts, index end
+        paths[index] = path
+        Low.reserve(restrictions, path, 0, true)
+    end
+    return paths, attempts, nil
+end

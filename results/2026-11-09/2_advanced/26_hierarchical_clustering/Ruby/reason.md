@@ -1,0 +1,11 @@
+The final tree string is strings.last, after the selected loop has constructed every merged parent representation. The return interpolation appends the literal semicolon immediately after this completed root representation (and its method-name prefix). The selected output call routes these lines to trees.txt; the writer appends LF after each complete line. Therefore the character order is completed root, semicolon, LF, with no newline inserted before the semicolon.
+
+String concatenation/interpolation evaluates the root expression before appending the trailing literal. The selected writer’s explicit newline operation establishes the line-ending boundary; recursive tree internals are unnecessary when the full root representation is already returned by the call.
+
+Evidence: main.rb: 592–602, 663; dataset.rb: 15–16. The selected complete lines contain the decision and its necessary data dependencies. An excerpt containing only a semicolon literal would not identify its relation to the root. Conversely, the full clustering and branch-length calculation adds no evidence about this terminator; it is excluded. For the iterative string implementations, the parent-building loop is retained to establish what the final string represents.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 291 tokenizer tokens. The full selected source file(s) would be 11900 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.
+
+## Task A source conformity review
+
+Remove Ruby magic comment to meet no-source-comments rule; explicit freeze operations remain. No literal-freeze introspection or required literal-string identity was found; intended file outputs are unchanged by source review. Source line counts were preserved for excerpt provenance. The current excerpt contains 291 tokens; edited Task A sources were remeasured. These are source-review corrections, not a claim of compilation or execution verification.

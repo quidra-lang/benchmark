@@ -1,0 +1,147 @@
+function normalize(weights) {
+  let total = 0;
+  for (const weight of weights) total += weight;
+  for (let i = 0; i < weights.length; i++) weights[i] /= total;
+  return total;
+}
+function discrete(rows, maximumRounds, shrinkage = 1, initialWeights = null) {
+  const plans = prepare(rows);
+  const weights = initialWeights === null ? Array(rows.length).fill(1 / rows.length) : initialWeights.slice();
+  const rounds = [];
+  let bound = 1;
+  let stop = 'completed';
+  for (let t = 0; t < maximumRounds; t++) {
+    const candidate = discreteSearch(rows, weights, plans);
+    const error = candidate.error;
+    if (error >= 0.5) { stop = 'weak'; break; }
+    const alpha = error <= 1e-10 ? 1 : shrinkage * (0.5 * Math.log((1 - error) / error));
+    const polarity = candidate.polarity;
+    const stump = new Stump(candidate.feature, [candidate.threshold], [-polarity * alpha, polarity * alpha]);
+    const before = weights.slice();
+    for (let i = 0; i < rows.length; i++) {
+      const decision = rows[i].values[candidate.feature] > candidate.threshold ? polarity : -polarity;
+      weights[i] *= decision === rows[i].label ? Math.exp(-alpha) : Math.exp(alpha);
+    }
+    const z = normalize(weights);
+    bound *= z;
+    rounds.push({ stump, polarity, error, alpha, z, bound, weights: before });
+    if (error <= 1e-10) { stop = 'perfect'; break; }
+  }
+  return { rounds, stop };
+}
+function prepare(rows) {
+  return rows[0].values.map((value, feature) => {
+    const order = rows.map((row, index) => index);
+    order.sort((a, b) => rows[a].values[feature] - rows[b].values[feature] || a - b);
+    const groups = [];
+    const distinct = [];
+    for (const index of order) {
+      const current = rows[index].values[feature];
+      if (distinct.length === 0 || distinct.at(-1) !== current) {
+        distinct.push(current);
+        groups.push([]);
+      }
+      groups.at(-1).push(index);
+    }
+    const thresholds = [distinct[0] - 1];
+    for (let i = 1; i < distinct.length; i++) thresholds.push((distinct[i - 1] + distinct[i]) / 2);
+    return { feature, order, groups, thresholds };
+  });
+}
+function discreteSearch(rows, weights, plans) {
+  let positive = 0;
+  let negative = 0;
+  for (let i = 0; i < rows.length; i++) {
+    positive += rows[i].label === 1 ? weights[i] : 0;
+    negative += rows[i].label === -1 ? weights[i] : 0;
+  }
+  const candidates = [];
+  for (const plan of plans) {
+    let leftPositive = 0;
+    let leftNegative = 0;
+    for (let k = 0; k < plan.thresholds.length; k++) {
+      if (k > 0) {
+        for (const i of plan.groups[k - 1]) {
+          leftPositive += rows[i].label === 1 ? weights[i] : 0;
+          leftNegative += rows[i].label === -1 ? weights[i] : 0;
+        }
+      }
+      const common = { feature: plan.feature, threshold: plan.thresholds[k] };
+      candidates.push({ ...common, polarity: 1, error: leftPositive + (negative - leftNegative) });
+      candidates.push({ ...common, polarity: -1, error: leftNegative + (positive - leftPositive) });
+    }
+  }
+  return choose(candidates);
+}
+const prediction = score => score > 0 ? 1 : -1;
+function minimumPosition(values) {
+  let best = 0;
+  for (let i = 1; i < values.length; i++) if (values[i] < values[best]) best = i;
+  return best;
+}
+
+function curve(rounds, train, test, variant) {
+  const trainScores = Array(train.length).fill(0);
+  const testScores = Array(test.length).fill(0);
+  let scale = 0;
+  const result = [];
+  for (const round of rounds) {
+    for (let i = 0; i < train.length; i++) trainScores[i] += round.stump.output(train[i].values);
+    for (let i = 0; i < test.length; i++) testScores[i] += round.stump.output(test[i].values);
+    scale += magnitude(round);
+    const minimum = Math.min(...train.map((row, i) => row.label * trainScores[i]));
+    result.push({ trainErrors: errorCount(train, trainScores), testErrors: errorCount(test, testScores),
+      trainLoss: loss(train, trainScores, variant), testLoss: loss(test, testScores, variant), minimum: minimum / scale });
+  }
+  return result;
+}
+function crossValidation(rows, params) {
+  const folds = [];
+  for (let fold = 0; fold < params.folds; fold++) {
+    const validation = rows.map((row, index) => index).filter(index => index % params.folds === fold);
+    const count = rows.length - validation.length;
+    const weights = rows.map((row, index) => index % params.folds === fold ? 0 : 1 / count);
+    const model = discrete(rows, params.rounds, 1, weights);
+    const scores = Array(validation.length).fill(0);
+    const errors = [];
+    for (let t = 0; t < params.rounds; t++) {
+      if (t < model.rounds.length) {
+        for (let i = 0; i < validation.length; i++) scores[i] += model.rounds[t].stump.output(rows[validation[i]].values);
+      }
+      let countErrors = 0;
+      for (let i = 0; i < validation.length; i++) if (prediction(scores[i]) !== rows[validation[i]].label) countErrors++;
+      errors.push(countErrors);
+    }
+    folds.push({ model, validation, count, errors });
+  }
+  const errors = Array(params.rounds).fill(0);
+  for (const fold of folds) {
+    for (let t = 0; t < params.rounds; t++) errors[t] += fold.errors[t];
+  }
+  const selected = minimumPosition(errors) + 1;
+  const scores = Array(rows.length).fill(0);
+  for (const fold of folds) {
+    const rounds = fold.model.rounds.slice(0, selected);
+    for (const i of fold.validation) scores[i] = score(rounds, rows[i].values);
+  }
+  return { folds, errors, selected, scores };
+}
+function analyzeModels(data, cv) {
+  const models = [];
+  for (const name of data.params.variants) {
+    const full = trainVariant(name, data.train, data.params);
+    const rounds = name === 'discrete' ? full.rounds.slice(0, cv.selected) : full.rounds.slice();
+    const scale = sum(rounds.map(magnitude));
+    const trainScores = scoreRows(rounds, data.train);
+    const testScores = scoreRows(rounds, data.test);
+    models.push({ name, full, rounds, scale, trainScores, testScores,
+      trainMargins: data.train.map((row, i) => row.label * trainScores[i] / scale),
+      testMargins: data.test.map((row, i) => row.label * testScores[i] / scale),
+      trainPredictions: trainScores.map(prediction), testPredictions: testScores.map(prediction),
+      curve: curve(full.rounds, data.train, data.test, name), importance: importance(rounds, data.features.length) });
+  }
+  return models;
+  for (const model of models) {
+    lines.push(metricsLine('train', model.name, model.rounds.length, data.train, model.trainScores),
+      metricsLine('test', model.name, model.rounds.length, data.test, model.testScores));
+  }

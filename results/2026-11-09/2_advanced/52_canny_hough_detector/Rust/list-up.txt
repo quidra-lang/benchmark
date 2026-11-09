@@ -1,0 +1,237 @@
+pub fn read() -> io::Result<Data> {
+    let content = fs::read_to_string("input/image.pgm")?;
+    let mut words = content.split_whitespace();
+    words.next();
+    let width = words.next().unwrap().parse().unwrap();
+    let height = words.next().unwrap().parse().unwrap();
+    words.next();
+    let pixels = words.map(|s| s.parse().unwrap()).collect();
+    let trig = fs::read_to_string("input/trig.txt")?.lines().map(|l| {
+        let v: Vec<i64> = l.split_whitespace().map(|s| s.parse().unwrap()).collect();
+        (v[1], v[2])
+    }).collect();
+    let params = fs::read_to_string("input/params.txt")?.lines().map(|l| l.split_whitespace().skip(1).map(|s| s.parse().unwrap()).collect()).collect();
+    Ok(Data { image: Image { width, height, pixels }, trig, params })
+}
+
+pub fn write(name: &str, image: &Image) -> io::Result<()> {
+    let mut lines = vec!["P2".into(), format!("{} {}", image.width, image.height), "255".into()];
+    lines.extend(image.pixels.chunks(image.width).map(|r| r.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")));
+    fs::write(format!("output/{}", name), lines.join("\n") + "\n")
+}
+pub fn clamped(values: &[i64], width: usize, height: usize, x: i64, y: i64) -> i64 {
+    let x = x.max(0).min(width as i64 - 1) as usize;
+    let y = y.max(0).min(height as i64 - 1) as usize;
+    values[y * width + x]
+}
+
+pub fn smooth(image: &Image, size: usize, kernel: &[i64], divisor: i64) -> Vec<i64> {
+    let half = size as i64 / 2;
+    let mut values = Vec::new();
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let mut sum = 0;
+            for j in 0..size {
+                for i in 0..size {
+                    sum += kernel[j * size + i] * clamped(&image.pixels, image.width, image.height, x as i64 + i as i64 - half, y as i64 + j as i64 - half);
+                }
+            }
+            values.push(sum.div_euclid(divisor));
+        }
+    }
+    values
+}
+
+pub fn gradient(values: &[i64], width: usize, height: usize) -> (Vec<i64>, Vec<i64>, Vec<i64>) {
+    let (mut gx, mut gy, mut magnitude) = (Vec::new(), Vec::new(), Vec::new());
+    for y in 0..height {
+        for x in 0..width {
+            let mut q = Vec::new();
+            for dy in -1..=1 {
+                for dx in -1..=1 { q.push(clamped(values, width, height, x as i64 + dx, y as i64 + dy)); }
+            }
+            let a = (q[2] + 2 * q[5] + q[8]) - (q[0] + 2 * q[3] + q[6]);
+            let b = (q[6] + 2 * q[7] + q[8]) - (q[0] + 2 * q[1] + q[2]);
+            gx.push(a);
+            gy.push(b);
+            magnitude.push(a.abs() + b.abs());
+        }
+    }
+    (gx, gy, magnitude)
+}
+pub fn neighbors(index: usize, width: usize, height: usize) -> Vec<usize> {
+    let (x, y) = ((index % width) as i64, (index / width) as i64);
+    let mut result = Vec::new();
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (a, b) = (x + dx, y + dy);
+            if (dx != 0 || dy != 0) && a >= 0 && b >= 0 && a < width as i64 && b < height as i64 { result.push(b as usize * width + a as usize); }
+        }
+    }
+    result
+}
+
+pub fn directions(gx: &[i64], gy: &[i64]) -> Vec<i64> {
+    gx.iter().zip(gy).map(|(&x, &y)| {
+        let (ax, ay) = (x.abs(), y.abs());
+        if 29 * ay <= 12 * ax { 0 } else if 29 * ay >= 70 * ax { 90 }
+        else if x * y < 0 { 45 } else { 135 }
+    }).collect()
+}
+
+pub fn suppress(magnitude: &[i64], directions: &[i64], width: usize, height: usize) -> Vec<i64> {
+    let mut values = vec![0; magnitude.len()];
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let i = y * width + x;
+            let (a, b) = match directions[i] {
+                0 => (i - 1, i + 1),
+                45 => (i - width + 1, i + width - 1),
+                90 => (i - width, i + width),
+                _ => (i - width - 1, i + width + 1),
+            };
+            if magnitude[i] > magnitude[a] && magnitude[i] >= magnitude[b] { values[i] = magnitude[i]; }
+        }
+    }
+    values
+}
+
+pub fn hysteresis(nms: &[i64], width: usize, height: usize, low: i64, high: i64) -> Vec<bool> {
+    let mut edges: Vec<bool> = nms.iter().map(|&n| n >= high).collect();
+    let mut queue: VecDeque<usize> = (0..edges.len()).filter(|&i| edges[i]).collect();
+    while let Some(i) = queue.pop_front() {
+        for j in neighbors(i, width, height) {
+            if !edges[j] && nms[j] >= low { edges[j] = true; queue.push_back(j); }
+        }
+    }
+    edges
+}
+
+pub fn components(edges: &[bool], width: usize, height: usize) -> Vec<Vec<usize>> {
+    let mut visited = vec![false; edges.len()];
+    let mut result = Vec::new();
+    for i in 0..edges.len() {
+        if !edges[i] || visited[i] { continue; }
+        visited[i] = true;
+        let mut component = Vec::new();
+        let mut queue = VecDeque::from([i]);
+        while let Some(j) = queue.pop_front() {
+            component.push(j);
+            for k in neighbors(j, width, height) {
+                if edges[k] && !visited[k] { visited[k] = true; queue.push_back(k); }
+            }
+        }
+        component.sort();
+        result.push(component);
+    }
+    result
+}
+pub fn detect(gx: &[i64], gy: &[i64], width: usize, height: usize, window: i64, threshold: i64) -> (Vec<i64>, Vec<usize>) {
+    let mut candidates: Vec<usize> = (0..response.len()).filter(|&i| response[i] >= threshold && canny::neighbors(i, width, height).iter()
+        .all(|&j| if j < i { response[i] > response[j] } else { response[i] >= response[j] })).collect();
+    candidates.sort_by_key(|&i| (std::cmp::Reverse(response[i]), i));
+    (response, candidates)
+}
+fn main() -> io::Result<()> {
+    let input = pgm_io::read()?;
+    let image = &input.image;
+    let (w, h) = (image.width, image.height);
+    let p: Vec<i64> = input.params.iter().map(|v| v[0]).collect();
+    let smoothed = filters::smooth(image, p[0] as usize, &input.params[1], p[2]);
+    let (gx, gy, magnitude) = filters::gradient(&smoothed, w, h);
+    let directions = canny::directions(&gx, &gy);
+    let nms = canny::suppress(&magnitude, &directions, w, h);
+    let edges = canny::hysteresis(&nms, w, h, p[3], p[4]);
+    let components = canny::components(&edges, w, h);
+    let edge_points: Vec<Point> = (0..w * h).filter(|&i| edges[i]).map(|i| ((i % w) as i64, (i / w) as i64)).collect();
+    let circle_votes = hough::circle_votes(&edge_points, p[5], p[6], w, h);
+    let (circle_candidates, circle_peaks) = hough::circle_peaks(&circle_votes, p[7]);
+    let mut circles = Vec::new();
+    for &(k, i) in circle_peaks.iter().take(p[8] as usize) {
+        let center = ((i % w) as i64, (i / w) as i64);
+        let mut offsets = circle_votes.points[k].clone();
+        circles.push(Circle { center, radius: circle_votes.minimum + k as i64, votes: circle_votes.votes[k][i], offsets, gap, arcs });
+    }
+    let circle_shapes: Vec<Shape> = circles.iter().map(Shape::Circle).collect();
+    let circle_edge_pixels = edge_points.iter().filter(|&&point| circle_shapes.iter().any(|s| s.explains(point))).count();
+    let line_points: Vec<Point> = edge_points.iter().copied().filter(|&point| !circle_shapes.iter().any(|s| s.explains(point))).collect();
+    let votes = hough::line_votes(&line_points, &input.trig, p[9]);
+    let line_peaks = hough::line_peaks(&votes, p[10]);
+    let mut lines = Vec::new();
+    let mut segments = Vec::new();
+    let mut claimed = vec![false; w * h];
+    for &(theta, radius, count) in &line_peaks {
+        if lines.len() == p[11] as usize { break; }
+        let mut candidates: Vec<(i64, Point)> = line_points.iter().copied().filter(|&point| !claimed[index(point, w, h).unwrap()]
+            && (hough::rho(point, theta, &input.trig, p[9]) - radius).abs() <= p[12])
+            .map(|point| (point.1 * input.trig[theta].0 - point.0 * input.trig[theta].1, point)).collect();
+        candidates.sort_by_key(|&(u, point)| (u, point.0, point.1));
+        let mut groups: Vec<Vec<Point>> = Vec::new();
+        let mut previous = None;
+        for (u, point) in candidates {
+            if previous.map_or(true, |before| u - before > p[13] * 16384) { groups.push(Vec::new()); }
+            groups.last_mut().unwrap().push(point);
+            previous = Some(u);
+        }
+        let mut selected = Vec::new();
+        for group in groups {
+            let start = group[0];
+            let end = *group.last().unwrap();
+            if distance(start, end) + 1 < p[14] { continue; }
+            selected.push(segments.len());
+            segments.push(Segment { theta, start, end, pixels: group.len() });
+            for point in group { claimed[index(point, w, h).unwrap()] = true; }
+        }
+        if !selected.is_empty() { lines.push(Line { theta, rho: radius, votes: count, segments: selected }); }
+    }
+    let mut junctions = BTreeMap::new();
+    for i in 0..segments.len() {
+        for j in i + 1..segments.len() {
+            if let Some(junction) = junction(&segments[i], &segments[j], p[15], p[16]) { junctions.insert((i, j), junction); }
+        }
+    }
+    let mut polygons = Vec::new();
+    for k in [3, 4] {
+        for sequence in polygon_cycles(segments.len(), &junctions, k) {
+            polygons.push(polygon(sequence, &segments, &junctions, &edges, w, h, p[17], p[18]));
+        }
+    }
+    let (response, corner_candidates) = corners::detect(&gx, &gy, w, h, p[20], p[21]);
+    let corner_indices: Vec<usize> = corner_candidates.iter().copied().take(p[22] as usize).collect();
+    let corner_points: Vec<Point> = corner_indices.iter().map(|&i| ((i % w) as i64, (i / w) as i64)).collect();
+    let mut corner_matches = Vec::new();
+    let mut component_output = vec![format!("components {}", components.len())];
+    for (j, component) in components.iter().enumerate() {
+        let ends = component.iter().filter(|&&i| canny::neighbors(i, w, h).iter().filter(|&&k| edges[k]).count() == 1).count();
+    let mut overlay: Vec<i64> = image.pixels.iter().map(|i| i.div_euclid(p[24])).collect();
+    let mut draw = |point| if let Some(i) = index(point, w, h) { overlay[i] = 255; };
+    for segment in &segments { for point in bresenham(segment.start, segment.end) { draw(point); } }
+    for circle in &circles { for &(dx, dy) in &circle.offsets { draw((circle.center.0 + dx, circle.center.1 + dy)); } }
+    for &(x, y) in &corner_points { for e in -2..=2 { draw((x + e, y)); draw((x, y + e)); } }
+    let strong = nms.iter().filter(|&&n| n >= p[4]).count();
+    let weak = nms.iter().filter(|&&n| n >= p[3] && n < p[4]).count();
+    let weak_kept = (0..w * h).filter(|&i| edges[i] && nms[i] >= p[3] && nms[i] < p[4]).count();
+    let mut report = vec![format!("image {} {}", w, h)];
+    for (name, value) in [("gradient_nonzero", magnitude.iter().filter(|&&m| m > 0).count()), ("gradient_max", *magnitude.iter().max().unwrap() as usize),
+        ("nms_kept", nms.iter().filter(|&&n| n > 0).count()), ("strong", strong), ("weak", weak), ("edges", edge_points.len()), ("weak_kept", weak_kept),
+        ("weak_dropped", weak - weak_kept), ("edge_components", components.len())] { report.push(format!("{} {}", name, value)); }
+    for direction in [0, 45, 90, 135] { report.push(format!("direction_{} {}", direction, (0..w * h).filter(|&i| edges[i] && directions[i] == direction).count())); }
+    for (name, value) in [("circle_candidates", circle_candidates), ("circle_peaks", circle_peaks.len()), ("circles", circles.len()), ("circle_edge_pixels", circle_edge_pixels),
+        ("line_edge_pixels", line_points.len()), ("hough_max_votes", maximum_votes as usize), ("hough_peaks", line_peaks.len()), ("lines", lines.len()),
+        ("segments", segments.len()), ("claimed_pixels", claimed.iter().filter(|&&c| c).count()), ("junctions", junctions.len()), ("polygons", polygons.len())] { report.push(format!("{} {}", name, value)); }
+    for kind in ["equilateral_triangle", "right_triangle", "triangle", "square", "rectangle", "parallelogram", "trapezoid", "quadrilateral"] {
+        report.push(format!("{} {}", kind, polygons.iter().filter(|p| p.kind == kind).count()));
+    }
+    for (name, value) in [("corner_candidates", corner_candidates.len()), ("corners", corner_indices.len()), ("corners_on_vertices", on_vertices), ("corners_on_segments", on_segments),
+        ("corners_unmatched", corner_indices.len() - on_vertices - on_segments), ("vertices_with_corner", vertices_with_corner)] { report.push(format!("{} {}", name, value)); }
+    fs::create_dir_all("output")?;
+    pgm_io::write("edges.pgm", &Image { width: w, height: h, pixels: edges.iter().map(|&e| if e { 255 } else { 0 }).collect() })?;
+    pgm_io::write("hough.pgm", &Image { width: 180, height: (rhi - rlo + 1) as usize, pixels: vote_pixels })?;
+    pgm_io::write("overlay.pgm", &Image { width: w, height: h, pixels: overlay })?;
+    for (name, lines) in [("lines.txt", line_output), ("circles.txt", circle_output), ("polygons.txt", polygon_output), ("corners.txt", corner_output),
+        ("components.txt", component_output), ("report.txt", report)] {
+        fs::write(format!("output/{}", name), lines.join("\n") + "\n")?;
+    }
+pub fn rho(point: Point, angle: usize, trig: &[(i64, i64)], step: i64) -> i64 {
+    (point.0 * trig[angle].0 + point.1 * trig[angle].1).div_euclid(16384 * step)
+}

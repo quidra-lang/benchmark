@@ -1,0 +1,213 @@
+local function csv(path, multiple)
+    local input, training, testing = assert(io.open(path, "r")), {}, {}
+    input:read("*l")
+    for line in input:lines() do
+        local words = {}
+        for word in line:gmatch("[^,]+") do words[#words + 1] = word end
+        local example = { id = words[1], point = { tonumber(words[2]), tonumber(words[3]) }, label = tonumber(words[4]), role = words[5] }
+        local target = multiple and example.role == "test" and testing or training
+        target[#target + 1] = example
+    end
+    input:close()
+    return training, testing
+end
+local function settings(path)
+    local result = { kernels = {} }
+    for line in io.lines(path) do
+        local words = {}
+        for word in line:gmatch("%S+") do words[#words + 1] = word end
+        local key = words[1]
+        if key == "KERNEL" then result.kernels[#result.kernels + 1] = K.new(words)
+        else
+            local values = {}
+            for i = 2, #words do values[#values + 1] = tonumber(words[i]) or words[i] end
+            if key == "C_GRID" then result.c_grid = values elseif key == "LEARNING_CURVE" then result.learning_curve = values
+            elseif key == "MULTICLASS" then result.multiclass = values elseif key == "PEGASOS" then result.pegasos = values
+            elseif key == "PLOT_X" then result.plot_x = values elseif key == "PLOT_Y" then result.plot_y = values elseif key == "PLOT_SIZE" then result.plot_size = values
+            elseif key == "TOLERANCE" then result.tolerance = values[1] elseif key == "EPS" then result.eps = values[1]
+            elseif key == "MAX_PASSES" then result.max_passes = values[1] elseif key == "FOLDS" then result.folds = values[1]
+            elseif key == "NEWTON_ITERATIONS" then result.newton_iterations = values[1] end
+        end
+    end
+    return result
+end
+function D.read()
+    local training = csv("input/train.csv", false)
+    local testing = csv("input/test.csv", false)
+    return training, testing, multi_training, multi_testing, settings("input/params.txt")
+end
+function K.new(words)
+    return setmetatable({ name = words[2], kind = words[3], degree = tonumber(words[4]),
+        gamma = tonumber(words[words[3] == "poly" and 5 or 4]), coef0 = tonumber(words[6]) }, K)
+end
+function K:value(a, b)
+    if self.kind == "rbf" then
+        local e1, e2 = a[1] - b[1], a[2] - b[2]
+        return math.exp(-self.gamma * (e1 * e1 + e2 * e2))
+    end
+    local dot = a[1] * b[1] + a[2] * b[2]
+    if self.kind == "linear" then return dot end
+    local factor, value = self.gamma * dot + self.coef0, 1.0
+    for _ = 1, self.degree do value = value * factor end
+    return value
+end
+function K:matrix(points)
+    local result = {}
+    for i, a in ipairs(points) do
+        local row = {}
+        for j, b in ipairs(points) do row[j] = self:value(a, b) end
+        result[i] = row
+    end
+    return result
+end
+function K.submatrix(matrix, indices)
+    local result = {}
+    for i, a in ipairs(indices) do
+        local row = {}
+        for j, b in ipairs(indices) do row[j] = matrix[a][b] end
+        result[i] = row
+    end
+    return result
+end
+function E.sign(value) return value > 0 and 1 or -1 end
+function E.folds(size, count)
+    local result = {}
+    for fold = 0, count - 1 do
+        local training, testing = {}, {}
+        for i = 1, size do
+            local target = (i - 1) % count == fold and testing or training
+            target[#target + 1] = i
+        end
+        result[#result + 1] = { training, testing }
+    end
+    return result
+end
+function S:decision(point)
+    local total = 0.0
+    for i, alpha in ipairs(self.alpha) do if alpha > 0 then total = total + alpha * self.labels[i] * self.kernel:value(self.points[i], point) end end
+    return total - self.b
+end
+function S.train(points, labels, kernel, matrix, coefficient, settings)
+    local model = setmetatable({ points = points, labels = labels, kernel = kernel, matrix = matrix, C = coefficient, tolerance = settings.tolerance,
+        eps = settings.eps, max_passes = settings.max_passes, alpha = {}, errors = {}, b = 0.0, full_passes = 0, nonbound_passes = 0, passes = 0,
+        examined = 0, steps = 0, choices = { heuristic = 0, nonbound_loop = 0, full_loop = 0 }, clipping = { none = 0, lower = 0, upper = 0 }, records = {}, converged = false }, S)
+    for i, label in ipairs(labels) do model.alpha[i], model.errors[i] = 0.0, -label + 0.0 end
+    return model
+end
+local function map(values, fn)
+    local result = {}
+    for i, value in ipairs(values) do result[i] = fn(value, i) end
+    return result
+end
+local function points(examples) return map(examples, function(example) return example.point end) end
+local function labels(examples) return map(examples, function(example) return example.label end) end
+local function subset(values, indices) return map(indices, function(i) return values[i] end) end
+local function support_counts(model)
+    local total, bound = 0, 0
+    for _, alpha in ipairs(model.alpha) do if alpha > 0 then total = total + 1; if alpha == model.C then bound = bound + 1 end end end
+    return total, bound, total - bound
+end
+local function ranking_less(a, b)
+    if a.correct ~= b.correct then return a.correct > b.correct end
+    if a.C ~= b.C then return a.C < b.C end
+    return a.kernel_index < b.kernel_index
+end
+local function cross_validate(training, settings)
+    local all_points, all_labels = points(training), labels(training)
+    local partitions, matrices, combinations, best = E.folds(#training, settings.folds), {}, {}, {}
+    for kernel_index, kernel in ipairs(settings.kernels) do
+        local matrix = kernel:matrix(all_points)
+        matrices[kernel_index] = matrix
+        for _, coefficient in ipairs(settings.c_grid) do
+            local result = { kernel = kernel, kernel_index = kernel_index, C = coefficient, values = {}, folds = {}, correct = 0, support = 0, passes = 0, steps = 0 }
+            for _, partition in ipairs(partitions) do
+                local train_indices, test_indices = partition[1], partition[2]
+                local model = S.train(subset(all_points, train_indices), subset(all_labels, train_indices), kernel, K.submatrix(matrix, train_indices), coefficient, settings)
+                local correct = 0
+                for _, i in ipairs(test_indices) do
+                    local value = model:decision(all_points[i])
+                    result.values[i] = value
+                    if sign(value) == all_labels[i] then correct = correct + 1 end
+                end
+                local support = support_counts(model)
+                result.folds[#result.folds + 1] = { train = #train_indices, test = #test_indices, correct = correct, support = support, model = model }
+                result.correct, result.support, result.passes, result.steps = result.correct + correct, result.support + support, result.passes + model.passes, result.steps + model.steps
+            end
+            combinations[#combinations + 1] = result
+            if not best[kernel_index] or ranking_less(result, best[kernel_index]) then best[kernel_index] = result end
+        end
+    end
+    local ranking = {}
+    append(ranking, combinations)
+    table.sort(ranking, ranking_less)
+    return matrices, combinations, best, ranking[1], ranking
+end
+local function cross_validation_lines(size, folds, best, selected, ranking)
+    local lines = { "cross_validation folds " .. folds .. " examples " .. size }
+    for _, result in ipairs(best) do
+        lines[#lines + 1] = "best " .. result.kernel.name .. " C " .. f(result.C) .. " correct " .. result.correct .. "/" .. size .. " accuracy " .. ratio(result.correct, size)
+    end
+    append(lines, { "selected " .. selected.kernel.name .. " C " .. f(selected.C), "ranking" })
+    for rank, result in ipairs(ranking) do lines[#lines + 1] = rank .. " " .. result.kernel.name .. " C " .. f(result.C) .. " correct " .. result.correct .. "/" .. size end
+    lines[#lines + 1] = "cv_detail " .. selected.kernel.name .. " C " .. f(selected.C)
+    for i, result in ipairs(selected.folds) do
+        lines[#lines + 1] = string.format("fold %d train %d test %d correct %d support_vectors %d %s", i, result.train, result.test, result.correct, result.support, run_info(result.model))
+    end
+    return lines
+end
+local function final_evaluation(model, training, testing, tolerance)
+    local n, m = #training, #testing
+    local train_values, test_values, test_labels = model:training_decisions(), map(testing, function(example) return model:decision(example.point) end), labels(testing)
+    local lines = {
+        "model " .. model.kernel.name, "kernel " .. model.kernel:description(), "C " .. f(model.C), "alignment " .. f(alignment, 6),
+    return { model = model, train_values = train_values, test_values = test_values, weights = { w1, w2 }, lines = lines }
+end
+local function calibrate(training, testing, selected, test_values, iterations)
+    local values, a, b = selected.values, 0.0, math.log((negative + 1) / (positive + 1))
+    local probabilities = map(test_values, function(value) return probability(value, a, b) end)
+local function cv_grid(combinations, folds, size)
+    local header = { "kernel", "C" }
+    for i = 1, folds do header[#header + 1] = "fold" .. i end
+    append(header, { "correct", "accuracy", "support_vectors", "passes", "steps" })
+    local lines = { table.concat(header, ",") }
+    for _, result in ipairs(combinations) do
+        local row = { result.kernel.name, f(result.C) }
+        for _, fold in ipairs(result.folds) do row[#row + 1] = tostring(fold.correct) end
+        append(row, { tostring(result.correct), ratio(result.correct, size), tostring(result.support), tostring(result.passes), tostring(result.steps) })
+        lines[#lines + 1] = table.concat(row, ",")
+    end
+    return lines
+end
+local function predictions(testing, finals, selected, pegasos_values, probabilities)
+    local header = { "id", "label" }
+    for _, result in ipairs(finals) do header[#header + 1] = result.model.kernel.name end
+    append(header, { "pegasos", "predicted", "probability" })
+    local lines, selected_values = { table.concat(header, ",") }, finals[selected.kernel_index].test_values
+    for i, example in ipairs(testing) do
+        local row = { example.id, tostring(example.label) }
+        for _, result in ipairs(finals) do row[#row + 1] = f(result.test_values[i]) end
+        append(row, { f(pegasos_values[i]), tostring(sign(selected_values[i])), f(probabilities[i]) })
+        lines[#lines + 1] = table.concat(row, ",")
+    end
+    return lines
+end
+local training, testing, multi_training, multi_testing, settings = Dataset.read()
+local matrices, combinations, best, selected, ranking = cross_validate(training, settings)
+local all_points, all_labels, finals = points(training), labels(training), {}
+for i, result in ipairs(best) do
+    local model = S.train(all_points, all_labels, result.kernel, matrices[i], result.C, settings)
+    finals[i] = final_evaluation(model, training, testing, settings.tolerance)
+end
+local selected_result, selected_matrix = finals[selected.kernel_index], matrices[selected.kernel_index]
+local sections = { cross_validation_lines(#training, settings.folds, best, selected, ranking) }
+for _, result in ipairs(finals) do sections[#sections + 1] = result.lines end
+sections[#sections + 1] = training_log(selected_result.model)
+sections[#sections + 1] = c_path(training, testing, selected, selected_matrix, settings)
+sections[#sections + 1] = learning_curve(training, testing, selected, selected_matrix, settings)
+local a, b, probabilities, calibration_lines = calibrate(training, testing, selected, selected_result.test_values, settings.newton_iterations)
+sections[#sections + 1] = calibration_lines
+local model_lines = {}
+for _, section in ipairs(sections) do if #model_lines > 0 then model_lines[#model_lines + 1] = "" end; append(model_lines, section) end
+E.write("output/model.txt", model_lines)
+E.write("output/cv_grid.csv", cv_grid(combinations, settings.folds, #training))
+E.write("output/predictions.csv", predictions(testing, finals, selected, pegasos_values, probabilities))

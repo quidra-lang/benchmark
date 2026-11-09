@@ -1,0 +1,9 @@
+The current question asks: Explain the string-shift operation from its input message and shift value to its resulting ciphertext. Cover uppercase and lowercase ranges, wraparound, nonletter handling and construction of the result, using Z and the following comma as concrete cases. Identify whether result construction mutates storage or creates/rebinds values in this source, and show which result is supplied to decryption. Do not trace every message character.
+
+Answer and source evidence: The cipher reads each input character/byte, chooses its uppercase or lowercase alphabet base, shifts modulo 26, and preserves nonletters. With shift 3, Z wraps to C while the following comma is unchanged. Go creates a byte slice and mutates indexed entries before converting to a new string; Rust and Swift map/collect new output values and leave the input intact. The named encrypted result is supplied to the inverse shift (23 or -3) for decryption.
+
+Selection: `main.swift` lines 3, 4, 5, 6, 7, 8, 9, 12, 14. The complete shift operation is needed for case ranges, fallback and construction semantics, plus the input/shift and decryption call. Printing the ciphertext itself adds no requested dependency.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

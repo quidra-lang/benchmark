@@ -1,0 +1,398 @@
+local function split(s, separator)
+  local out, at = {}, 1
+  while true do
+    local p = s:find(separator, at, true)
+    if not p then
+      out[#out + 1] = s:sub(at)
+      return out
+    end
+    out[#out + 1] = s:sub(at, p - 1)
+    at = p + #separator
+  end
+local function bad(format, ...)
+  error(string.format(format, ...), 0)
+local function decimal(s)
+  return s == "0" or s:match("^[1-9][0-9]*$") ~= nil
+local function address(a)
+  return string.format("%d.%d.%d.%d",(a >> 24) & 255,(a >> 16) & 255,(a >> 8) & 255, a & 255)
+local function parse_address(s)
+  local fields = split(s, ".")
+  if #fields ~= 4 then
+  end
+  local a = 0
+  for _, p in ipairs(fields) do
+    if #p > 3 or not decimal(p) or tonumber(p) > 255 then
+    end
+    a = a * 256 + tonumber(p)
+  end
+  return a
+local function network(a, length)
+  return a &((0xffffffff <<(32 - length)) & 0xffffffff)
+local function parse_prefix(s)
+  local parts = split(s, "/")
+  if #parts ~= 2 or #parts[2] > 2 or not decimal(parts[2]) or tonumber(parts[2]) > 32 then
+  end
+  local a = parse_address(parts[1])
+  if not a then
+  end
+  return { address = a, length = tonumber(parts[2]) }
+local function contains(p, a)
+  return network(a, p.length) == network(p.address, p.length)
+local function prefix_text(p)
+  return address(p.address) .. "/" .. p.length
+local function checked_address(s)
+  local a = parse_address(s)
+  if not a then
+  end
+  return a
+local function checked_prefix(s)
+  local p = parse_prefix(s)
+  if not p then
+  end
+  if p.address ~= network(p.address, p.length) then
+  end
+  return p
+local function same_prefix(a, b)
+  return a.address == b.address and a.length == b.length
+local function ports(s)
+  if s == "ANY" then
+    return { lo = 0, hi = 65535, any = true }
+  end
+  local p = split(s, "-")
+  local lo, hi = tonumber(p[1]), tonumber(p[#p])
+  if lo > 65535 or hi > 65535 or lo > hi then
+  end
+  return { lo = lo, hi = hi, any = false }
+local function sorted(xs, before)
+  local out = {}
+  for i, x in ipairs(xs) do
+    out[i] = x
+  end
+  table.sort(out, before)
+  return out
+local ifaces, by_name, routes, statics, forwards, conns = {}, {}, {}, {}, {}, {}
+local clock, packet_number, connection_number = 0, 0, 0
+local forwarded, local_count, error_count, drops = 0, 0, 0, {}
+local REASONS = { "down", "martian", "rpf", "invalid", "acl_in", "ttl", "noroute", "acl_out", "exhausted" }
+local function interface(name)
+  if not by_name[name] then
+  end
+  return by_name[name]
+local function local_address(a)
+  for _, i in ipairs(ifaces) do
+    if i.prefix.address == a then
+      return i
+    end
+  end
+local function select_route(a)
+  local best
+  for _, r in ipairs(routes) do
+    if r.out.up and contains(r.prefix, a) and (not best or r.prefix.length > best.prefix.length or r.prefix.length == best.prefix.length and r.metric < best.metric) then
+      best = r
+    end
+  end
+  return best
+local function route_text(r)
+  return r.kind .. " " .. prefix_text(r.prefix) ..(r.hop and " via " .. address(r.hop) or "") .. " dev " .. r.out.name .. " metric " .. r.metric
+local function same_tuple(a, b)
+  return a.proto == b.proto and a.src == b.src and a.sport == b.sport and a.dst == b.dst and a.dport == b.dport
+local function evaluate_acl(i, direction, t, existing)
+  local rules = i.rules[direction]
+  if #rules == 0 then
+    return nil
+  end
+  for _, r in ipairs(rules) do
+    local match =(r.proto == "ANY" or r.proto == t.proto) and contains(r.src, t.src) and contains(r.dst, t.dst) and (not r.established or existing)
+    if r.proto == "TCP" or r.proto == "UDP" then
+      match = match and t.sport >= r.sports.lo and t.sport <= r.sports.hi and t.dport >= r.dports.lo and t.dport <= r.dports.hi
+    end
+    if match then
+      r.hits = r.hits + 1
+      if r.action == "PERMIT" then
+        return nil
+      end
+      if r.action == "DENY" then
+      end
+      return string.format("REJECT acl %s %s %d %s", i.name, direction, r.seq, t.proto == "TCP" and "tcp-reset" or "icmp-prohibited")
+    end
+  end
+local function martian(a)
+  return a >> 24 == 0 or a >> 24 == 127 or a >> 29 == 7
+local function packet(i, t, flags, ttl)
+  local function drop(reason)
+    return "DROP " .. reason, reason
+  end
+  if not i.up then
+  end
+  if martian(t.src) or martian(t.dst) or local_address(t.src) then
+  end
+  if i.rpf ~= "off" then
+  end
+  local pure = t.proto == "TCP" and flags == "S"
+  local conn, way = nil, "new"
+  for n, c in ipairs(conns) do
+    if same_tuple(t, c.orig) then
+      conn, way = c, "orig"
+    elseif same_tuple(t, c.reply) then
+      conn, way = c, "reply"
+    end
+    if conn then
+      break
+    end
+  end
+  if t.proto == "TCP" and not conn and not pure then
+  end
+  local verdict = evaluate_acl(i, "in", t, conn ~= nil)
+  if verdict then
+    return verdict, "acl_in"
+  end
+  local translated = { proto = t.proto, src = t.src, sport = t.sport, dst = t.dst, dport = t.dport }
+  local used
+  if i.outside then
+    local matched = false
+    for _, m in ipairs(statics) do
+      if m.outside == t.dst then
+        translated.dst = m.inside
+        matched = true
+        break
+      end
+    end
+    if not matched and t.dst == i.prefix.address then
+      for _, f in ipairs(forwards) do
+      end
+      if not matched then
+        for _, m in ipairs(i.mappings) do
+          if m.proto == t.proto and m.outport == t.dport then
+            translated.dst, translated.dport, used = m.inside, m.inport, m
+            break
+          end
+        end
+      end
+    end
+  end
+  local local_iface = local_address(translated.dst)
+  if local_iface then
+  end
+  if ttl == 1 then
+  end
+  local route = select_route(translated.dst)
+  if not route then
+  end
+  local o = route.out
+  verdict = evaluate_acl(o, "out", translated, conn ~= nil)
+  if verdict then
+    return verdict, "acl_out"
+  end
+  if not i.outside and o.outside then
+    local matched = false
+    for _, m in ipairs(statics) do
+      if m.inside == t.src then
+        translated.src = m.outside
+        matched = true
+        break
+      end
+    end
+    if not matched then
+      for _, f in ipairs(forwards) do
+      end
+    end
+    if not matched and o.pool then
+      for _, m in ipairs(o.mappings) do
+        if m.proto == t.proto and m.inside == t.src and m.inport == t.sport then
+          used = m
+          break
+        end
+      end
+      if not used then
+        local chosen
+        used = { proto = t.proto, inside = t.src, inport = t.sport, outport = chosen, last = clock }
+        o.mappings[#o.mappings + 1] = used
+      end
+      translated.src, translated.sport = o.prefix.address, used.outport
+    end
+  end
+  if used then
+    used.last = clock
+  end
+  if not conn then
+    connection_number = connection_number + 1
+    conn = { number = connection_number, orig = t, reply = { proto = t.proto, src = translated.dst, sport = translated.dport, dst = translated.src, dport = translated.sport }, input = i, out = o, state = t.proto == "TCP" and "SYN_SENT" or "UNREPLIED", orig_count = 0, reply_count = 0, fin = {}, last = clock }
+    conns[#conns + 1] = conn
+    way = "new"
+  end
+  if way == "reply" then
+  else
+    conn.orig_count = conn.orig_count + 1
+  end
+  conn.last = clock
+  if t.proto ~= "TCP" then
+    if way == "reply" then
+    end
+  end
+  o.tx, route.hits = o.tx + 1, route.hits + 1
+  local v = string.format("FORWARD %s %s ttl=%d", o.name, route.hop and "via " .. address(route.hop) or "direct", ttl - 1)
+  if translated.dst ~= t.dst or translated.dport ~= t.dport then
+    v = v .. string.format(" dnat=%s:%d", address(translated.dst), translated.dport)
+  end
+  if translated.src ~= t.src or translated.sport ~= t.sport then
+    v = v .. string.format(" snat=%s:%d", address(translated.src), translated.sport)
+  end
+  return v .. string.format(" conn=%d %s", conn.number, way), "forwarded"
+local function show(what)
+  local out = {}
+  local function add(format, ...)
+    out[#out + 1] = string.format(format, ...)
+  end
+  local ordered = sorted(ifaces, function (a, b)
+    return a.name < b.name
+  end)
+  if what == "IFACES" then
+  elseif what == "COUNTERS" then
+    local total = 0
+    for _, count in pairs(drops) do
+      total = total + count
+    end
+    add("show counters packets=%d forwarded=%d local=%d dropped=%d errors=%d", forwarded + local_count + total, forwarded, local_count, total, error_count)
+    local parts = { "drops" }
+    for _, reason in ipairs(REASONS) do
+      parts[#parts + 1] = reason .. "=" ..(drops[reason] or 0)
+    end
+    out[#out + 1] = table.concat(parts, " ")
+    for _, i in ipairs(ordered) do
+      add("iface %s rx=%d tx=%d drop=%d", i.name, i.rx, i.tx, i.drop)
+    end
+  end
+  return table.concat(out, "\n")
+local function command(w)
+  local cmd = w[1]
+  if cmd == "IFACE" then
+    if by_name[w[2]] then
+    end
+    local p = parse_prefix(w[3])
+    if not p or p.length < 8 or p.length > 30 then
+    end
+    local net = network(p.address, p.length)
+    if p.address == net or p.address ==(net |(0xffffffff >> p.length)) then
+    end
+    for _, i in ipairs(ifaces) do
+      local length = math.min(p.length, i.prefix.length)
+      if network(p.address, length) == network(i.prefix.address, length) then
+      end
+    end
+    local i = { name = w[2], prefix = p, up = true, outside = false, rpf = "off", rx = 0, tx = 0, drop = 0, rules = { ["in"] = {}, out = {} }, defaults = { ["in"] = 0, out = 0 }, mappings = {} }
+    ifaces[#ifaces + 1], by_name[i.name] = i, i
+    routes[#routes + 1] = { kind = "C", prefix = { address = net, length = p.length }, out = i, metric = 0, hits = 0 }
+    return string.format("ok iface %s %s network %s/%d", i.name, w[3], address(net), p.length)
+  elseif cmd == "ROUTE" then
+    local p, hop, out = checked_prefix(w[2]), nil, nil
+    if w[3] == "VIA" then
+    else
+      out = interface(w[4])
+    end
+    local metric = tonumber(w[5])
+    if metric < 1 or metric > 255 then
+    end
+    if hop then
+    end
+    for _, r in ipairs(routes) do
+      if r.kind == "S" and same_prefix(r.prefix, p) and r.out == out and r.hop == hop then
+      end
+    end
+    local r = { kind = "S", prefix = p, out = out, hop = hop, metric = metric, hits = 0 }
+    routes[#routes + 1] = r
+    return "ok route " .. route_text(r)
+  elseif cmd == "ACL" then
+    local i, seq, d = interface(w[2]), tonumber(w[4]), w[3]:lower()
+    if seq < 1 or seq > 9999 then
+    end
+    local function acl_prefix(s)
+      if s == "ANY" then
+        return { address = 0, length = 0 }
+      end
+      return checked_prefix(s)
+    end
+    local src = acl_prefix(w[7])
+    local sports = ports(w[8])
+    local dst = acl_prefix(w[9])
+    local dports = ports(w[10])
+    if (w[6] == "ICMP" or w[6] == "ANY") and (not sports.any or not dports.any) then
+    end
+    for _, r in ipairs(i.rules[d]) do
+      if r.seq == seq then
+      end
+    end
+    i.rules[d][#i.rules[d] + 1] = { seq = seq, action = w[5], proto = w[6], src = src, sports = sports, dst = dst, dports = dports, established = #w == 11, hits = 0 }
+    table.sort(i.rules[d], function (a, b)
+      return a.seq < b.seq
+    end)
+    return "ok acl " .. i.name .. " " .. d .. " " .. w[4]
+  elseif cmd == "NAT" then
+    if w[2] == "STATIC" then
+      local a = checked_address(w[3])
+      local b = checked_address(w[4])
+      if local_address(a) then
+      end
+      if local_address(b) then
+      end
+      for _, m in ipairs(statics) do
+        if m.inside == a then
+        end
+      end
+      for _, m in ipairs(statics) do
+        if m.outside == b then
+        end
+      end
+      statics[#statics + 1] = { inside = a, outside = b }
+      return "ok nat static " .. w[3] .. " " .. w[4]
+    end
+    local i = interface(w[3])
+    if w[2] == "OUTSIDE" then
+    elseif w[2] == "PAT" then
+      local n = tonumber(w[4])
+      if n < 1 or n > 1000 then
+      end
+      if i.pool then
+      end
+      i.pool, i.outside = n, true
+      return string.format("ok nat pat %s %s 20000-%d", i.name, address(i.prefix.address), 19999 + n)
+    end
+  elseif cmd == "PACKET" then
+    local i, proto, flags = interface(w[2]), w[3], w[4]
+    if proto ~= "TCP" and flags ~= "-" then
+    end
+    local src = checked_address(w[5])
+    local sp = tonumber(w[6])
+    if sp > 65535 then
+    end
+    local dst = checked_address(w[7])
+    local dp = tonumber(w[8])
+    if dp > 65535 then
+    end
+    local ttl = tonumber(w[9])
+    if ttl < 1 or ttl > 255 then
+    end
+    packet_number, i.rx = packet_number + 1, i.rx + 1
+    local verdict, reason = packet(i, { proto = proto, src = src, sport = sp, dst = dst, dport = dp }, flags, ttl)
+    if reason == "forwarded" then
+      forwarded = forwarded + 1
+    elseif reason == "local" then
+      local_count = local_count + 1
+    else
+      drops[reason] =(drops[reason] or 0) + 1
+      i.drop = i.drop + 1
+    end
+    return string.format("#%d %s %s %s:%s > %s:%s %s", packet_number, proto, flags, w[5], w[6], w[7], w[8], verdict)
+  elseif cmd == "SHOW" then
+    return show(w[2])
+  end
+local n = tonumber(io.read("*l"))
+for _ = 1, n do
+  local words = split(io.read("*l"), " ")
+  local ok, result = pcall(command, words)
+  if ok then
+    print(result)
+  else
+    error_count = error_count + 1
+    print("error: " .. result)
+  end
+end

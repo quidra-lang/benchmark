@@ -1,0 +1,327 @@
+sealed record Attribute(int Index, string Name, bool Integer, List<string> Values)
+{
+    public int Parse(string text) => text == "?" ? -1 : Integer ? int.Parse(text) : Values.IndexOf(text);
+}
+sealed record Row(string Id, int[] Values, int Label)
+{
+    public int Value(Attribute attribute) => Values[attribute.Index];
+    public int MissingCount => Values.Count(value => value < 0);
+sealed record Settings(int MaxDepth, int MinSplit, int MinLeaf, int MaxSurrogates, int Folds,
+    List<int> Curve, int BagTrees, long BagSeed, int Repeats, long PermutationSeed);
+    private static string[] Lines(string path) => File.ReadAllLines(path, Encoding.ASCII);
+    private static List<Row> ReadRows(string path, List<Attribute> attributes, List<string> classes) =>
+        Lines(path).Skip(1).Select(line =>
+        {
+            string[] fields = line.Split(',');
+            return new Row(fields[0], attributes.Select(attribute => attribute.Parse(fields[attribute.Index + 1])).ToArray(), classes.IndexOf(fields[^1]));
+        }).ToList();
+    public static Dataset Load(string directory)
+    {
+        string[][] schema = Lines(Path.Combine(directory, "schema.txt")).Select(line => line.Split(' ')).ToArray();
+        List<Attribute> attributes = schema.SkipLast(1).Select((fields, index) =>
+            new Attribute(index, fields[1], fields[2] == "INT", fields.Skip(3).ToList())).ToList();
+        string target = schema[^1][1];
+        List<string> classes = schema[^1].Skip(2).ToList();
+        Dictionary<string, List<int>> entries = Lines(Path.Combine(directory, "params.txt"))
+            .Select(line => line.Split(' ')).ToDictionary(fields => fields[0], fields => fields.Skip(1).Select(int.Parse).ToList(), StringComparer.Ordinal);
+        int Get(string key) => entries[key][0];
+        var settings = new Settings(Get("MAX_DEPTH"), Get("MIN_SAMPLES_SPLIT"), Get("MIN_SAMPLES_LEAF"),
+            Get("MAX_SURROGATES"), Get("FOLDS"), entries["CURVE"], Get("BAG_TREES"), Get("BAG_SEED"),
+            Get("PERMUTATION_REPEATS"), Get("PERMUTATION_SEED"));
+        return new Dataset(attributes, target, classes, ReadRows(Path.Combine(directory, "train.csv"), attributes, classes),
+            ReadRows(Path.Combine(directory, "validation.csv"), attributes, classes), ReadRows(Path.Combine(directory, "test.csv"), attributes, classes), settings);
+    }
+readonly record struct Fraction(long Numerator, long Denominator) : IComparable<Fraction>
+{
+    public int CompareTo(Fraction other) => (Numerator * other.Denominator).CompareTo(other.Numerator * Denominator);
+}
+    public static int[] Counts(IEnumerable<Row> rows, int classes)
+    {
+        var counts = new int[classes];
+        foreach (Row row in rows) counts[row.Label]++;
+        return counts;
+    }
+    public static long SquareSum(int[] counts) => counts.Sum(count => (long)count * count);
+    public static int Majority(int[] counts)
+    {
+        int best = 0;
+        for (int i = 1; i < counts.Length; i++) if (counts[i] > counts[best]) best = i;
+        return best;
+    }
+    public static int Errors(int[] counts) => counts.Sum() - counts[Majority(counts)];
+    public static Fraction Quality(int[] left, int[] right)
+    {
+        long leftSize = left.Sum(), rightSize = right.Sum();
+        return new Fraction(SquareSum(left) * rightSize + SquareSum(right) * leftSize, leftSize * rightSize);
+    }
+    public static bool Improves(Fraction value, int[] counts) => value.Numerator * counts.Sum() > SquareSum(counts) * value.Denominator;
+sealed record Split(Attribute Attribute, int Point)
+{
+    public bool GoesLeft(int value) => Attribute.Integer ? 2 * value <= Point : value == Point;
+sealed record Surrogate(Split Split, bool Left, int Score)
+{
+    public bool GoesLeft(int value) => Split.GoesLeft(value) == Left;
+}
+sealed record Candidate(Split Split, int[] LeftCounts, int[] RightCounts)
+{
+    public int LeftSize => LeftCounts.Sum();
+    public int RightSize => RightCounts.Sum();
+    public Fraction Quality => Impurity.Quality(LeftCounts, RightCounts);
+}
+sealed class Node
+{
+    public int Number { get; }
+    public int Depth { get; }
+    public int[] Counts { get; }
+    public int Size { get; }
+    public int Prediction { get; }
+    public int Errors { get; }
+    public Split? Split { get; set; }
+    public List<Surrogate> Surrogates { get; set; } = new();
+    public bool DefaultLeft { get; set; }
+    public Node Left { get; set; } = null!;
+    public Node Right { get; set; } = null!;
+    public Node(int number, int depth, int[] counts)
+    {
+        Number = number; Depth = depth; Counts = counts;
+        Size = counts.Sum(); Prediction = Impurity.Majority(counts); Errors = Impurity.Errors(counts);
+    }
+}
+sealed class TreeBuilder
+{
+    private readonly List<Attribute> attributes;
+    private readonly int classes;
+    private readonly Settings settings;
+    public TreeBuilder(List<Attribute> attributes, int classes, Settings settings)
+    {
+        this.attributes = attributes; this.classes = classes; this.settings = settings;
+    }
+    public List<Candidate> Candidates(Attribute attribute, List<Row> rows, List<int> labels, int classCount)
+    {
+        var groups = new SortedDictionary<int, int[]>();
+        var total = new int[classCount];
+        for (int i = 0; i < rows.Count; i++)
+        {
+            int value = rows[i].Value(attribute);
+            if (!groups.ContainsKey(value)) groups[value] = new int[classCount];
+            groups[value][labels[i]]++;
+            total[labels[i]]++;
+        }
+        var found = new List<Candidate>();
+        if (groups.Count < 2) return found;
+        List<int> values = groups.Keys.ToList();
+        if (attribute.Integer)
+        {
+            var left = new int[classCount];
+            for (int i = 0; i + 1 < values.Count; i++)
+            {
+                for (int k = 0; k < classCount; k++) left[k] += groups[values[i]][k];
+                int[] right = total.Select((count, k) => count - left[k]).ToArray();
+                found.Add(new Candidate(new Split(attribute, values[i] + values[i + 1]), (int[])left.Clone(), right));
+            }
+        }
+        else foreach (int value in values)
+        {
+            int[] left = groups[value], right = total.Select((count, k) => count - left[k]).ToArray();
+            found.Add(new Candidate(new Split(attribute, value), left, right));
+        }
+        return found;
+    }
+    public Candidate? BestSplit(List<Row> rows, List<Attribute> considered)
+    {
+        Candidate? best = null;
+        List<int> labels = rows.Select(row => row.Label).ToList();
+        foreach (Attribute attribute in considered)
+            foreach (Candidate candidate in Candidates(attribute, rows, labels, classes))
+                if (candidate.LeftSize >= settings.MinLeaf && candidate.RightSize >= settings.MinLeaf
+                    && (best is null || candidate.Quality.CompareTo(best.Quality) > 0)) best = candidate;
+        return best;
+    }
+    private List<Surrogate> FindSurrogates(List<Row> rows, Split primary)
+    {
+        List<int> directions = rows.Select(row => primary.GoesLeft(row.Value(primary.Attribute)) ? 0 : 1).ToList();
+        int leftSize = directions.Count(value => value == 0), baseline = Math.Max(leftSize, rows.Count - leftSize);
+        var found = new List<Surrogate>();
+        foreach (Attribute attribute in attributes)
+        {
+            if (attribute.Index == primary.Attribute.Index) continue;
+            Surrogate? best = null;
+            foreach (Candidate candidate in Candidates(attribute, rows, directions, 2))
+            {
+                int agreement = candidate.LeftCounts[0] + candidate.RightCounts[1];
+                var surrogate = new Surrogate(candidate.Split, agreement >= rows.Count - agreement, Math.Max(agreement, rows.Count - agreement));
+                if (best is null || surrogate.Score > best.Score) best = surrogate;
+            }
+            if (best is not null && best.Score > baseline) found.Add(best);
+        }
+        return found.OrderByDescending(surrogate => surrogate.Score).ThenBy(surrogate => surrogate.Split.Attribute.Index)
+            .Take(settings.MaxSurrogates).ToList();
+    }
+    public Node Grow(List<Row> rows) => GrowNode(rows, 1, 0);
+    private Node GrowNode(List<Row> rows, int number, int depth)
+    {
+        var node = new Node(number, depth, Impurity.Counts(rows, classes));
+        if (node.Errors == 0 || depth == settings.MaxDepth || node.Size < settings.MinSplit) return node;
+        Candidate? best = BestSplit(rows, attributes);
+        if (best is null || !Impurity.Improves(best.Quality, node.Counts)) return node;
+        Split split = best.Split;
+        List<Row> left = rows.Where(row => split.GoesLeft(row.Value(split.Attribute))).ToList();
+        List<Row> right = rows.Where(row => !split.GoesLeft(row.Value(split.Attribute))).ToList();
+        node.Split = split;
+        node.Surrogates = FindSurrogates(rows, split);
+        node.DefaultLeft = left.Count >= right.Count;
+        node.Left = GrowNode(left, 2 * number, depth + 1);
+        node.Right = GrowNode(right, 2 * number + 1, depth + 1);
+        return node;
+    }
+}
+sealed record Step(Node Node, bool Left, string Method);
+sealed record Route(List<Node> Path, List<Step> Steps)
+{
+    public Node Leaf => Path[^1];
+}
+sealed class PrunedTree
+{
+    public Node Root { get; }
+    public HashSet<int> Cut { get; }
+    public PrunedTree(Node root, IEnumerable<int>? cut = null)
+    {
+        Root = root; Cut = cut is null ? new HashSet<int>() : cut.ToHashSet();
+    }
+    public bool IsLeaf(Node node) => node.Split is null || Cut.Contains(node.Number);
+    public Route Route(Row row)
+    {
+        Node node = Root;
+        var path = new List<Node> { node };
+        var steps = new List<Step>();
+        while (!IsLeaf(node))
+        {
+            bool left = node.DefaultLeft;
+            string method = "default";
+            int value = row.Value(node.Split!.Attribute);
+            if (value >= 0) { left = node.Split.GoesLeft(value); method = "primary"; }
+            else foreach (Surrogate surrogate in node.Surrogates)
+                if (row.Value(surrogate.Split.Attribute) >= 0)
+                {
+                    left = surrogate.GoesLeft(row.Value(surrogate.Split.Attribute));
+                    method = "surrogate";
+                    break;
+                }
+            steps.Add(new Step(node, left, method));
+            node = left ? node.Left : node.Right;
+            path.Add(node);
+        }
+        return new Route(path, steps);
+    }
+    public Node LeafOf(Row row) => Route(row).Leaf;
+    public int Predict(Row row) => LeafOf(row).Prediction;
+    public int Correct(IEnumerable<Row> rows) => rows.Count(row => Predict(row) == row.Label);
+    public static List<string> Classification(string title, List<string> classes, List<Row> rows, List<int> predictions)
+    {
+        int size = classes.Count, correct = 0;
+        var matrix = new int[size, size];
+        for (int i = 0; i < rows.Count; i++) matrix[rows[i].Label, predictions[i]]++;
+        for (int i = 0; i < size; i++) correct += matrix[i, i];
+        var lines = new List<string>
+        {
+            $"confusion {title} correct {correct}/{rows.Count} accuracy {Fraction(correct, rows.Count)}",
+            "actual\\predicted " + string.Join(" ", classes)
+        };
+        for (int i = 0; i < size; i++) lines.Add(classes[i] + " " + string.Join(" ", Enumerable.Range(0, size).Select(j => matrix[i, j])));
+        double total = 0;
+        int available = 0;
+        for (int i = 0; i < size; i++)
+        {
+            int hits = matrix[i, i], predicted = 0, support = 0;
+            for (int j = 0; j < size; j++) { predicted += matrix[j, i]; support += matrix[i, j]; }
+            if (predicted + support > 0) { total += (double)(2 * hits) / (predicted + support); available++; }
+            lines.Add($"class {classes[i]} precision {Fraction(hits, predicted)} recall {Fraction(hits, support)} f1 {Fraction(2 * hits, predicted + support)} support {support}");
+        }
+        lines.Add($"macro_f1 {Real(total / available)}");
+        return lines;
+    }
+    public static PruningResult ReducedError(Node root, List<Row> rows)
+    {
+        var reached = new Dictionary<int, int[]>();
+        var tree = new PrunedTree(root);
+        foreach (Row row in rows)
+            foreach (Node node in tree.Route(row).Path)
+            {
+                if (!reached.ContainsKey(node.Number)) reached[node.Number] = new int[2];
+                reached[node.Number][0]++;
+                if (node.Prediction != row.Label) reached[node.Number][1]++;
+            }
+        var decisions = new List<Decision>();
+        var cut = new HashSet<int>();
+        int Decide(Node node)
+        {
+            int[] tally = reached.GetValueOrDefault(node.Number) ?? new int[2];
+            int leafError = tally[1];
+            if (node.Split is null) return leafError;
+            int subtreeError = Decide(node.Left) + Decide(node.Right);
+            bool pruned = leafError <= subtreeError;
+            decisions.Add(new Decision(node, tally[0], leafError, subtreeError, pruned));
+            if (pruned) cut.Add(node.Number);
+            return pruned ? leafError : subtreeError;
+        }
+        Decide(root);
+        return new PruningResult(new PrunedTree(root, cut), decisions);
+    }
+    public Analysis(Dataset data)
+    {
+        this.data = data; attributes = data.Attributes; classes = data.Classes; settings = data.Settings;
+        train = data.Train; validation = data.Validation; test = data.Test;
+        builder = new TreeBuilder(attributes, classes.Count, settings);
+        Grown = new PrunedTree(builder.Grow(train));
+        PruningResult result = Pruning.ReducedError(Grown.Root, validation);
+        Pruned = result.Tree; decisions = result.Decisions;
+        var models = new Dictionary<string, PrunedTree>(StringComparer.Ordinal)
+        {
+            ["grown"] = Grown, ["pruned"] = Pruned, ["depth"] = selectedDepth.Tree,
+            ["cost_complexity"] = sequence[selectedIndex].Tree
+        };
+        foreach (var model in models) predictions[model.Key] = test.Select(model.Value.Predict).ToList();
+    private string Accuracy(PrunedTree tree, List<Row> rows) => Ratio(tree.Correct(rows), rows.Count);
+    public List<string> PredictionsFile()
+    {
+        var lines = new List<string> { "id,predicted,actual,grown,leaf,path,missing" };
+        foreach (Row row in test)
+        {
+            Route route = Pruned.Route(row);
+            string path = string.Join("-", route.Path.Select(node => node.Number));
+            int missing = route.Steps.Count(step => step.Method != "primary");
+            lines.Add($"{row.Id},{classes[route.Leaf.Prediction]},{classes[row.Label]},{classes[Grown.Predict(row)]},{route.Leaf.Number},{path},{missing}");
+        }
+        return lines;
+    }
+    private List<string> ModelEvaluation(string model) => Evaluation.Classification(model + " test", classes, test, predictions[model]);
+    private List<string> RoutingLines()
+    {
+        Dictionary<int, int[]> tallies = Grown.Preorder().ToDictionary(node => node.Number, _ => new int[3]);
+        string[] methods = { "primary", "surrogate", "default" };
+        foreach (Row row in test)
+            foreach (Step step in Pruned.Route(row).Steps) tallies[step.Node.Number][Array.IndexOf(methods, step.Method)]++;
+        var lines = new List<string> { "routing pruned test" };
+        foreach (Node node in Pruned.InternalNodes())
+        {
+            int[] counts = tallies[node.Number];
+            lines.Add($"node {node.Number} rows {counts.Sum()} primary {counts[0]} surrogate {counts[1]} default {counts[2]}");
+        }
+        foreach (bool complete in new[] { true, false })
+        {
+            List<Row> rows = test.Where(row => (row.MissingCount == 0) == complete).ToList();
+            lines.Add($"{(complete ? "complete" : "incomplete")} rows {rows.Count} correct {Accuracy(Pruned, rows)}");
+        }
+        return lines;
+    }
+    public List<string> EvaluationFile() => Program.Sections(DataLines(), new List<string> { Summary("grown", Grown), Summary("pruned", Pruned) },
+        ModelEvaluation("grown"), ModelEvaluation("pruned"), RoutingLines(), CrossValidationLines(), DepthLines(),
+        ComplexityLines(), BaggingLines(), McnemarLines(), AucLines(), LearningLines());
+        var analysis = new Analysis(Dataset.Load("input"));
+        var files = new Dictionary<string, List<string>>(StringComparer.Ordinal)
+        {
+            ["tree.txt"] = Sections(analysis.RootCandidates(), analysis.TreeLines(analysis.Grown), analysis.SurrogateLines()),
+            ["pruned_tree.txt"] = analysis.PrunedTreeFile(), ["predictions.csv"] = analysis.PredictionsFile(),
+            ["rules.txt"] = analysis.RulesFile(), ["evaluation.txt"] = analysis.EvaluationFile(),
+        };
+        foreach (var file in files) File.WriteAllText(Path.Combine("output", file.Key), string.Join("\n", file.Value) + "\n", new UTF8Encoding(false));

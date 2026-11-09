@@ -1,0 +1,190 @@
+    static int register(String value) {
+        return value.matches("r(?:[0-9]|[12][0-9]|3[01])") ? Integer.parseInt(value.substring(1)) : -1;
+    static Config read() throws Exception {
+        Config c = new Config();
+        for (String line : lines("config.txt")) {
+            String[] w = line.split(" ");
+            case "VARIANT" ->
+                c.variants.add(new Variant(w[1], w[2].equals("ON"), w[3], Integer.parseInt(w[4])));
+            case "PRIMARY" -> {
+                c.primaryVariant = w[1];
+                c.primaryPredictor = w[2];
+            }
+    static List<List<Source>> dependencies(List<Main.Instruction> instructions) {
+        int[] writers = new int[32];
+        Arrays.fill(writers, -1);
+        List<List<Source>> result = new ArrayList<>();
+        for (int i = 0; i < instructions.size(); i++) {
+            Main.Instruction t = instructions.get(i);
+            List<Source> current = new ArrayList<>();
+            for (int register : new int[] {t.rs1(), t.rs2()})
+                if (register > 0)
+                    current.add(new Source(register, writers[register]));
+            result.add(current);
+            if (t.rd() > 0)
+                writers[t.rd()] = i;
+        }
+        return result;
+    }
+    static boolean idResolved(Main.Instruction t, TraceIO.Variant v) {
+        return t.kind() == 5 && t.rs1() < 0 || t.control() && v.stage().equals("ID");
+    }
+    static int ready(Main.Instruction t, Main.Instruction producer, Pipeline.Time p, TraceIO.Variant v) {
+        if (!v.forwarding())
+            return p.w() + 1;
+        return (producer.kind() == 2 ? p.w() : p.m()) + (idResolved(t, v) ? 1 : 0);
+    static final String[] CAUSES = {"control", "structural", "load_use", "raw"};
+    static final String[] STAGES = {"IF", "ID", "EX", "MEM", "WB"};
+    record Time(int f, int d, int x, int m, int w) {}
+    record Stall(int cause, int cycles, int responsible, int waiting, int producer) {}
+    static Run simulate(List<Main.Instruction> instructions, List<List<Hazards.Source>> sources,
+                        TraceIO.Variant variant, boolean[] misses) {
+        Run run = new Run();
+        run.variant = variant;
+        for (int i = 0; i < instructions.size(); i++) {
+            Main.Instruction t = instructions.get(i);
+            int f = 1, d = 2, x = 3;
+            if (i > 0) {
+                Time p = run.times.get(i - 1);
+                f = misses[i - 1] ? p.x() + (Hazards.idResolved(instructions.get(i - 1), variant) ? 0 : 1)
+                                  : p.d();
+                d = Math.max(f + 1, p.x());
+                int ideal = p.x() + 1;
+                int[] bounds = {d + 1, p.m(), ideal, ideal};
+                int[] producers = {-1, -1, -1, -1};
+                for (Hazards.Source source : sources.get(i))
+                    if (source.producer() >= 0) {
+                        int j = source.producer(),
+                            ready = Hazards.ready(t, instructions.get(j), run.times.get(j), variant);
+                        int cause = instructions.get(j).kind() == 2 ? 2 : 3;
+                        if (ready > bounds[cause]) {
+                            bounds[cause] = ready;
+                            producers[cause] = j;
+                        }
+                    }
+                x = ideal;
+                for (int cause = 0; cause < 4; cause++)
+                    if (bounds[cause] > x) {
+                        run.records.add(
+                            new Stall(cause, bounds[cause] - x, cause < 2 ? i - 1 : i, i, producers[cause]));
+                        x = bounds[cause];
+                    }
+                if (x > ideal)
+                    run.lengths[Math.min(5, x - ideal)]++;
+            }
+            int m = x + (t.kind() == 1 ? variant.latency() : 1);
+            run.times.add(new Time(f, d, x, m, m + 1));
+        }
+        for (Stall stall : run.records) {
+            run.cycles[stall.cause()] += stall.cycles();
+            run.events[stall.cause()]++;
+        }
+        run.total = run.times.get(n - 1).w();
+        return run;
+    static final String[] CLASSES = {"ALU", "MUL", "LOAD", "STORE", "BRANCH", "JUMP", "NOP"};
+    record Instruction(int number, int line, int pc, int kind, int rd, int rs1, int rs2, boolean taken,
+                       int target, int address) {
+        boolean control() {
+            return kind == 4 || kind == 5;
+        }
+    static String check(String line, int lineNumber) {
+        String[] w = line.split(" ", -1);
+        if (w.length != 8 || Arrays.asList(w).contains(""))
+            return "fields";
+        int pc = TraceIO.hex(w[0]);
+        if (pc < 0 || pc % 4 != 0)
+            return "pc";
+        int kind = Arrays.asList(CLASSES).indexOf(w[1]);
+        if (kind < 0)
+            return "class";
+        int[] regs = new int[3];
+        for (int i = 0; i < 3; i++) {
+            regs[i] = TraceIO.register(w[i + 2]);
+        int n = instructions.size();
+        Instruction t = new Instruction(n + 1, lineNumber, pc, kind, regs[0], regs[1], regs[2],
+                                        w[5].equals("T"), target, address);
+        instructions.add(t);
+    static void simulate() {
+        for (TraceIO.Variant variant : config.variants)
+            for (TraceIO.Predictor predictor : config.predictors) {
+                Pipeline.Run run = Pipeline.simulate(instructions, sources, variant,
+                                                     predictions.get(predictor.name()).flags);
+                run.predictor = predictor.name();
+                combinations.add(new Combination(variant, predictor.name(), run));
+                if (variant.name().equals(config.primaryVariant) &&
+                    predictor.name().equals(config.primaryPredictor))
+                    primary = run;
+        for (Pipeline.Stall stall : primary.records)
+            if (stall.waiting() >= 0)
+                annotations[stall.waiting()]
+                    .append(" ")
+                    .append(Pipeline.CAUSES[stall.cause()])
+                    .append(" ")
+                    .append(stall.cycles());
+        for (int i = 0; i < instructions.size(); i++) {
+            Instruction t = instructions.get(i);
+            Pipeline.Time time = primary.times.get(i);
+            String annotation = annotations[i].toString();
+            Row row = new Row(i + 1, t.pc(), CLASSES[t.kind()], annotation);
+            row.add(time.f(), time.f(), 'F', 0);
+            row.add(time.f() + 1, time.d() - 1, '*', 0);
+            row.add(time.d(), time.d(), 'D', 1);
+            row.add(time.d() + 1, time.x() - 1, '*', 1);
+            row.add(time.x(), time.m() - 1, 'X', 2);
+            row.add(time.m(), time.m(), 'M', 3);
+            row.add(time.w(), time.w(), 'W', 4);
+            rows.add(row);
+        int s = sum(primary.cycles), refetch = rows.size() - n;
+        section = new ArrayList<>(
+            List.of("timing variant=" + v.name() + " predictor=" + primary.predictor,
+                    "forwarding " + (v.forwarding() ? "on" : "off") + " branch_stage " + v.stage() +
+                        " mul_latency " + v.latency(),
+                    "cycles " + c, "cpi " + Report.fraction(c, n) + " " + Report.decimal(c, n),
+                    "ipc " + Report.decimal(n, c), "stall_cycles total " + s + " " + causes(primary.cycles),
+                    "stall_events " + causes(primary.events), "flushed " + refetch,
+                    "cycle_check " + n + " + 4 + " + s + " = " + (n + 4 + s)));
+        Map<Integer, int[]> segments = new HashMap<>();
+        int first = 0;
+        for (int last = 0; last < instructions.size(); last++)
+            if (instructions.get(last).control() || last == instructions.size() - 1) {
+                int[] group = segments.computeIfAbsent(instructions.get(first).pc(), k -> new int[3]);
+                group[0]++;
+                group[1] += last - first + 1;
+                group[2] += primary.times.get(last).w() - (first == 0 ? 0 : primary.times.get(first - 1).w());
+                first = last + 1;
+            }
+        List<Integer> starts = new ArrayList<>(segments.keySet());
+        starts.sort((x, y) -> {
+            int c = Integer.compare(segments.get(y)[2], segments.get(x)[2]);
+            return c != 0 ? c : Integer.compare(x, y);
+        });
+        section = new ArrayList<>(List.of("segments total " + segments.size()));
+        for (int k = 0; k < Math.min(config.top, starts.size()); k++) {
+            int pc = starts.get(k);
+            int[] group = segments.get(pc);
+            section.add((k + 1) + " " + Report.hex(pc) + " instances " + group[0] + " instructions " +
+                        group[1] + " cycles " + group[2] + " cpi " + Report.decimal(group[2], group[1]));
+        Map<Integer, Integer> stalls = new HashMap<>();
+        for (Pipeline.Stall stall : primary.records) {
+            int pc = instructions.get(stall.responsible()).pc();
+            stalls.put(pc, stalls.getOrDefault(pc, 0) + stall.cycles());
+        }
+        for (int pc : groups.keySet()) {
+            Instruction t = statics.get(pc);
+            section.add(Report.hex(pc) + " " + CLASSES[t.kind()] + " " + Report.register(t.rd()) + " " +
+                        Report.register(t.rs1()) + " " + Report.register(t.rs2()) + " executions " +
+                        groups.get(pc).size() + " stall_cycles " + stalls.getOrDefault(pc, 0));
+        config = TraceIO.read();
+        List<String> input = TraceIO.lines("trace.txt");
+        inputLines = input.size();
+        for (int i = 0; i < input.size(); i++) {
+            String reason = check(input.get(i), i + 1);
+            if (reason != null)
+        sources = Hazards.dependencies(instructions);
+        for (TraceIO.Predictor definition : config.predictors)
+            predictions.put(definition.name(), predict(definition));
+        simulate();
+        List<Row> rows = rows();
+        Report.write("pipeline.txt", diagram(rows));
+        Report.write("stats.txt", statistics(rows));
+        Report.write("profile.txt", profile());

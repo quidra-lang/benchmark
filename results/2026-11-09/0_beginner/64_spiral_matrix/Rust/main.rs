@@ -1,0 +1,25 @@
+fn main() {
+    let mut matrix = [[0; 6]; 5];
+    let dr = [0, 1, 0, -1];
+    let dc = [1, 0, -1, 0];
+    let (mut r, mut c, mut d) = (0_i32, 0_i32, 0);
+    for n in 1..=30 {
+        matrix[r as usize][c as usize] = n;
+        if n == 30 {
+            break;
+        }
+        let (mut nr, mut nc) = (r + dr[d], c + dc[d]);
+        if !(0..5).contains(&nr) || !(0..6).contains(&nc) || matrix[nr as usize][nc as usize] != 0 {
+            d = (d + 1) % 4;
+            nr = r + dr[d];
+            nc = c + dc[d];
+        }
+        (r, c) = (nr, nc);
+    }
+    for row in matrix {
+        for n in row {
+            print!("{:3}", n);
+        }
+        println!();
+    }
+}

@@ -1,0 +1,21 @@
+# Task B selection — C++
+
+## Answer requirements shared across languages
+
+1. Trace one valid document whose TOC precedes headings, whose explicit heading ID occupies an automatic candidate, and which contains a nested heading, from block and inline parsing to HTML output.
+2. Show when IDs are reserved, how automatic suffixes avoid used IDs, and how recorded heading IDs determine TOC links and nesting.
+3. Explain the deferred TOC replacement that resolves forward references and distinguish raw heading text, explicit-ID-stripped text, rendered inline HTML, and tag-stripped TOC labels.
+
+## Selected source locations
+
+- `main.cpp`: 12, 13, 15, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57, 58, 59, 60, 61, 62, 63, 64, 92, 94, 95, 96, 97, 100, 105, 106, 107, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 180, 185, 186, 187, 188, 189, 190, 203, 215, 216, 217, 219, 220, 221, 222, 223, 224, 225, 228, 234, 235, 236, 237, 279, 280, 281, 282, 292, 293, 294, 295, 296, 297, 357, 358, 359, 362, 363, 364, 365, 366, 367, 381, 382, 383, 386, 388, 391, 392, 401, 402, 403, 404, 405, 406, 407, 408, 410, 411, 414, 415, 416, 417, 418, 501, 502, 503, 504, 505, 534, 535, 536, 537, 538, 539, 540, 541, 551, 574, 575, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 644, 645, 646, 647, 648, 649, 650, 651, 652, 679, 680, 681, 682, 683, 684, 685, 686, 687
+
+## Evidence and language semantics
+
+Use [TOC], a blank line, # Parent {#foo}, a blank line, > ## Foo, then @@END@@. The TOC is recognized before either heading; the quoted line is stripped of > and recursively parsed as a level-2 heading. The explicit heading reserves foo and removes {#foo} from the display source. The nested automatic heading uses raw Foo to form foo, finds it occupied, then chooses and reserves foo-1. Ordinary inline characters are escaped and assembled into the heading HTML; tag stripping that rendered HTML supplies the TOC labels Parent and Foo. Automatic slugging receives raw heading source, before inline rendering. The same final IDs are recorded for both heading attributes and TOC links. The heading-level tree makes the level-2 Foo a child of level-1 Parent. The earlier TOC placeholder is replaced only after the heading traversal, so the leading nav links #foo and #foo-1 agree with h1 id=foo and the quoted h2 id=foo-1. C++ uses value-owned Block vectors for the parse tree and one Renderer receiver with set<string> usedIds and vector<HeadingEntry> headings throughout recursive rendering. HeadingEntry stores child indices, so TOC construction consistently refers to entries in the collected vector. Each explicit or chosen automatic ID is inserted before inline rendering and recording. The document method builds the body, builds the TOC, then replaces every marker occurrence; the recorded IDs, not new slug calculations, feed tocList. No global prescan of later explicit IDs is implied.
+
+## Minimization and alternatives
+
+Selected the ordinary-character inline path for this valid minimal witness. More elaborate emphasis, links, footnotes, tables, lists, code fences, other heading syntaxes, and error handling do not establish an additional answer requirement. Kept quote recursion, shared heading/ID state, suffix selection, label derivation, TOC tree construction, and deferred insertion: dropping any of these loses one part of the requested trace. A witness with only top-level headings would shorten the excerpt but would not demonstrate nested-block collection. An allocation-only excerpt loses forward references and raw-versus-rendered provenance. Every selected source line was considered individually; the assembled excerpt was separately reviewed against the witness. Imports and structural delimiters are retained only when needed to identify the selected state or path. No program was executed.
+
+The excerpt contains 3515 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

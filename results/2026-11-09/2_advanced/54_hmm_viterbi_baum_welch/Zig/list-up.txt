@@ -1,0 +1,306 @@
+pub fn readLines(io: std.Io, path: []const u8) ![]const []const u8 {
+    const value = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    const lines = split(value, '\n');
+    return lines[0 .. lines.len - 1];
+}
+pub fn f(value: anytype) f64 {
+    return @floatFromInt(value);
+}
+pub fn real(value: []const u8) f64 {
+    return std.fmt.parseFloat(f64, value) catch unreachable;
+}
+pub const Observation = []const i64;
+pub const Path = []const usize;
+pub const StateValues = [4]f64;
+pub const Matrix = [4][4]f64;
+pub const Emissions = [4][8]f64;
+pub const Confusion = [4][4]i64;
+pub const Model = struct {
+    name: []const u8,
+    states: []const u8,
+    symbols: []const u8,
+    missing: u8,
+    initial: StateValues = .{ 0, 0, 0, 0 },
+    transition: Matrix = [_][4]f64{.{ 0, 0, 0, 0 }} ** 4,
+    emission: Emissions = [_][8]f64{.{ 0, 0, 0, 0, 0, 0, 0, 0 }} ** 4,
+    pub fn k(self: Model) usize {
+        return self.states.len;
+    }
+    pub fn m(self: Model) usize {
+        return self.symbols.len;
+    }
+};
+pub const Rows = []const []const []const u8;
+pub const Input = struct { model: Model, sequences: Rows, labeled: Rows, parameters: Rows };
+pub const Sequence = struct { name: []const u8, role: []const u8 = "", observation: Observation = &.{}, truth: Path = &.{} };
+fn readRows(io: std.Io, name: []const u8) !Rows {
+    const lines = try readLines(io, fmt("input/{s}", .{name}));
+    const out = alloc([]const []const u8, lines.len);
+    for (lines, out) |line, *row| row.* = words(line);
+    return out;
+}
+pub fn normalize(values: []f64) void {
+    var sum: f64 = 0;
+    for (values) |value| sum += value;
+    for (values) |*value| value.* /= sum;
+}
+pub fn load(io: std.Io) !Input {
+    const rows = try readRows(io, "model.txt");
+    const states = alloc(u8, rows[0].len - 1);
+    for (rows[0][1..], states) |field, *state| state.* = field[0];
+    const symbols = alloc(u8, rows[1].len - 1);
+    for (rows[1][1..], symbols) |field, *symbol| symbol.* = field[0];
+    var model: Model = .{ .name = "INITIAL", .states = states, .symbols = symbols, .missing = rows[2][1][0] };
+    for (0..model.k()) |i| model.initial[i] = real(rows[3][i + 1]);
+    normalize(model.initial[0..model.k()]);
+    for (0..model.k()) |i| {
+        for (0..model.k()) |j| model.transition[i][j] = real(rows[4 + i][j + 2]);
+        normalize(model.transition[i][0..model.k()]);
+        for (0..model.m()) |j| model.emission[i][j] = real(rows[4 + model.k() + i][j + 2]);
+        normalize(model.emission[i][0..model.m()]);
+    }
+    return .{ .model = model, .sequences = try readRows(io, "sequences.txt"), .labeled = try readRows(io,
+         "labeled.txt"), .parameters = try readRows(io, "params.txt") };
+}
+pub const FB = struct { forward: []c.StateValues, backward: []c.StateValues, posterior: []c.StateValues,
+     emissions: []c.StateValues, scales: []f64, loglik: f64 = 0 };
+pub const Viterbi = struct { path: c.Path, logprob: f64 };
+pub const Decoding = struct { fb: FB, viterbi: Viterbi, posterior: c.Path, confidence: []const f64 };
+pub fn maximum(values: []const f64) usize {
+    var chosen: usize = 0;
+    for (values[1..], 1..) |value, i| if (value > values[chosen]) {
+        chosen = i;
+    };
+    return chosen;
+}
+pub fn emission(model: c.Model, observation: i64, state: usize) f64 {
+    return if (observation < 0) 1 else model.emission[state][c.u(observation)];
+}
+pub fn forwardBackward(model: c.Model, observation: c.Observation) FB {
+    const length = observation.len;
+    const k = model.k();
+    var out: FB = .{ .forward = c.alloc(c.StateValues, length), .backward = c.alloc(c.StateValues,
+         length), .posterior = c.alloc(c.StateValues, length), .emissions = c.alloc(c.StateValues,
+         length), .scales = c.alloc(f64, length) };
+    @memset(out.forward, .{ 0, 0, 0, 0 });
+    @memset(out.backward, .{ 0, 0, 0, 0 });
+    @memset(out.posterior, .{ 0, 0, 0, 0 });
+    @memset(out.emissions, .{ 0, 0, 0, 0 });
+    @memset(out.scales, 0);
+    for (observation, 0..) |symbol, t| {
+        for (0..k) |j| {
+            out.emissions[t][j] = emission(model, symbol, j);
+            var value = model.initial[j];
+            if (t > 0) {
+                value = 0;
+                for (0..k) |i| value += out.forward[t - 1][i] * model.transition[i][j];
+            }
+            out.forward[t][j] = value * out.emissions[t][j];
+            out.scales[t] += out.forward[t][j];
+        }
+        for (0..k) |j| out.forward[t][j] /= out.scales[t];
+        out.loglik += @log(out.scales[t]);
+    }
+    for (0..k) |i| out.backward[length - 1][i] = 1;
+    var remaining = length - 1;
+    while (remaining > 0) {
+        remaining -= 1;
+        const t = remaining;
+        for (0..k) |i| {
+            var sum: f64 = 0;
+            for (0..k) |j| sum += model.transition[i][j] * out.emissions[t + 1][j] * out.backward[t + 1][j];
+            out.backward[t][i] = sum / out.scales[t + 1];
+        }
+    }
+    for (0..length) |t| for (0..k) |i| {
+        out.posterior[t][i] = out.forward[t][i] * out.backward[t][i];
+    };
+    return out;
+}
+pub fn viterbi(model: c.Model, observation: c.Observation) Viterbi {
+    const k = model.k();
+    const length = observation.len;
+    var transitions: c.Matrix = undefined;
+    for (0..k) |i| for (0..k) |j| {
+        transitions[i][j] = @log(model.transition[i][j]);
+    };
+    var predecessors: [300][4]usize = undefined;
+    var scores: c.StateValues = .{ 0, 0, 0, 0 };
+    for (0..k) |j| scores[j] = @log(model.initial[j]) + (if (observation[0] < 0) 0 else @log(model.emission[j][c.u(observation[0])]));
+    for (observation[1..], 1..) |symbol, t| {
+        var next: c.StateValues = .{ 0, 0, 0, 0 };
+        for (0..k) |j| {
+            var candidates: c.StateValues = undefined;
+            for (0..k) |i| candidates[i] = scores[i] + transitions[i][j];
+            const previous = maximum(candidates[0..k]);
+            predecessors[t][j] = previous;
+            next[j] = candidates[previous] + (if (symbol < 0) 0 else @log(model.emission[j][c.u(symbol)]));
+        }
+        scores = next;
+    }
+    const path = c.alloc(usize, length);
+    path[length - 1] = maximum(scores[0..k]);
+    const logprob = scores[path[length - 1]];
+    var remaining = length - 1;
+    while (remaining > 0) {
+        path[remaining - 1] = predecessors[remaining][path[remaining]];
+        remaining -= 1;
+    }
+    return .{ .path = path, .logprob = logprob };
+}
+pub fn decode(model: c.Model, observation: c.Observation) Decoding {
+    const fb = forwardBackward(model, observation);
+    const path = viterbi(model, observation);
+    const posterior = c.alloc(usize, observation.len);
+    const confidence = c.alloc(f64, observation.len);
+    for (fb.posterior, posterior, confidence) |row, *state, *value| {
+        state.* = maximum(row[0..model.k()]);
+        value.* = row[state.*];
+    }
+    return .{ .fb = fb, .viterbi = path, .posterior = posterior, .confidence = confidence };
+}
+pub fn accumulate(matrix: *c.Confusion, truth: c.Path, predicted: c.Path) void {
+    for (truth, predicted) |actual, prediction| matrix[actual][prediction] += 1;
+}
+pub fn correct(truth: c.Path, predicted: c.Path) i64 {
+    var out: i64 = 0;
+    for (truth, predicted) |actual, prediction| out += @intFromBool(actual == prediction);
+    return out;
+}
+const zero_confusion: c.Confusion = [_][4]i64{.{ 0, 0, 0, 0 }} ** 4;
+fn stateString(path: c.Path, alphabet: []const u8) []const u8 {
+    const out = c.alloc(u8, path.len);
+    for (path, out) |state, *character| character.* = alphabet[state];
+    return out;
+}
+fn indexOf(text: []const u8, character: u8) ?usize {
+    return std.mem.indexOfScalar(u8, text, character);
+}
+fn parseObservation(raw: []const u8, model: c.Model) ParsedObservation {
+    const path = c.alloc(i64, raw.len);
+    for (raw, path, 1..) |character, *symbol, position| {
+        const ch = if (character >= 'a' and character <= 'z') character - 'a' + 'A' else character;
+        if (ch == model.missing) symbol.* = -1 else if (indexOf(model.symbols, ch)) |value| symbol.* = c.n(value) else return .{ .path = path,
+             .reason = c.fmt("invalid symbol {c} at position {d}", .{ ch, position }) };
+    }
+    return .{ .path = path };
+}
+    var i: usize = 0;
+    while (i < input.labeled.len) : (i += 2) {
+        const fields = input.labeled[i];
+        const labels = input.labeled[i + 1][0];
+        var sequence: c.Sequence = .{ .name = fields[0], .role = fields[1] };
+        var reason: ?[]const u8 = null;
+        var earlier: usize = 0;
+        while (earlier < i) : (earlier += 2) if (c.eq(sequence.name, input.labeled[earlier][0])) {
+            reason = "duplicate name";
+            break;
+        };
+        if (reason == null) {
+            const parsed = parseObservation(fields[2], input.model);
+            sequence.observation = parsed.path;
+            reason = parsed.reason;
+        }
+        if (reason == null) {
+            const truth = c.alloc(usize, labels.len);
+            sequence.truth = truth;
+            for (labels, truth, 1..) |character, *state, position| {
+                state.* = indexOf(input.model.states, character) orelse {
+                    reason = c.fmt("invalid label {c} at position {d}", .{ character, position });
+                    break;
+                };
+            }
+        }
+        if (reason == null and fields[2].len != labels.len) reason = c.fmt("length mismatch {d} {d}",
+             .{ fields[2].len, labels.len });
+        if (reason == null) reason = finalChecks(sequence.observation, p);
+        if (reason) |message| {
+            out.labeled_rejected += 1;
+            out.rejected.add("REJECT labeled.txt line {d} {s} {s}", .{ i + 1, sequence.name, message });
+        } else if (c.eq(sequence.role, "TRAIN")) c.append(c.Sequence, &train, sequence) else c.append(c.Sequence,
+             &test_rows, sequence);
+    }
+    out.unlabeled = unlabeled.items;
+    out.train = train.items;
+    out.test_rows = test_rows.items;
+    return out;
+fn add(target: *evaluation.MatchCounts, value: evaluation.MatchCounts) void {
+    target.predicted += value.predicted;
+    target.truth += value.truth;
+    target.matched_predicted += value.matched_predicted;
+    target.matched_truth += value.matched_truth;
+}
+const Evaluation = struct { matrix: c.Confusion = zero_confusion, positions: i64 = 0, correct_count: i64 = 0,
+     regions: evaluation.MatchCounts = .{}, boundaries: evaluation.MatchCounts = .{}, bins: [10]i64 = [_]i64{0} ** 10,
+     correct_bins: [10]i64 = [_]i64{0} ** 10, record_correct: [30]i64 = undefined };
+fn evaluate(model: c.Model, records: []const c.Sequence, p: c.Params, decoder: usize) Evaluation {
+    var out: Evaluation = .{};
+    for (records, 0..) |sequence, i| {
+        var scratch = std.heap.ArenaAllocator.init(c.backing_allocator);
+        const permanent = c.allocator;
+        c.allocator = scratch.allocator();
+        const decoded = inference.decode(model, sequence.observation);
+        const prediction = if (decoder == 0) decoded.viterbi.path else decoded.posterior;
+        evaluation.accumulate(&out.matrix, sequence.truth, prediction);
+        const correct_count = evaluation.correct(sequence.truth, prediction);
+        out.positions += c.n(prediction.len);
+        out.correct_count += correct_count;
+        out.record_correct[i] = correct_count;
+        add(&out.regions, evaluation.regionCounts(segments(prediction, p), trueRegions(sequence.truth, p.segment_state)));
+        add(&out.boundaries, evaluation.boundaryCounts(prediction, sequence.truth, p.boundary_tolerance));
+        if (decoder == 1) for (prediction, sequence.truth, decoded.confidence) |state, truth, confidence| {
+            const bin = @min(@as(usize, 9), @as(usize, @intFromFloat(@floor(10 * confidence))));
+            out.bins[bin] += 1;
+            out.correct_bins[bin] += @intFromBool(state == truth);
+        };
+        c.allocator = permanent;
+        scratch.deinit();
+    }
+    return out;
+}
+fn evaluationLines(model: c.Model, result: Evaluation, records: []const c.Sequence, p: c.Params, decoder: usize) c.Lines {
+    var out: c.Lines = .{};
+    out.add("EVALUATION {s} {s}", .{ model.name, if (decoder == 0) "VITERBI" else "POSTERIOR" });
+    out.extend(evaluation.matrixLines(model, result.matrix));
+    out.extend(evaluation.metricLines(model, result.matrix));
+    out.add("REGIONS {c} predicted {d} true {d} precision {s} recall {s}", .{ model.states[p.segment_state],
+         result.regions.predicted, result.regions.truth, evaluation.fraction(result.regions.matched_predicted,
+         result.regions.predicted), evaluation.fraction(result.regions.matched_truth, result.regions.truth) });
+    out.add("BOUNDARIES predicted {d} true {d} precision {s} recall {s}", .{ result.boundaries.predicted,
+         result.boundaries.truth, evaluation.fraction(result.boundaries.matched_predicted, result.boundaries.predicted),
+         evaluation.fraction(result.boundaries.matched_truth, result.boundaries.truth) });
+    if (decoder == 1) for (0..10) |b| {
+        if (result.bins[b] > 0) out.add("CALIBRATION 0.{d}-{s} positions {d} correct {d} accuracy {s}",
+             .{ b, if (b == 9) "1.0" else c.fmt("0.{d}", .{b + 1}), result.bins[b], result.correct_bins[b],
+             evaluation.fraction(result.correct_bins[b], result.bins[b]) });
+    };
+    for (records, 0..) |sequence, i| out.add("RECORD {s} length {d} correct {d}", .{ sequence.name,
+         sequence.observation.len, result.record_correct[i] });
+    return out;
+}
+    const input = try c.load(init.io);
+    const p = parameters(input.parameters, input.model);
+    const data = validate(input, p);
+    const unlabeled = observations(data.unlabeled);
+    var models: [4]c.Model = undefined;
+    models[0] = input.model;
+    models[1] = input.model;
+    var evaluations: [4][2]Evaluation = undefined;
+    for (models, 0..) |model, index| for (0..2) |decoder| {
+        evaluations[index][decoder] = evaluate(model, data.test_rows, p, decoder);
+        if (evaluation_file.data.items.len > 0) evaluation_file.add("", .{});
+        evaluation_file.extend(evaluationLines(model, evaluations[index][decoder], data.test_rows, p, decoder));
+    };
+    var cached: [4][]inference.Decoding = undefined;
+    for (models, &cached) |model, *results| {
+        results.* = c.alloc(inference.Decoding, unlabeled.len);
+        for (unlabeled, results.*) |observation, *result| result.* = inference.decode(model, observation);
+    }
+    var posterior_generator: sampler.Generator = .{ .state = p.posterior_seed };
+    const bw = models[1];
+    for (data.unlabeled, 0..) |sequence, index| {
+        const decoded = cached[1][index];
+        decodings.add("VITERBI {s}", .{stateString(decoded.viterbi.path, bw.states)});
+        decodings.add("POSTERIOR {s}", .{stateString(decoded.posterior, bw.states)});
+    try c.save(init.io, "decodings.txt", decodings);
+    try c.save(init.io, "evaluation.txt", evaluation_file);

@@ -1,0 +1,650 @@
+const COMPLEMENT = Dict(zip(collect("ACGTN"),collect("TGCAN")))
+reverse_complement(sequence) = join(COMPLEMENT[base] for base in reverse(sequence))
+function read_inputs()
+    references,name,parts,masked = NamedTuple[],"",String[],0
+    for line in readlines("input/reference.fasta")
+        if startswith(line,">")
+            !isempty(name) && push!(references,(name=name,bases=join(parts),masked=masked))
+            name,parts,masked = String(split(line[2:end],' ';limit=2)[1]),String[],0
+        else
+            masked += count(islowercase,line)
+            push!(parts,uppercase(line))
+        end
+    end
+    push!(references,(name=name,bases=join(parts),masked=masked))
+    lines = readlines("input/reads.fastq")
+    reads = [(name=lines[i][2:end],bases=lines[i+1],quality=lines[i+3]) for i in 1:4:length(lines)]
+    params = Dict{String,Vector{Int}}()
+    for line in readlines("input/params.txt")
+        fields = split(line)
+        params[fields[1]] = parse.(Int,fields[2:end])
+    end
+    references,reads,params
+end
+function FMIndex(text,suffixes,interval,sample_interval=0)
+    n = length(text)
+    bwt = [text[position>0 ? position : n] for position in suffixes]
+    c,offset = Dict{Char,Int}(),0
+    for symbol in SYMBOLS
+        c[symbol] = offset
+        offset += count(==(symbol),text)
+    end
+    counts = zeros(Int,length(SYMBOLS))
+    checkpoints = [copy(counts)]
+    for (position,symbol) in enumerate(bwt)
+        counts[SYMBOL_NUMBER[symbol]+1] += 1
+        position%interval==0 && push!(checkpoints,copy(counts))
+    end
+    samples = Dict{Int,Int}()
+    if sample_interval>0
+        for (i,position) in enumerate(suffixes)
+            position%sample_interval==0 && (samples[i-1]=position)
+        end
+    end
+    FMIndex(n,bwt,interval,c,checkpoints,samples)
+end
+function occurrence(index,symbol,position)
+    checkpoint = position÷index.interval
+    start = checkpoint*index.interval
+    index.checkpoints[checkpoint+1][SYMBOL_NUMBER[symbol]+1]+count(==(symbol),index.bwt[start+1:position])
+end
+function lf(index,row)
+    symbol = index.bwt[row+1]
+    index.c[symbol]+occurrence(index,symbol,row)
+end
+function extend_interval(index,lower,upper,base)
+    base=='N' && return (0,0)
+    index.c[base]+occurrence(index,base,lower),index.c[base]+occurrence(index,base,upper)
+end
+function locate(index,row)
+    steps = 0
+    while !haskey(index.samples,row)
+        row = lf(index,row)
+        steps += 1
+    end
+    index.samples[row]+steps,steps
+function backward_search(index,sequence)
+    lower,upper = 0,index.size
+    for base in reverse(sequence)
+        lower,upper = extend_interval(index,lower,upper,base)
+        lower>=upper && break
+    end
+    lower,upper
+end
+function lower_bounds(sequence,reverse_index)
+    lower,upper,mismatches,bounds = 0,reverse_index.size,0,Int[]
+    for base in sequence
+        lower,upper = extend_interval(reverse_index,lower,upper,base)
+        if lower>=upper
+            mismatches += 1
+            lower,upper = 0,reverse_index.size
+        end
+        push!(bounds,mismatches)
+    end
+    bounds
+end
+function backtrack(sequence,maximum,forward_index,reverse_index)
+    bounds = lower_bounds(sequence,reverse_index)
+    stack = [(length(sequence)-1,maximum,0,forward_index.size)]
+    nodes,leaves = 0,NTuple{3,Int}[]
+    while !isempty(stack)
+        position,remaining,lower,upper = pop!(stack)
+        nodes += 1
+        remaining<(position>=0 ? bounds[position+1] : 0) && continue
+        if position== -1
+            push!(leaves,(lower,upper,maximum-remaining))
+            continue
+        end
+        for base in "TGCA"
+            first,last = extend_interval(forward_index,lower,upper,base)
+            first>=last && continue
+            mismatch = base!=sequence[position+1]
+            (!mismatch || remaining>=1) && push!(stack,(position-1,remaining-Int(mismatch),first,last))
+        end
+    end
+    (nodes=nodes,leaves=leaves,positions=sum((upper-lower for (lower,upper,_) in leaves);init=0))
+end
+value(s,name) = s.params[name][1]
+function reference_text(references)
+    offsets,offset = Int[],0
+    for reference in references
+        push!(offsets,offset)
+        offset += length(reference.bases)+1
+    end
+    text = join([r.bases for r in references],"#")*"\$"
+    (references=references,offsets=offsets,text=text,reverse=reverse(text[1:end-1])*"\$")
+end
+function text_position(text,p)
+    r = searchsortedlast(text.offsets,p)
+    offset = p-text.offsets[r]
+    offset<length(text.references[r].bases) ? (r,offset) : nothing
+end
+function operation_runs(operations)
+    result = Tuple{Char,Int}[]
+    for op in operations
+        if !isempty(result) && result[end][1]==op
+            result[end] = (op,result[end][2]+1)
+        else
+            push!(result,(op,1))
+        end
+    end
+    result
+end
+function describe(reference,position,strand,operations,core,trimmed,references)
+    oriented = strand=='+' ? core : reverse_complement(core)
+    sequence = references[reference].bases
+    cigar,md,pairs = String[],String[],Tuple{Int,Int}[]
+    i,j,matches,nm = 0,position,0,0
+    for (op,n) in operation_runs(operations)
+        push!(cigar,"$n$op")
+        if op=='I'
+            i += n
+            nm += n
+        elseif op=='D'
+            push!(md,"$matches^$(sequence[j+1:j+n])")
+            matches = 0
+            j += n
+            nm += n
+        else
+            for _ in 1:n
+                push!(pairs,(i,j))
+                if oriented[i+1]==sequence[j+1]
+                    matches += 1
+                else
+                    push!(md,"$matches$(sequence[j+1])")
+                    matches = 0
+                    nm += 1
+                end
+                i,j = i+1,j+1
+            end
+        end
+    end
+    push!(md,string(matches))
+    if trimmed>0
+        strand=='+' ? push!(cigar,"$(trimmed)S") : pushfirst!(cigar,"$(trimmed)S")
+    end
+    (
+        reference=reference,
+        position=position,
+        strand=strand,
+        operations=operations,
+        oriented=oriented,
+        pairs=pairs,
+        cigar=join(cigar),
+        nm=nm,
+        md=join(md)
+    )
+end
+function map_read(s,read)
+    qualities = [Int(c)-33 for c in read.quality]
+    n = length(read.bases)
+    while n>0 && qualities[n]<value(s,"TRIM_QUALITY")
+        n -= 1
+    end
+    result = MappingResult(
+        read=read,
+        core=read.bases[1:n],
+        qualities=qualities,
+        length=n,
+        trimmed=length(read.bases)-n
+    )
+    n<value(s,"MIN_READ_LENGTH") && return result
+    oriented = (result.core,reverse_complement(result.core))
+    exact = [backward_search(s.forward,sequence) for sequence in oriented]
+    maximum_mismatches = any(interval->interval[1]<interval[2],exact) ? 1 : value(s,"MAX_MISMATCHES")
+    hits = NTuple{4,Int}[]
+    for (strand,sequence) in enumerate(oriented)
+        search = backtrack(sequence,maximum_mismatches,s.forward,s.reverse)
+        s.search_counts .+= [1,search.nodes,length(search.leaves),search.positions]
+        for (lower,upper,mm) in search.leaves,row in lower:upper-1
+            position,_ = locate(s.forward,row)
+            r,p = text_position(s.text,position)
+            push!(hits,(mm,r,p,strand))
+        end
+    end
+    if isempty(hits)
+        seed_and_extend!(s,result,oriented)
+        return result
+    end
+    sort!(hits)
+    best = hits[1][1]
+    n1,n2 = count(h->h[1]==best,hits),count(h->h[1]==best+1,hits)
+    alignments = [describe(
+        r,
+        p,
+        strand==1 ? '+' : '-',
+        repeat("M",n),
+        result.core,
+        result.trimmed,
+        s.references
+    ) for (mm,r,p,strand) in hits if mm<=best+1]
+    result.mapped,result.primary,result.others = true,alignments[1],alignments[2:end]
+    result.method,result.score = best==0 ? "EXACT" : "MISMATCH",(n-best)*s.params["SCORES"][1]-best*s.params["SCORES"][2]
+    result.mapq = n1>=2 ? 0 : n2==0 ? 60-12best : max(30-12best-3n2,1)
+    result.x0,result.x1 = n1,n2
+    result.targets = sort!(unique([r for (mm,r,_,_) in hits if mm==best]))
+    result
+end
+function coverage_and_variants(results,references,params)
+    depths,starts = [zeros(Int,length(r.bases)) for r in references],[zeros(
+        Int,
+        length(r.bases)
+    ) for r in references]
+    pileups = [zeros(Int,length(r.bases),4,2) for r in references]
+    min_depth,min_quality,min_alt,hom_percent = params["VARIANTS"]
+    minimum_mapq = params["COVERAGE_MIN_MAPQ"][1]
+    for result in results
+        result.mapped || continue
+        a = result.primary
+        r,strand = a.reference,a.strand=='+' ? 1 : 2
+        result.mapq==0 && (starts[r][a.position+1]+=1)
+        result.mapq<minimum_mapq && continue
+        for (i,j) in a.pairs
+            depths[r][j+1] += 1
+            base = a.oriented[i+1]
+            cycle = strand==1 ? i+1 : result.length-i
+            if base!='N' && result.qualities[cycle]>=min_quality
+                pileups[r][j+1,findfirst(==(base),BASES),strand] += 1
+            end
+        end
+    end
+    window = params["COVERAGE_WINDOW"][1]
+    coverage = [words("window",window,"min_mapq",minimum_mapq)]
+    variants = [words(
+        "min_depth",
+        min_depth,
+        "min_base_quality",
+        min_quality,
+        "min_alt_percent",
+        min_alt,
+        "hom_percent",
+        hom_percent
+    )]
+    callable_count,variant_count,heterozygous,homozygous = 0,0,0,0
+    for (r,reference) in enumerate(references)
+        n,depth = length(reference.bases),depths[r]
+        covered = count(>(0),depth)
+        push!(
+            coverage,
+            words(
+                "reference",
+                reference.name,
+                "length",
+                n,
+                "covered",
+                covered,
+                "breadth",
+                ratio(covered,n),
+                "mean_depth",
+                ratio(sum(depth),n),
+                "max_depth",
+                maximum(depth)
+            )
+        )
+        push!(coverage,"depth_histogram "*join(("$d:$(count(==(d),depth))" for d in 0:maximum(depth))," "))
+        for first in 0:window:n-1
+            last = min(first+window,n)
+            values = depth[first+1:last]
+            sequence = reference.bases[first+1:last]
+            total,size_window = sum(values),last-first
+            push!(
+                coverage,
+                words(
+                    reference.name,
+                    first+1,
+                    last,
+                    "gc",
+                    ratio(count(c->c in ('G','C'),sequence),size_window),
+                    "sum",
+                    total,
+                    "mean",
+                    ratio(total,size_window),
+                    "max",
+                    maximum(values),
+                    "zero",
+                    count(==(0),values),
+                    "mapq0",
+                    sum(starts[r][first+1:last]),
+                    "|"*repeat("#",10total÷size_window)
+                )
+            )
+        end
+        for j in 1:n
+            counts = [pileups[r][j,b,1]+pileups[r][j,b,2] for b in 1:4]
+            dp = sum(counts)
+            dp<min_depth && continue
+            callable_count += 1
+            ref_base = reference.bases[j]
+            alternative = argmax(b->counts[b],[b for b in 1:4 if BASES[b]!=ref_base])
+            alt_count = counts[alternative]
+            (alt_count<2 || 100alt_count<min_alt*dp) && continue
+            hom = 100alt_count>=hom_percent*dp
+            homozygous += hom
+            heterozygous += !hom
+            variant_count += 1
+            push!(
+                variants,
+                words(
+                    reference.name,
+                    j,
+                    "$ref_base>$(BASES[alternative])",
+                    "depth",
+                    dp,
+                    "alt",
+                    alt_count,
+                    "fraction",
+                    ratio(alt_count,dp),
+                    "genotype",
+                    hom ? "1/1" : "0/1",
+                    "strands",
+                    pileups[r][j,alternative,1],
+                    pileups[r][j,alternative,2],
+                    "counts",
+                    join(counts," ")
+                )
+            )
+        end
+    end
+    push!(
+        variants,
+        words(
+            "callable",
+            callable_count,
+            "variants",
+            variant_count,
+            "heterozygous",
+            heterozygous,
+            "homozygous",
+            homozygous
+        )
+    )
+    coverage,variants
+end
+function error_statistics(results,references)
+    maximum_cycle = maximum(length(r.read.bases) for r in results)
+    cycles,substitutions = zeros(Int,maximum_cycle,2),zeros(Int,4,5)
+    quality_counts,quality_sums,quality_bins = zeros(Int,2),zeros(Int,2),zeros(Int,5,2)
+    operation_counts,events,indel_bases = Dict(c=>0 for c in "MIDS"),Dict(c=>0 for c in "ID"),Dict(c=>0 for c in "ID")
+    for result in results
+        result.mapped || continue
+        a = result.primary
+        for op in a.operations
+            operation_counts[op] += 1
+        end
+        operation_counts['S'] += result.trimmed
+        result.x0==1 || continue
+        sequence = references[a.reference].bases
+        for (i,j) in a.pairs
+            observed,reference = a.oriented[i+1],sequence[j+1]
+            mismatch = Int(observed!=reference)
+            cycle = a.strand=='+' ? i+1 : result.length-i
+            quality = result.qualities[cycle]
+            cycles[cycle,1] += 1
+            cycles[cycle,2] += mismatch
+            substitutions[findfirst(==(reference),BASES),findfirst(==(observed),collect("ACGTN"))] += 1
+            quality_counts[mismatch+1] += 1
+            quality_sums[mismatch+1] += quality
+            bin = min(quality÷10,4)+1
+            quality_bins[bin,1] += 1
+            quality_bins[bin,2] += mismatch
+        end
+        for (op,n) in operation_runs(a.operations)
+            if op in "ID"
+                events[op] += 1
+                indel_bases[op] += n
+            end
+        end
+    end
+    aligned,mismatches = sum(quality_counts),quality_counts[2]
+    lines = [
+        words("error_profile aligned_bases",aligned,"mismatches",mismatches,"rate",ratio(mismatches,aligned)),
+        "substitutions",
+        "ref A C G T N"
+    ]
+    for (i,base) in enumerate(BASES)
+        push!(lines,words(base,join(substitutions[i,:]," ")))
+    end
+    push!(lines,"mismatch_by_cycle")
+    for cycle in 1:maximum_cycle
+        n,errors = cycles[cycle,:]
+        push!(lines,words("cycle",cycle,"aligned",n,"mismatches",errors,"rate",ratio(errors,n)))
+    end
+    push!(
+        lines,
+        words(
+            "quality matched",
+            quality_counts[1],
+            "mean",
+            ratio(quality_sums[1],quality_counts[1]),
+            "mismatched",
+            quality_counts[2],
+            "mean",
+            ratio(quality_sums[2],quality_counts[2])
+        )
+    )
+    push!(lines,"quality_bins")
+    for (i,name) in enumerate(("0-9","10-19","20-29","30-39","40-"))
+        n,errors = quality_bins[i,:]
+        push!(lines,words(name,"aligned",n,"mismatches",errors,"rate",ratio(errors,n)))
+    end
+    push!(lines,"cigar "*join((words(op,operation_counts[op]) for op in "MIDS")," "))
+    push!(
+        lines,
+        words("indels insertions",events['I'],indel_bases['I'],"deletions",events['D'],indel_bases['D'])
+    )
+    lines
+end
+function mapping_statistics(results,references,search_counts,seed_counts)
+    total,mapped = length(results),filter(r->r.mapped,results)
+    unique_count = count(r->r.x0==1,mapped)
+    short,nohit = count(r->!r.mapped && r.reason=="SHORT",results),count(
+        r->!r.mapped && r.reason=="NOHIT",
+        results
+    )
+    lines = [
+        words(
+            "reads total",
+            total,
+            "trimmed",
+            count(r->r.trimmed>0,results),
+            "trimmed_bases",
+            sum(r.trimmed for r in results),
+            "short",
+            short
+        ),
+        words(
+            "mapped",
+            length(mapped),
+            "rate",
+            ratio(length(mapped),total),
+            "unique",
+            unique_count,
+            "multi",
+            length(mapped)-unique_count,
+            "unmapped",
+            total-length(mapped)
+        ),
+        words("unmapped short",short,"nohit",nohit),
+        words(
+            "method exact",
+            count(r->r.method=="EXACT",mapped),
+            "mismatch",
+            count(r->r.method=="MISMATCH",mapped),
+            "seed",
+            count(r->r.method=="SEED",mapped)
+        ),
+        words(
+            "strand forward",
+            count(r->r.primary.strand=='+',mapped),
+            "reverse",
+            count(r->r.primary.strand=='-',mapped)
+        )
+    ]
+    for (i,reference) in enumerate(references)
+        on_reference = filter(r->r.primary.reference==i,mapped)
+        forward = count(r->r.primary.strand=='+',on_reference)
+        push!(
+            lines,
+            words(
+                "reference",
+                reference.name,
+                "mapped",
+                length(on_reference),
+                "unique",
+                count(r->r.x0==1,on_reference),
+                "forward",
+                forward,
+                "reverse",
+                length(on_reference)-forward
+            )
+        )
+    end
+    push!(lines,"length_bins")
+    lengths = [r.length for r in results]
+    for lower in minimum(lengths)÷10*10:10:maximum(lengths)÷10*10
+        in_bin = filter(r->lower<=r.length<=lower+9,results)
+        mapped_bin = filter(r->r.mapped,in_bin)
+        push!(
+            lines,
+            words(
+                "$lower-$(lower+9)",
+                "reads",
+                length(in_bin),
+                "mapped",
+                length(mapped_bin),
+                "unique",
+                count(r->r.x0==1,mapped_bin)
+            )
+        )
+    end
+    with_n = filter(r->'N' in r.read.bases,results)
+    push!(
+        lines,
+        words(
+            "n_reads",
+            length(with_n),
+            "n_bases",
+            sum((count(==('N'),r.read.bases) for r in with_n);init=0),
+            "mapped",
+            count(r->r.mapped,with_n)
+        )
+    )
+    target_counts = Dict{String,Int}()
+    for r in mapped
+        if r.x0>=2
+            key = join([references[i].name for i in r.targets],"+")
+            target_counts[key] = get(target_counts,key,0)+1
+        end
+    end
+    push!(lines,"multi_targets")
+    isempty(target_counts) && push!(lines,"none")
+    for key in sort!(collect(keys(target_counts)))
+        push!(lines,words(key,target_counts[key]))
+    end
+    push!(lines,"mapq_histogram")
+    for mapq in sort!(unique([r.mapq for r in mapped]);rev=true)
+        push!(lines,words(mapq,count(r->r.mapq==mapq,mapped)))
+    end
+    push!(lines,"nm_histogram")
+    for nm in sort!(unique([r.primary.nm for r in mapped]))
+        push!(lines,words(nm,count(r->r.primary.nm==nm,mapped)))
+    end
+    append!(lines,error_statistics(results,references))
+    push!(
+        lines,
+        words(
+            "search dfs_calls",
+            search_counts[1],
+            "dfs_nodes",
+            search_counts[2],
+            "dfs_leaves",
+            search_counts[3],
+            "dfs_positions",
+            search_counts[4]
+        )
+    )
+    push!(
+        lines,
+        "seeds "*join(
+            (words(name,n) for (name,n) in zip(
+                ("reads","seeds","with_n","repetitive","without_hit","candidates","passing"),
+                seed_counts
+            )),
+            " "
+        )
+    )
+    lines
+end
+function main()
+    references,reads,params = read_inputs()
+    text = reference_text(references)
+    suffixes,classes = build_suffix_array(text.text)
+    reverse_suffixes,reverse_classes = build_suffix_array(text.reverse)
+    interval = params["OCC_INTERVAL"][1]
+    forward = FMIndex(text.text,suffixes,interval,params["SA_SAMPLE_INTERVAL"][1])
+    reverse_index = FMIndex(text.reverse,reverse_suffixes,interval)
+    index_lines = index_statistics(
+        text,
+        suffixes,
+        classes,
+        forward,
+        reverse_suffixes,
+        reverse_classes,
+        reverse_index,
+        params
+    )
+    s = (
+        text=text,
+        references=references,
+        forward=forward,
+        reverse=reverse_index,
+        params=params,
+        search_counts=zeros(Int,4),
+        seed_counts=zeros(Int,7)
+    )
+    results = [map_read(s,read) for read in reads]
+    sam = sam_header(references)
+    append!(sam,[sam_record(r,references,params["MAX_ALT_HITS"][1]) for r in results])
+    coverage,variants = coverage_and_variants(results,references,params)
+    for (name,lines) in [
+        "alignments.sam"=>sam,
+        "coverage.txt"=>coverage,
+        "variants.txt"=>variants,
+        "index_stats.txt"=>index_lines,
+        "summary.txt"=>mapping_statistics(results,references,s.search_counts,s.seed_counts)
+    ]
+        write_lines(name,lines)
+    end
+end
+function sam_record(result,references,maximum_alternatives)
+    read = result.read
+    if !result.mapped
+        return join((read.name,4,"*",0,0,"*","*",0,0,read.bases,read.quality,"YM:Z:"*result.reason),'\t')
+    end
+    alignment = result.primary
+    reverse = alignment.strand=='-'
+    fields = [
+        read.name,
+        reverse ? "16" : "0",
+        references[alignment.reference].name,
+        string(alignment.position+1),
+        string(result.mapq),
+        alignment.cigar,
+        "*",
+        "0",
+        "0",
+        reverse ? reverse_complement(read.bases) : read.bases,
+        reverse ? Base.reverse(read.quality) : read.quality,
+        "NM:i:$(alignment.nm)",
+        "MD:Z:$(alignment.md)",
+        "AS:i:$(result.score)",
+        "X0:i:$(result.x0)",
+        "X1:i:$(result.x1)",
+        "YM:Z:$(result.method)"
+    ]
+    if 1<=length(result.others)<=maximum_alternatives
+        alternative = join("$(references[item.reference].name),$(item.strand)$(item.position+1),$(item.cigar),$(item.nm);" for item in result.others)
+        push!(fields,"XA:Z:"*alternative)
+    end
+    join(fields,'\t')
+end

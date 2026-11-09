@@ -1,0 +1,216 @@
+  Annotation = Struct.new(:sample, :label, :beat, keyword_init: true)
+  def read_ecg(path = "input/ecg.csv")
+    File.readlines(path, chomp: true).drop(1).map { |line| line.split(",")[1].to_i }
+  end
+
+  def read_annotations(path = "input/annotations.csv")
+    File.readlines(path, chomp: true).drop(1).map do |line|
+      sample, label = line.split(",")
+      Annotation.new(sample: sample.to_i, label: label)
+    end
+  end
+
+  def read_params(path = "input/params.txt")
+    File.readlines(path, chomp: true).to_h do |line|
+      name, value = line.split(" ")
+      [name.to_sym, value.to_i]
+    end
+  end
+  LABELS = %w[N V A].freeze
+  PEAK_CLASSES = %w[qrs searchback twave refractory noise].freeze
+  LEVELS = %i[spki npki spkf npkf].freeze
+  Beat = Struct.new(:number, :sample, :rr, :width, :label, :method, :reference, :offset,
+                    :nn, :previous_total, keyword_init: true)
+  Segment = Data.define(:start_ms, :end_ms, :beats, :annotations, :peaks)
+  def build_beats(registered, band, params)
+    beats = []
+    registered.each do |peak|
+      number = beats.length + 1
+      sample = [0, peak.r - 21].max
+      rr = beats.empty? ? nil : 5 * (sample - beats.last.sample)
+      width = Detector.width_ms(band, peak.r)
+      label, previous_total = "N", nil
+      if number >= 10
+        previous_total = beats[-8, 8].reduce(0) { |total, beat| total + beat.rr }
+        if 800 * rr < params[:premature_percent] * previous_total
+          label = width > params[:qrs_width_ms] ? "V" : "A"
+        end
+      end
+      beats << Beat.new(number: number, sample: sample, rr: rr, width: width, label: label,
+                        method: peak.kind == "qrs" ? "threshold" : "searchback",
+                        nn: false, previous_total: previous_total)
+    end
+    beats.each_cons(2) do |previous, current|
+      current.nn = current.number >= 3 && previous.label == "N" && current.label == "N" &&
+                   5 * (current.rr - previous.rr).abs <= previous.rr
+    end
+    beats
+  end
+
+  def match_annotations(beats, annotations, tolerance)
+    beats.each do |beat|
+      candidates = annotations.select do |annotation|
+        annotation.beat.nil? && (annotation.sample - beat.sample).abs <= tolerance
+      end
+      chosen = candidates.min_by { |annotation| [(annotation.sample - beat.sample).abs, annotation.sample] }
+      next if chosen.nil?
+
+      chosen.beat = beat
+      beat.reference = chosen
+      beat.offset = 5 * (beat.sample - chosen.sample)
+    end
+  end
+
+  def make_segments(length, params, beats, annotations, peaks)
+    size = params[:segment_ms] / 5
+    (0...length).step(size).map do |start|
+      finish = [start + size, length].min
+      Segment.new(5 * start, 5 * finish,
+                  beats.select { |beat| start <= beat.sample && beat.sample < finish },
+                  annotations.select { |annotation| start <= annotation.sample && annotation.sample < finish },
+                  peaks.select { |peak| start <= peak.time && peak.time < finish })
+    end
+  end
+  def beat_lines(beats)
+    header = "beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"
+    rows = beats.map do |beat|
+      rate = beat.rr.nil? ? "-" : two(rdiv(6_000_000, beat.rr))
+      [beat.number, beat.sample, 5 * beat.sample, missing(beat.rr), rate, beat.width,
+       beat.label, beat.method, missing(beat.reference&.sample), missing(beat.reference&.label)].join(",")
+    end
+    [header] + rows
+  def matching_lines(beats, annotations)
+    entries = annotations.map do |annotation|
+      beat = annotation.beat
+      row = if beat.nil?
+              [annotation.sample, annotation.label, "-", "-", "-", "-", "FN", "-"]
+            else
+              [annotation.sample, annotation.label, beat.number, beat.sample, beat.label,
+               beat.offset, "TP", beat.label == annotation.label ? "yes" : "no"]
+            end
+      [annotation.sample, 0, row.join(",")]
+    end
+    beats.each do |beat|
+      next unless beat.reference.nil?
+
+      entries << [beat.sample, 1, "-,-,#{beat.number},#{beat.sample},#{beat.label},-,FP,-"]
+    end
+    ["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"] +
+      entries.sort_by { |sample, order, _| [sample, order] }.map(&:last)
+  end
+  def matching_errors(beats, annotations)
+    errors = beats.filter_map do |beat|
+      next unless beat.reference.nil?
+
+      [beat.sample, 0, "false_positive beat=#{beat.number} sample=#{beat.sample} " \
+        "time_ms=#{5 * beat.sample} label=#{beat.label}"]
+    end
+    annotations.each do |annotation|
+      next unless annotation.beat.nil?
+
+      errors << [annotation.sample, 1, "false_negative sample=#{annotation.sample} " \
+        "time_ms=#{5 * annotation.sample} label=#{annotation.label}"]
+    end
+    errors.sort_by { |sample, order, _| [sample, order] }.map(&:last)
+  end
+
+  def label_counts(items, labels = LABELS)
+    labels.map { |label| "#{label}=#{items.count { |item| item.label == label }}" }.join(" ")
+  end
+  def performance_lines(detector, beats, annotations, segments, params, length)
+    matched, extra = beats.partition { |beat| !beat.reference.nil? }
+    missed = annotations.select { |annotation| annotation.beat.nil? }
+      "MATCHING", "tolerance_ms #{params[:match_ms]}",
+      "references #{annotations.length} #{label_counts(annotations)}",
+      "detections #{beats.length} #{label_counts(beats)}",
+      "true_positives #{matched.length}", "false_positives #{extra.length}", "false_negatives #{missed.length}",
+      "sensitivity #{ratio(matched.length, matched.length + missed.length)}",
+      "positive_predictivity #{ratio(matched.length, beats.length)}",
+      "detection_error_rate #{ratio(extra.length + missed.length, annotations.length)}"
+    ]
+    methods = %w[threshold searchback].map do |method|
+      "#{method}=#{matched.count { |beat| beat.method == method }}/#{beats.count { |beat| beat.method == method }}"
+    end
+    lines << "by_method #{methods.join(' ')}"
+    if matched.empty?
+      lines << "offset_ms none"
+    else
+      offsets = matched.map(&:offset)
+      absolute = offsets.map(&:abs)
+      lines << "offset_ms mean=#{two(rdiv(100 * offsets.reduce(0, :+), offsets.length))} " \
+        "mean_abs=#{two(rdiv(100 * absolute.reduce(0, :+), offsets.length))} max_abs=#{absolute.max}"
+    end
+    lines.concat(["CONFUSION", "ref  #{LABELS.map { |label| label.rjust(6) }.join}  miss"])
+    LABELS.each do |label|
+      counts = LABELS.map do |predicted|
+        matched.count { |beat| beat.reference.label == label && beat.label == predicted }.to_s.rjust(6)
+      end
+      lines << label + "    " + counts.join + missed.count { |annotation| annotation.label == label }.to_s.rjust(6)
+    end
+    lines << "extra" + LABELS.map { |label| extra.count { |beat| beat.label == label }.to_s.rjust(6) }.join
+    [["V", "veb"], ["A", "sveb"]].each do |label, prefix|
+      hits = matched.count { |beat| beat.label == label && beat.reference.label == label }
+      lines << "#{prefix}_sensitivity #{ratio(hits, annotations.count { |annotation| annotation.label == label })}"
+      lines << "#{prefix}_positive_predictivity #{ratio(hits, beats.count { |beat| beat.label == label })}"
+    end
+    lines << "SEGMENTS segment_ms=#{params[:segment_ms]} segments=#{segments.length}"
+    segments.each do |segment|
+      tp = segment.annotations.count { |annotation| !annotation.beat.nil? }
+      fp = segment.beats.count { |beat| beat.reference.nil? }
+      noise = segment.peaks.count { |peak| peak.kind == "noise" }
+      lines << format("%6d-%6d", segment.start_ms, segment.end_ms) +
+        " refs=#{segment.annotations.length} tp=#{tp} fp=#{fp} fn=#{segment.annotations.length - tp} noise_peaks=#{noise}"
+    end
+    lines << "ERRORS count=#{extra.length + missed.length}"
+    lines + matching_errors(beats, annotations)
+  end
+  def rhythm_lines(samples, beats, annotations, params)
+    start, length = params[:strip_start_ms] / 5, params[:strip_ms] / 5
+    columns, height = length / 10, params[:strip_rows]
+    beat_marks, ref_marks = Array.new(columns, " "), Array.new(columns, " ")
+    beats.each do |beat|
+      beat_marks[(beat.sample - start) / 10] = beat.label if start <= beat.sample && beat.sample < start + length
+    end
+    annotations.each do |annotation|
+      if start <= annotation.sample && annotation.sample < start + length
+        ref_marks[(annotation.sample - start) / 10] = annotation.label
+      end
+    end
+    lines.concat([" beats |#{beat_marks.join}|", "  refs |#{ref_marks.join}|"])
+  end
+    annotations = SignalIO.read_annotations
+    params = SignalIO.read_params
+    signals = Filters.filter_ecg(samples)
+    detector = AdaptiveDetector.new(signals, params)
+    detector.run
+    beats = build_beats(detector.registered, signals[:bandpass], params)
+    match_annotations(beats, annotations, params[:match_ms] / 5)
+    segments = make_segments(samples.length, params, beats, annotations, detector.peaks)
+    outputs = {
+      "beats.csv" => beat_lines(beats), "peaks.csv" => peak_lines(detector.peaks),
+      "matching.csv" => matching_lines(beats, annotations), "signals_excerpt.csv" => signal_lines(signals, params),
+      "performance.txt" => performance_lines(detector, beats, annotations, segments, params, samples.length),
+      "rhythm_strip.txt" => rhythm_lines(samples, beats, annotations, params)
+    }
+    outputs.each { |name, lines| SignalIO.write_lines(name, lines) }
+  end
+end
+
+ECG.main if $PROGRAM_NAME == __FILE__
+  def rdiv(numerator, denominator) = (2 * numerator + denominator) / (2 * denominator)
+  def two(value)
+    sign = value.negative? ? "-" : ""
+    magnitude = value.abs
+    format("%s%d.%02d", sign, magnitude / 100, magnitude % 100)
+  end
+  def fraction(numerator, denominator)
+    divisor = numerator.gcd(denominator)
+    "#{numerator / divisor}/#{denominator / divisor}"
+  end
+
+  def ratio(numerator, denominator)
+    return "#{numerator}/0 none" if denominator.zero?
+
+    "#{numerator}/#{denominator} reduced=#{fraction(numerator, denominator)} " \
+      "percent=#{two(rdiv(10_000 * numerator, denominator))}"
+  end

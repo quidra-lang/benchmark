@@ -1,0 +1,286 @@
+function normalize_values($values)
+{
+    $total = 0.0;
+    foreach ($values as $value) $total += $value;
+    $result = [];
+    foreach ($values as $value) $result[] = $value / $total;
+    return $result;
+}
+function read_rows($filename)
+{
+    $rows = [];
+    foreach (file('input/' . $filename, FILE_IGNORE_NEW_LINES) as $line) $rows[] = explode(' ', $line);
+    return $rows;
+}
+
+function read_inputs()
+{
+    $rows = read_rows('model.txt');
+    $states = array_slice($rows[0], 1);
+    $symbols = array_slice($rows[1], 1);
+    $count = count($states);
+    $initial = normalize_values(array_map('floatval', array_slice($rows[3], 1)));
+    $transition = [];
+    $emission = [];
+    for ($i = 0; $i < $count; $i++) {
+        $transition[] = normalize_values(array_map('floatval', array_slice($rows[4 + $i], 2)));
+        $emission[] = normalize_values(array_map('floatval', array_slice($rows[4 + $count + $i], 2)));
+    }
+    $model = ['name' => 'INITIAL', 'states' => $states, 'symbols' => $symbols, 'missing' => $rows[2][1],
+        'initial' => $initial, 'transition' => $transition, 'emission' => $emission];
+    return ['model' => $model, 'sequences' => read_rows('sequences.txt'), 'labeled' => read_rows('labeled.txt'), 'parameters' => read_rows('params.txt')];
+}
+function argmax_index($values)
+{
+    $best = 0;
+    for ($i = 1; $i < count($values); $i++) if ($values[$i] > $values[$best]) $best = $i;
+    return $best;
+}
+
+function emission_factor($model, $observation, $state)
+{
+    return $observation < 0 ? 1.0 : $model['emission'][$state][$observation];
+}
+
+function forward($model, $observations)
+{
+    $count = count($model['states']);
+    $factors = [];
+    $scales = [];
+    $loglik = 0.0;
+    foreach ($observations as $t => $observation) {
+        $row = [];
+        for ($j = 0; $j < $count; $j++) {
+            $probability = $model['initial'][$j];
+            if ($t > 0) {
+                $probability = 0.0;
+                for ($i = 0; $i < $count; $i++) $probability += $factors[$t - 1][$i] * $model['transition'][$i][$j];
+            }
+            $row[] = $probability * emission_factor($model, $observation, $j);
+        }
+        $scale = 0.0;
+        foreach ($row as $value) $scale += $value;
+        $scales[] = $scale;
+        $normalized = [];
+        foreach ($row as $value) $normalized[] = $value / $scale;
+        $factors[] = $normalized;
+        $loglik += log($scale);
+    }
+    return compact('factors', 'scales', 'loglik');
+}
+
+function forward_backward($model, $observations)
+{
+    $result = forward($model, $observations);
+    $count = count($model['states']);
+    $length = count($observations);
+    $backward = array_fill(0, $length, []);
+    $backward[$length - 1] = array_fill(0, $count, 1.0);
+    for ($t = $length - 2; $t >= 0; $t--) {
+        $backward[$t] = [];
+        for ($i = 0; $i < $count; $i++) {
+            $value = 0.0;
+            for ($j = 0; $j < $count; $j++) $value += $model['transition'][$i][$j] * emission_factor($model, $observations[$t + 1], $j) * $backward[$t + 1][$j];
+            $backward[$t][] = $value / $result['scales'][$t + 1];
+        }
+    }
+    $gamma = [];
+    foreach ($result['factors'] as $t => $row) {
+        $current = [];
+        foreach ($row as $i => $value) $current[] = $value * $backward[$t][$i];
+        $gamma[] = $current;
+    }
+    $result['backward'] = $backward;
+    $result['gamma'] = $gamma;
+    return $result;
+}
+
+function viterbi($model, $observations)
+{
+    $count = count($model['states']);
+    $transitions = [];
+    foreach ($model['transition'] as $row) $transitions[] = array_map('log', $row);
+    $delta = [];
+    foreach ($model['initial'] as $j => $value) $delta[] = log($value) + ($observations[0] < 0 ? 0 : log($model['emission'][$j][$observations[0]]));
+    $predecessors = [array_fill(0, $count, 0)];
+    for ($t = 1; $t < count($observations); $t++) {
+        $next = [];
+        $row = [];
+        for ($j = 0; $j < $count; $j++) {
+            $candidates = [];
+            foreach ($delta as $i => $value) $candidates[] = $value + $transitions[$i][$j];
+            $best = argmax_index($candidates);
+            $row[] = $best;
+            $next[] = ($delta[$best] + $transitions[$best][$j]) + ($observations[$t] < 0 ? 0 : log($model['emission'][$j][$observations[$t]]));
+        }
+        $predecessors[] = $row;
+        $delta = $next;
+    }
+    $path = array_fill(0, count($observations), 0);
+    $last = count($path) - 1;
+    $path[$last] = argmax_index($delta);
+    $logprob = $delta[$path[$last]];
+    for ($t = $last; $t > 0; $t--) $path[$t - 1] = $predecessors[$t][$path[$t]];
+    return compact('path', 'logprob');
+}
+
+function decode($model, $observations)
+{
+    $result = forward_backward($model, $observations);
+    $best = viterbi($model, $observations);
+    $posterior = [];
+    $confidence = [];
+    foreach ($result['gamma'] as $row) {
+        $state = argmax_index($row);
+        $posterior[] = $state;
+        $confidence[] = $row[$state];
+    }
+    $result['viterbi'] = $best['path'];
+    $result['logprob'] = $best['logprob'];
+    $result['posterior'] = $posterior;
+    $result['confidence'] = $confidence;
+    return $result;
+}
+function confusion($size)
+{
+    return array_fill(0, $size, array_fill(0, $size, 0));
+}
+
+function accumulate(&$matrix, $truth, $prediction)
+{
+    $correct = 0;
+    foreach ($truth as $t => $state) {
+        $matrix[$state][$prediction[$t]]++;
+        if ($state === $prediction[$t]) $correct++;
+    }
+    return $correct;
+}
+function rejection_reason(&$record, &$seen, $model, $params, $labeled)
+{
+    $duplicate = isset($seen[$record['name']]);
+    $seen[$record['name']] = true;
+    if ($duplicate) return 'duplicate name';
+    $record['text'] = strtoupper($record['text']);
+    $record['observations'] = [];
+    foreach (str_split($record['text']) as $character) {
+        $index = array_search($character, $model['symbols'], true);
+        $record['observations'][] = $index === false ? -1 : $index;
+    }
+    if ($labeled) {
+        $record['path'] = [];
+        foreach (str_split($record['labels']) as $character) $record['path'][] = array_search($character, $model['states'], true);
+    }
+    return null;
+}
+
+function validate_input($input, $params)
+{
+    $data = ['unlabeled' => [], 'train' => [], 'test' => [], 'rejected' => []];
+    $seen = [];
+    foreach ($input['sequences'] as $i => $row) {
+        $record = ['name' => $row[0], 'text' => $row[1]];
+        $reason = rejection_reason($record, $seen, $input['model'], $params, false);
+        if ($reason === null) $data['unlabeled'][] = $record;
+        else $data['rejected'][] = ['file' => 'sequences.txt', 'line' => $i + 1, 'name' => $record['name'], 'reason' => $reason];
+    }
+    $seen = [];
+    for ($i = 0; $i < count($input['labeled']); $i += 2) {
+        $row = $input['labeled'][$i];
+        $record = ['name' => $row[0], 'role' => $row[1], 'text' => $row[2], 'labels' => $input['labeled'][$i + 1][0]];
+        $reason = rejection_reason($record, $seen, $input['model'], $params, true);
+        if ($reason === null) $data[$record['role'] === 'TRAIN' ? 'train' : 'test'][] = $record;
+        else $data['rejected'][] = ['file' => 'labeled.txt', 'line' => $i + 1, 'name' => $record['name'], 'reason' => $reason];
+    }
+    return $data;
+}
+function evaluation_block($model, $records, $decoded, $decoder, $params)
+{
+    $matrix = confusion(count($model['states']));
+    $region = ['predicted' => 0, 'truth' => 0, 'matchedPredicted' => 0, 'matchedTruth' => 0];
+    $boundary = ['predicted' => 0, 'truth' => 0, 'matchedPredicted' => 0, 'matchedTruth' => 0];
+    $bins = array_fill(0, 10, ['positions' => 0, 'correct' => 0]);
+    $recordLines = [];
+    $correct = 0;
+    foreach ($records as $i => $record) {
+        $result = $decoded[$i];
+        $path = $decoder === 'VITERBI' ? $result['viterbi'] : $result['posterior'];
+        $count = accumulate($matrix, $record['path'], $path);
+        $correct += $count;
+        $recordLines[] = fields('RECORD', $record['name'], 'length', count($path), 'correct', $count);
+        $predicted = segments($path, $params);
+        $truth = [];
+        foreach (runs($record['path']) as $run) if ($run['state'] === $params['segment_state']) $truth[] = $run;
+        $region['predicted'] += count($predicted);
+        $region['truth'] += count($truth);
+        foreach ($predicted as $segment) if (any_overlap($segment, $truth)) $region['matchedPredicted']++;
+        foreach ($truth as $segment) if (any_overlap($segment, $predicted)) $region['matchedTruth']++;
+        $predictedBoundaries = boundaries($path);
+        $trueBoundaries = boundaries($record['path']);
+        $boundary['predicted'] += count($predictedBoundaries);
+        $boundary['truth'] += count($trueBoundaries);
+        $boundary['matchedPredicted'] += matched_boundaries($predictedBoundaries, $trueBoundaries, $params['boundary_tolerance']);
+        $boundary['matchedTruth'] += matched_boundaries($trueBoundaries, $predictedBoundaries, $params['boundary_tolerance']);
+        if ($decoder === 'POSTERIOR') foreach ($path as $t => $state) {
+            $bin = min(9, (int) floor(10 * $result['confidence'][$t]));
+            $bins[$bin]['positions']++;
+            if ($state === $record['path'][$t]) $bins[$bin]['correct']++;
+        }
+    }
+    $lines = array_merge([fields('EVALUATION', $model['name'], $decoder)], confusion_lines($matrix, $model['states']), metric_lines($matrix, $model['states']));
+    $lines[] = fields('REGIONS', $model['states'][$params['segment_state']], 'predicted', $region['predicted'], 'true', $region['truth'],
+        'precision', fraction($region['matchedPredicted'], $region['predicted']), 'recall', fraction($region['matchedTruth'], $region['truth']));
+    $lines[] = fields('BOUNDARIES predicted', $boundary['predicted'], 'true', $boundary['truth'],
+        'precision', fraction($boundary['matchedPredicted'], $boundary['predicted']), 'recall', fraction($boundary['matchedTruth'], $boundary['truth']));
+    foreach ($bins as $b => $bin) {
+        if ($bin['positions'] === 0) continue;
+        $range = $b === 9 ? '0.9-1.0' : '0.' . $b . '-0.' . ($b + 1);
+        $lines[] = fields('CALIBRATION', $range, 'positions', $bin['positions'], 'correct', $bin['correct'], 'accuracy', fraction($bin['correct'], $bin['positions']));
+    }
+    foreach ($recordLines as $line) $lines[] = $line;
+    return compact('lines', 'correct');
+}
+function path_text($path, $names)
+{
+    $text = '';
+    foreach ($path as $state) $text .= $names[$state];
+    return $text;
+}
+function annotate($model, $records, $decoded, $params)
+{
+    $generator = new Minstd($params['posterior_seed']);
+    $lines = [];
+    $segmentLines = ['sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island'];
+    foreach ($records as $i => $record) {
+        $result = $decoded[$i];
+        $lines[] = fields('SEQUENCE', $record['name'], 'length', count($record['observations']), 'loglik', real_number($result['loglik']),
+            'viterbi', real_number($result['logprob']), 'differences', $differences, 'uncertain', $uncertain, 'expected_segments', real_number($segmentCount / $params['posterior_samples']));
+        $lines[] = 'VITERBI ' . path_text($result['viterbi'], $model['states']);
+        $lines[] = 'POSTERIOR ' . path_text($result['posterior'], $model['states']);
+    $input = read_inputs();
+    $params = parameters($input['parameters'], $input['model']);
+    $data = validate_input($input, $params);
+    $models = [$input['model'], $bw['model'], $vt['model'], $supervised['model']];
+    $decoded = [];
+    $testDecoded = [];
+    foreach ($models as $model) {
+        $unlabeledResults = [];
+        $testResults = [];
+        foreach ($data['unlabeled'] as $record) $unlabeledResults[] = decode($model, $record['observations']);
+        foreach ($data['test'] as $record) $testResults[] = decode($model, $record['observations']);
+        $decoded[] = $unlabeledResults;
+        $testDecoded[] = $testResults;
+    }
+    $evaluation = [];
+    $scores = [];
+    foreach ($models as $i => $model) {
+        $row = [];
+        foreach (DECODERS as $decoder) {
+            $result = evaluation_block($model, $data['test'], $testDecoded[$i], $decoder, $params);
+            $evaluation[] = $result['lines'];
+            $row[] = $result['correct'];
+        }
+        $scores[] = $row;
+    }
+    $annotation = annotate($bw['model'], $data['unlabeled'], $decoded[1], $params);
+    write_lines('decodings.txt', $annotation['lines']);
+    write_lines('evaluation.txt', join_blocks($evaluation));

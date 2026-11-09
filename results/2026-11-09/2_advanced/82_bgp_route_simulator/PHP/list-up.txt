@@ -1,0 +1,666 @@
+function bestRoute(array $routes, array $routerIds): array
+{
+    if (count($routes) === 1)
+        return [$routes[0], 'ONLY'];
+    $origin = ['IGP' => 0, 'EGP' => 1, 'INCOMPLETE' => 2];
+    $stages = [
+        'LOCALPREF' => fn($r) => -$r->localPref,
+        'ASPATH' => fn($r) => count($r->path),
+        'ORIGIN' => fn($r) => $origin[$r->origin],
+        'MED' => null,
+        'ROUTERID' => fn($r) => $routerIds[$r->neighbor()],
+        'LINK' => fn($r) => $r->link->number,
+    ];
+    foreach ($stages as $reason => $key) {
+        if ($reason === 'MED') {
+            $minima = [];
+            foreach ($routes as $r)
+                $minima[$r->neighbor()] = min($minima[$r->neighbor()] ?? $r->med, $r->med);
+            $routes = array_values(array_filter($routes, fn($r) => $r->med === $minima[$r->neighbor()]));
+        } else {
+            $minimum = min(array_map($key, $routes));
+            $routes = array_values(array_filter($routes, fn($r) => $key($r) === $minimum));
+        }
+        if (count($routes) === 1)
+            return [$routes[0], $reason];
+    }
+    throw new LogicException('No unique route');
+}
+    private function importRoute(object $session, string $prefix, RouteAttributes $attribute): array
+    {
+        $r = $this->policies->applied(
+            'IMPORT',
+            $session->owner,
+            $session->link,
+            $prefix,
+            $attribute->path,
+            $attribute->communities,
+        );
+        $localPref = $this->defaults[$session->link->role($session->owner)];
+        if ($r !== null && $r->has('DENY'))
+            return [null, $r];
+        $med = $attribute->med;
+        $communities = $attribute->communities;
+        if ($r !== null) {
+            $localPref = $r->value('LOCALPREF', $localPref);
+            $med = $r->value('MED', $med);
+            $communities = editCommunities($communities, $r);
+        }
+        return [
+            new Route($attribute->path, $attribute->origin, $med, $communities, $localPref, $session->link),
+            $r,
+        ];
+    }
+    private function candidates(int $owner, string $prefix): array
+    {
+        $routes = [];
+        foreach ($this->routers[$owner]->sessions as $s)
+            if (isset($s->incoming[$prefix])) {
+                [$r] = $this->importRoute($s, $prefix, $s->incoming[$prefix]);
+                if ($r !== null)
+                    $routes[] = $r;
+            }
+        return $routes;
+    }
+    private function advertised(object $session, string $prefix): array
+    {
+        $owner = $session->owner;
+        $link = $session->link;
+        $route = $this->routers[$owner]->rib[$prefix] ?? null;
+        if (
+            $route === null
+            || !$route->local() && $route->neighbor() === $link->other($owner)
+            || in_array(NO_EXPORT, $route->communities, true)
+        )
+            return [null, null];
+        $r = $this->policies->applied('EXPORT', $owner, $link, $prefix, $route->path, $route->communities);
+        if ($r !== null && $r->has('DENY'))
+            return [null, $r];
+        if (
+            !($r?->has('ALLOW') ?? false)
+            && !$route->local()
+            && $route->link->role($owner) !== 'customer'
+            && $link->role($owner) !== 'customer'
+        )
+            return [null, $r];
+        $prepend = $r?->value('PREPEND', 0) ?? 0;
+        $med = $r?->value('MED', 0) ?? 0;
+        $communities = $r === null ? $route->communities : editCommunities($route->communities, $r);
+        return [
+            new RouteAttributes(
+                [...array_fill(0, 1 + $prepend, $owner), ...$route->path],
+                $route->origin,
+                $med,
+                $communities,
+            ),
+            $r,
+        ];
+    }
+    private function redecide(int $owner, string $prefix): void
+    {
+        $router = $this->routers[$owner];
+        $route = $router->origination[$prefix] ?? null;
+        if ($route === null) {
+            $candidates = $this->candidates($owner, $prefix);
+            $route = $candidates ? bestRoute($candidates, $this->network->routerIds)[0] : null;
+        }
+        if (($router->rib[$prefix] ?? null) == $route)
+            return;
+        if ($route === null)
+            unset($router->rib[$prefix]);
+        else
+            $router->rib[$prefix] = $route;
+        $this->log("BEST $owner $prefix " . routeText($route));
+        ++$router->changes;
+        ++$this->period->counters['best_changes'];
+        $key = $owner . ':' . $prefix;
+        $this->period->exploration[$key] = ($this->period->exploration[$key] ?? 0) + 1;
+        $this->period->bestLines[] = [$this->time, $owner, $prefix, $route];
+        $this->changed[$prefix] = true;
+        foreach ($router->sessions as $s)
+            if ($s->link->up) {
+                $s->pending[$prefix] = true;
+                if ($s->timer === null)
+                    $this->processPending($s);
+            }
+    }
+    private function processPending(object $session): void
+    {
+        $sent = 0;
+        foreach (orderedPrefixes(array_keys($session->pending)) as $prefix) {
+            [$content, $rule] = $this->advertised($session, $prefix);
+            if (($session->outgoing[$prefix] ?? null) == $content)
+                continue;
+            if ($content === null)
+                unset($session->outgoing[$prefix]);
+            else
+                $session->outgoing[$prefix] = $content;
+            $m = $this->messages->send(
+                $this->time,
+                $session->owner,
+                $session->link->other($session->owner),
+                $session->link,
+                $prefix,
+                $content,
+            );
+            $this->log(
+                'SEND '
+                . messageText($m)
+                . ' '
+                . ($content === null ? 'WITHDRAW' : 'ANNOUNCE ' . attributeText($content)),
+            );
+            ++$session->sent;
+            ++$sent;
+            ++$this->period->counters['updates'];
+            if ($content === null)
+                ++$this->period->counters['withdrawals'];
+            if ($rule !== null)
+                ++$rule->hits;
+        }
+        $session->pending = [];
+        $session->timer = $sent && $session->link->mrai >= 1 ? $this->time + $session->link->mrai : null;
+    }
+    private function receive(Message $m): void
+    {
+        $s = $this->bySession[$m->receiver . ':' . $m->link->number];
+        $prefix = $m->prefix;
+        $content = $m->content;
+        ++$s->received;
+        $this->period->convergenceTime = $this->time - $this->period->event->time;
+        if ($content === null) {
+            unset($s->incoming[$prefix]);
+            $result = 'WITHDRAW';
+        } elseif (in_array($m->receiver, $content->path, true)) {
+            unset($s->incoming[$prefix]);
+            $result = 'ANNOUNCE loop';
+        } else {
+            $s->incoming[$prefix] = $content;
+            [$route, $rule] = $this->importRoute($s, $prefix, $content);
+            if ($rule !== null)
+                ++$rule->hits;
+            $result = $route === null
+                ? 'ANNOUNCE deny ' . $rule->name
+                : 'ANNOUNCE accept' . ($rule !== null ? ' ' . $rule->name : '');
+        }
+        $this->log('RECV ' . messageText($m) . ' ' . $result);
+        $this->redecide($m->receiver, $prefix);
+    }
+    private function originate(int $owner, string $prefix, string $origin, array $communities): void
+    {
+        $this->routers[$owner]->origination[$prefix] = Route::originated(
+            $origin,
+            parseCommunities($communities),
+        );
+        $this->redecide($owner, $prefix);
+    }
+    private function executeEvent(object $event): void
+    {
+        $this->log("EVENT {$this->period->number} {$event->text}");
+        $f = $event->fields;
+        switch ($event->kind) {
+            case 'INITIAL':
+                foreach ($this->network->initial as [$owner, $p, $origin, $comm])
+                    $this->originate($owner, $p, $origin, $comm);
+                break;
+            case 'ANNOUNCE':
+                $this->originate((int) $f[1], $f[2], $f[3], array_slice($f, 4));
+                break;
+            case 'WITHDRAW':
+                unset($this->routers[(int) $f[1]]->origination[$f[2]]);
+                $this->redecide((int) $f[1], $f[2]);
+                break;
+            case 'LINK_DOWN':
+                $this->linkDown($this->network->byName[$f[2]]);
+                break;
+            case 'LINK_UP':
+                $this->linkUp($this->network->byName[$f[2]]);
+                break;
+            default:
+                $this->changePolicy($this->policies->byName[$f[2]], $event->kind === 'POLICY_ON');
+        }
+    }
+    private function trace(int $source, int $address): object
+    {
+        $visits = [$source];
+        $visited = [$source => true];
+        $hops = [];
+        $owner = $source;
+        while (true) {
+            $matches = array_values(array_filter(
+                array_keys($this->routers[$owner]->rib),
+                fn($p) => prefixContains($p, $address),
+            ));
+            if (!$matches) {
+                $result = $hops ? 'BLACKHOLE' : 'UNREACHABLE';
+                break;
+            }
+            usort($matches, fn($a, $b) => parsePrefix($b)[1] <=> parsePrefix($a)[1]);
+            $prefix = $matches[0];
+            $route = $this->routers[$owner]->rib[$prefix];
+            if ($route->local()) {
+                $hops[] = [$owner, $prefix, null];
+                $result = 'DELIVERED';
+                break;
+            }
+            $hops[] = [$owner, $prefix, $route->link];
+            $owner = $route->link->other($owner);
+            $visits[] = $owner;
+            if (isset($visited[$owner])) {
+                $result = 'LOOP';
+                break;
+            }
+            $visited[$owner] = true;
+        }
+        return (object) [
+            'result' => $result,
+            'visits' => $visits,
+            'hops' => $hops,
+            'count' => count(array_filter($hops, fn($h) => $h[2] !== null)),
+            'arrival' => $result === 'DELIVERED' ? $owner : null,
+        ];
+    }
+    private function forwardingChecks(): void
+    {
+        foreach (orderedPrefixes(array_keys($this->changed)) as $prefix) {
+            $loops = $this->prefixLoops($prefix);
+            foreach ($this->ongoingRings as $key => $r)
+                if ($r->prefix === $prefix && !isset($loops[implode(',', $r->path)])) {
+                    $r->end = $this->time;
+                    unset($this->ongoingRings[$key]);
+                }
+            $ordered = array_values($loops);
+            usort($ordered, fn($a, $b) => $a <=> $b);
+            foreach ($ordered as $loop) {
+                $key = $prefix . ':' . implode(',', $loop);
+                if (!isset($this->ongoingRings[$key])) {
+                    $r = (object) [
+                        'prefix' => $prefix,
+                        'path' => $loop,
+                        'start' => $this->time,
+                        'end' => null,
+                    ];
+                    $this->ringRecords[] = $r;
+                    $this->ongoingRings[$key] = $r;
+                }
+            }
+        }
+        foreach ($this->traces as $i => [$source, $address, $value]) {
+            $path = $this->trace($source, $value);
+            $status = in_array($path->result, ['LOOP', 'BLACKHOLE'], true)
+                ? [$path->result, $path->visits]
+                : null;
+            $r = $this->ongoingTraces[$i] ?? null;
+            if ($r !== null && $r->status !== $status) {
+                $r->end = $this->time;
+                unset($this->ongoingTraces[$i]);
+            }
+            if ($status !== null && !isset($this->ongoingTraces[$i])) {
+                $r = (object) ['index' => $i, 'status' => $status, 'start' => $this->time, 'end' => null];
+                $this->traceRecords[] = $r;
+                $this->ongoingTraces[$i] = $r;
+            }
+        }
+    }
+    private function runPeriod(int $number, object $event, ?int $boundary): void
+    {
+        $before = [];
+        foreach ($this->routers as $owner => $router)
+            $before[$owner] = $router->rib;
+        $p = (object) [
+            'number' => $number,
+            'event' => $event,
+            'before' => $before,
+            'counters' => array_fill_keys(['updates', 'withdrawals', 'drops', 'best_changes'], 0),
+            'exploration' => [],
+            'bestLines' => [],
+            'convergenceTime' => 0,
+            'deliveryTimes' => 0,
+            'states' => [],
+            'divergence' => null,
+            'status' => null,
+            'routesChanged' => 0,
+        ];
+        $this->period = $p;
+        $this->periods[] = $p;
+        $this->time = $event->time;
+        $this->changed = [];
+        $this->executeEvent($event);
+        while (true) {
+            $delivered = false;
+            while ($this->messages->nextTime() === $this->time) {
+                $this->receive($this->messages->take());
+                $delivered = true;
+            }
+            foreach ($this->sessions as $s)
+                if ($s->timer === $this->time) {
+                    $s->timer = null;
+                    if ($s->pending)
+                        $this->processPending($s);
+                }
+            if ($this->changed)
+                $this->forwardingChecks();
+            if ($delivered) {
+                ++$p->deliveryTimes;
+                $this->detectDivergence();
+            }
+            $quiet = $this->quiet();
+            if (
+                $boundary === null
+                    ? $quiet || $p->divergence !== null || $p->deliveryTimes >= $this->stepcap
+                    : $this->time === $boundary
+            )
+                break;
+            $this->time = $this->nextMoment($boundary);
+            $this->changed = [];
+        }
+        $p->status = $p->divergence !== null
+            ? 'DIVERGENT'
+            : ($quiet ? 'CONVERGED' : ($boundary === null ? 'CAPPED' : 'UNSETTLED'));
+        foreach ($this->routers as $owner => $router)
+            foreach (array_unique([...array_keys($before[$owner]), ...array_keys($router->rib)]) as $prefix)
+                if (($before[$owner][$prefix] ?? null) != ($router->rib[$prefix] ?? null))
+                    ++$p->routesChanged;
+        $p->states = [];
+    }
+    private function ribLines(): array
+    {
+        $lines = [];
+        foreach ($this->routers as $owner => $router) {
+            $local = count(array_filter($router->rib, fn($r) => $r->local()));
+            $sent = array_sum(array_column($router->sessions, 'sent'));
+            $received = array_sum(array_column($router->sessions, 'received'));
+            $lines[] =
+                "AS $owner routes "
+                . count($router->rib)
+                . " local $local sent $sent received $received changes {$router->changes}";
+            foreach ($router->sessions as $s) {
+                $accepted = 0;
+                foreach ($s->incoming as $p => $a)
+                    if ($this->importRoute($s, $p, $a)[0] !== null)
+                        ++$accepted;
+                $l = $s->link;
+                $lines[] =
+                    "SESSION {$l->name} "
+                    . $l->other($owner)
+                    . ' '
+                    . $l->role($owner)
+                    . ' '
+                    . ($l->up ? 'UP' : 'DOWN')
+                    . ' in '
+                    . count($s->incoming)
+                    . " accepted $accepted out "
+                    . count($s->outgoing)
+                    . " sent {$s->sent} received {$s->received} flaps {$l->downCount}";
+            }
+            foreach (orderedPrefixes(array_keys($router->rib)) as $prefix) {
+                $route = $router->rib[$prefix];
+                $candidates = $this->candidates($owner, $prefix);
+                $line = $prefix . ' ' . routeText($route) . ' candidates ' . count($candidates);
+                if (!$route->local())
+                    $line .= ' reason ' . bestRoute($candidates, $this->network->routerIds)[1];
+                $lines[] = $line;
+                $remaining = array_values(array_filter($candidates, fn($r) => $r != $route));
+                while ($remaining) {
+                    [$r] = bestRoute($remaining, $this->network->routerIds);
+                    $lines[] = 'ALT ' . routeText($r);
+                    $index = array_search($r, $remaining, true);
+                    array_splice($remaining, $index, 1);
+                }
+            }
+        }
+        return $lines;
+    }
+    private function pathLines(): array
+    {
+        $lines = [];
+        foreach ($this->traces as [$source, $address, $value])
+            array_push($lines, ...$this->traceLines($source, $address, $value));
+        $prefixes = [];
+        foreach ($this->routers as $router)
+            array_push($prefixes, ...array_keys($router->origination));
+        $prefixes = orderedPrefixes($prefixes);
+        $lines[] = 'PREFIXES' . ($prefixes ? ' ' . implode(',', $prefixes) : '');
+        foreach ($this->network->ases as $source) {
+            $symbols = '';
+            foreach ($prefixes as $prefix) {
+                $p = $this->trace($source, parsePrefix($prefix)[0]);
+                $symbols .= $p->result === 'DELIVERED'
+                    ? (
+                        $p->count === 0
+                            ? '*'
+                            : (isset($this->routers[$p->arrival]->origination[$prefix]) ? '+' : 'X')
+                    )
+                    : ['LOOP' => 'L', 'BLACKHOLE' => 'B', 'UNREACHABLE' => 'U'][$p->result];
+            }
+            $lines[] = "REACH $source" . ($symbols !== '' ? ' ' . $symbols : '');
+        }
+        return $lines;
+    }
+    private function auditLines(): array
+    {
+        $lines = [];
+        $totals = ['LOOP' => 0, 'BLACKHOLE' => 0];
+        $records = $this->traceRecords;
+        usort($records, fn($a, $b) => [$a->start, $a->index] <=> [$b->start, $b->index]);
+        foreach ($records as $r) {
+            [$source, $address] = $this->traces[$r->index];
+            [$result, $visits] = $r->status;
+            ++$totals[$result];
+            $end = $r->end ?? 'END';
+            $line = "$result $source $address from {$r->start} to $end";
+            if ($result === 'BLACKHOLE')
+                $line .= ' at ' . $visits[count($visits) - 1];
+            $lines[] = $line . ' path ' . pathText($visits);
+        }
+        $rings = $this->ringRecords;
+        usort(
+            $rings,
+            fn($a, $b) => (
+                $a->start <=> $b->start ?: prefixCompare($a->prefix, $b->prefix)
+                ?: $a->path[0] <=> $b->path[0]
+            ),
+        );
+        foreach ($rings as $r)
+            $lines[] =
+                "RING {$r->prefix} from {$r->start} to " . ($r->end ?? 'END') . ' path ' . pathText($r->path);
+        $routes = $valleys = 0;
+        foreach ($this->routers as $owner => $router)
+            foreach (orderedPrefixes(array_keys($router->rib)) as $prefix) {
+                $r = $router->rib[$prefix];
+                if ($r->local())
+                    continue;
+                ++$routes;
+                $path = collapseRuns([$owner, ...$r->path]);
+                $pattern = '';
+                for ($i = 0; $i < (count($path) - 1); ++$i)
+                    $pattern .= $this->network->connecting($path[$i], $path[$i + 1])[0]->direction($path[$i]);
+                $violation = valleyPosition($pattern);
+                if ($violation !== strlen($pattern)) {
+                    ++$valleys;
+                    $lines[] =
+                        "VALLEY $owner $prefix path "
+                        . pathText($r->path)
+                        . " pattern $pattern leaker {$path[$violation]}";
+                }
+            }
+        foreach ($this->policies->rules as $r)
+            $lines[] = "RULE {$r->name} {$r->direction} " . ($r->active ? 'ON' : 'OFF') . " hits {$r->hits}";
+        $divergent = 0;
+        foreach ($this->periods as $p)
+            if ($p->divergence !== null) {
+                ++$divergent;
+                [$first, $repeat, $cycle] = $p->divergence;
+                $lines[] =
+                    "DIVERGENT event {$p->number} first $first repeat $repeat period " . ($repeat - $first);
+                $counts = [];
+                foreach ($cycle as [$time, $owner, $prefix, $route]) {
+                    $lines[] = "CYCLE $time $owner $prefix " . routeText($route);
+                    $counts[$owner][$prefix] = ($counts[$owner][$prefix] ?? 0) + 1;
+                }
+                ksort($counts, SORT_NUMERIC);
+                foreach ($counts as $owner => $prefixCounts)
+                    foreach (orderedPrefixes(array_keys($prefixCounts)) as $prefix)
+                        $lines[] = "OSCILLATE $owner $prefix changes {$prefixCounts[$prefix]}";
+            }
+        $lines[] =
+            "SUMMARY loops {$totals['LOOP']} blackholes {$totals['BLACKHOLE']} rings "
+            . count($rings)
+            . " routes $routes valleys $valleys divergent $divergent end {$this->time}";
+        return $lines;
+    }
+    public function run(array $events): void
+    {
+        foreach ($events as $number => $event)
+            $this->runPeriod(
+                $number,
+                $event,
+                isset($events[$number + 1]) ? $events[$number + 1]->time - 1 : null,
+            );
+        $convergence = [CONVERGENCE_HEADER];
+        foreach ($this->periods as $p)
+            $convergence[] = implode(',', [
+                $p->number,
+                $p->event->time,
+                $p->event->kind,
+                $p->status,
+                $p->convergenceTime,
+                $p->counters['updates'],
+                $p->counters['withdrawals'],
+                $p->counters['drops'],
+                $p->counters['best_changes'],
+                $p->routesChanged,
+                $p->exploration ? max($p->exploration) : 0,
+            ]);
+        writeReports([
+            'updates.txt' => $this->logs,
+            'convergence.csv' => $convergence,
+            'ribs.txt' => $this->ribLines(),
+            'paths.txt' => $this->pathLines(),
+            'audit.txt' => $this->auditLines(),
+        ]);
+    }
+    public function __construct()
+    {
+        foreach (file('input/topology.txt', FILE_IGNORE_NEW_LINES) as $line) {
+            $f = explode(' ', $line);
+            if ($f[0] === 'AS')
+                $this->routerIds[(int) $f[1]] = addressValue($f[2]);
+            elseif ($f[0] === 'LINK') {
+                $link = new Link(
+                    count($this->links),
+                    $f[1],
+                    (int) $f[2],
+                    (int) $f[3],
+                    $f[4],
+                    (int) $f[5],
+                    (int) $f[6],
+                );
+                $this->links[] = $link;
+                $this->byName[$link->name] = $link;
+                $this->atAS[$link->first][] = $link;
+                $this->atAS[$link->second][] = $link;
+                $this->between[min($link->first, $link->second) . ':' . max($link->first, $link->second)][] =
+                    $link;
+            } else
+                $this->initial[] = [(int) $f[1], $f[2], $f[3], array_slice($f, 4)];
+        }
+        $this->ases = array_keys($this->routerIds);
+        sort($this->ases, SORT_NUMERIC);
+    }
+    public function __construct()
+    {
+        foreach (file('input/policies.txt', FILE_IGNORE_NEW_LINES) as $line) {
+            $f = explode(' ', $line);
+            if ($f[0] === 'PLIST') {
+                $bounds = [];
+                for ($i = 4; $i < count($f); $i += 2)
+                    $bounds[$f[$i]] = (int) $f[$i + 1];
+                $length = parsePrefix($f[3])[1];
+                $this->lists[$f[1]][] = [
+                    $f[2] === 'PERMIT',
+                    $f[3],
+                    $bounds['GE'] ?? $length,
+                    $bounds['LE'] ?? (isset($bounds['GE']) ? 32 : $length),
+                ];
+                continue;
+            }
+            $separator = array_search('THEN', $f, true);
+            $conditions = [];
+            for ($i = 6; $i < $separator; $i += 2) {
+                $kind = $f[$i];
+                $v = $f[$i + 1];
+                $value = match ($kind) {
+                    'CONTAINS', 'ORIGINAS' => (int) $v,
+                    'LENGTH' => array_map(intval(...), explode('-', $v)),
+                    'COMMUNITY' => parseCommunity($v),
+                    default => $v,
+                };
+                $conditions[] = [$kind, $value];
+            }
+            $actions = [];
+            for ($i = $separator + 1; $i < count($f);) {
+                $action = $f[$i++];
+                $v = null;
+                if ($action !== 'DENY' && $action !== 'ALLOW') {
+                    $v = $f[$i++];
+                    $v = in_array($action, ['ADD', 'REMOVE'], true) ? parseCommunity($v) : (int) $v;
+                }
+                $actions[] = [$action, $v];
+            }
+            $r = new Rule($f[1], $f[2] === 'ON', (int) $f[3], $f[4], $f[5], $conditions, $actions);
+            $this->rules[] = $r;
+            $this->byName[$r->name] = $r;
+        }
+    }
+    public function applied(
+        string $direction,
+        int $owner,
+        Link $link,
+        string $prefix,
+        array $path,
+        array $communities,
+    ): ?Rule {
+        foreach ($this->rules as $r)
+            if (
+                $r->direction === $direction
+                && $this->matches($r, $owner, $link, $prefix, $path, $communities)
+            )
+                return $r;
+        return null;
+    }
+    public function send(
+        int $time,
+        int $sender,
+        int $receiver,
+        Link $link,
+        string $prefix,
+        ?RouteAttributes $content,
+    ): Message {
+        $m = new Message(++$this->serial, $sender, $receiver, $link, $prefix, $content, $time + $link->delay);
+        $this->heap->insert($m, $m->priority());
+        return $m;
+    }
+function readEvents(): array
+{
+    $events = [(object) ['time' => 0, 'text' => 'INITIAL', 'fields' => ['INITIAL'], 'kind' => 'INITIAL']];
+    foreach (file('input/events.txt', FILE_IGNORE_NEW_LINES) as $line) {
+        [$time, $text] = explode(' ', $line, 2);
+        $f = explode(' ', $text);
+        $kind = in_array($f[0], ['LINK', 'POLICY'], true) ? $f[0] . '_' . $f[1] : $f[0];
+        $events[] = (object) ['time' => (int) $time, 'text' => $text, 'fields' => $f, 'kind' => $kind];
+    }
+    return $events;
+}
+function readParams(): array
+{
+    $lines = file('input/params.txt', FILE_IGNORE_NEW_LINES);
+    $f = explode(' ', $lines[0]);
+    $defaults = ['customer' => (int) $f[1], 'peer' => (int) $f[2], 'provider' => (int) $f[3]];
+    $stepcap = (int) explode(' ', $lines[1])[1];
+    $traces = [];
+    foreach (array_slice($lines, 2) as $line) {
+        [, $source, $address] = explode(' ', $line);
+        $traces[] = [(int) $source, $address, addressValue($address)];
+    }
+    return [$defaults, $stepcap, $traces];
+}

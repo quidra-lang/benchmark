@@ -1,0 +1,413 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
+pub const TEXT_NAMES: [&str; 5] = ["INITIAL", "FINAL", "DEFAULT", "QUESTION", "REPEAT"];
+const GLOBAL: [&str; 12] = ["INITIAL", "FINAL", "QUIT", "STOP", "DEFAULT", "QUESTION", "REPEAT", "MEMSIZE", "PERSIST", "PRE", "POST", "SYNON"];
+pub struct Item { pub kind: String, pub text: String, pub arguments: Vec<String>, pub line: usize }
+pub struct Rule { pub kind: String, pub pattern: Vec<String>, pub line: usize, pub items: Vec<usize> }
+pub struct Keyword { pub word: String, pub rank: usize, pub line: usize, pub memories: Vec<usize>, pub decomps: Vec<usize> }
+pub struct Script {
+    pub lines: Vec<String>, pub texts: BTreeMap<String, Vec<String>>,
+    pub quit: HashSet<String>, pub stop: HashSet<String>, pub persist: HashSet<String>, pub capacity: usize,
+    pub pres: Vec<Substitution>, pub posts: Vec<Substitution>,
+    pub pre: HashMap<String, Vec<String>>, pub post: HashMap<String, Vec<String>>,
+    pub groups: Vec<Group>, pub group_words: BTreeMap<String, HashSet<String>>,
+    pub keywords: Vec<Keyword>, pub keyword_map: HashMap<String, usize>,
+    pub rules: Vec<Rule>, pub items: Vec<Item>, pub diagnostics: Vec<Diagnostic>,
+}
+pub fn is_word(word: &str) -> bool {
+    !word.is_empty() && !word.starts_with('\'') && !word.ends_with('\'')
+        && word.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'\'')
+}
+pub fn reference(word: &str) -> Option<usize> {
+    let bytes = word.as_bytes();
+    (bytes.len() == 3 && bytes[0] == b'(' && bytes[1].is_ascii_digit() && bytes[2] == b')')
+        .then(|| (bytes[1] - b'0') as usize)
+}
+fn number(word: &str) -> bool { !word.is_empty() && word.len() <= 2 && word.bytes().all(|byte| byte.is_ascii_digit()) }
+fn element(word: &str) -> bool { matches!(word, "*" | "#") || word.strip_prefix('@').map_or_else(|| is_word(word), is_word) }
+fn well_formed(name: &str, args: &[String]) -> bool {
+    match name {
+        "INITIAL" | "FINAL" | "DEFAULT" | "QUESTION" | "REPEAT" | "REASM" => !args.is_empty(),
+        "QUIT" | "STOP" => !args.is_empty() && args.iter().all(|word| is_word(word)),
+        "KEY" => args.len() == 2 && is_word(&args[0]) && number(&args[1]),
+        "DECOMP" | "MEMORY" => !args.is_empty() && args.iter().all(|word| element(word)),
+        _ => false,
+    }
+}
+pub fn load_script(lines: Vec<String>) -> Script {
+    let mut script = Script {
+        texts: TEXT_NAMES.iter().map(|&name| (name.to_owned(), Vec::new())).collect(), lines,
+        quit: HashSet::new(), stop: HashSet::new(), persist: HashSet::new(), capacity: 3,
+        pres: Vec::new(), posts: Vec::new(), pre: HashMap::new(), post: HashMap::new(),
+        groups: Vec::new(), group_words: BTreeMap::new(), keywords: Vec::new(), keyword_map: HashMap::new(),
+        rules: Vec::new(), items: Vec::new(), diagnostics: Vec::new(),
+    };
+    let mut keyword = None;
+    let mut rule = None;
+    let mut ignoring = false;
+    let mut first_lines: HashMap<String, usize> = HashMap::new();
+    for index in 0..script.lines.len() {
+        let line = script.lines[index].clone();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let (name, text) = line.split_once(' ').unwrap_or((&line, ""));
+        let args: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+        let is_rule = matches!(name, "DECOMP" | "MEMORY");
+        let is_item = matches!(name, "REASM" | "GOTO" | "NEWKEY" | "RESTATE");
+        if GLOBAL.contains(&name) || name == "KEY" { keyword = None; rule = None; ignoring = false; }
+        else if is_rule || is_item {
+            if ignoring { continue; }
+            if is_rule { rule = None; }
+        }
+        let definition = if name == "MEMSIZE" { Some(name.to_owned()) }
+            else if matches!(name, "KEY" | "SYNON" | "PRE" | "POST" | "PERSIST") && !args.is_empty() { Some(format!("{name} {}", args[0])) }
+            else { None };
+        let problem = if !GLOBAL.contains(&name) && name != "KEY" && !is_rule && !is_item {
+            Some(("SYNTAX", format!("unknown directive {name}")))
+        } else if !well_formed(name, &args) {
+            Some(("SYNTAX", format!("bad arguments for {name}")))
+        } else if is_rule && keyword.is_none() {
+            Some(("ORPHAN", format!("{name} without KEY")))
+        } else if name == "REASM" && rule.is_none() {
+            Some(("ORPHAN", "REASM without DECOMP or MEMORY".to_owned()))
+        } else if matches!(name, "GOTO" | "NEWKEY" | "RESTATE") && rule.is_none_or(|id: usize| script.rules[id].kind == "MEMORY") {
+            Some(("ORPHAN", format!("{name} without DECOMP")))
+        } else if let Some((key, first)) = definition.as_ref().and_then(|key| first_lines.get(key).map(|first| (key, first))) {
+            Some(("DUPLICATE", format!("{key} first defined at line {first}")))
+        } else { None };
+        if let Some((code, message)) = problem {
+            script.diagnostics.push(Diagnostic { line: index + 1, code: code.to_owned(), message });
+            if code == "DUPLICATE" && name == "KEY" { ignoring = true; }
+            continue;
+        }
+        let line_number = index + 1;
+        if let Some(key) = definition { first_lines.insert(key, line_number); }
+        match name {
+            "INITIAL" | "FINAL" | "DEFAULT" | "QUESTION" | "REPEAT" => script.texts.get_mut(name).unwrap().push(text.to_owned()),
+            "QUIT" => script.quit.extend(args),
+            "STOP" => script.stop.extend(args),
+            "PERSIST" => { script.persist.insert(args[0].clone()); }
+            "MEMSIZE" => script.capacity = args[0].parse().unwrap(),
+            "KEY" => {
+                let id = script.keywords.len();
+                script.keyword_map.insert(args[0].clone(), id);
+                script.keywords.push(Keyword { word: args[0].clone(), rank: args[1].parse().unwrap(), line: line_number, memories: Vec::new(), decomps: Vec::new() });
+                keyword = Some(id);
+            }
+            "DECOMP" | "MEMORY" => {
+                let id = script.rules.len();
+                script.rules.push(Rule { kind: name.to_owned(), pattern: args, line: line_number, items: Vec::new() });
+                let key = &mut script.keywords[keyword.unwrap()];
+                if name == "MEMORY" { key.memories.push(id); } else { key.decomps.push(id); }
+                rule = Some(id);
+            }
+            _ => {
+                let id = script.items.len();
+                script.items.push(Item { kind: name.to_owned(), text: text.to_owned(), arguments: args, line: line_number });
+                script.rules[rule.unwrap()].items.push(id);
+            }
+        }
+    }
+    script
+}
+pub type Groups = BTreeMap<String, HashSet<String>>;
+pub fn wildcard(element: &str) -> bool { matches!(element, "*" | "#") || element.starts_with('@') }
+fn fits(element: &str, word: &str, groups: &Groups) -> bool {
+    if element == "#" { true }
+    else if let Some(group) = element.strip_prefix('@') { groups.get(group).is_some_and(|members| members.contains(word)) }
+    else { element == word }
+}
+pub fn match_pattern(pattern: &[String], words: &[String], groups: &Groups) -> Option<Vec<Vec<String>>> {
+    fn search(pattern: &[String], words: &[String], groups: &Groups, position: usize, start: usize, bindings: &mut Vec<Vec<String>>) -> bool {
+        if position == pattern.len() { return start == words.len(); }
+        let element = &pattern[position];
+        let ends: Vec<usize> = if element == "*" { (start..=words.len()).collect() }
+            else if start < words.len() && fits(element, &words[start], groups) { vec![start + 1] }
+            else { Vec::new() };
+        for end in ends {
+            if wildcard(element) { bindings.push(words[start..end].to_vec()); }
+            if search(pattern, words, groups, position + 1, end, bindings) { return true; }
+            if wildcard(element) { bindings.pop(); }
+        }
+        false
+    }
+    let mut bindings = Vec::new();
+    search(pattern, words, groups, 0, 0, &mut bindings).then_some(bindings)
+}
+use std::collections::HashMap;
+use crate::script_loader::reference;
+pub fn build_reply(template: &str, bindings: &[Vec<String>], replacements: &HashMap<String, Vec<String>>) -> String {
+    let mut text = String::new();
+    let mut index = 0;
+    while index < template.len() {
+        if let Some(number) = template.get(index..index + 3).and_then(reference) {
+        } else {
+            text.push(template.as_bytes()[index] as char);
+            index += 1;
+        }
+    }
+    let mut reply = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if reply.as_bytes().first().is_some_and(u8::is_ascii_lowercase) {
+        reply.replace_range(..1, &reply[..1].to_ascii_uppercase());
+    }
+    reply
+}
+pub fn wrap_reply(text: &str) -> Vec<String> {
+    let mut words = text.split_whitespace();
+    let Some(first) = words.next() else { return vec!["ELIZA:".to_owned()]; };
+    let mut lines = vec![format!("ELIZA: {first}")];
+    for word in words {
+        let last = lines.last_mut().unwrap();
+        if last.len() + word.len() + 1 <= 72 { last.push(' '); last.push_str(word); }
+        else { lines.push(format!("       {word}")); }
+    }
+    lines
+}
+use std::collections::VecDeque;
+#[derive(Clone)]
+pub struct MemoryQueue { pub capacity: usize, pub texts: VecDeque<String>, pub log: Vec<String> }
+impl MemoryQueue {
+    pub fn new(capacity: usize) -> Self { Self { capacity, texts: VecDeque::new(), log: Vec::new() } }
+    pub fn store(&mut self, prefix: &str, keyword: &str, text: String) -> bool {
+        if self.texts.contains(&text) { self.log.push(format!("{prefix} SKIP {keyword} {text}")); return false; }
+        if self.texts.len() == self.capacity { self.log.push(format!("{prefix} DROP {}", self.texts.pop_front().unwrap())); }
+        self.log.push(format!("{prefix} STORE {keyword} {text}"));
+        self.texts.push_back(text);
+        true
+    }
+use std::collections::{BTreeMap, HashSet};
+use script_loader::{Script, Keyword};
+use memory::MemoryQueue;
+const SOURCES: [&str; 5] = ["keyword", "memory", "question", "default", "repeat"];
+const NO_ARGUMENT: [&str; 9] = [":keys", ":why", ":history", ":memory", ":forget", ":reset", ":unused", ":stats", ":undo"];
+const TEXT_ARGUMENT: [&str; 4] = [":prepare", ":reflect", ":say", ":explain"];
+const ONE_ARGUMENT: [&str; 5] = [":groups", ":find", ":script", ":cycles", ":coverage"];
+fn normalize(text: &str) -> Vec<Vec<String>> {
+    text.to_ascii_lowercase().split([',', '.', '?', '!', ';']).filter_map(|part| {
+        let words: Vec<String> = part.split(|character: char| !(character.is_ascii_lowercase() || character.is_ascii_digit() || character == '\''))
+            .map(|word| word.trim_matches('\'')) .filter(|word| !word.is_empty()).map(str::to_owned).collect();
+        (!words.is_empty()).then_some(words)
+    }).collect()
+}
+fn count_line(turns: usize, sources: &[usize; 5]) -> String {
+    format!("turns={turns} {}", SOURCES.iter().zip(sources).map(|(source, count)| format!("{source}={count}")).collect::<Vec<_>>().join(" "))
+}
+fn leaders(counts: &BTreeMap<String, usize>) -> String {
+    let mut entries: Vec<_> = counts.iter().filter(|(_, count)| **count > 0).collect();
+    entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let values: Vec<_> = entries.into_iter().take(5).map(|(word, count)| format!("{word} {count}")).collect();
+    if values.is_empty() { "none".to_owned() } else { values.join(", ") }
+}
+#[derive(Clone)]
+struct Session {
+    name: String, turns: usize, sources: [usize; 5], previous: Option<Vec<Vec<String>>>, history: Vec<String>,
+    last_trace: Option<Vec<String>>, trace_on: bool, topics: BTreeMap<String, usize>, words: BTreeMap<String, usize>,
+    stored: usize, recalled: usize, unrecognized: Vec<usize>, undo: Option<Box<State>>,
+}
+impl Session {
+    fn new(name: String) -> Self {
+        Self { name, turns: 0, sources: [0; 5], previous: None, history: Vec::new(), last_trace: None, trace_on: false,
+            topics: BTreeMap::new(), words: BTreeMap::new(), stored: 0, recalled: 0, unrecognized: Vec::new(), undo: None }
+    }
+}
+#[derive(Clone)]
+struct State {
+    positions: Vec<usize>, hits: Vec<usize>, item_uses: Vec<usize>, keyword_uses: Vec<usize>, keyword_replies: Vec<usize>,
+    cycles: [usize; 3], memory: MemoryQueue, session: Session,
+}
+struct Chatbot { script: Script, state: State, transcript: Vec<String>, total_turns: usize, total_sources: [usize; 5], sessions: usize }
+impl Chatbot {
+    fn new(script: Script) -> Self {
+        let state = State { positions: vec![0; script.rules.len()], hits: vec![0; script.rules.len()], item_uses: vec![0; script.items.len()],
+            keyword_uses: vec![0; script.keywords.len()], keyword_replies: vec![0; script.keywords.len()], cycles: [0; 3],
+            memory: MemoryQueue::new(script.capacity), session: Session::new(String::new()) };
+        Self { script, state, transcript: Vec::new(), total_turns: 0, total_sources: [0; 5], sessions: 0 }
+    }
+    fn prefix(&self) -> String { format!("{} {}", self.state.session.name, self.state.session.turns) }
+    fn take_item(&mut self, rule: usize) -> (usize, usize) {
+        let position = self.state.positions[rule];
+        let items = &self.script.rules[rule].items;
+        let item = items[position];
+        self.state.item_uses[item] += 1;
+        self.state.positions[rule] = (position + 1) % items.len();
+        (position + 1, item)
+    }
+    fn prepared(&self, clauses: &[Vec<String>]) -> Vec<Vec<String>> {
+        clauses.iter().map(|clause| clause.iter().flat_map(|word| self.script.pre.get(word).cloned().unwrap_or_else(|| vec![word.clone()])).collect()).collect()
+    }
+    fn is_quit(&self, clauses: &[Vec<String>]) -> bool {
+        let words: Vec<_> = clauses.iter().flatten().collect();
+        words.len() == 1 && self.script.quit.contains(words[0])
+    }
+    fn select_clause(&self, clauses: &[Vec<String>]) -> Option<(usize, Vec<String>, Vec<usize>)> {
+        for (number, clause) in clauses.iter().enumerate() {
+            let mut found = Vec::new();
+            for word in clause {
+                if let Some(&id) = self.script.keyword_map.get(word) { if !found.contains(&id) { found.push(id); } }
+            }
+            if !found.is_empty() {
+                found.sort_by_key(|&id| std::cmp::Reverse(self.script.keywords[id].rank));
+                return Some((number + 1, clause.clone(), found));
+            }
+        }
+        None
+    }
+    fn find_rule(&self, rules: &[usize], words: &[String]) -> Option<(usize, usize, Vec<Vec<String>>)> {
+        rules.iter().enumerate().find_map(|(number, &id)| matcher::match_pattern(&self.script.rules[id].pattern, words, &self.script.group_words).map(|bindings| (number + 1, id, bindings)))
+    }
+    fn apply_memory(&mut self, keyword: usize, words: &[String], trace: &mut Vec<String>) {
+        let Some((number, rule, bindings)) = self.find_rule(&self.script.keywords[keyword].memories, words) else { return; };
+        let word = self.script.keywords[keyword].word.clone();
+        trace.push(format!("MEMORY {word} {number}"));
+        self.state.hits[rule] += 1;
+        if self.script.rules[rule].items.is_empty() { return; }
+        let (_, item) = self.take_item(rule);
+        let text = responder::build_reply(&self.script.items[item].text, &bindings, &self.script.post);
+        if self.state.memory.store(&self.prefix(), &word, text) { self.state.session.stored += 1; }
+    }
+    fn keyword_reply(&mut self, clauses: &[Vec<String>], trace: &mut Vec<String>) -> Option<String> {
+        let Some((number, words, keywords)) = self.select_clause(clauses) else { trace.push("CLAUSE none".to_owned()); return None; };
+        trace.push(format!("CLAUSE {number} {}", words.join(" ")));
+        trace.push(format!("KEYS {}", keywords.iter().map(|&id| self.script.keywords[id].word.as_str()).collect::<Vec<_>>().join(" ")));
+        self.apply_memory(keywords[0], &words, trace);
+        let mut entered = HashSet::new();
+        for initial in keywords {
+            if entered.contains(&initial) { continue; }
+            trace.push(format!("ENTER {}", self.script.keywords[initial].word));
+            let mut keyword = initial;
+            let mut current = words.clone();
+            loop {
+                entered.insert(keyword);
+                self.state.keyword_uses[keyword] += 1;
+                let word = self.script.keywords[keyword].word.clone();
+                let Some((number, rule, bindings)) = self.find_rule(&self.script.keywords[keyword].decomps, &current) else {
+                    trace.push(format!("NOMATCH {word}")); break;
+                };
+                self.state.hits[rule] += 1;
+                if self.script.rules[rule].items.is_empty() { trace.push(format!("DECOMP {word} {number} 0")); break; }
+                let (item_number, item_id) = self.take_item(rule);
+                let item = &self.script.items[item_id];
+                trace.push(format!("DECOMP {word} {number} {item_number}"));
+                if item.kind == "REASM" {
+                    self.state.keyword_replies[keyword] += 1;
+                    *self.state.session.topics.entry(word).or_default() += 1;
+                    return Some(responder::build_reply(&item.text, &bindings, &self.script.post));
+                }
+            }
+        }
+        None
+    }
+    fn decide(&mut self, text: &str) -> (String, Vec<String>) {
+        let clauses = normalize(text);
+        let mut trace = Vec::new();
+        let (reply, source) = if !self.script.texts["REPEAT"].is_empty() && !clauses.is_empty() && self.state.session.previous.as_ref() == Some(&clauses) {
+            trace.push("REPEAT".to_owned());
+            (self.take_text("REPEAT"), 4)
+        } else {
+            let prepared = self.prepared(&clauses);
+            if let Some(reply) = self.keyword_reply(&prepared, &mut trace) { (reply, 0) }
+            else if !self.state.memory.texts.is_empty() { self.state.session.recalled += 1; (self.state.memory.recall(&self.prefix()), 1) }
+            else if text.ends_with('?') && !self.script.texts["QUESTION"].is_empty() { (self.take_text("QUESTION"), 2) }
+            else { (self.take_text("DEFAULT"), 3) }
+        };
+        trace.push(format!("REPLY {}", SOURCES[source]));
+        self.state.session.previous = Some(clauses);
+        self.state.session.sources[source] += 1;
+        if source == 2 || source == 3 { self.state.session.unrecognized.push(self.state.session.turns); }
+        (reply, trace)
+    }
+    fn respond(&mut self, text: &str) {
+        let mut snapshot = self.state.clone();
+        snapshot.session.undo = None;
+        self.state.session.undo = Some(Box::new(snapshot));
+        self.state.session.turns += 1;
+        for word in normalize(text).into_iter().flatten() {
+            if !self.script.stop.contains(&word) { *self.state.session.words.entry(word).or_default() += 1; }
+        }
+        self.state.session.history.push(format!("{}: {text}", self.state.session.turns));
+        let (reply, trace) = self.decide(text);
+        self.transcript.extend(responder::wrap_reply(&reply));
+        self.state.session.last_trace = Some(trace.clone());
+        if self.state.session.trace_on { self.transcript.extend(trace.into_iter().map(|line| format!("  {line}"))); }
+    }
+    fn command(&mut self, line: &str) -> Vec<String> {
+        let (name, text) = line.split_once(' ').unwrap_or((line, ""));
+        let args: Vec<&str> = text.split_whitespace().collect();
+        if !NO_ARGUMENT.contains(&name) && !TEXT_ARGUMENT.contains(&name) && !ONE_ARGUMENT.contains(&name) && !matches!(name, ":trace" | ":test") { return vec![format!("unknown command {name}")]; }
+        if NO_ARGUMENT.contains(&name) && !args.is_empty() || TEXT_ARGUMENT.contains(&name) && text.is_empty()
+            || ONE_ARGUMENT.contains(&name) && args.len() != 1 || name == ":trace" && (args.len() != 1 || !matches!(args[0], "on" | "off"))
+            || name == ":test" && args.len() < 2 { return vec!["bad arguments".to_owned()]; }
+        let keyword = args.first().and_then(|word| self.script.keyword_map.get(*word)).copied();
+        if matches!(name, ":script" | ":cycles" | ":coverage" | ":test") && keyword.is_none() { return vec![format!("unknown keyword {}", args[0])]; }
+        match name {
+            ":say" | ":explain" => {
+                if self.is_quit(&normalize(text)) { return vec!["would quit".to_owned()]; }
+                let saved = self.state.clone();
+                let (reply, trace) = self.decide(text);
+                self.state = saved;
+                if name == ":say" { vec![reply] } else { trace }
+            }
+            _ => {
+                if let Some(snapshot) = self.state.session.undo.take() { self.state = *snapshot; vec![format!("undone turn {}", self.state.session.turns + 1)] }
+                else { vec!["nothing to undo".to_owned()] }
+            }
+        }
+    }
+    fn notes(&mut self) {
+        let session = &self.state.session;
+        self.transcript.extend([
+            format!("NOTES {}", session.name), format!("  {}", count_line(session.turns, &session.sources)),
+            format!("  topics: {}", leaders(&session.topics)), format!("  words: {}", leaders(&session.words)),
+            format!("  memory: stored={} recalled={} pending={}", session.stored, session.recalled, self.state.memory.texts.len()),
+            format!("  unrecognized: {}", if session.unrecognized.is_empty() { "none".to_owned() } else { session.unrecognized.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ") }),
+        ]);
+        self.total_turns += session.turns;
+        for index in 0..5 { self.total_sources[index] += session.sources[index]; }
+    }
+    fn run(&mut self, lines: Vec<String>) {
+        for line in lines {
+            if let Some(name) = line.strip_prefix("SESSION ") {
+                if self.sessions > 0 {
+                }
+                self.sessions += 1;
+                self.state.session = Session::new(name.to_owned());
+                self.transcript.push(line.clone());
+                let texts = &self.script.texts["INITIAL"];
+                self.transcript.extend(responder::wrap_reply(&texts[(self.sessions - 1) % texts.len()]));
+            } else if line.starts_with(':') {
+                self.transcript.push(line.clone());
+                let output = self.command(&line);
+                self.transcript.extend(output.into_iter().map(|text| format!("  {text}")));
+            } else {
+                self.transcript.push(format!("YOU: {line}"));
+                if self.is_quit(&normalize(&line)) {
+                    let texts = &self.script.texts["FINAL"];
+                    self.transcript.extend(responder::wrap_reply(&texts[(self.sessions - 1) % texts.len()]));
+                    self.notes();
+                } else { self.respond(&line); }
+            }
+        }
+        self.transcript.push(String::new());
+        self.transcript.push(format!("SUMMARY sessions={} {}", self.sessions, count_line(self.total_turns, &self.total_sources)));
+    }
+    fn keyword_stats(&self) -> Vec<String> {
+        let mut indices: Vec<_> = (0..self.script.keywords.len()).collect();
+        indices.sort_by(|&a, &b| self.state.keyword_uses[b].cmp(&self.state.keyword_uses[a]).then_with(|| self.script.keywords[a].word.cmp(&self.script.keywords[b].word)));
+        let mut lines = vec!["keyword,rank,uses,replies,decomposition_hits".to_owned()];
+        for id in indices {
+            let keyword = &self.script.keywords[id];
+            let hits = keyword.decomps.iter().map(|&rule| self.state.hits[rule].to_string()).collect::<Vec<_>>().join("/");
+            lines.push(format!("{},{},{},{},{}", keyword.word, keyword.rank, self.state.keyword_uses[id], self.state.keyword_replies[id], if hits.is_empty() { "-" } else { &hits }));
+        }
+        lines
+    }
+fn read_lines(path: &str) -> io::Result<Vec<String>> { Ok(fs::read_to_string(path)?.split_terminator('\n').map(str::to_owned).collect()) }
+fn write_lines(name: &str, lines: &[String]) -> io::Result<()> {
+    fs::write(format!("output/{name}"), if lines.is_empty() { String::new() } else { lines.join("\n") + "\n" })
+}
+fn main() -> io::Result<()> {
+    let script = script_loader::load_script(read_lines("input/script.txt")?);
+    let mut chatbot = Chatbot::new(script);
+    chatbot.run(read_lines("input/dialogue.txt")?);
+    write_lines("transcript.txt", &chatbot.transcript)?;
+    write_lines("keyword_stats.csv", &chatbot.keyword_stats())?;
+    write_lines("memory_log.txt", &chatbot.state.memory.log)
+}

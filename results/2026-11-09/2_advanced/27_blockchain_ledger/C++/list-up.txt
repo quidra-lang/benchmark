@@ -1,0 +1,550 @@
+struct Entry {
+    Transaction tx;
+    Integer fee, arrival;
+};
+static bool priority(const Entry &a, const Entry &b) {
+    const Integer left = a.fee * b.tx.size(), right = b.fee * a.tx.size();
+    return left != right ? left > right : a.tx.id < b.tx.id;
+}
+    template <class... T> void log(const T &...parts) {
+        log_file << now;
+        ((log_file << ' ' << parts), ...);
+        log_file << '\n';
+    }
+    int next_height() const {
+        return tip->block.height + 1;
+    }
+    Integer block_reward(int height) const {
+        return reward(height, p.initial_reward, p.halving);
+    }
+    int next_bits(Record *parent) const {
+        return required_difficulty(parent, p.initial_bits, p.retarget, p.target);
+    }
+    Record *store(Block block, Record *parent, Utxo utxo, std::vector<Integer> fees,
+                  const std::string &source) {
+        auto record =
+            std::make_unique<Record>(std::move(block), parent, std::move(utxo), std::move(fees), source);
+        Record *result = record.get();
+        records[result->block.hash] = std::move(record);
+        return result;
+    }
+    void refresh() {
+        main_chain = chain_to(tip);
+        confirmed.clear();
+        for (Record *record : main_chain)
+            for (const Transaction &tx : record->block.transactions)
+                confirmed[tx.id] = record->block.height;
+    }
+    std::vector<Entry> ordered() const {
+        std::vector<Entry> result = pool;
+        std::sort(result.begin(), result.end(), priority);
+        return result;
+    }
+    std::set<Reference> locked() const {
+        std::set<Reference> result;
+        for (const Entry &e : pool)
+            result.insert(e.tx.inputs.begin(), e.tx.inputs.end());
+        return result;
+    }
+    const Entry *find_entry(const std::string &id) const {
+        for (const Entry &e : pool)
+            if (e.tx.id == id)
+                return &e;
+        return nullptr;
+    }
+    Acceptance acceptance(const Transaction &tx) const {
+        if (tx.coinbase())
+            return {"coinbase"};
+        if (confirmed.count(tx.id) || find_entry(tx.id))
+            return {"duplicate"};
+        const auto check = check_transaction(tx, tip->utxo, {}, next_height(), owners, p.maturity);
+        if (!check.first.empty())
+            return {check.first};
+        const Integer fee = check.second;
+        if (fee * 1000 < p.min_rate * tx.size())
+            return {"low-fee"};
+        const std::set<Reference> inputs(tx.inputs.begin(), tx.inputs.end());
+        Acceptance result{"", fee, {}};
+        Integer conflict_fees = 0;
+        bool higher = true;
+        for (const Entry &e : pool) {
+            bool conflict = false;
+            for (const Reference &ref : e.tx.inputs)
+                if (inputs.count(ref))
+                    conflict = true;
+            if (!conflict)
+                continue;
+            result.conflicts.push_back(e.tx.id);
+            conflict_fees += e.fee;
+            if (fee * e.tx.size() <= e.fee * tx.size())
+                higher = false;
+        }
+        if (!result.conflicts.empty() && (fee <= conflict_fees || !higher))
+            return {"conflict"};
+        return result;
+    }
+    void drop(const std::string &id, const std::string &reason) {
+        pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const Entry &e) { return e.tx.id == id; }),
+                   pool.end());
+        drops[id] = reason;
+        log("DROP", short_hash(id), reason);
+    }
+    void register_tx(const Transaction &tx, const Acceptance &accepted, Integer arrival) {
+        for (const std::string &id : accepted.conflicts)
+            drop(id, "replaced");
+        pool.push_back({tx, accepted.fee, arrival});
+        if (pool.size() > std::size_t(p.pool_limit)) {
+            const std::string id = ordered().back().tx.id;
+            drop(id, "mempool-full");
+        }
+    }
+    void rebuild(const std::vector<Transaction> &returned) {
+        const std::vector<Entry> old = pool;
+        pool.clear();
+        auto candidate = [&](const Transaction &tx, Integer arrival, bool returning) {
+            if (confirmed.count(tx.id))
+                return;
+            const Acceptance result = acceptance(tx);
+            if (!result.reason.empty()) {
+                drop(tx.id, result.reason);
+                return;
+            }
+            if (returning)
+                log("RETURN", short_hash(tx.id));
+            register_tx(tx, result, arrival);
+        };
+        for (const Transaction &tx : returned)
+            candidate(tx, now, true);
+        for (const Entry &e : old)
+            candidate(e.tx, e.arrival, false);
+    }
+    void switch_tip(Record *target) {
+        Record *old = tip;
+        Record *fork = fork_point(old, target);
+        const int depth = old->block.height - fork->block.height,
+                  connected = target->block.height - fork->block.height;
+        if (depth > p.max_reorg) {
+            log("REFUSE", target->block.height, short_hash(target->block.hash), "work", target->work, "fork",
+                fork->block.height, "depth", depth);
+            return;
+        }
+        std::vector<Transaction> returned;
+        for (Record *r : main_chain)
+            if (r->block.height > fork->block.height)
+                returned.insert(returned.end(), r->block.transactions.begin() + 1,
+                                r->block.transactions.end());
+        tip = target;
+        refresh();
+        if (!depth)
+            log("TIP", target->block.height, short_hash(target->block.hash), "work", target->work);
+        else {
+            log("REORG", target->block.height, short_hash(target->block.hash), "work", target->work, "fork",
+                fork->block.height, "disconnected", depth, "connected", connected);
+            reorganizations.push_back(
+                {now, fork->block.height, depth, connected, old->block.hash, target->block.hash});
+        }
+        rebuild(returned);
+    }
+    void connect(const std::string &kind, const Block &block, const std::string &name) {
+        Record *parent = records.at(block.previous).get();
+        std::string error;
+        if (block.height != parent->block.height + 1)
+            error = "bad-height";
+        else if (block.difficulty != next_bits(parent))
+            error = "bad-difficulty";
+        else if (block.time <= median_time(parent))
+            error = "time-too-old";
+        else if (block.time > now + p.drift)
+            error = "time-too-new";
+        Utxo coins = parent->utxo;
+        std::set<Reference> spent;
+        std::vector<Integer> fees;
+        if (error.empty())
+            for (std::size_t i = 1; i < block.transactions.size(); ++i) {
+                const Transaction &tx = block.transactions[i];
+                const auto result = check_transaction(tx, coins, spent, block.height, owners, p.maturity);
+                if (!result.first.empty()) {
+                    error = result.first + " tx " + std::to_string(i + 1);
+                    break;
+                }
+                fees.push_back(result.second);
+                spent.insert(tx.inputs.begin(), tx.inputs.end());
+                apply(coins, tx, block.height);
+            }
+        const Transaction &cb = block.transactions[0];
+        if (error.empty()) {
+            for (const Output &out : cb.outputs)
+                if (!owners.count(out.first) || out.second == 0) {
+                    error = "bad-output tx 1";
+                    break;
+                }
+            if (error.empty() && cb.total() > block_reward(block.height) +
+                                                  std::accumulate(fees.begin(), fees.end(), Integer(0)))
+                error = "bad-coinbase";
+        }
+        if (!error.empty()) {
+            reject_block(kind, block, name, error);
+            return;
+        }
+        apply(coins, cb, block.height);
+        Record *record = store(block, parent, std::move(coins), std::move(fees), name);
+        ++peers[name].blocks;
+        log(kind, name, block.height, short_hash(block.hash), "accepted", "work", record->work);
+        if (record->work > tip->work)
+            switch_tip(record);
+    }
+    void resolve(const std::string &start) {
+        std::deque<std::string> queue{start};
+        while (!queue.empty()) {
+            const std::string parent = queue.front();
+            queue.pop_front();
+            for (std::size_t i = 0; i < orphans.size();) {
+                if (orphans[i].block.previous != parent) {
+                    ++i;
+                    continue;
+                }
+                const Orphan orphan = orphans[i];
+                orphans.erase(orphans.begin() + i);
+                if (rejected.count(parent))
+                    reject_block("UNORPHAN", orphan.block, orphan.peer, "bad-parent");
+                else
+                    connect("UNORPHAN", orphan.block, orphan.peer);
+                queue.push_back(orphan.block.hash);
+            }
+        }
+    }
+    void receive_block(const Block &block, const std::string &name) {
+        bool duplicate = records.count(block.hash) || rejected.count(block.hash);
+        for (const Orphan &orphan : orphans)
+            if (orphan.block.hash == block.hash)
+                duplicate = true;
+        if (duplicate) {
+            ++peers[name].rejected_blocks;
+            ++rejections[{"block", "duplicate"}];
+            log("BLOCK", name, block.height, short_hash(block.hash), "rejected", "duplicate");
+            return;
+        }
+        std::string error = context_error(block, p.max_size);
+        if (error.empty() && rejected.count(block.previous))
+            error = "bad-parent";
+        if (!error.empty()) {
+            reject_block("BLOCK", block, name, error);
+            resolve(block.hash);
+            return;
+        }
+        if (!records.count(block.previous)) {
+            orphans.push_back({block, name});
+            ++peers[name].orphans;
+            log("BLOCK", name, block.height, short_hash(block.hash), "orphan", "parent",
+                short_hash(block.previous));
+            if (orphans.size() > std::size_t(p.orphan_limit)) {
+                log("EVICT", short_hash(orphans.front().block.hash), "orphan-limit");
+                orphans.erase(orphans.begin());
+            }
+            return;
+        }
+        connect("BLOCK", block, name);
+        resolve(block.hash);
+    }
+    void write_chain() {
+        std::ofstream out("output/chain.txt");
+        out << "TIP " << tip->block.height << ' ' << tip->block.hash << " work " << tip->work << " stored "
+            << records.size() << " orphans " << orphans.size() << '\n';
+        std::set<std::string> main_hashes;
+        Integer rewards = 0, fees = 0, coinbases = 0;
+        for (Record *r : main_chain) {
+            const Block &b = r->block;
+            main_hashes.insert(b.hash);
+            out << "BLOCK " << b.height << ' ' << b.hash << " prev " << short_hash(b.previous) << " time "
+                << b.time << " bits " << b.difficulty << " nonce " << b.nonce << " txs "
+                << b.transactions.size() << " size " << b.size() << " fees " << r->fees << " miner "
+                << miner(r) << " source " << r->source << " work " << r->work << '\n';
+        }
+        std::vector<Record *> stale;
+        for (const auto &item : records)
+            if (!main_hashes.count(item.first))
+                stale.push_back(item.second.get());
+        std::sort(stale.begin(), stale.end(), [](Record *a, Record *b) {
+            return std::tie(a->block.height, a->block.hash) < std::tie(b->block.height, b->block.hash);
+        });
+        for (Record *r : stale)
+            out << "STALE " << r->block.height << ' ' << r->block.hash << " prev "
+                << short_hash(r->block.previous) << " source " << r->source << " work " << r->work << '\n';
+        for (const Reorganization &r : reorganizations)
+            out << "REORG " << r.time << " fork " << r.fork << " disconnected " << r.disconnected
+                << " connected " << r.connected << " old " << short_hash(r.old_hash) << " new "
+                << short_hash(r.new_hash) << '\n';
+        const std::vector<Entry> order = ordered();
+        for (std::size_t i = 0; i < order.size(); ++i)
+            out << "MEMPOOL " << i + 1 << ' ' << order[i].tx.id << " fee " << order[i].fee << " size "
+                << order[i].tx.size() << " time " << order[i].arrival << '\n';
+    }
+    void write_balances_utxo() {
+        const std::set<Reference> locks = locked();
+        std::ofstream out("output/balances.csv");
+        out << "wallet,address,balance,immature,locked,incoming,utxos\n";
+        for (const Wallet &w : wallets) {
+            Integer amount = 0, immature = 0, locked_amount = 0, incoming = 0, count = 0;
+            for (const auto &item : tip->utxo)
+                if (item.second.address == w.address) {
+                    const Coin &c = item.second;
+                    amount += c.amount;
+                    ++count;
+                    if (!c.mature(next_height(), p.maturity))
+                        immature += c.amount;
+                    if (locks.count(item.first))
+                        locked_amount += c.amount;
+                }
+            for (const Entry &e : pool)
+                for (const Output &o : e.tx.outputs)
+                    if (o.first == w.address)
+                        incoming += o.second;
+            out << w.name << ',' << w.address << ',' << amount << ',' << immature << ',' << locked_amount
+                << ',' << incoming << ',' << count << '\n';
+        }
+        std::ofstream utxo("output/utxo.txt");
+        std::vector<std::string> hashes;
+        Integer total = 0;
+        for (const auto &item : tip->utxo) {
+            const Coin &c = item.second;
+            std::ostringstream line;
+            line << item.first.first << ':' << item.first.second << ' ' << owners.at(c.address).name << ' '
+                 << c.amount << " height " << c.height << ' '
+                 << (c.height == 0 ? "genesis"
+                     : c.coinbase  ? "coinbase"
+                                   : "payment")
+                 << ' '
+                 << (!c.mature(next_height(), p.maturity) ? "immature"
+                     : locks.count(item.first)            ? "locked"
+                                                          : "free");
+            utxo << line.str() << '\n';
+            hashes.push_back(digest(line.str()));
+            total += c.amount;
+        }
+        utxo << "TOTAL " << tip->utxo.size() << ' ' << total << "\nROOT " << merkle(hashes) << '\n';
+    }
+    void write_history() {
+        std::ofstream out("output/history.txt");
+        std::map<Reference, Output> all_outputs;
+        for (Record *r : main_chain)
+            for (const Transaction &tx : r->block.transactions)
+                for (std::size_t i = 0; i < tx.outputs.size(); ++i)
+                    all_outputs[{tx.id, int(i)}] = tx.outputs[i];
+        for (const Wallet &w : wallets) {
+            out << "WALLET " << w.name << ' ' << w.address << '\n';
+            Integer count = 0, spent_total = 0, received_total = 0, balance_value = 0, pending = 0;
+            for (Record *r : main_chain)
+                for (const Transaction &tx : r->block.transactions) {
+                    Integer spent = 0, received = 0;
+                    for (const Reference &ref : tx.inputs) {
+                        const Output &o = all_outputs.at(ref);
+                        if (o.first == w.address)
+                            spent += o.second;
+                    }
+                    for (const Output &o : tx.outputs)
+                        if (o.first == w.address)
+                            received += o.second;
+                    if (!spent && !received)
+                        continue;
+                    ++count;
+                    spent_total += spent;
+                    received_total += received;
+                    balance_value += received - spent;
+                    out << r->block.height << ' ' << short_hash(tx.id) << ' '
+                        << (r->block.height == 0 ? "genesis"
+                            : tx.coinbase()      ? "coinbase"
+                                                 : "payment")
+                        << " spent " << spent << " received " << received << " net "
+                        << signed_value(received - spent) << " balance " << balance_value << '\n';
+                }
+            for (const Entry &e : ordered()) {
+                Integer spent = 0, received = 0;
+                for (const Reference &ref : e.tx.inputs) {
+                    const Coin &c = tip->utxo.at(ref);
+                    if (c.address == w.address)
+                        spent += c.amount;
+                }
+                for (const Output &o : e.tx.outputs)
+                    if (o.first == w.address)
+                        received += o.second;
+                if (!spent && !received)
+                    continue;
+                ++pending;
+                out << "pending " << short_hash(e.tx.id) << " spent " << spent << " received " << received
+                    << " net " << signed_value(received - spent) << '\n';
+            }
+            out << "END " << w.name << " txs " << count << " spent " << spent_total << " received "
+                << received_total << " balance " << balance_value << " pending " << pending << '\n';
+        }
+    }
+        std::ifstream events("input/events.txt");
+        std::string line;
+        while (std::getline(events, line)) {
+            const std::vector<std::string> fields = split(line, ' ');
+            std::vector<std::string> texts;
+            if (fields[1] == "BLOCK")
+                for (int i = 0; i < std::stoi(fields[9]); ++i) {
+                    std::getline(events, line);
+                    texts.push_back(line);
+                }
+            now = std::stoll(fields[0]);
+            const std::vector<Entry> before = pool;
+            for (const Entry &e : before)
+                if (now - e.arrival >= p.expiry)
+                    drop(e.tx.id, "expired");
+            const std::string &kind = fields[1];
+            else {
+                const std::string &name = fields[2];
+                Peer &q = peers[name];
+                if (q.score >= p.ban) {
+                    ++q.ignored;
+                    log("IGNORE", name, kind);
+                } else if (kind == "TX")
+                    receive_transaction(name, parse_transaction(fields[3]));
+                else
+                    receive_block(parse_block(fields, texts), name);
+            }
+        }
+        write_chain();
+        write_balances_utxo();
+        write_history();
+Record::Record(Block value, Record *previous, Utxo coins, std::vector<Integer> amounts, std::string origin)
+    : block(std::move(value)), parent(previous), utxo(std::move(coins)), transaction_fees(std::move(amounts)),
+      source(std::move(origin)) {
+    fees = std::accumulate(transaction_fees.begin(), transaction_fees.end(), Integer(0));
+    if (parent)
+        work = parent->work + (Integer(1) << (4 * block.difficulty));
+}
+Record *ancestor(Record *record, int height) {
+    while (record->block.height > height)
+        record = record->parent;
+    return record;
+}
+std::vector<Record *> chain_to(Record *record) {
+    std::vector<Record *> result;
+    for (; record; record = record->parent)
+        result.push_back(record);
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+Record *fork_point(Record *a, Record *b) {
+    const int height = std::min(a->block.height, b->block.height);
+    a = ancestor(a, height);
+    b = ancestor(b, height);
+    while (a != b) {
+        a = a->parent;
+        b = b->parent;
+    }
+    return a;
+}
+std::string Block::header() const {
+    return std::to_string(height) + "|" + previous + "|" + root + "|" + std::to_string(time) + "|" +
+           std::to_string(difficulty) + "|" + std::to_string(nonce);
+}
+void Block::hash_header() {
+    hash = digest(header());
+}
+Integer Block::size() const {
+    Integer size = 0;
+    for (std::size_t i = 1; i < transactions.size(); ++i)
+        size += transactions[i].size();
+    return size;
+}
+bool Block::proof() const {
+    return hash.compare(0, difficulty, std::string(difficulty, '0')) == 0;
+}
+Block parse_block(const std::vector<std::string> &fields, const std::vector<std::string> &texts) {
+    Block block;
+    block.height = std::stoi(fields[3]);
+    block.previous = fields[4];
+    block.root = fields[5];
+    block.time = std::stoll(fields[6]);
+    block.difficulty = std::stoi(fields[7]);
+    block.nonce = std::stoll(fields[8]);
+    for (const std::string &text : texts)
+        block.transactions.push_back(parse_transaction(text));
+    block.hash_header();
+    return block;
+}
+std::string context_error(const Block &block, Integer limit) {
+    if (!block.proof())
+        return "bad-pow";
+    std::vector<std::string> ids;
+    for (const Transaction &tx : block.transactions)
+        ids.push_back(tx.id);
+    if (merkle(ids) != block.root)
+        return "bad-merkle";
+    if (!block.transactions[0].coinbase() || block.transactions[0].coinbase_height != block.height)
+        return "bad-structure";
+    for (std::size_t i = 1; i < block.transactions.size(); ++i)
+        if (block.transactions[i].coinbase())
+            return "bad-structure";
+    return block.size() > limit ? "too-large" : "";
+}
+bool Coin::mature(int at, int maturity) const {
+    return !coinbase || height == 0 || at >= height + maturity;
+}
+Integer Transaction::total() const {
+    Integer amount = 0;
+    for (const Output &output : outputs)
+        amount += output.second;
+    return amount;
+}
+std::pair<std::string, Integer> check_transaction(const Transaction &tx, const Utxo &utxo,
+                                                  const std::set<Reference> &spent, int height,
+                                                  const Owners &owners, int maturity) {
+    for (const Output &output : tx.outputs)
+        if (!owners.count(output.first) || output.second == 0)
+            return {"bad-output", 0};
+    std::set<Reference> seen;
+    Integer total = 0;
+    for (std::size_t i = 0; i < tx.inputs.size(); ++i) {
+        const Reference &ref = tx.inputs[i];
+        if (spent.count(ref) || seen.count(ref))
+            return {"double-spend", 0};
+        const auto found = utxo.find(ref);
+        if (found == utxo.end())
+            return {"missing-input", 0};
+        const Coin &coin = found->second;
+        if (!coin.mature(height, maturity))
+            return {"immature", 0};
+        if (tx.signatures[i] != sign(owners.at(coin.address).secret, int(i), tx.body))
+            return {"bad-sig", 0};
+        seen.insert(ref);
+        total += coin.amount;
+    }
+    if (total < tx.total())
+        return {"overspend", 0};
+    return {"", total - tx.total()};
+}
+void apply(Utxo &utxo, const Transaction &tx, int height) {
+    for (const Reference &ref : tx.inputs)
+        utxo.erase(ref);
+    for (std::size_t i = 0; i < tx.outputs.size(); ++i) {
+        const Output &output = tx.outputs[i];
+        utxo[{tx.id, int(i)}] = {output.first, output.second, height, tx.coinbase()};
+    }
+}
+using Reference = std::pair<std::string, int>;
+struct Coin {
+    std::string address;
+    Integer amount;
+    int height;
+    bool coinbase;
+    bool mature(int, int) const;
+};
+using Utxo = std::map<Reference, Coin>;
+struct Transaction {
+    std::string text, id, body;
+    std::vector<Reference> inputs;
+    std::vector<Output> outputs;
+    std::vector<std::string> signatures;
+    int coinbase_height = -1;
+    bool coinbase() const {
+        return coinbase_height >= 0;
+    }
+    Integer size() const {
+        return text.size();
+    }
+    Integer total() const;
+};

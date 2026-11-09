@@ -1,0 +1,307 @@
+Token = Data.define(:kind, :text, :value)
+Expr = Data.define(:kind, :type, :value, :args)
+PrintItem = Data.define(:kind, :expr)
+SIGNATURES = {
+  "RND" => %w[I],
+OPERATORS = [%w[OR], %w[AND], [], %w[= <> < > <= >=], %w[+ -], %w[* / MOD], [], %w[^]].freeze
+def syntax! = raise SyntaxFault, "SYNTAX ERROR"
+def fault!(message) = raise RuntimeFault, message
+def name_type(name) = name.end_with?("$") ? "S" : "I"
+def expr(kind, type, value = "", args = []) = Expr.new(kind, type, value, args)
+class Statement
+  attr_accessor(
+    :kind,
+    :line,
+    :next,
+    :items
+  )
+  def initialize(kind)
+    @kind = kind
+    @line = 0
+    @next = nil
+    @items = []
+def tokenize(text)
+  tokens = []
+  p = 0
+  while p < text.length
+    ch = text[p]
+    if ch == " "
+      p += 1
+    elsif ch == "\""
+      ending = text.index("\"", p + 1)
+      syntax! unless ending
+      tokens << Token.new("S", text[p..ending], text[p + 1...ending])
+      p = ending + 1
+    elsif /[0-9]/.match?(ch)
+      start = p
+      p += 1 while p < text.length && /[0-9]/.match?(text[p])
+      word = text[start...p]
+      value = word.to_i
+      syntax! if value > 32767
+      tokens << Token.new("I", word, value)
+    elsif /[A-Z]/.match?(ch)
+      start = p
+      p += 1 while p < text.length && /[A-Z0-9]/.match?(text[p])
+      p += 1 if text[p] == "$"
+      word = text[start...p]
+      tokens << Token.new("W", word, word)
+    else
+      word = text[p, 2]
+      word = ch unless %w[<> <= >=].include?(word)
+      syntax! unless "+-*/^=<>() ,;:".include?(ch)
+      tokens << Token.new("P", word, word)
+      p += word.length
+    end
+  end
+
+  tokens << Token.new("E", "", "")
+end
+
+class Parser
+  def initialize(tokens)
+    @tokens = tokens
+    @position = 0
+  end
+
+  def current = @tokens[@position]
+  def at?(word) = %w[P W].include?(current.kind) && current.text == word
+  def take(word)
+    return false unless at?(word)
+    @position += 1
+    true
+  end
+
+  def expect(word)
+    syntax! unless take(word)
+  end
+
+  def integer
+    e = expression
+    syntax! unless e.type == "I"
+    e
+  end
+
+  def integer_at(level)
+    e = expression(level)
+    syntax! unless e.type == "I"
+    e
+  end
+  def expression(level = 0)
+    return expr("unary", "I", "NOT", [integer_at(2)]) if level == 2 && take("NOT")
+    return expr("unary", "I", "-", [integer_at(6)]) if level == 6 && take("-")
+    return primary if level == 8
+    left = expression(level + 1)
+    while OPERATORS[level].any? { |op| at?(op) }
+      op = current.text
+      @position += 1
+      right = expression(level == 7 ? 6 : level + 1)
+      syntax! if left.type != right.type || (left.type == "S" && level != 3 && op != "+")
+      left = expr("binary", level == 3 ? "I" : left.type, op, [left, right])
+      break if level == 7
+    end
+
+    left
+  end
+
+  def primary
+    token = current
+    if %w[I S].include?(token.kind)
+      @position += 1
+      return expr("constant", token.kind, token.value)
+    end
+
+    if take("(")
+      e = expression
+      expect(")")
+      return e
+    end
+
+    if token.kind == "W" && SIGNATURES.key?(token.text)
+      @position += 1
+      expect("(")
+      args = [expression]
+      args << expression while take(",")
+      expect(")")
+      syntax! unless SIGNATURES[token.text].include?(args.map(&:type).join)
+      return expr("call", name_type(token.text), token.text, args)
+    end
+
+    syntax!
+  end
+  def list(in_clause = false)
+    statements = [statement(in_clause)]
+    statements << statement(in_clause) while take(":")
+    statements
+  end
+
+  def statement(in_clause)
+    word = current.text
+    syntax! if in_clause && %w[IF FOR NEXT WHILE WEND DATA].include?(word)
+    s = Statement.new(word)
+    if take("PRINT")
+      expression_last = false
+      while current.kind != "E" && !at?(":") && !at?("ELSE")
+        if take(";")
+          s.items << PrintItem.new(";", nil)
+          expression_last = false
+        elsif take(",")
+          s.items << PrintItem.new(",", nil)
+          expression_last = false
+        else
+          kind = at?("TAB") ? "TAB" : at?("SPC") ? "SPC" : "value"
+          syntax! if kind == "value" && expression_last
+          if kind == "value"
+            e = expression
+          s.items << PrintItem.new(kind, e)
+          expression_last = kind == "value"
+        end
+      end
+
+      return s
+    end
+  def parse
+    result = list
+    syntax! unless current.kind == "E"
+    result
+  end
+  def initialize(inputs)
+    @random = 1
+    @handler = 0
+    @handling = false
+    @buffer = ""
+    @output = []
+  def end_line
+    @output << @buffer.sub(/ +\z/, "")
+    @buffer = ""
+  end
+
+  def message(text)
+    end_line unless @buffer.empty?
+    @output << text
+  end
+
+  def checked(n)
+    fault!("OVERFLOW") unless n.between?(-32768, 32767)
+    n
+  end
+  def quotient(a, b) = (a < 0) != (b < 0) ? -(a.abs / b.abs) : a.abs / b.abs
+  def evaluate(e)
+    op = e.value
+    return op if e.kind == "constant"
+    if e.kind == "unary"
+      a = evaluate(e.args[0])
+      return op == "NOT" ? ~a : checked(-a)
+    end
+
+    args = e.args.map { |a| evaluate(a) }
+    return call(op, args) if e.kind == "call"
+    a, b = args
+    case op
+    when "/"
+      fault!("DIVISION BY ZERO") if b.zero?
+      checked(quotient(a, b))
+    when "MOD"
+      fault!("DIVISION BY ZERO") if b.zero?
+      a - b * quotient(a, b)
+    when "AND"
+      a & b
+    when "OR"
+      a | b
+    end
+  end
+
+  def call(name, args)
+    a, b, c = args
+    case name
+    when "RND"
+      fault!("ILLEGAL FUNCTION CALL") if a < 1
+      @random = 48271 * @random % 2147483647
+      @random % a + 1
+  def execute(s)
+    following = s.next
+    case s.kind
+    when "PRINT"
+      s.items.each do |item|
+        if item.kind == ","
+          @buffer += " " * (10 - @buffer.length % 10)
+        elsif item.kind != ";"
+          value = evaluate(item.expr)
+          if item.kind == "value"
+            @buffer += value.to_s
+        end
+      end
+
+      end_line if s.items.empty? || ![";", ","].include?(s.items.last.kind)
+    following
+  def connect(body, after, number)
+    following = after
+    body.reverse_each do |s|
+      s.line = number
+      s.next = following
+      following = s
+    end
+  end
+
+  def run(source)
+    parsed = []
+    source.keys.sort.each do |number|
+      begin
+        parsed << [number, Parser.new(tokenize(source[number])).parse]
+      rescue SyntaxFault
+        message("ERROR IN LINE #{number}: SYNTAX ERROR")
+        return finish
+      end
+    end
+
+    after = nil
+    parsed.reverse_each do |number, body|
+      connect(body, after, number)
+      @entries[number] = body[0]
+      after = body[0]
+    end
+    position = after
+    while position
+      statement = position
+      begin
+        position = execute(statement)
+      rescue RuntimeFault => failure
+        if @handler != 0 && !@handling
+        else
+          message("ERROR IN LINE #{statement.line}: #{failure.message}")
+          position = nil
+        end
+      end
+    end
+
+    finish
+  end
+
+  def finish
+    end_line unless @buffer.empty?
+    @output << "READY"
+    @output
+  end
+lines = $stdin.each_line.map(&:chomp)
+cursor = 1
+output = []
+lines[0].to_i.times do
+  source = {}
+  while lines[cursor] != "RUN"
+    match = /\A([0-9]+)(?: +(.*))?\z/.match(lines[cursor])
+    cursor += 1
+    number = match[1].to_i
+    match[2] ? source[number] = match[2] : source.delete(number)
+  end
+
+  cursor += 1
+  data = []
+  while lines[cursor] != "END"
+    data << lines[cursor]
+    cursor += 1
+  end
+
+  cursor += 1
+  output.concat(Machine.new(data).run(source))
+end
+
+$stdout.write(output.join("\n") + "\n")

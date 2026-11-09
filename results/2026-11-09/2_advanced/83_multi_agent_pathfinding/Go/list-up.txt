@@ -1,0 +1,469 @@
+func newProhibitions() *Prohibitions {
+	return &Prohibitions{map[State]bool{}, map[Move]bool{}, map[int]int{}}
+}
+func (b *Prohibitions) Allowed(u, v, t int) bool {
+	if b.States[State{v, t}] {
+		return false
+	}
+	if at, ok := b.Permanent[v]; ok && at <= t {
+		return false
+	}
+	return u == v || !b.Moves[Move{u, v, t}]
+}
+func (b *Prohibitions) Arrival(goal int) int {
+	r := 0
+	for s := range b.States {
+		if s.Cell == goal {
+			r = max(r, s.Time+1)
+		}
+	}
+	return r
+}
+func (b *Prohibitions) Reserve(path []int, start int, permanent bool) {
+	for k, c := range path {
+		b.States[State{c, start + k}] = true
+		if k > 0 && c != path[k-1] {
+			b.Moves[Move{c, path[k-1], start + k}] = true
+		}
+	}
+	if permanent {
+		goal := path[len(path)-1]
+		at := start + len(path) - 1
+		if old, ok := b.Permanent[goal]; !ok || at < old {
+			b.Permanent[goal] = at
+		}
+	}
+}
+func lowLevel(g *Grid, agent, start, t0, tmax int, b *Prohibitions, window bool, counter *Counters) []int {
+	counter.Searches++
+	r := b.Arrival(g.Agents[agent].Goal)
+	states := []SearchState{{start, t0, g.Dist[agent][start], 0, 0, -1}}
+	open := &SearchHeap{[]int{0}, &states}
+	generated := map[State]bool{{start, t0}: true}
+	for open.Len() > 0 {
+		index := heap.Pop(open).(int)
+		s := states[index]
+		counter.Expansions++
+		if counter.Expansions > counter.Limit {
+			counter.Aborted = true
+			return nil
+		}
+		if (s.Cell == g.Agents[agent].Goal && s.Time >= r) || (window && s.Time == tmax) {
+			out := []int{}
+			for index >= 0 {
+				out = append(out, states[index].Cell)
+				index = states[index].Parent
+			}
+			for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+				out[i], out[j] = out[j], out[i]
+			}
+			return out
+		}
+		if s.Time == tmax {
+			continue
+		}
+		for _, v := range g.Destinations(s.Cell) {
+			key := State{v, s.Time + 1}
+			if g.Dist[agent][v] < 0 || generated[key] || !b.Allowed(s.Cell, v, s.Time+1) {
+				continue
+			}
+			generated[key] = true
+			serial := len(states)
+			distance := s.Time + 1 - t0
+			states = append(states, SearchState{v, s.Time + 1, distance + g.Dist[agent][v], distance, serial, index})
+			heap.Push(open, serial)
+		}
+	}
+	return nil
+}
+func readGrid() *Grid {
+	a := lines("input/map.txt")
+	wh := strings.Fields(a[0])
+	g := &Grid{W: integer(wh[0]), H: integer(wh[1]), Rows: a[1:]}
+	for _, line := range lines("input/agents.csv")[1:] {
+		v := strings.Split(line, ",")
+		g.Agents = append(g.Agents, Agent{integer(v[2])*g.W + integer(v[1]), integer(v[4])*g.W + integer(v[3])})
+	}
+	for _, a := range g.Agents {
+		g.Dist = append(g.Dist, g.Distances(a.Goal))
+	}
+	return g
+}
+func readParameters(n int) Parameters {
+	p := Parameters{}
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	p.Orders = append(p.Orders, order)
+	for _, line := range lines("input/params.txt") {
+		a := strings.Fields(line)
+		switch a[0] {
+		case "HORIZON":
+			p.Horizon = integer(a[1])
+		case "HL_BUDGET":
+			p.HighBudget = integer(a[1])
+		case "LL_BUDGET":
+			p.LowBudget = integer(a[1])
+		case "WINDOW":
+			p.Window = integer(a[1])
+			p.Step = integer(a[2])
+		case "ORDER":
+			order := []int{}
+			for _, v := range a[1:] {
+				order = append(order, integer(v))
+			}
+			p.Orders = append(p.Orders, order)
+		case "RUN":
+			p.Definitions = append(p.Definitions, RunDefinition{a[1], a[2], a[1] + "-" + a[2]})
+		case "ANIMATE":
+			p.Animate = a[1]
+			p.Frames = integer(a[2])
+		case "DELAY":
+			p.Delays = append(p.Delays, Delay{integer(a[1]), integer(a[2]), integer(a[3])})
+		}
+	}
+	return p
+}
+func solvePP(g *Grid, p Parameters, r *Run) {
+	for k, order := range p.Orders {
+		r.High++
+		before := r.Counter.Expansions
+		paths, planned, failed := prioritized(g, p, order, k+1, r)
+		if r.Counter.Aborted {
+			r.Reason = "ll_budget"
+			break
+		}
+		names := ""
+		for _, i := range order {
+			names += name(i)
+		}
+		line := fmt.Sprintf("order %d %s planned %d expansions %d", k+1, names, planned, r.Counter.Expansions-before)
+		if paths != nil {
+			r.Paths = paths
+			r.Specific = append(r.Specific, line+" ok")
+			r.End = fmt.Sprintf("end OK order %d", k+1)
+			return
+		}
+		r.Specific = append(r.Specific, line+" failed "+name(failed))
+	}
+	if r.Reason == "" {
+		r.Reason = "orders"
+	}
+}
+func metrics(g *Grid, paths [][]int) *PlanMetrics {
+	soc, makespan := planCosts(paths)
+	m := &PlanMetrics{SOC: soc, Makespan: makespan, Traffic: make([]int, g.W*g.H), CellWaits: make([]int, g.W*g.H), Arrivals: make([]int, makespan+1)}
+	for i, p := range paths {
+		a := AgentMetrics{Cost: len(p) - 1, Extra: len(p) - 1 - g.Dist[i][g.Agents[i].Start], Arrival: -1, Actions: actions(g, p)}
+		seen := map[int]bool{}
+		last := byte(0)
+		for t, c := range p {
+			seen[c] = true
+			if c == g.Agents[i].Goal && a.Arrival < 0 {
+				a.Arrival = t
+			}
+			if t == 0 {
+				continue
+			}
+			if c == p[t-1] {
+				a.Waits++
+				m.CellWaits[c]++
+			} else {
+				d := action(g, p[t-1], c)
+				if last != 0 && last != d {
+					a.Turns++
+				}
+				last = d
+			}
+			if p[t-1] == g.Agents[i].Goal && c != g.Agents[i].Goal {
+				a.Leave++
+			}
+		}
+		for c := range seen {
+			m.Traffic[c]++
+		}
+		for t := a.Cost; t <= makespan; t++ {
+			m.Arrivals[t]++
+		}
+		m.SumExtra += a.Extra
+		m.MaxExtra = max(m.MaxExtra, a.Extra)
+		m.Waits += a.Waits
+		m.Turns += a.Turns
+		m.Agents = append(m.Agents, a)
+	}
+	for c, n := range m.Traffic {
+		if n > 0 {
+			m.Hotspots = append(m.Hotspots, c)
+		}
+	}
+	sort.Slice(m.Hotspots, func(i, j int) bool {
+		a, b := m.Hotspots[i], m.Hotspots[j]
+		if m.Traffic[a] != m.Traffic[b] {
+			return m.Traffic[a] > m.Traffic[b]
+		}
+		return a < b
+	})
+	m.Hotspots = m.Hotspots[:min(5, len(m.Hotspots))]
+	return m
+}
+func validation(g *Grid, name string, paths [][]int, independent bool) []string {
+	start, goal, moves, follows, vertex, edge := 0, 0, 0, 0, 0, 0
+	for i, p := range paths {
+		if p[0] != g.Agents[i].Start {
+			start++
+		}
+		if p[len(p)-1] != g.Agents[i].Goal {
+			goal++
+		}
+		for t := 1; t < len(p); t++ {
+			if !slices.Contains(g.Destinations(p[t-1]), p[t]) {
+				moves++
+			}
+		}
+	}
+	cs := conflicts(paths)
+	for _, c := range cs {
+		if c.Edge {
+			edge++
+		} else {
+			vertex++
+		}
+	}
+	_, last := planCosts(paths)
+	for t := 1; t <= last; t++ {
+		for a := range paths {
+			for b := range paths {
+				if a != b && position(paths[a], t) != position(paths[a], t-1) && position(paths[a], t) == position(paths[b], t-1) && position(paths[b], t) != position(paths[a], t-1) {
+					follows++
+				}
+			}
+		}
+	}
+	verdict := "VALID"
+	if start+goal+moves+vertex+edge > 0 {
+		verdict = "INVALID"
+	}
+	out := []string{fmt.Sprintf("plan %s verdict %s start %d goal %d moves %d vertex %d edge %d follows %d", name, verdict, start, goal, moves, vertex, edge, follows)}
+	cache := map[int][]map[int]bool{}
+	constraints := make([][]Constraint, len(paths))
+	for _, c := range cs {
+		text := "  " + conflictText(g, c)
+		if independent {
+			text += " " + classNames[classify(g, c, paths, constraints, cache)]
+		}
+		out = append(out, text)
+	}
+	return out
+}
+func frames(g *Grid, p Parameters, r *Run) []string {
+	if r.Paths == nil {
+		return []string{"run " + p.Animate + " FAIL"}
+	}
+	out := []string{fmt.Sprintf("run %s frames %d", p.Animate, p.Frames)}
+	for t := 0; t < p.Frames; t++ {
+		picture := make([][]byte, g.H)
+		for y := range picture {
+			picture[y] = []byte(g.Rows[y])
+		}
+		for i, a := range g.Agents {
+			picture[a.Goal/g.W][a.Goal%g.W] = byte('a' + i)
+		}
+		done, moving, waiting := 0, 0, 0
+		for i, path := range r.Paths {
+			c := position(path, t)
+			picture[c/g.W][c%g.W] = byte('A' + i)
+			if t >= len(path)-1 {
+				done++
+			} else if t >= 1 && position(path, t) != position(path, t-1) {
+				moving++
+			} else {
+				waiting++
+			}
+		}
+		out = append(out, "", fmt.Sprintf("frame %d done %d moving %d waiting %d", t, done, moving, waiting))
+		for _, row := range picture {
+			out = append(out, string(row))
+		}
+	}
+	out = append(out, "", "traffic")
+	out = append(out, countPicture(g, r.Metrics.Traffic)...)
+	out = append(out, "", "waits")
+	out = append(out, countPicture(g, r.Metrics.CellWaits)...)
+	return out
+}
+func runBlock(g *Grid, r *Run) []string {
+	d := r.Definition
+	base := fmt.Sprintf("run %s solver %s cost_function %s result", d.Name, d.Solver, d.CostFunction)
+	if r.Paths == nil {
+		return append([]string{base + " FAIL reason " + r.Reason}, r.Specific...)
+	}
+	m := r.Metrics
+	cost, lower := m.SOC, 0
+	for i, a := range g.Agents {
+		lower += g.Dist[i][a.Start]
+	}
+	if d.CostFunction == "MAKESPAN" {
+		cost = m.Makespan
+		lower = 0
+		for i, a := range g.Agents {
+			lower = max(lower, g.Dist[i][a.Start])
+		}
+	}
+	out := append([]string{fmt.Sprintf("%s OK cost %d soc %d makespan %d ratio %s", base, cost, m.SOC, m.Makespan, fraction(cost, lower))}, r.Specific...)
+	for i, a := range m.Agents {
+		out = append(out, fmt.Sprintf("agent %s cost %d extra %d waits %d turns %d arrive %d leave %d moves %s", name(i), a.Cost, a.Extra, a.Waits, a.Turns, a.Arrival, a.Leave, a.Actions))
+	}
+	out = append(out, "arrivals "+strings.Join(intTexts(m.Arrivals), " "))
+	hotspots := []string{}
+	for _, c := range m.Hotspots {
+		hotspots = append(hotspots, fmt.Sprintf("%s:%d", cell(g, c), m.Traffic[c]))
+	}
+	out = append(out, "hotspots "+strings.Join(hotspots, " "))
+	e := r.Execution
+	if e.Deadlock {
+		out = append(out, fmt.Sprintf("execution deadlock time %d", e.Time))
+	} else {
+		out = append(out, fmt.Sprintf("execution soc %d makespan %d blocked %d finish %s", e.SOC, e.Makespan, e.Blocked, strings.Join(intTexts(e.Finish), " ")))
+	}
+	return out
+}
+func main() {
+	g := readGrid()
+	p := readParameters(len(g.Agents))
+	independent := make([][]int, len(g.Agents))
+	counter := Counters{Limit: int(^uint(0) >> 1)}
+	for i, a := range g.Agents {
+		independent[i] = lowLevel(g, i, a.Start, 0, p.Horizon, newProhibitions(), false, &counter)
+	}
+	solutions := overview(g, p, independent)
+	validations := validation(g, "INDEPENDENT", independent, true)
+	stats := []string{"run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions"}
+	trace := []string{}
+	runs := []*Run{}
+	successful := []int{}
+	var animated *Run
+	for _, d := range p.Definitions {
+		r := &Run{Definition: d, Counter: Counters{Limit: p.LowBudget}}
+		switch d.Solver {
+		case "PP":
+			solvePP(g, p, r)
+		case "CBS", "ICBS":
+			solveCBS(g, p, r)
+		case "WHCA":
+			solveWHCA(g, p, r)
+		}
+		if r.Paths != nil {
+			r.Metrics = metrics(g, r.Paths)
+			r.Execution = delayed(r.Paths, p.Delays)
+			successful = append(successful, len(runs))
+			validations = append(validations, validation(g, d.Name, r.Paths, false)...)
+		} else {
+			validations = append(validations, "plan "+d.Name+" verdict NONE")
+			r.End = "end FAIL " + r.Reason
+		}
+		solutions = append(solutions, "")
+		solutions = append(solutions, runBlock(g, r)...)
+		stats = append(stats, statsLine(r))
+		if len(trace) > 0 {
+			trace = append(trace, "")
+		}
+		trace = append(trace, "run "+d.Name)
+		trace = append(trace, r.Trace...)
+		trace = append(trace, r.End)
+		runs = append(runs, r)
+		if d.Name == p.Animate {
+			animated = r
+		}
+	}
+	solutions = append(solutions, "", fmt.Sprintf("summary ok %d failed %d", len(successful), len(runs)-len(successful)))
+	if len(successful) > 0 {
+		bestSOC, bestMax := runs[successful[0]].Metrics.SOC, runs[successful[0]].Metrics.Makespan
+		for _, i := range successful {
+			bestSOC = min(bestSOC, runs[i].Metrics.SOC)
+			bestMax = min(bestMax, runs[i].Metrics.Makespan)
+		}
+		socNames, maxNames := []string{}, []string{}
+		for _, i := range successful {
+			if runs[i].Metrics.SOC == bestSOC {
+				socNames = append(socNames, runs[i].Definition.Name)
+			}
+			if runs[i].Metrics.Makespan == bestMax {
+				maxNames = append(maxNames, runs[i].Definition.Name)
+			}
+		}
+		solutions = append(solutions, fmt.Sprintf("best_soc %d %s", bestSOC, strings.Join(socNames, " ")), fmt.Sprintf("best_makespan %d %s", bestMax, strings.Join(maxNames, " ")))
+		sort.Slice(successful, func(i, j int) bool {
+			a, b := runs[successful[i]].Metrics, runs[successful[j]].Metrics
+			if a.SOC != b.SOC {
+				return a.SOC < b.SOC
+			}
+			if a.Makespan != b.Makespan {
+				return a.Makespan < b.Makespan
+			}
+			return successful[i] < successful[j]
+		})
+		ranking := []string{}
+		for _, i := range successful {
+			ranking = append(ranking, runs[i].Definition.Name)
+		}
+		solutions = append(solutions, "ranking "+strings.Join(ranking, " "))
+	}
+	if e := os.MkdirAll("output", 0755); e != nil {
+		panic(e)
+	}
+	writeLines("solutions.txt", solutions)
+	writeLines("stats.csv", stats)
+	writeLines("validation.txt", validations)
+	writeLines("trace.txt", trace)
+	writeLines("frames.txt", frames(g, p, animated))
+}
+func position(path []int, t int) int { return path[min(t, len(path)-1)] }
+func planCosts(paths [][]int) (int, int) {
+	soc, makespan := 0, 0
+	for _, p := range paths {
+		soc += len(p) - 1
+		makespan = max(makespan, len(p)-1)
+	}
+	return soc, makespan
+}
+func conflicts(paths [][]int) []Conflict {
+	_, last := planCosts(paths)
+	out := []Conflict{}
+	for t := 1; t <= last; t++ {
+		for a := 0; a < len(paths); a++ {
+			for b := a + 1; b < len(paths); b++ {
+				u, v := position(paths[a], t-1), position(paths[a], t)
+				bu, bv := position(paths[b], t-1), position(paths[b], t)
+				if v == bv {
+					out = append(out, Conflict{t, a, b, v, v, false})
+				} else if v == bu && bv == u {
+					out = append(out, Conflict{t, a, b, u, v, true})
+				}
+			}
+		}
+	}
+	return out
+}
+func prioritized(g *Grid, p Parameters, order []int, number int, r *Run) ([][]int, int, int) {
+	b := newProhibitions()
+	paths := make([][]int, len(g.Agents))
+	planned := 0
+	for _, agent := range order {
+		before := r.Counter.Expansions
+		path := lowLevel(g, agent, g.Agents[agent].Start, 0, p.Horizon, b, false, &r.Counter)
+		if r.Counter.Aborted {
+			return nil, planned, agent
+		}
+		text := fmt.Sprintf("order %d agent %s", number, name(agent))
+		if path == nil {
+			r.Trace = append(r.Trace, fmt.Sprintf("%s failed expansions %d", text, r.Counter.Expansions-before))
+			return nil, planned, agent
+		}
+		r.Trace = append(r.Trace, fmt.Sprintf("%s cost %d expansions %d", text, len(path)-1, r.Counter.Expansions-before))
+		paths[agent] = path
+		planned++
+		b.Reserve(path, 0, true)
+	}
+	return paths, planned, -1
+}

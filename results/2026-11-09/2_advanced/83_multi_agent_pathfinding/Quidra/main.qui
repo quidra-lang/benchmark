@@ -1,0 +1,792 @@
+import collections
+import grid_map = "./grid_map.qui"
+import low_level = "./low_level.qui"
+import cbs = "./cbs.qui"
+import prioritized = "./prioritized.qui"
+import report = "./report.qui"
+
+class RunDefinition(string solver, string cost_function)
+class Delay(int agent, int start, int duration)
+class Parameters(int horizon, int high_budget, int low_budget, int window, int step, int[][] orders, RunDefinition[] runs, string animate, int frames, Delay[] delays)
+class Mdd(int[][] layers, int states, int width)
+class AgentMetrics(int cost, int extra, int waits, int turns, int arrival, int leaves, string actions)
+class PlanMetrics()
+    AgentMetrics[] agents := []
+    cost := 0
+    soc := 0
+    makespan := 0
+    sum_extra := 0
+    max_extra := 0
+    waits := 0
+    turns := 0
+    int[] arrivals := []
+    int[] traffic := []
+    int[] cell_waits := []
+    int[] hotspots := []
+
+class Execution()
+    deadlock := false
+    cutoff := 0
+    soc := 0
+    makespan := 0
+    blocked := 0
+    int[] finish := []
+
+class Run(RunDefinition definition, int low_budget)
+    string name := definition.solver + "-" + definition.cost_function
+    success := false
+    reason := ""
+    int[][] paths := []
+    budget := low_level.Budget(low_budget)
+    high_level := 0
+    generated := -1
+    pruned := 0
+    open_count := 0
+    classes := [0, 0, 0]
+    answer_number := -1
+    answer_depth := 0
+    answer_order := 0
+    low_level.Prohibitions[] constraints := []
+    string[] specific := []
+    trace := ["run " + name]
+    metrics := PlanMetrics()
+    execution := Execution()
+
+Parameters read_parameters(int count)
+    horizon := 0
+    high_budget := 0
+    low_budget := 0
+    window := 0
+    step := 0
+    int[][] orders := []
+    int[] number_order := []
+    for: i < count
+        number_order = number_order.append(i)
+    orders = orders.append(number_order)
+    RunDefinition[] runs := []
+    animate := ""
+    frames := 0
+    Delay[] delays := []
+    for row := grid_map.input_lines("params.txt")[]
+        fields := row.split(" ")
+        kind := fields[0]
+        if kind == "HORIZON"
+            horizon = int(fields[1])
+        elif kind == "HL_BUDGET"
+            high_budget = int(fields[1])
+        elif kind == "LL_BUDGET"
+            low_budget = int(fields[1])
+        elif kind == "WINDOW"
+            window = int(fields[1])
+            step = int(fields[2])
+        elif kind == "ORDER"
+            orders = orders.append([for word := fields[1:][] then int(word)])
+        elif kind == "RUN"
+            runs = runs.append(RunDefinition(fields[1], fields[2]))
+        elif kind == "ANIMATE"
+            animate = fields[1]
+            frames = int(fields[2])
+        else
+            delays = delays.append(Delay(int(fields[1]), int(fields[2]), int(fields[3])))
+    return Parameters(horizon, high_budget, low_budget, window, step, orders, runs, animate, frames, delays)
+
+bool contains_cell(int[] cells, int wanted)
+    for cell := cells[]
+        if cell == wanted
+            return true
+    return false
+
+Mdd build_mdd(grid_map.Grid grid, grid_map.Agent agent, int[] distances, int length, low_level.Prohibitions restrictions)
+    int[][] layers := [[agent.start]]
+    for: 1 <= tick <= length
+        distinct<int> reached
+        for source := layers[tick - 1][]
+            for destination := grid.destinations[source][]
+                if distances[destination] >= 0 and tick + distances[destination] <= length and low_level.action_allowed(restrictions, source, destination, tick)
+                    .reached.add(destination)
+        layers = layers.append(reached.sorted())
+    layers[length] = [agent.goal]
+    for: length > tick >= 0
+        int[] kept := []
+        for source := layers[tick][]
+            reaches := false
+            for destination := grid.destinations[source][]
+                if contains_cell(layers[tick + 1], destination) and low_level.action_allowed(restrictions, source, destination, tick + 1)
+                    reaches = true
+            if reaches
+                kept = kept.append(source)
+        layers[tick] = kept
+    states := 0
+    width := 0
+    for layer := layers[]
+        states += int(#layer)
+        if int(#layer) > width
+            width = int(#layer)
+    return Mdd(layers, states, width)
+
+int layer_size(Mdd mdd, int tick)
+    return if tick >= int(#mdd.layers) then 1 else int(#mdd.layers[tick])
+
+int classify_conflict(cbs.Conflict conflict, Mdd[] mdds)
+    first_fixed := layer_size(mdds[conflict.first], conflict.tick) == 1
+    second_fixed := layer_size(mdds[conflict.second], conflict.tick) == 1
+    if conflict.kind == "edge"
+        first_fixed = first_fixed and layer_size(mdds[conflict.first], conflict.tick - 1) == 1
+        second_fixed = second_fixed and layer_size(mdds[conflict.second], conflict.tick - 1) == 1
+    return if first_fixed and second_fixed then 0 elif first_fixed or second_fixed then 1 else 2
+
+string class_name(int category)
+    return if category == 0 then "cardinal" elif category == 1 then "semi_cardinal" else "non_cardinal"
+
+string agent_order(int[] order)
+    return [for id := order[] then report.agent_name(id)].join("")
+
+class Overview(int free_cells, int[] degrees, int components, int[] distances, int soc_lower, int makespan_lower, Mdd[] mdds, int[][] independent, cbs.Conflict[] conflicts, int[] conflict_classes, string[] groups)
+
+string[] conflict_groups(cbs.Conflict[] conflicts, int count)
+    bool[][] adjacent := []
+    for: i < count
+        adjacent = adjacent.append(array(nat(count), fill = false))
+    for conflict := conflicts[]
+        adjacent[conflict.first][conflict.second] = true
+        adjacent[conflict.second][conflict.first] = true
+    seen := array(nat(count), fill = false)
+    string[] result := []
+    for: seed < count
+        if seen[seed]
+            continue
+        queue := [seed]
+        seen[seed] = true
+        cursor := 0
+        while cursor < int(#queue)
+            current := queue[cursor]
+            cursor += 1
+            for: other < count
+                if adjacent[current][other] and not seen[other]
+                    seen[other] = true
+                    queue = queue.append(other)
+        if #queue > 1
+            result = result.append(agent_order(queue.sorted()))
+    return result
+
+Overview inspect_instance(grid_map.Grid grid, grid_map.Agent[] agents, int[][] distances, int horizon)
+    free_cells := 0
+    degrees := [0, 0, 0, 0]
+    components := 0
+    seen := array(#grid.free, fill = false)
+    for: cell < int(#grid.free)
+        if not grid.free[cell]
+            continue
+        free_cells += 1
+        degree := grid_map.degree(grid, cell)
+        degrees[if degree < 3 then degree else 3] += 1
+        if seen[cell]
+            continue
+        components += 1
+        queue := [cell]
+        seen[cell] = true
+        cursor := 0
+        while cursor < int(#queue)
+            current := queue[cursor]
+            cursor += 1
+            for next := grid.destinations[current][]
+                if not seen[next]
+                    seen[next] = true
+                    queue = queue.append(next)
+    int[] shortest := []
+    soc_lower := 0
+    makespan_lower := 0
+    Mdd[] mdds := []
+    int[][] independent := []
+    budget := low_level.Budget(-1)
+    for: i < int(#agents)
+        distance := distances[i][agents[i].start]
+        shortest = shortest.append(distance)
+        soc_lower += distance
+        if distance > makespan_lower
+            makespan_lower = distance
+        restrictions := low_level.Prohibitions(int(#grid.free))
+        mdds = mdds.append(build_mdd(grid, agents[i], distances[i], distance, restrictions))
+        result := low_level.search_path(grid, agents[i], distances[i], agents[i].start, 0, restrictions, horizon, &budget)
+        independent = independent.append(result.path)
+    cbs.Conflict[] conflicts := cbs.find_conflicts(independent)
+    conflict_classes := [for conflict := conflicts[] then classify_conflict(conflict, mdds)]
+    return Overview(free_cells, degrees, components, shortest, soc_lower, makespan_lower, mdds, independent, conflicts, conflict_classes, conflict_groups(conflicts, int(#agents)))
+
+void solve_pp(Run &run, grid_map.Grid grid, grid_map.Agent[] agents, int[][] distances, Parameters settings)
+    for: index < int(#settings.orders)
+        number := index + 1
+        run.high_level += 1
+        int beginning := run.budget.expansions
+        result := prioritized.try_order(grid, agents, distances, settings.horizon, settings.orders[index], &run.budget)
+        planned := 0
+        for attempt := result.attempts[]
+            prefix := "order {number} agent " + report.agent_name(attempt.agent)
+            if attempt.result.status == "ok"
+                planned += 1
+                run.trace = run.trace.append(prefix + " cost {int(#attempt.result.path) - 1} expansions {attempt.result.expansions}")
+            else
+                run.trace = run.trace.append(prefix + " failed expansions {attempt.result.expansions}")
+        if result.status == "ll_budget"
+            run.reason = "ll_budget"
+            return
+        suffix := if result.status == "ok" then "ok" else "failed " + report.agent_name(result.failed_agent)
+        run.specific = run.specific.append("order {number} " + agent_order(settings.orders[index]) + " planned {planned} expansions {run.budget.expansions - beginning} {suffix}")
+        if result.status == "ok"
+            run.success = true
+            run.answer_order = number
+            run.paths = result.paths
+            return
+    run.reason = "orders"
+
+void apply_constraint(low_level.Prohibitions &restrictions, cbs.Constraint addition)
+    cells := restrictions.cell_count
+    if addition.kind == "vertex"
+        .restrictions.states.add(addition.tick * cells + addition.source)
+    else
+        .restrictions.moves.add((addition.tick * cells + addition.source) * cells + addition.destination)
+
+void solve_cbs(Run &run, grid_map.Grid grid, grid_map.Agent[] agents, int[][] distances, Parameters settings)
+    run.generated = 0
+    int[][] paths := []
+    low_level.Prohibitions[] constraints := []
+    for: i < int(#agents)
+        restrictions := low_level.Prohibitions(int(#grid.free))
+        constraints = constraints.append(restrictions)
+        result := low_level.search_path(grid, agents[i], distances[i], agents[i].start, 0, restrictions, settings.horizon, &run.budget)
+        if result.status == "aborted"
+            run.reason = "ll_budget"
+            return
+        paths = paths.append(result.path)
+    root := cbs.create_node(paths, constraints, 0, 0, -1, run.definition.cost_function)
+    heap := [root]
+    run.generated = 1
+    while #heap != 0
+        node := cbs.pop_node(&heap)
+        run.open_count = int(#heap)
+        if #node.conflicts == 0
+            run.success = true
+            run.paths = node.paths
+            run.answer_number = node.number
+            run.answer_depth = node.depth
+            run.constraints = node.constraints
+            return
+        if run.high_level == settings.high_budget
+            run.reason = "hl_budget"
+            return
+        run.high_level += 1
+        chosen := 0
+        category := -1
+        if run.definition.solver == "ICBS"
+            Mdd[] mdds := []
+            for: i < int(#agents)
+                mdds = mdds.append(build_mdd(grid, agents[i], distances[i], int(#node.paths[i]) - 1, node.constraints[i]))
+            category = 3
+            for: i < int(#node.conflicts)
+                current := classify_conflict(node.conflicts[i], mdds)
+                if current < category
+                    category = current
+                    chosen = i
+            run.classes[category] += 1
+        cbs.Conflict conflict := node.conflicts[chosen]
+        cbs.Constraint[] additions := cbs.split_constraints(conflict)
+        children := ["-", "-"]
+        for: branch < 2
+            addition := additions[branch]
+            next_constraints := node.constraints
+            apply_constraint(&next_constraints[addition.agent], addition)
+            result := low_level.search_path(grid, agents[addition.agent], distances[addition.agent], agents[addition.agent].start, 0, next_constraints[addition.agent], settings.horizon, &run.budget)
+            if result.status == "aborted"
+                run.reason = "ll_budget"
+                run.open_count = int(#heap)
+                return
+            if result.status != "ok"
+                run.pruned += 1
+                continue
+            next_paths := node.paths
+            next_paths[addition.agent] = result.path
+            child := cbs.create_node(next_paths, next_constraints, run.generated, node.depth + 1, node.number, run.definition.cost_function)
+            children[branch] = string(run.generated)
+            run.generated += 1
+            cbs.push_node(&heap, child)
+        run.open_count = int(#heap)
+        parent := if node.parent < 0 then "-" else string(node.parent)
+        split := report.conflict_text(conflict, grid.width)
+        if category >= 0
+            split += " class " + class_name(category)
+        run.trace = run.trace.append("expand {run.high_level} node {node.number} parent {parent} depth {node.depth} cost {node.cost} conflicts {#node.conflicts} split {split} children {children[0]} {children[1]}")
+    run.reason = "exhausted"
+
+void solve_whca(Run &run, grid_map.Grid grid, grid_map.Agent[] agents, int[][] distances, Parameters settings)
+    positions := [for agent := agents[] then agent.start]
+    int[][] executed := [for agent := agents[] then [agent.start]]
+    start_tick := 0
+    while true
+        finished := true
+        for: i < int(#agents)
+            finished = finished and positions[i] == agents[i].goal
+        if finished
+            for: i < int(#agents)
+                while #executed[i] > 1 and executed[i][-2] == agents[i].goal
+                    executed[i] = executed[i][0:<int(#executed[i]) - 1]
+            run.paths = executed
+            run.success = true
+            return
+        if start_tick >= settings.horizon
+            run.reason = "timeout"
+            return
+        run.high_level += 1
+        restrictions := low_level.Prohibitions(int(#grid.free))
+        int[] order := []
+        for: i < int(#agents)
+            if positions[i] != agents[i].goal
+                order = order.append(i)
+        for: i < int(#agents)
+            if positions[i] == agents[i].goal
+                order = order.append(i)
+        int[][] windows := []
+        for agent := agents[]
+            windows = windows.append([])
+        for i := order[]
+            result := low_level.search_path(grid, agents[i], distances[i], positions[i], start_tick, restrictions, start_tick + settings.window, &run.budget, true)
+            if result.status == "aborted"
+                run.reason = "ll_budget"
+                return
+            prefix := "round {run.high_level} time {start_tick} agent " + report.agent_name(i)
+            if result.status != "ok"
+                run.trace = run.trace.append(prefix + " blocked expansions {result.expansions}")
+                run.reason = "blocked"
+                return
+            path := result.path
+            while int(#path) < settings.window + 1
+                path = path.append(path[-1])
+            windows[i] = path
+            run.trace = run.trace.append(prefix + " moves " + report.action_string(path, grid.width) + " expansions {result.expansions}")
+            low_level.reserve_path(&restrictions, path, start_tick)
+        for: i < int(#agents)
+            executed[i] = executed[i].concat(windows[i][1:settings.step])
+            positions[i] = windows[i][settings.step]
+        start_tick += settings.step
+
+AgentMetrics path_metrics(int[] path, int goal, int lower, int width)
+    length := int(#path) - 1
+    waits := 0
+    turns := 0
+    arrival := -1
+    leaves := 0
+    previous := ""
+    for: tick < int(#path)
+        if path[tick] == goal and arrival < 0
+            arrival = tick
+        if tick == 0
+            continue
+        action := report.action_name(path[tick - 1], path[tick], width)
+        if action == "."
+            waits += 1
+        else
+            if previous != "" and previous != action
+                turns += 1
+            previous = action
+        if path[tick - 1] == goal and path[tick] != goal
+            leaves += 1
+    return AgentMetrics(length, length - lower, waits, turns, arrival, leaves, report.action_string(path, width))
+
+PlanMetrics plan_metrics(int[][] paths, grid_map.Grid grid, grid_map.Agent[] agents, Overview overview, string cost_function)
+    result := PlanMetrics()
+    result.soc = cbs.plan_soc(paths)
+    result.makespan = cbs.plan_makespan(paths)
+    result.cost = if cost_function == "SOC" then result.soc else result.makespan
+    result.traffic = array(#grid.free, fill = 0)
+    result.cell_waits = array(#grid.free, fill = 0)
+    for: i < int(#agents)
+        metrics := path_metrics(paths[i], agents[i].goal, overview.distances[i], grid.width)
+        result.agents = result.agents.append(metrics)
+        result.sum_extra += metrics.extra
+        if metrics.extra > result.max_extra
+            result.max_extra = metrics.extra
+        result.waits += metrics.waits
+        result.turns += metrics.turns
+        distinct<int> visited
+        for cell := paths[i][]
+            .visited.add(cell)
+        for cell := visited.values()[]
+            result.traffic[cell] += 1
+        for: 1 <= tick < int(#paths[i])
+            if paths[i][tick] == paths[i][tick - 1]
+                result.cell_waits[paths[i][tick]] += 1
+    for: tick <= result.makespan
+        count := 0
+        for path := paths[]
+            if int(#path) - 1 <= tick
+                count += 1
+        result.arrivals = result.arrivals.append(count)
+    selected := array(#grid.free, fill = false)
+    for: rank < 5
+        best := -1
+        for: cell < int(#grid.free)
+            if not selected[cell] and result.traffic[cell] > 0 and (best < 0 or result.traffic[cell] > result.traffic[best])
+                best = cell
+        if best < 0
+            break
+        selected[best] = true
+        result.hotspots = result.hotspots.append(best)
+    return result
+
+class ExecutionStep(int scheduled, int cell)
+class Prerequisite(int agent, int step)
+
+Execution delayed_execution(int[][] paths, Delay[] delays)
+    result := Execution()
+    ExecutionStep[][] steps := []
+    for path := paths[]
+        current := [ExecutionStep(0, path[0])]
+        for: 1 <= tick < int(#path)
+            if path[tick] != path[tick - 1]
+                current = current.append(ExecutionStep(tick, path[tick]))
+        steps = steps.append(current)
+    Prerequisite[][][] prerequisites := []
+    for: i < int(#paths)
+        Prerequisite[][] per_agent := []
+        for target := steps[i][]
+            Prerequisite[] required := []
+            for: j < int(#paths)
+                if i == j
+                    continue
+                for: index < int(#steps[j])
+                    earlier := steps[j][index]
+                    if earlier.cell == target.cell and earlier.scheduled < target.scheduled
+                        required = required.append(Prerequisite(j, index))
+            per_agent = per_agent.append(required)
+        prerequisites = prerequisites.append(per_agent)
+    progress := array(#paths, fill = 0)
+    result.finish = array(#paths, fill = 0)
+    tick := 0
+    while true
+        all_finished := true
+        for: i < int(#paths)
+            if progress[i] < int(#steps[i]) - 1
+                all_finished = false
+        if all_finished
+            break
+        int[] advancing := []
+        stopped_any := false
+        for: i < int(#paths)
+            if progress[i] == int(#steps[i]) - 1
+                continue
+            stopped := false
+            for delay := delays[]
+                if delay.agent == i and delay.start <= tick and tick < delay.start + delay.duration
+                    stopped = true
+            if stopped
+                stopped_any = true
+                continue
+            ready := true
+            for required := prerequisites[i][progress[i] + 1][]
+                if progress[required.agent] <= required.step
+                    ready = false
+            if ready
+                advancing = advancing.append(i)
+            else
+                result.blocked += 1
+        if #advancing == 0 and not stopped_any
+            result.deadlock = true
+            result.cutoff = tick
+            return result
+        for i := advancing[]
+            progress[i] += 1
+            result.finish[i] = tick + 1
+        tick += 1
+    for finish := result.finish[]
+        result.soc += finish
+        if finish > result.makespan
+            result.makespan = finish
+    return result
+
+Run[] run_solvers(grid_map.Grid grid, grid_map.Agent[] agents, int[][] distances, Parameters settings, Overview overview)
+    Run[] results := []
+    for definition := settings.runs[]
+        run := Run(definition, settings.low_budget)
+        if definition.solver == "PP"
+            solve_pp(&run, grid, agents, distances, settings)
+        elif definition.solver == "WHCA"
+            solve_whca(&run, grid, agents, distances, settings)
+        else
+            solve_cbs(&run, grid, agents, distances, settings)
+        if run.success
+            run.metrics = plan_metrics(run.paths, grid, agents, overview, definition.cost_function)
+            run.execution = delayed_execution(run.paths, settings.delays)
+            string ending
+            if definition.solver == "PP"
+                ending = "end OK order {run.answer_order}"
+            elif definition.solver == "WHCA"
+                ending = "end OK rounds {run.high_level}"
+            else
+                ending = "end OK node {run.answer_number} cost {run.metrics.cost}"
+            run.trace = run.trace.append(ending)
+        else
+            run.trace = run.trace.append("end FAIL " + run.reason)
+        results = results.append(run)
+    return results
+
+string[] instance_lines(grid_map.Grid grid, grid_map.Agent[] agents, Overview overview)
+    lines := ["instance width {grid.width} height {grid.height} free {overview.free_cells} agents {#agents}", "map isolated {overview.degrees[0]} dead_ends {overview.degrees[1]} corridors {overview.degrees[2]} junctions {overview.degrees[3]} components {overview.components}"]
+    for: i < int(#agents)
+        agent := agents[i]
+        lines = lines.append("agent {agent.name} start " + report.cell_text(agent.start, grid.width) + " goal " + report.cell_text(agent.goal, grid.width) + " distance {overview.distances[i]} mdd {overview.mdds[i].states} width {overview.mdds[i].width}")
+    lines = lines.append("lower_bound soc {overview.soc_lower} makespan {overview.makespan_lower}")
+    vertices := 0
+    edges := 0
+    classes := [0, 0, 0]
+    for: i < int(#overview.conflicts)
+        if overview.conflicts[i].kind == "vertex"
+            vertices += 1
+        else
+            edges += 1
+        classes[overview.conflict_classes[i]] += 1
+    lines = lines.append("independent conflicts {#overview.conflicts} vertex {vertices} edge {edges} cardinal {classes[0]} semi_cardinal {classes[1]} non_cardinal {classes[2]}")
+    return lines.append("groups " + (if #overview.groups == 0 then "-" else overview.groups.join(" ")))
+
+bool constraint_before(cbs.Constraint first, cbs.Constraint second, int width)
+    a := [first.agent, first.tick, if first.kind == "vertex" then 0 else 1, first.source % width, first.source / width, first.destination % width, first.destination / width]
+    b := [second.agent, second.tick, if second.kind == "vertex" then 0 else 1, second.source % width, second.source / width, second.destination % width, second.destination / width]
+    for: i < int(#a)
+        if a[i] != b[i]
+            return a[i] < b[i]
+    return false
+
+cbs.Constraint[] ordered_constraints(low_level.Prohibitions[] restrictions, int width)
+    cbs.Constraint[] result := []
+    for: agent < int(#restrictions)
+        cells := restrictions[agent].cell_count
+        for key := restrictions[agent].states.values()[]
+            cell := key % cells
+            result = result.append(cbs.Constraint(agent, "vertex", key / cells, cell, cell))
+        for key := restrictions[agent].moves.values()[]
+            destination := key % cells
+            source := (key / cells) % cells
+            result = result.append(cbs.Constraint(agent, "edge", key / cells / cells, source, destination))
+    for: 1 <= i < int(#result)
+        j := i
+        while j > 0 and constraint_before(result[j], result[j - 1], width)
+            temporary := result[j - 1]
+            result[j - 1] = result[j]
+            result[j] = temporary
+            j -= 1
+    return result
+
+string[] solver_lines(Run run, Parameters settings, int width)
+    if run.definition.solver == "PP"
+        return run.specific
+    if run.definition.solver == "WHCA"
+        return ["window {settings.window} step {settings.step} rounds {run.high_level}"]
+    lines := ["search expanded {run.high_level} generated {run.generated} pruned {run.pruned} open {run.open_count}"]
+    if run.definition.solver == "ICBS"
+        lines = lines.append("classes cardinal {run.classes[0]} semi_cardinal {run.classes[1]} non_cardinal {run.classes[2]}")
+    if run.success
+        lines = lines.append("solution node {run.answer_number} depth {run.answer_depth}")
+        for constraint := ordered_constraints(run.constraints, width)[]
+            beginning := "constraint " + report.agent_name(constraint.agent) + " {constraint.kind} " + report.cell_text(constraint.source, width)
+            if constraint.kind == "edge"
+                beginning += " " + report.cell_text(constraint.destination, width)
+            lines = lines.append(beginning + " t {constraint.tick}")
+    return lines
+
+string[] successful_lines(Run run, grid_map.Grid grid, grid_map.Agent[] agents)
+    string[] lines := []
+    for: i < int(#agents)
+        AgentMetrics metrics := run.metrics.agents[i]
+        lines = lines.append("agent {agents[i].name} cost {metrics.cost} extra {metrics.extra} waits {metrics.waits} turns {metrics.turns} arrive {metrics.arrival} leave {metrics.leaves} moves {metrics.actions}")
+    lines = lines.append("arrivals " + [for count := run.metrics.arrivals[] then string(count)].join(" "))
+    string[] hotspots := []
+    for cell := run.metrics.hotspots[]
+        hotspots = hotspots.append(report.cell_text(cell, grid.width) + ":{run.metrics.traffic[cell]}")
+    lines = lines.append("hotspots " + hotspots.join(" "))
+    if run.execution.deadlock
+        lines = lines.append("execution deadlock time {run.execution.cutoff}")
+    else
+        lines = lines.append("execution soc {run.execution.soc} makespan {run.execution.makespan} blocked {run.execution.blocked} finish " + [for tick := run.execution.finish[] then string(tick)].join(" "))
+    return lines
+
+string[] solution_lines(grid_map.Grid grid, grid_map.Agent[] agents, Overview overview, Run[] results, Parameters settings)
+    lines := instance_lines(grid, agents, overview)
+    int[] successful := []
+    for: i < int(#results)
+        run := results[i]
+        lines = lines.append("")
+        prefix := "run {run.name} solver {run.definition.solver} cost_function {run.definition.cost_function} result "
+        if run.success
+            successful = successful.append(i)
+            lower := if run.definition.cost_function == "SOC" then overview.soc_lower else overview.makespan_lower
+            lines = lines.append(prefix + "OK cost {run.metrics.cost} soc {run.metrics.soc} makespan {run.metrics.makespan} ratio " + report.fraction_text(run.metrics.cost, lower))
+        else
+            lines = lines.append(prefix + "FAIL reason " + run.reason)
+        lines = lines.concat(solver_lines(run, settings, grid.width))
+        if run.success
+            lines = lines.concat(successful_lines(run, grid, agents))
+    lines = lines.concat(["", "summary ok {#successful} failed {int(#results) - int(#successful)}"])
+    if #successful == 0
+        return lines
+    int best_soc := results[successful[0]].metrics.soc
+    int best_makespan := results[successful[0]].metrics.makespan
+    for index := successful[]
+        if results[index].metrics.soc < best_soc
+            best_soc = results[index].metrics.soc
+        if results[index].metrics.makespan < best_makespan
+            best_makespan = results[index].metrics.makespan
+    string[] soc_names := []
+    string[] makespan_names := []
+    for index := successful[]
+        if results[index].metrics.soc == best_soc
+            soc_names = soc_names.append(results[index].name)
+        if results[index].metrics.makespan == best_makespan
+            makespan_names = makespan_names.append(results[index].name)
+    ranking := successful
+    for: 1 <= i < int(#ranking)
+        j := i
+        while j > 0
+            PlanMetrics a := results[ranking[j]].metrics
+            PlanMetrics b := results[ranking[j - 1]].metrics
+            earlier := a.soc < b.soc or (a.soc == b.soc and a.makespan < b.makespan)
+            if not earlier
+                break
+            temporary := ranking[j - 1]
+            ranking[j - 1] = ranking[j]
+            ranking[j] = temporary
+            j -= 1
+    return lines.concat(["best_soc {best_soc} " + soc_names.join(" "), "best_makespan {best_makespan} " + makespan_names.join(" "), "ranking " + [for index := ranking[] then results[index].name].join(" ")])
+
+string[] stats_lines(Run[] results)
+    lines := ["run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions"]
+    for run := results[]
+        fields := [run.name, run.definition.solver, run.definition.cost_function, if run.success then "OK" else "FAIL", if run.success then "-" else run.reason]
+        if run.success
+            PlanMetrics metrics := run.metrics
+            fields = fields.concat([string(metrics.cost), string(metrics.soc), string(metrics.makespan), string(metrics.sum_extra), string(metrics.max_extra), string(metrics.waits), string(metrics.turns), if run.execution.deadlock then "-" else string(run.execution.soc), if run.execution.deadlock then "-" else string(run.execution.makespan)])
+        else
+            fields = fields.concat(["-", "-", "-", "-", "-", "-", "-", "-", "-"])
+        fields = fields.concat([string(run.high_level), if run.generated < 0 then "-" else string(run.generated), string(run.budget.searches), string(run.budget.expansions)])
+        lines = lines.append(report.csv_line(fields))
+    return lines
+
+string[] validate_plan(string name, int[][] paths, grid_map.Grid grid, grid_map.Agent[] agents, int[] classes)
+    starts := 0
+    goals := 0
+    moves := 0
+    for: i < int(#agents)
+        if paths[i][0] != agents[i].start
+            starts += 1
+        if paths[i][-1] != agents[i].goal
+            goals += 1
+        for: 1 <= tick < int(#paths[i])
+            if not contains_cell(grid.destinations[paths[i][tick - 1]], paths[i][tick])
+                moves += 1
+    cbs.Conflict[] conflicts := cbs.find_conflicts(paths)
+    vertices := 0
+    edges := 0
+    for conflict := conflicts[]
+        if conflict.kind == "vertex"
+            vertices += 1
+        else
+            edges += 1
+    follows := 0
+    horizon := cbs.plan_makespan(paths)
+    for: 1 <= tick <= horizon
+        for: first < int(#agents)
+            current := cbs.path_position(paths[first], tick)
+            previous := cbs.path_position(paths[first], tick - 1)
+            if current == previous
+                continue
+            for: second < int(#agents)
+                if first != second and current == cbs.path_position(paths[second], tick - 1) and cbs.path_position(paths[second], tick) != previous
+                    follows += 1
+    verdict := if starts + goals + moves + vertices + edges == 0 then "VALID" else "INVALID"
+    lines := ["plan {name} verdict {verdict} start {starts} goal {goals} moves {moves} vertex {vertices} edge {edges} follows {follows}"]
+    for: i < int(#conflicts)
+        line := "  " + report.conflict_text(conflicts[i], grid.width)
+        if #classes > 0
+            line += " " + class_name(classes[i])
+        lines = lines.append(line)
+    return lines
+
+string[] validation_lines(Run[] results, grid_map.Grid grid, grid_map.Agent[] agents, Overview overview)
+    lines := validate_plan("INDEPENDENT", overview.independent, grid, agents, overview.conflict_classes)
+    for run := results[]
+        if run.success
+            lines = lines.concat(validate_plan(run.name, run.paths, grid, agents, []))
+        else
+            lines = lines.append("plan {run.name} verdict NONE")
+    return lines
+
+string[] trace_lines(Run[] results)
+    string[] lines := []
+    for: i < int(#results)
+        if i > 0
+            lines = lines.append("")
+        lines = lines.concat(results[i].trace)
+    return lines
+
+string[] occupancy_picture(grid_map.Grid grid, grid_map.Agent[] agents, int[][] paths, int tick)
+    string[] cells := []
+    for: cell < int(#grid.free)
+        cells = cells.append(if grid.free[cell] then "." else "@")
+    lower_names := "abcdefghijklmnopqrst"
+    for: i < int(#agents)
+        cells[agents[i].goal] = lower_names[i]
+    for: i < int(#agents)
+        cells[cbs.path_position(paths[i], tick)] = agents[i].name
+    string[] rows := []
+    for: y < grid.height
+        rows = rows.append(cells[y * grid.width:<(y + 1) * grid.width].join(""))
+    return rows
+
+string[] count_picture(grid_map.Grid grid, int[] counts)
+    string[] cells := []
+    for: cell < int(#grid.free)
+        character := if not grid.free[cell] then "@" elif counts[cell] == 0 then "." elif counts[cell] < 10 then string(counts[cell]) else "+"
+        cells = cells.append(character)
+    string[] rows := []
+    for: y < grid.height
+        rows = rows.append(cells[y * grid.width:<(y + 1) * grid.width].join(""))
+    return rows
+
+string[] animation_lines(Run[] results, grid_map.Grid grid, grid_map.Agent[] agents, Parameters settings)
+    selected := 0
+    for: i < int(#results)
+        if results[i].name == settings.animate
+            selected = i
+    run := results[selected]
+    if not run.success
+        return ["run {run.name} FAIL"]
+    lines := ["run {run.name} frames {settings.frames}"]
+    for: tick < settings.frames
+        done := 0
+        moving := 0
+        waiting := 0
+        for path := run.paths[]
+            length := int(#path) - 1
+            if tick >= length
+                done += 1
+            elif tick >= 1 and cbs.path_position(path, tick) != cbs.path_position(path, tick - 1)
+                moving += 1
+            else
+                waiting += 1
+        lines = lines.concat(["", "frame {tick} done {done} moving {moving} waiting {waiting}"]).concat(occupancy_picture(grid, agents, run.paths, tick))
+    return lines.concat(["", "traffic"]).concat(count_picture(grid, run.metrics.traffic)).concat(["", "waits"]).concat(count_picture(grid, run.metrics.cell_waits))
+
+void run_program()
+    grid := grid_map.read_grid()
+    grid_map.Agent[] agents := grid_map.read_agents(grid)
+    settings := read_parameters(int(#agents))
+    distances := [for agent := agents[] then grid_map.distance_table(grid, agent.goal)]
+    overview := inspect_instance(grid, agents, distances, settings.horizon)
+    results := run_solvers(grid, agents, distances, settings, overview)
+    bool directory_exists := file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    report.write_lines("solutions.txt", solution_lines(grid, agents, overview, results, settings))
+    report.write_lines("stats.csv", stats_lines(results))
+    report.write_lines("validation.txt", validation_lines(results, grid, agents, overview))
+    report.write_lines("trace.txt", trace_lines(results))
+    report.write_lines("frames.txt", animation_lines(results, grid, agents, settings))
+
+run_program()

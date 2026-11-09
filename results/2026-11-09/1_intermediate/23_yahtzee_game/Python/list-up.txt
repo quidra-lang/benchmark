@@ -1,0 +1,346 @@
+from collections import deque
+DICE = 5
+FACE_VALUES = (1, 2, 3, 4, 5, 6)
+CATEGORIES = (
+    "ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+    "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE",
+)
+UPPER_CATEGORIES = CATEGORIES[:6]
+LOWER_CATEGORIES = CATEGORIES[6:]
+MODULUS = 2147483647
+MULTIPLIER = 48271
+MAX_PLAYERS = 6
+UPPER_TARGET = 63
+UPPER_BONUS = 35
+YAHTZEE_SCORE = 50
+YAHTZEE_BONUS = 100
+INTEGER_WORD = re.compile(r"-?(0|[1-9][0-9]*)")
+NAME_WORD = re.compile(r"[A-Z]{1,8}")
+PATTERN_WORD = re.compile(r"[01]{5}")
+def integer_word(text, minimum, maximum):
+    if INTEGER_WORD.fullmatch(text) is None or text == "-0":
+        raise CommandError(f"bad value {text}")
+    value = int(text)
+    if not minimum <= value <= maximum:
+        raise CommandError(f"bad value {text}")
+    return value
+
+
+def player_name(text):
+    if NAME_WORD.fullmatch(text) is None:
+        raise CommandError(f"bad name {text}")
+    return text
+
+
+def hold_pattern(text):
+    if PATTERN_WORD.fullmatch(text) is None:
+        raise CommandError(f"bad pattern {text}")
+    return [mark == "1" for mark in text]
+
+
+def category_name(text):
+    if text not in CATEGORIES:
+        raise CommandError(f"bad category {text}")
+    return text
+def face_list(faces):
+    return " ".join(str(face) for face in faces) if faces else "-"
+
+
+def pattern_text(holds):
+    return "".join("1" if hold else "0" for hold in holds)
+
+
+def held_faces(faces, holds):
+    return [face for face, hold in zip(faces, holds) if hold]
+def is_yahtzee(faces):
+    return faces.count(faces[0]) == DICE
+def normal_score(category, faces):
+    if category in UPPER_CATEGORIES:
+        face = UPPER_CATEGORIES.index(category) + 1
+        return face * faces.count(face)
+class Rules:
+    def __init__(self):
+        self.rolls = 3
+        self.joker = "FORCED"
+
+
+class DiceRoller:
+    def __init__(self, seed):
+        self.state = seed
+        self.loaded = deque()
+        self.counts = [0] * len(FACE_VALUES)
+
+    def roll_die(self):
+        if self.loaded:
+            face = self.loaded.popleft()
+        else:
+            self.state = MULTIPLIER * self.state % MODULUS
+            face = self.state % len(FACE_VALUES) + 1
+        self.counts[face - 1] += 1
+        return face
+
+
+class Player:
+    def __init__(self, name, strategy="KIND"):
+        self.name = name
+        self.strategy = strategy
+        self.boxes = dict.fromkeys(CATEGORIES)
+        self.yahtzee_bonus = 0
+
+    def open_categories(self):
+        return [category for category in CATEGORIES if self.boxes[category] is None]
+
+    def used_count(self):
+        return len(CATEGORIES) - len(self.open_categories())
+
+    def round(self):
+        return self.used_count() + 1
+
+    def upper_subtotal(self):
+        return sum(self.boxes[c] for c in UPPER_CATEGORIES if self.boxes[c] is not None)
+
+    def upper_bonus(self):
+        return UPPER_BONUS if self.upper_subtotal() >= UPPER_TARGET else 0
+
+    def total(self):
+        entered = sum(points for points in self.boxes.values() if points is not None)
+        return entered + self.upper_bonus() + self.yahtzee_bonus
+
+
+class Turn:
+    def __init__(self, seat, rolls=0, faces=(), holds=(False,) * DICE):
+        self.seat = seat
+        self.rolls = rolls
+        self.faces = list(faces)
+        self.holds = list(holds)
+
+    def copy(self):
+        return Turn(self.seat, self.rolls, self.faces, self.holds)
+class ScoreEntry:
+    def __init__(self, player, category, points, bonus, joker, turn):
+        self.player = player
+        self.category = category
+        self.points = points
+        self.bonus = bonus
+        self.joker = joker
+        self.turn = turn.copy()
+
+
+class Game:
+    def __init__(self, players, rules, roller):
+        self.players = players
+        self.rules = rules
+        self.roller = roller
+        self.turn = Turn(0)
+        self.entries = []
+        self.redo_list = []
+
+    def finished(self):
+        return self.turn is None
+
+    def current_player(self):
+        return self.players[self.turn.seat]
+    def roll(self):
+        turn = self.turn
+        if turn.rolls == 0:
+            turn.faces = [self.roller.roll_die() for _ in range(DICE)]
+        else:
+            for index in range(DICE):
+                if not turn.holds[index]:
+                    turn.faces[index] = self.roller.roll_die()
+        turn.rolls += 1
+        self.redo_list.clear()
+        return f"{self.current_player().name} roll {turn.rolls}: {face_list(turn.faces)}"
+
+    def set_holds(self, holds):
+        self.turn.holds = holds
+        self.redo_list.clear()
+        held = held_faces(self.turn.faces, holds)
+        return f"{self.current_player().name} holds {pattern_text(holds)}: {face_list(held)}"
+
+    def joker_situation(self, player, faces):
+        return (
+            self.rules.joker != "OFF" and is_yahtzee(faces)
+            and player.boxes["YAHTZEE"] is not None
+        )
+
+    def allowed_categories(self, player, faces, joker):
+        open_categories = player.open_categories()
+        if not joker or self.rules.joker == "FREE":
+            return open_categories
+    def points_to_enter(self, faces, category, joker):
+        if joker and category in JOKER_POINTS:
+            return JOKER_POINTS[category]
+        return normal_score(category, faces)
+    def prepare_entry(self, category):
+        player = self.current_player()
+        faces = self.turn.faces
+        if player.boxes[category] is not None:
+            raise CommandError(f"{category} already used")
+        joker = self.joker_situation(player, faces)
+        if category not in self.allowed_categories(player, faces, joker):
+            upper = UPPER_CATEGORIES[faces[0] - 1]
+            if player.boxes[upper] is None:
+                raise CommandError(f"joker requires {upper}")
+            raise CommandError("joker requires lower box")
+        points = self.points_to_enter(faces, category, joker)
+        bonus = 0
+        if is_yahtzee(faces) and player.boxes["YAHTZEE"] == YAHTZEE_SCORE:
+            bonus = YAHTZEE_BONUS
+        return ScoreEntry(player, category, points, bonus, joker, self.turn)
+
+    def score_line(self, entry, verb):
+        player = entry.player
+        parts = [player.name, verb, entry.points, "in", entry.category]
+        if entry.joker:
+            parts.append("joker")
+        if entry.bonus:
+            parts.extend(("ybonus", entry.bonus))
+        subtotal = player.upper_subtotal()
+        if entry.category in UPPER_CATEGORIES:
+            subtotal += entry.points
+        gained = 0
+        if player.upper_bonus() == 0 and subtotal >= UPPER_TARGET:
+            gained = UPPER_BONUS
+            parts.extend(("ubonus", gained))
+        parts.extend(("total", player.total() + entry.points + entry.bonus + gained))
+        return " ".join(str(part) for part in parts)
+
+    def enter(self, entry):
+        entry.player.boxes[entry.category] = entry.points
+        entry.player.yahtzee_bonus += entry.bonus
+        self.entries.append(entry)
+
+    def score(self, category):
+        entry = self.prepare_entry(category)
+        line = self.score_line(entry, "scores")
+        self.enter(entry)
+        self.redo_list.clear()
+        if all(player.used_count() == len(CATEGORIES) for player in self.players):
+            self.turn = None
+            return [line, "game over"]
+        self.turn = Turn((self.turn.seat + 1) % len(self.players))
+        player = self.current_player()
+        return [line, f"turn {player.round()} {player.name}"]
+
+    def undo(self):
+        entry = self.entries.pop()
+        entry.player.boxes[entry.category] = None
+        entry.player.yahtzee_bonus -= entry.bonus
+        self.redo_list.append((self.turn, entry))
+        self.turn = entry.turn.copy()
+        return entry
+
+    def redo(self):
+        turn, entry = self.redo_list.pop()
+        self.enter(entry)
+        self.turn = turn
+        return entry
+class YahtzeeTable:
+    def __init__(self):
+        self.rules = Rules()
+        self.game = None
+        self.output = []
+        self.handlers = {
+            "GAME": self.start_game,
+            "LOAD": self.load,
+            "ROLL": self.roll,
+            "HOLD": self.hold,
+            "SCORE": self.score,
+            "UNDO": self.undo,
+            "REDO": self.redo,
+    def emit(self, line):
+        self.output.append(line)
+
+    def require_no_game(self):
+        if self.game is not None:
+            raise CommandError("game in progress")
+
+    def require_game(self):
+        if self.game is None:
+            raise CommandError("no game")
+        return self.game
+
+    def require_turn(self):
+        game = self.require_game()
+        if game.finished():
+            raise CommandError("game over")
+        return game
+
+    def require_rolled(self):
+        game = self.require_turn()
+        if game.turn.rolls == 0:
+            raise CommandError("not rolled")
+        return game
+
+    def require_rolls_left(self):
+        game = self.require_rolled()
+        if game.turn.rolls == self.rules.rolls:
+            raise CommandError("no rolls left")
+        return game
+    def start_game(self, arguments):
+        seed = integer_word(arguments[0], 1, MODULUS - 1)
+        names = [player_name(text) for text in arguments[1:]]
+        if len(names) > MAX_PLAYERS:
+            raise CommandError("too many players")
+        self.require_no_game()
+        for index, name in enumerate(names):
+            if name in names[:index]:
+                raise CommandError(f"duplicate name {name}")
+        players = [Player(name) for name in names]
+        self.game = Game(players, self.rules, DiceRoller(seed))
+        self.emit(f"game seed {seed} players " + " ".join(names))
+        self.emit(f"turn 1 {names[0]}")
+    def load(self, arguments):
+        values = [integer_word(text, 1, len(FACE_VALUES)) for text in arguments]
+        game = self.require_game()
+        game.roller.loaded.extend(values)
+        self.emit(f"loaded {len(game.roller.loaded)}")
+
+    def roll(self, arguments):
+        game = self.require_turn()
+        if game.turn.rolls == self.rules.rolls:
+            raise CommandError("no rolls left")
+        if all(game.turn.holds):
+            raise CommandError("all dice held")
+        self.emit(game.roll())
+
+    def hold(self, arguments):
+        holds = hold_pattern(arguments[0])
+        game = self.require_rolls_left()
+        self.emit(game.set_holds(holds))
+    def score(self, arguments):
+        category = category_name(arguments[0])
+        game = self.require_rolled()
+        self.output.extend(game.score(category))
+    def undo(self, arguments):
+        game = self.require_game()
+        if not game.entries:
+            raise CommandError("nothing to undo")
+        entry = game.undo()
+        self.emit(f"undo {entry.player.name} {entry.category} {entry.points}")
+
+    def redo(self, arguments):
+        game = self.require_game()
+        if not game.redo_list:
+            raise CommandError("nothing to redo")
+        entry = game.redo()
+        self.emit(f"redo {entry.player.name} {entry.category} {entry.points}")
+    def execute(self, line):
+        command, *arguments = line.split()
+        try:
+            if command not in self.handlers:
+                raise CommandError(f"unknown command {command}")
+            self.handlers[command](arguments)
+        except CommandError as error:
+            self.emit(f"error: {error}")
+
+
+def main():
+    table = YahtzeeTable()
+    count = int(sys.stdin.readline())
+    for _ in range(count):
+        table.execute(sys.stdin.readline().rstrip("\n"))
+    sys.stdout.write("\n".join(table.output) + "\n")
+if __name__ == "__main__":
+    main()

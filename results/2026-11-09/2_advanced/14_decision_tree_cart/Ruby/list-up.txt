@@ -1,0 +1,287 @@
+  Attribute = Struct.new(:index, :name, :type, :values, keyword_init: true)
+  Row = Struct.new(:id, :values, :klass, :index, keyword_init: true)
+  Data = Struct.new(:attributes, :target, :classes, :train, :validation, :test,
+                    :settings, keyword_init: true)
+  def read_rows(name, attributes, classes)
+    File.readlines("input/#{name}.csv", chomp: true).drop(1).each_with_index.map do |line, index|
+      fields = line.split(',')
+      values = attributes.map do |attribute|
+        value = fields[attribute.index + 1]
+        if value == '?'
+          nil
+        elsif attribute.type == 'INT'
+          value.to_i
+        else
+          attribute.values.index(value)
+        end
+      end
+      Row.new(id: fields.first, values: values, klass: classes.index(fields.last), index: index)
+    end
+  end
+  def read
+    schema = File.readlines('input/schema.txt', chomp: true).map(&:split)
+    attributes = schema[0...-1].each_with_index.map do |fields, index|
+      Attribute.new(index: index, name: fields[1], type: fields[2], values: fields.drop(3))
+    end
+    target = schema.last[1]
+    classes = schema.last.drop(2)
+    settings = {}
+    File.readlines('input/params.txt', chomp: true).each do |line|
+      keyword, *fields = line.split
+      values = fields.map(&:to_i)
+      settings[keyword.downcase.to_sym] = keyword == 'CURVE' ? values : values.first
+    end
+    Data.new(attributes: attributes, target: target, classes: classes,
+             train: read_rows('train', attributes, classes),
+             validation: read_rows('validation', attributes, classes),
+             test: read_rows('test', attributes, classes), settings: settings)
+  end
+  Statistics = Struct.new(:size, :counts, :squares, :majority, :errors, keyword_init: true)
+  def statistics(rows, class_count)
+    counts = Array.new(class_count, 0)
+    rows.each { |row| counts[row.klass] += 1 }
+    largest = counts.max
+    Statistics.new(size: rows.length, counts: counts, squares: counts.sum { |count| count * count },
+                   majority: counts.index(largest), errors: rows.length - largest)
+  end
+  def quality(left, right)
+    Rational(left.squares * right.size + right.squares * left.size, left.size * right.size)
+  end
+  def improves?(quality, parent)
+    quality.numerator * parent.size > parent.squares * quality.denominator
+  end
+  Split = Struct.new(:attribute, :value, keyword_init: true) do
+    def left?(observed)
+      attribute.type == 'INT' ? 2 * observed <= value : observed == value
+    end
+  Surrogate = Struct.new(:split, :direction, :score, keyword_init: true)
+  Node = Struct.new(:number, :depth, :rows, :stats, :split, :left, :right,
+                    :surrogates, :default_left, keyword_init: true)
+  Candidate = Struct.new(:split, :left_rows, :right_rows, :left_stats, :right_stats,
+                         :quality, keyword_init: true)
+  def initialize(attributes, class_count, settings)
+    @attributes = attributes
+    @class_count = class_count
+    @max_depth = settings[:max_depth]
+    @min_split = settings[:min_samples_split]
+    @min_leaf = settings[:min_samples_leaf]
+    @max_surrogates = settings[:max_surrogates]
+  end
+  def candidates(rows, attribute)
+    values = rows.map { |row| row.values[attribute.index] }.uniq.sort
+    return [] if values.length < 2
+    parameters = if attribute.type == 'INT'
+                   values.each_cons(2).map { |first, second| first + second }
+                 else
+                   values
+                 end
+    parameters.map { |value| Split.new(attribute: attribute, value: value) }
+  end
+  def best_for_attribute(rows, attribute)
+    best = nil
+    candidates(rows, attribute).each do |split|
+      left, right = rows.partition { |row| split.left?(row.values[attribute.index]) }
+      next if left.length < @min_leaf || right.length < @min_leaf
+      left_stats = Impurity.statistics(left, @class_count)
+      right_stats = Impurity.statistics(right, @class_count)
+      quality = Impurity.quality(left_stats, right_stats)
+      next if best && quality <= best.quality
+      best = Candidate.new(split: split, left_rows: left, right_rows: right,
+                           left_stats: left_stats, right_stats: right_stats, quality: quality)
+    end
+    best
+  end
+  def best_split(rows)
+    best = nil
+    @attributes.each do |attribute|
+      candidate = best_for_attribute(rows, attribute)
+      best = candidate if candidate && (!best || candidate.quality > best.quality)
+    end
+    best
+  end
+  def find_surrogates(rows, primary, left_size, right_size)
+    return [] if @max_surrogates.zero?
+    primary_directions = rows.map { |row| primary.left?(row.values[primary.attribute.index]) }
+    surrogates = []
+    @attributes.each do |attribute|
+      next if attribute.index == primary.attribute.index
+      best = nil
+      candidates(rows, attribute).each do |split|
+        agreement = 0
+        rows.each_with_index do |row, index|
+          agreement += 1 if split.left?(row.values[attribute.index]) == primary_directions[index]
+        end
+        direction = agreement >= rows.length - agreement ? :left : :right
+        score = [agreement, rows.length - agreement].max
+        best = Surrogate.new(split: split, direction: direction, score: score) if !best || score > best.score
+      end
+      surrogates << best if best && best.score > [left_size, right_size].max
+    end
+    surrogates.sort_by { |surrogate| [-surrogate.score, surrogate.split.attribute.index] }.first(@max_surrogates)
+  end
+  def grow(rows, number = 1, depth = 0)
+    stats = Impurity.statistics(rows, @class_count)
+    node = Node.new(number: number, depth: depth, rows: rows, stats: stats, surrogates: [])
+    return node if stats.errors.zero? || depth == @max_depth || rows.length < @min_split
+    best = best_split(rows)
+    return node unless best && Impurity.improves?(best.quality, stats)
+    node.split = best.split
+    node.default_left = best.left_rows.length >= best.right_rows.length
+    node.surrogates = find_surrogates(rows, best.split, best.left_rows.length, best.right_rows.length)
+    node.left = grow(best.left_rows, number * 2, depth + 1)
+    node.right = grow(best.right_rows, number * 2 + 1, depth + 1)
+    node
+  end
+  Step = Struct.new(:node, :left, :method, keyword_init: true)
+  Route = Struct.new(:leaf, :path, :steps, keyword_init: true)
+  module_function
+  def leaf?(node, cuts)
+    node.split.nil? || cuts.key?(node.number)
+  end
+  def route(root, row, cuts = {})
+    node = root
+    path = []
+    steps = []
+    loop do
+      path << node
+      break if leaf?(node, cuts)
+      observed = row.values[node.split.attribute.index]
+      if !observed.nil?
+        left = node.split.left?(observed)
+        method = :primary
+      else
+        surrogate = node.surrogates.find { |candidate| !row.values[candidate.split.attribute.index].nil? }
+        if surrogate
+          left = surrogate.split.left?(row.values[surrogate.split.attribute.index])
+          left = !left if surrogate.direction == :right
+          method = :surrogate
+        else
+          left = node.default_left
+          method = :default
+        end
+      end
+      steps << Step.new(node: node, left: left, method: method)
+      node = left ? node.left : node.right
+    end
+    Route.new(leaf: node, path: path, steps: steps)
+  end
+  def predict(root, row, cuts = {})
+    route(root, row, cuts).leaf.stats.majority
+  end
+  def correct(root, rows, cuts = {})
+    rows.count { |row| predict(root, row, cuts) == row.klass }
+  end
+  def classification(title, rows, predictions, classes)
+    size = classes.length
+    matrix = Array.new(size) { Array.new(size, 0) }
+    rows.each_with_index { |row, index| matrix[row.klass][predictions[index]] += 1 }
+    correct_count = size.times.sum { |index| matrix[index][index] }
+    lines = ["confusion #{title} correct #{correct_count}/#{rows.length} accuracy #{fraction(correct_count, rows.length)}",
+             ['actual\\predicted', *classes].join(' ')]
+    classes.each_with_index { |name, index| lines << [name, *matrix[index]].join(' ') }
+    macro = 0.0
+    available = 0
+    classes.each_with_index do |name, index|
+      true_positive = matrix[index][index]
+      predicted = matrix.sum { |row| row[index] }
+      actual = matrix[index].sum
+      denominator = predicted + actual
+      lines << "class #{name} precision #{fraction(true_positive, predicted)} recall #{fraction(true_positive, actual)} f1 #{fraction(2 * true_positive, denominator)} support #{actual}"
+      unless denominator.zero?
+        macro += (2 * true_positive).to_f / denominator
+        available += 1
+      end
+    end
+    lines << "macro_f1 #{real(macro / available)}"
+    lines
+  end
+  def reduced_error(root, validation)
+    counts = Hash.new(0)
+    errors = Hash.new(0)
+    validation.each do |row|
+      Evaluation.route(root, row).path.each do |node|
+        counts[node.number] += 1
+        errors[node.number] += 1 if row.klass != node.stats.majority
+      end
+    end
+    cuts = {}
+    decisions = []
+    visit = lambda do |node|
+      leaf_error = errors[node.number]
+      next leaf_error if node.split.nil?
+      left_error = visit.call(node.left)
+      right_error = visit.call(node.right)
+      subtree_error = left_error + right_error
+      prune = leaf_error <= subtree_error
+      cuts[node.number] = true if prune
+      decisions << Decision.new(node: node, rows: counts[node.number], leaf_error: leaf_error,
+                                subtree_error: subtree_error, pruned: prune)
+      prune ? leaf_error : subtree_error
+    end
+    visit.call(root)
+    [cuts, decisions]
+  end
+  View = Struct.new(:root, :cuts)
+  def initialize
+    @data = Dataset.read
+    @attributes, @classes = @data.attributes, @data.classes
+    @train, @validation, @test = @data.train, @data.validation, @data.test
+    @settings = @data.settings
+    @n, @v, @m = @train.length, @validation.length, @test.length
+    @builder = TreeBuilder.new(@attributes, @classes.length, @settings)
+  end
+  def build_primary_trees
+    @grown = View.new(@builder.grow(@train), {})
+    cuts, @pruning_decisions = Pruning.reduced_error(@grown.root, @validation)
+    @pruned = View.new(@grown.root, cuts)
+    @routes = {}
+    { grown: @grown, pruned: @pruned }.each do |name, tree|
+      @routes[name] = @test.map { |row| Evaluation.route(tree.root, row, tree.cuts) }
+    end
+    @models = @routes.transform_values { |routes| routes.map { |route| route.leaf.stats.majority } }
+  end
+  def prediction_lines
+    lines = ['id,predicted,actual,grown,leaf,path,missing']
+    @test.each_with_index do |row, index|
+      route = @routes[:pruned][index]
+      path = route.path.map(&:number).join('-')
+      missing = route.steps.count { |step| step.method != :primary }
+      lines << [row.id, @classes[@models[:pruned][index]], @classes[row.klass],
+                @classes[@models[:grown][index]], route.leaf.number, path, missing].join(',')
+    end
+    lines
+  end
+  def routing_lines
+    internals = Evaluation.nodes(@pruned.root, @pruned.cuts).reject { |node| Evaluation.leaf?(node, @pruned.cuts) }
+    counts = internals.to_h { |node| [node.number, { primary: 0, surrogate: 0, default: 0 }] }
+    @routes[:pruned].each do |route|
+      route.steps.each { |step| counts[step.node.number][step.method] += 1 }
+    end
+    lines = ['routing pruned test']
+    internals.each do |node|
+      tally = counts[node.number]
+      lines << "node #{node.number} rows #{tally.values.sum} primary #{tally[:primary]} surrogate #{tally[:surrogate]} default #{tally[:default]}"
+    end
+    [false, true].each do |incomplete|
+      indices = @test.each_index.select { |index| @test[index].values.any?(&:nil?) == incomplete }
+      hit = indices.count { |index| @models[:pruned][index] == @test[index].klass }
+      lines << "#{incomplete ? 'incomplete' : 'complete'} rows #{indices.length} correct #{Evaluation.ratio(hit, indices.length)}"
+    end
+    lines
+  end
+  def write_parts(name, parts)
+    text = parts.map { |lines| lines.join("\n") }.join("\n\n") + "\n"
+    File.binwrite(File.join('output', name), text)
+  end
+    write_parts('predictions.csv', [prediction_lines])
+    evaluation = [data_lines, tree_summary_lines,
+                  Evaluation.classification('grown test', @test, @models[:grown], @classes),
+                  Evaluation.classification('pruned test', @test, @models[:pruned], @classes),
+                  routing_lines, cross_validation_lines, depth_lines, complexity_lines,
+                  bagging_lines, mcnemar_lines, auc_lines, learning_lines]
+    write_parts('evaluation.txt', evaluation)
+  def run
+    build_primary_trees
+    write_outputs
+  end
+DecisionTreeStudy.new.run if $PROGRAM_NAME == __FILE__

@@ -1,0 +1,18 @@
+# Task B — schema size normalization
+
+The same answer requirements apply in every language: identify the size spelling grammar and case-insensitive binary unit scale; follow exact decimal-to-byte arithmetic and its failure exit; trace 1.5MB and 0.05KB; identify the successful source value representation and the normalization/error boundary; show how optional range bounds consume that successful numeric value, in order. Includes, inheritance, interpolation implementation and other scalar types are outside this routine-level question.
+
+## C source evidence
+
+`parse_size` returns bool and writes exact int64_t bytes through its number pointer. The selected Value declaration establishes the output number field, parse_scalar initializes the kind and passes that field by address, and normalize reports invalid_value/E_TYPE and returns false on rejection before delegating to check_range. C integer remainder/division plus the decimal digit checks preserve exact accepted bytes. check_range uses value.number and parses size bounds through parse_scalar; strict comparisons reject out-of-range values and report E_RANGE. Custom slice/lowercase/decimal implementations are included because their spelling, case and digit semantics cannot be assumed from function names.
+
+For 1.5MB the whole part contributes 1×1048576 and the fractional part contributes (5×1048576)/10 = 524288 exactly, giving 1572864 integer bytes. For 0.05KB the fractional numerator is 5×1024 = 5120 with divisor 100; the nonzero remainder rejects the value before any range comparison. This becomes E_TYPE, not a rounded 51-byte value. A successful value is checked against any nonempty size bounds in the same byte unit; strict less-than/greater-than rejection makes equality acceptable. Without a range failure it crosses the normalization return boundary; the first failed parse or range check stops that operation.
+
+## Necessity and alternatives
+
+- `main.c`: 15, 16, 17, 18, 19, 20, 22, 91, 92, 93, 94, 95, 96, 189, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 362, 363, 364, 367, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 436, 437, 438, 439, 440, 442, 443, 444, 445, 446, 447, 448, 449, 486, 487, 488
+- `main.h`: 39, 40, 41, 42, 43, 44, 45, 46
+
+The parser body is required because a name or return type alone cannot establish exact-byte divisibility, accepted spellings or unit factors. The selected dispatch, failure/return and range-consumer lines connect that computation to the requested operation. Type/standard-library conversion guarantees are used instead of copying their implementations; custom helpers needed to establish the grammar or arithmetic are retained. Whole scalar dispatches, list/string/date algorithms, callers that only carry an already expanded string, include processing and inheritance were considered and excluded because they add no evidence for these answer requirements. Diagnostic escaping/rendering internals are unnecessary to identify the first diagnostic code and precedence, so no exact escaped diagnostic text is claimed.
+
+The excerpt has 2103 tokens under `metric/tokenizer.py`; omitting blank lines saves tokens over contiguous function blocks. A fresh excerpt-only review checked the grammar/constants, fractional rejection, success representation, parse-before-range precedence and range use against each requirement. No proposed program change was implemented, and this source review makes no compilation or runtime-correctness claim.

@@ -1,0 +1,11 @@
+fn main() {
+    let sales = [120, 135, 98, 143, 160, 152, 171, 149, 188, 176];
+    let window_size = 3;
+    for (i, window) in sales.windows(window_size).enumerate() {
+        println!(
+            "day {}: {:.2}",
+            i + window_size,
+            f64::from(window.iter().sum::<i32>()) / window_size as f64
+        );
+    }
+}

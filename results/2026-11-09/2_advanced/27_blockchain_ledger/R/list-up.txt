@@ -1,0 +1,661 @@
+setting <- function(node, key, index = 1L) as.integer(node$params[[key]][index])
+height <- function(record) record$block$height
+next_height <- function(node) height(node$tip) + 1L
+reward <- function(node, h) block_reward(h, setting(node, "REWARD"), setting(node, "REWARD", 2L))
+difficulty <- function(node, parent = node$tip) required_difficulty(
+    parent,
+    setting(node, "DIFFICULTY"),
+    setting(node, "RETARGET"),
+    setting(node, "RETARGET", 2L)
+)
+mature <- function(node, coin) is_mature(coin, next_height(node), setting(node, "MATURITY"))
+locked_references <- function(node) unique(unlist(
+    lapply(node$mempool, function(entry) entry$transaction$inputs),
+    use.names = FALSE
+))
+priority_order <- function(node) {
+    entries <- node$mempool
+    before <- function(first, second) {
+        left <- first$fee * second$transaction$size
+        right <- second$fee * first$transaction$size
+        if (left != right) left > right else first$transaction$txid < second$transaction$txid
+    }
+    ranks <- vapply(entries, function(entry) sum(vapply(entries, before, FALSE, second = entry)), 0L)
+    entries[order(ranks)]
+}
+find_entry <- function(node, txid) {
+    for (entry in node$mempool) if (entry$transaction$txid == txid) return(entry)
+    NULL
+}
+line_text <- function(...) paste(c(...), collapse = " ")
+log_event <- function(node, ...) node$log <- c(node$log, line_text(node$now, ...))
+signed <- function(value) paste0(if (value >= 0L) "+" else "", value)
+refresh_chain <- function(node) {
+    node$main_chain <- chain_to(node$tip)
+    node$confirmed <- list()
+    for (record in node$main_chain) for (tx in record$block$transactions) node$confirmed[[tx$txid]] <- height(record)
+}
+    node <- new.env(parent = emptyenv())
+acceptance <- function(node, tx) {
+    failure <- function(reason) list(reason = reason, fee = 0L, conflicts = list())
+    if (is_coinbase(tx)) return(failure("coinbase"))
+    if (!is.null(node$confirmed[[tx$txid]]) || !is.null(find_entry(
+        node,
+        tx$txid
+    ))) return(failure("duplicate"))
+    result <- check_transaction(
+        tx,
+        node$tip$utxo,
+        character(),
+        next_height(node),
+        node$owners,
+        setting(node, "MATURITY")
+    )
+    if (!is.null(result$reason)) return(failure(result$reason))
+    fee <- result$fee
+    if (fee * 1000L < setting(node, "MINFEERATE") * tx$size) return(failure("low-fee"))
+    conflicts <- Filter(function(entry) any(entry$transaction$inputs %in% tx$inputs), node$mempool)
+    if (length(conflicts) && !(fee > sum(vapply(conflicts, function(entry) entry$fee, 0L)) && all(vapply(
+        conflicts,
+        function(entry) fee * entry$transaction$size > entry$fee * tx$size,
+        FALSE
+    )))) return(failure("conflict"))
+    list(reason = NULL, fee = fee, conflicts = conflicts)
+}
+record_drop <- function(node, txid, reason) {
+    node$drops[[txid]] <- reason
+    log_event(node, "DROP", short_hash(txid), reason)
+}
+drop_entry <- function(node, entry, reason) {
+    node$mempool <- Filter(function(other) other$transaction$txid != entry$transaction$txid, node$mempool)
+    record_drop(node, entry$transaction$txid, reason)
+}
+register <- function(node, tx, result, arrival) {
+    for (entry in result$conflicts) drop_entry(node, entry, "replaced")
+    node$mempool <- c(node$mempool, list(list(transaction = tx, fee = result$fee, arrival = arrival)))
+    if (length(node$mempool) > setting(node, "MEMPOOL")) drop_entry(
+        node,
+        tail(priority_order(node), 1L)[[1L]],
+        "mempool-full"
+    )
+}
+rebuild_mempool <- function(node, returned) {
+    previous <- node$mempool
+    node$mempool <- list()
+    candidates <- c(
+        lapply(returned, function(tx) list(transaction = tx, arrival = node$now, returned = TRUE)),
+        lapply(previous, function(entry) c(entry, list(returned = FALSE)))
+    )
+    for (candidate in candidates) {
+        tx <- candidate$transaction
+        if (!is.null(node$confirmed[[tx$txid]])) next
+        result <- acceptance(node, tx)
+        if (!is.null(result$reason)) record_drop(node, tx$txid, result$reason) else {
+            if (candidate$returned) log_event(node, "RETURN", short_hash(tx$txid))
+            register(node, tx, result, candidate$arrival)
+        }
+    }
+}
+switch_tip <- function(node, target) {
+    old <- node$tip
+    fork <- fork_point(old, target)
+    disconnected <- height(old) - height(fork)
+    connected <- height(target) - height(fork)
+    if (disconnected > setting(node, "MAXREORG")) {
+        log_event(
+            node,
+            "REFUSE",
+            height(target),
+            short_hash(target$block$hash),
+            "work",
+            target$cumulative_work,
+            "fork",
+            height(fork),
+            "depth",
+            disconnected
+        )
+        return(invisible(NULL))
+    }
+    returned <- list()
+    for (record in node$main_chain) if (height(record) > height(fork)) returned <- c(
+        returned,
+        record$block$transactions[-1L]
+    )
+    node$tip <- target
+    refresh_chain(node)
+    if (disconnected == 0L) log_event(
+        node,
+        "TIP",
+        height(target),
+        short_hash(target$block$hash),
+        "work",
+        target$cumulative_work
+    ) else {
+        log_event(
+            node,
+            "REORG",
+            height(target),
+            short_hash(target$block$hash),
+            "work",
+            target$cumulative_work,
+            "fork",
+            height(fork),
+            "disconnected",
+            disconnected,
+            "connected",
+            connected
+        )
+        node$reorganizations <- c(
+            node$reorganizations,
+            list(list(
+                time = node$now,
+                fork = height(fork),
+                disconnected = disconnected,
+                connected = connected,
+                old = old$block$hash,
+                new = target$block$hash
+            ))
+        )
+    }
+    rebuild_mempool(node, returned)
+}
+validate_block <- function(node, block, parent) {
+    failure <- function(reason) list(reason = reason)
+    if (block$height != height(parent) + 1L) return(failure("bad-height"))
+    if (block$difficulty != difficulty(node, parent)) return(failure("bad-difficulty"))
+    if (block$timestamp <= median_time(parent)) return(failure("time-too-old"))
+    if (block$timestamp > node$now + setting(node, "DRIFT")) return(failure("time-too-new"))
+    utxo <- parent$utxo
+    spent <- character()
+    fees <- integer()
+    for (position in seq_along(block$transactions)[-1L]) {
+        tx <- block$transactions[[position]]
+        result <- check_transaction(tx, utxo, spent, block$height, node$owners, setting(node, "MATURITY"))
+        if (!is.null(result$reason)) return(failure(paste(result$reason, "tx", position)))
+        spent <- union(spent, tx$inputs)
+        utxo <- apply_transaction(utxo, tx, block$height)
+        fees <- c(fees, result$fee)
+    }
+    coinbase <- block$transactions[[1L]]
+    for (output in coinbase$outputs) if (is.null(node$owners[[output$address]]) || output$amount == 0L) return(failure("bad-output tx 1"))
+    if (output_total(coinbase) > reward(node, block$height) + sum(fees)) return(failure("bad-coinbase"))
+    list(reason = NULL, utxo = apply_transaction(utxo, coinbase, block$height), fees = fees)
+}
+connect_block <- function(node, kind, block, peer) {
+    parent <- node$records[[block$previous]]
+    result <- validate_block(node, block, parent)
+    if (!is.null(result$reason)) {
+        reject_block(node, kind, block, peer, result$reason)
+        return(invisible(NULL))
+    }
+    record <- block_record(block, parent, result$utxo, result$fees, peer$name)
+    node$records[[block$hash]] <- record
+    peer$blocks <- peer$blocks + 1L
+    log_event(
+        node,
+        kind,
+        peer$name,
+        block$height,
+        short_hash(block$hash),
+        "accepted",
+        "work",
+        record$cumulative_work
+    )
+    if (record$cumulative_work > node$tip$cumulative_work) switch_tip(node, record)
+}
+resolve_orphans <- function(node, start) {
+    queue <- start
+    while (length(queue)) {
+        parent <- queue[1L]
+        queue <- queue[-1L]
+        children <- Filter(function(orphan) orphan$block$previous == parent, node$orphans)
+        for (orphan in children) {
+            node$orphans <- Filter(function(other) other$block$hash != orphan$block$hash, node$orphans)
+            if (parent %in% node$rejected) reject_block(
+                node,
+                "UNORPHAN",
+                orphan$block,
+                orphan$peer,
+                "bad-parent"
+            ) else connect_block(node, "UNORPHAN", orphan$block, orphan$peer)
+            queue <- c(queue, orphan$block$hash)
+        }
+    }
+}
+receive_block <- function(node, peer, block) {
+    if (!is.null(node$records[[block$hash]]) || any(vapply(
+        node$orphans,
+        function(orphan) orphan$block$hash == block$hash,
+        FALSE
+    )) || block$hash %in% node$rejected) {
+        log_event(node, "BLOCK", peer$name, block$height, short_hash(block$hash), "rejected", "duplicate")
+        peer$rejected_blocks <- peer$rejected_blocks + 1L
+        tally(node, "block", "duplicate")
+        return(invisible(NULL))
+    }
+    reason <- context_free_error(block, setting(node, "MAXBLOCK"))
+    if (is.null(reason) && block$previous %in% node$rejected) reason <- "bad-parent"
+    if (!is.null(reason)) {
+        reject_block(node, "BLOCK", block, peer, reason)
+        resolve_orphans(node, block$hash)
+    } else if (is.null(node$records[[block$previous]])) {
+        node$orphans <- c(node$orphans, list(list(block = block, peer = peer)))
+        peer$orphans <- peer$orphans + 1L
+        log_event(
+            node,
+            "BLOCK",
+            peer$name,
+            block$height,
+            short_hash(block$hash),
+            "orphan",
+            "parent",
+            short_hash(block$previous)
+        )
+        if (length(node$orphans) > setting(node, "ORPHANS")) {
+            evicted <- node$orphans[[1L]]
+            node$orphans <- node$orphans[-1L]
+            log_event(node, "EVICT", short_hash(evicted$block$hash), "orphan-limit")
+        }
+    } else {
+        connect_block(node, "BLOCK", block, peer)
+        resolve_orphans(node, block$hash)
+    }
+}
+process <- function(node, fields, texts) {
+    node$now <- as.integer(fields[1L])
+    for (entry in node$mempool) if (node$now - entry$arrival >= setting(node, "EXPIRY")) drop_entry(
+        node,
+        entry,
+        "expired"
+    )
+    kind <- fields[2L]
+    ) else if (kind == "MINE") mine(node, node$named[[fields[3L]]]) else if (kind == "STATUS") status(node, fields[3L]) else if (kind == "PRINT") print_state(node) else {
+        name <- fields[3L]
+        if (is.null(node$peers[[name]])) node$peers[[name]] <- new_peer(name)
+        peer <- node$peers[[name]]
+        if (peer$score >= setting(node, "BAN")) {
+            peer$ignored <- peer$ignored + 1L
+            log_event(node, "IGNORE", name, kind)
+        } else if (kind == "TX") receive_transaction(node, peer, parse_transaction(fields[4L])) else receive_block(
+            node,
+            peer,
+            parse_block_event(fields, texts)
+        )
+    }
+}
+chain_lines <- function(node) {
+    tip <- node$tip
+    lines <- line_text(
+        "TIP",
+        height(tip),
+        tip$block$hash,
+        "work",
+        tip$cumulative_work,
+        "stored",
+        length(node$records),
+        "orphans",
+        length(node$orphans)
+    )
+    add <- function(...) lines <<- c(lines, line_text(...))
+    for (record in node$main_chain) {
+        b <- record$block
+        miner <- if (b$height == 0L) "-" else node$owners[[miner_address(record)]]$name
+        add(
+            "BLOCK",
+            b$height,
+            b$hash,
+            "prev",
+            short_hash(b$previous),
+            "time",
+            b$timestamp,
+            "bits",
+            b$difficulty,
+            "nonce",
+            b$nonce,
+            "txs",
+            length(b$transactions),
+            "size",
+            block_size(b),
+            "fees",
+            record$fees,
+            "miner",
+            miner,
+            "source",
+            record$source,
+            "work",
+            record$cumulative_work
+        )
+    main_hashes <- vapply(node$main_chain, function(record) record$block$hash, "")
+    stale <- Filter(function(record) !(record$block$hash %in% main_hashes), node$records)
+    stale <- stale[order(
+        vapply(stale, height, 0L),
+        vapply(stale, function(record) record$block$hash, ""),
+        method = "radix"
+    )]
+    for (record in stale) add(
+        "STALE",
+        height(record),
+        record$block$hash,
+        "prev",
+        short_hash(record$block$previous),
+        "source",
+        record$source,
+        "work",
+        record$cumulative_work
+    )
+    for (entry in node$reorganizations) add(
+        "REORG",
+        entry$time,
+        "fork",
+        entry$fork,
+        "disconnected",
+        entry$disconnected,
+        "connected",
+        entry$connected,
+        "old",
+        short_hash(entry$old),
+        "new",
+        short_hash(entry$new)
+    )
+    ranked <- priority_order(node)
+    for (rank in seq_along(ranked)) {
+        entry <- ranked[[rank]]
+        add(
+            "MEMPOOL",
+            rank,
+            entry$transaction$txid,
+            "fee",
+            entry$fee,
+            "size",
+            entry$transaction$size,
+            "time",
+            entry$arrival
+        )
+    }
+    lines
+}
+balance_lines <- function(node) {
+    locked <- locked_references(node)
+    lines <- "wallet,address,balance,immature,locked,incoming,utxos"
+    for (wallet in node$wallets) {
+        refs <- names(node$tip$utxo)[vapply(
+            node$tip$utxo,
+            function(coin) coin$address == wallet$address,
+            FALSE
+        )]
+        amount <- function(ref) node$tip$utxo[[ref]]$amount
+        balance <- sum(vapply(refs, amount, 0L))
+        immature <- sum(vapply(
+            refs,
+            function(ref) if (!mature(node, node$tip$utxo[[ref]])) amount(ref) else 0L,
+            0L
+        ))
+        amount_locked <- sum(vapply(refs[refs %in% locked], amount, 0L))
+        incoming <- sum(vapply(
+            node$mempool,
+            function(entry) sum(vapply(
+                entry$transaction$outputs,
+                function(output) if (output$address == wallet$address) output$amount else 0L,
+                0L
+            )),
+            0L
+        ))
+        lines <- c(
+            lines,
+            paste(
+                wallet$name,
+                wallet$address,
+                balance,
+                immature,
+                amount_locked,
+                incoming,
+                length(refs),
+                sep = ","
+            )
+        )
+    }
+    lines
+}
+coin_category <- function(coin) if (coin$height == 0L) "genesis" else if (coin$coinbase) "coinbase" else "payment"
+utxo_lines <- function(node) {
+    locked <- locked_references(node)
+    utxo <- node$tip$utxo
+    refs <- names(utxo)
+    refs <- refs[order(substr(refs, 1L, 32L), as.integer(substring(refs, 34L)), method = "radix")]
+    lines <- vapply(refs, function(ref) {
+        coin <- utxo[[ref]]
+        state <- if (!mature(node, coin)) "immature" else if (ref %in% locked) "locked" else "free"
+        line_text(
+            ref,
+            node$owners[[coin$address]]$name,
+            coin$amount,
+            "height",
+            coin$height,
+            coin_category(coin),
+            state
+        )
+    }, "")
+    root <- merkle_root(vapply(lines, digest, ""))
+    c(
+        lines,
+        line_text("TOTAL", length(utxo), sum(vapply(utxo, function(coin) coin$amount, 0L))),
+        line_text("ROOT", root)
+    )
+}
+history_lines <- function(node) {
+    confirmed <- list()
+    for (record in node$main_chain) for (tx in record$block$transactions) confirmed[[tx$txid]] <- tx
+    lines <- character()
+    add <- function(...) lines <<- c(lines, line_text(...))
+    for (wallet in node$wallets) {
+        add("WALLET", wallet$name, wallet$address)
+        count <- spent_total <- received_total <- balance <- pending <- 0L
+        for (record in node$main_chain) for (tx in record$block$transactions) {
+            inputs <- lapply(tx$inputs, function(ref) {
+                id <- substr(ref, 1L, 32L)
+                index <- as.integer(substring(ref, 34L)) + 1L
+                confirmed[[id]]$outputs[[index]]
+            })
+            involved <- any(vapply(
+                c(inputs, tx$outputs),
+                function(output) output$address == wallet$address,
+                FALSE
+            ))
+            if (!involved) next
+            own_amount <- function(output) if (output$address == wallet$address) output$amount else 0L
+            spent <- sum(vapply(inputs, own_amount, 0L))
+            received <- sum(vapply(tx$outputs, own_amount, 0L))
+            count <- count + 1L
+            spent_total <- spent_total + spent
+            received_total <- received_total + received
+            balance <- balance + received - spent
+            category <- if (!is_coinbase(tx)) "payment" else if (height(record) == 0L) "genesis" else "coinbase"
+            add(
+                height(record),
+                short_hash(tx$txid),
+                category,
+                "spent",
+                spent,
+                "received",
+                received,
+                "net",
+                signed(received - spent),
+                "balance",
+                balance
+            )
+        }
+        for (entry in priority_order(node)) {
+            tx <- entry$transaction
+            spent <- sum(vapply(tx$inputs, function(ref) {
+                coin <- node$tip$utxo[[ref]]
+                if (coin$address == wallet$address) coin$amount else 0L
+            }, 0L))
+            received <- sum(vapply(
+                tx$outputs,
+                function(output) if (output$address == wallet$address) output$amount else 0L,
+                0L
+            ))
+            if (spent != 0L || received != 0L) {
+                pending <- pending + 1L
+                add(
+                    "pending",
+                    short_hash(tx$txid),
+                    "spent",
+                    spent,
+                    "received",
+                    received,
+                    "net",
+                    signed(received - spent)
+                )
+            }
+        }
+        add(
+            "END",
+            wallet$name,
+            "txs",
+            count,
+            "spent",
+            spent_total,
+            "received",
+            received_total,
+            "balance",
+            balance,
+            "pending",
+            pending
+        )
+    }
+    lines
+}
+    lines <- readLines("input/events.txt")
+    position <- 1L
+    while (position <= length(lines)) {
+        fields <- strsplit(lines[position], " ", fixed = TRUE)[[1L]]
+        count <- if (fields[2L] == "BLOCK") as.integer(fields[10L]) else 0L
+        texts <- if (count) lines[seq.int(position + 1L, position + count)] else character()
+        process(node, fields, texts)
+        position <- position + count + 1L
+    }
+    dir.create("output", showWarnings = FALSE)
+    outputs <- list(
+        "log.txt" = node$log,
+        "chain.txt" = chain_lines(node),
+        "balances.csv" = balance_lines(node),
+        "utxo.txt" = utxo_lines(node),
+        "history.txt" = history_lines(node)
+    )
+    for (name in names(outputs)) writeLines(outputs[[name]], file.path("output", name), useBytes = TRUE)
+block_record <- function(block, parent, utxo, fees, source) {
+    record <- new.env(parent = emptyenv())
+    record$block <- block
+    record$parent <- parent
+    record$utxo <- utxo
+    record$transaction_fees <- fees
+    record$fees <- sum(fees)
+    record$source <- source
+    record$cumulative_work <- if (is.null(parent)) 1L else parent$cumulative_work + as.integer(16L ^ block$difficulty)
+    record
+}
+ancestor <- function(record, height) {
+    while (record$block$height > height) record <- record$parent
+    record
+}
+chain_to <- function(record) {
+    records <- list()
+    while (!is.null(record)) {
+        records <- c(list(record), records)
+        record <- record$parent
+    }
+    records
+}
+fork_point <- function(first, second) {
+    height <- min(first$block$height, second$block$height)
+    first <- ancestor(first, height)
+    second <- ancestor(second, height)
+    while (!identical(first, second)) {
+        first <- first$parent
+        second <- second$parent
+    }
+    first
+}
+header_text <- function(height, previous, merkle, timestamp, difficulty, nonce) paste(
+    height,
+    previous,
+    merkle,
+    timestamp,
+    difficulty,
+    nonce,
+    sep = "|"
+)
+block <- function(height, previous, merkle, timestamp, difficulty, nonce, transactions) {
+    list(height = height, previous = previous, merkle = merkle, timestamp = timestamp, difficulty = difficulty, nonce = nonce, transactions = transactions,
+         hash = digest(header_text(height, previous, merkle, timestamp, difficulty, nonce)))
+}
+block_size <- function(block) sum(vapply(block$transactions[-1L], function(tx) tx$size, 0L))
+meets_difficulty <- function(hash, difficulty) startsWith(hash, paste(rep("0", difficulty), collapse = ""))
+parse_block_event <- function(fields, texts) block(
+    as.integer(fields[4L]),
+    fields[5L],
+    fields[6L],
+    as.integer(fields[7L]),
+    as.integer(fields[8L]),
+    as.integer(fields[9L]),
+    lapply(texts, parse_transaction)
+)
+context_free_error <- function(block, max_size) {
+    if (!meets_difficulty(block$hash, block$difficulty)) return("bad-pow")
+    if (merkle_root(vapply(
+        block$transactions,
+        function(tx) tx$txid,
+        ""
+    )) != block$merkle) return("bad-merkle")
+    first <- block$transactions[[1L]]
+    if (!is_coinbase(first) || first$coinbase_height != block$height || any(vapply(
+        block$transactions[-1L],
+        is_coinbase,
+        FALSE
+    ))) return("bad-structure")
+    if (block_size(block) > max_size) return("too-large")
+    NULL
+}
+is_coinbase <- function(tx) !is.null(tx$coinbase_height)
+output_total <- function(tx) sum(vapply(tx$outputs, function(output) output$amount, 0L))
+is_mature <- function(
+    coin,
+    height,
+    maturity
+) !coin$coinbase || coin$height == 0L || height >= coin$height + maturity
+check_transaction <- function(tx, utxo, spent, height, owners, maturity) {
+    failure <- function(reason) list(reason = reason, fee = 0L)
+    for (output in tx$outputs) if (is.null(owners[[output$address]]) || output$amount == 0L) return(failure("bad-output"))
+    seen <- character()
+    total <- 0L
+    for (i in seq_along(tx$inputs)) {
+        ref <- tx$inputs[i]
+        if (ref %in% spent || ref %in% seen) return(failure("double-spend"))
+        coin <- utxo[[ref]]
+        if (is.null(coin)) return(failure("missing-input"))
+        if (!is_mature(coin, height, maturity)) return(failure("immature"))
+        if (tx$signatures[i] != signature(
+            owners[[coin$address]]$secret,
+            i - 1L,
+            transaction_body(tx)
+        )) return(failure("bad-sig"))
+        seen <- c(seen, ref)
+        total <- total + coin$amount
+    }
+    if (total < output_total(tx)) return(failure("overspend"))
+    list(reason = NULL, fee = total - output_total(tx))
+}
+apply_transaction <- function(utxo, tx, height) {
+    utxo[tx$inputs] <- NULL
+    for (i in seq_along(tx$outputs)) {
+        output <- tx$outputs[[i]]
+        utxo[[paste(tx$txid, i - 1L, sep = ":")]] <- list(
+            address = output$address,
+            amount = output$amount,
+            height = height,
+            coinbase = is_coinbase(tx)
+        )
+    }
+    utxo
+}

@@ -1,0 +1,319 @@
+using Integer = std::int64_t;
+using Counts = std::vector<Integer>;
+struct Attribute { std::string name; bool integer; Lines values; };
+struct Row { std::string id; Counts values; int label; };
+using Rows = std::vector<const Row*>;
+struct Settings {
+    int maxDepth, minSplit, minLeaf, maxSurrogates, folds, bagTrees, repeats;
+    Integer bagSeed, permutationSeed;
+    std::vector<int> curve;
+};
+struct Dataset {
+    std::vector<Attribute> attributes;
+    std::string target;
+    Lines classes;
+    std::vector<Row> train, validation, test;
+    Settings settings;
+};
+struct Fraction { Integer numerator, denominator; };
+struct Statistics { Counts counts; Integer size, squares, errors; int prediction; };
+struct Split { int attribute; Integer point; };
+struct Surrogate { Split split; bool forward; Integer score; };
+struct Candidate { Split split; Rows left, right; Fraction value; };
+struct Node {
+    int number, depth;
+    Statistics stats;
+    std::optional<Split> split;
+    std::vector<Surrogate> surrogates;
+    bool defaultLeft = true;
+    std::unique_ptr<Node> left, right;
+};
+    explicit TreeBuilder(const Dataset& data) : data(data) {}
+enum class Method { primary, surrogate, fallback };
+static Lines split(const std::string& value, char separator) {
+    Lines result;
+    std::istringstream stream(value);
+    std::string part;
+    while (std::getline(stream, part, separator)) result.push_back(part);
+    return result;
+}
+static int position(const Lines& values, const std::string& name) {
+    return static_cast<int>(std::find(values.begin(), values.end(), name) - values.begin());
+}
+static std::vector<Row> readRows(const std::string& name, const Dataset& data) {
+    Lines lines = readLines("input/" + name + ".csv");
+    std::vector<Row> result;
+    for (std::size_t i = 1; i < lines.size(); ++i) {
+        Lines fields = split(lines[i], ',');
+        Row row{fields.front(), {}, position(data.classes, fields.back())};
+        for (std::size_t a = 0; a < data.attributes.size(); ++a) {
+            const Attribute& attribute = data.attributes[a];
+            const std::string& field = fields[a + 1];
+            row.values.push_back(field == "?" ? -1 : attribute.integer ? std::stoll(field) : position(attribute.values, field));
+        }
+        result.push_back(std::move(row));
+    }
+    return result;
+}
+Dataset loadDataset() {
+    Dataset data;
+    for (const std::string& line : readLines("input/schema.txt")) {
+        Lines fields = split(line, ' ');
+        if (fields[0] == "ATTRIBUTE") data.attributes.push_back({fields[1], fields[2] == "INT", Lines(fields.begin() + 3, fields.end())});
+        else {
+            data.target = fields[1];
+            data.classes.assign(fields.begin() + 2, fields.end());
+        }
+    }
+    std::vector<Counts> settings;
+    for (const std::string& line : readLines("input/params.txt")) {
+        Lines fields = split(line, ' ');
+        Counts values;
+        for (std::size_t i = 1; i < fields.size(); ++i) values.push_back(std::stoll(fields[i]));
+        settings.push_back(std::move(values));
+    }
+    data.settings = {static_cast<int>(settings[0][0]), static_cast<int>(settings[1][0]), static_cast<int>(settings[2][0]), static_cast<int>(settings[3][0]),
+                     static_cast<int>(settings[4][0]), static_cast<int>(settings[6][0]), static_cast<int>(settings[8][0]), settings[7][0], settings[9][0], {}};
+    for (Integer value : settings[5]) data.settings.curve.push_back(static_cast<int>(value));
+    data.train = readRows("train", data);
+    data.validation = readRows("validation", data);
+    data.test = readRows("test", data);
+    return data;
+}
+Rows rowPointers(const std::vector<Row>& rows) {
+    Rows result;
+    for (const Row& row : rows) result.push_back(&row);
+    return result;
+}
+int majority(const Counts& counts) {
+    return static_cast<int>(std::max_element(counts.begin(), counts.end()) - counts.begin());
+}
+Statistics statistics(const Rows& rows, int classes) {
+    Counts counts(classes);
+    for (const Row* row : rows) ++counts[row->label];
+    int prediction = majority(counts);
+    Integer squares = 0;
+    for (Integer count : counts) squares += count * count;
+    Integer size = static_cast<Integer>(rows.size());
+    return {counts, size, squares, size - counts[prediction], prediction};
+}
+int compare(Fraction a, Fraction b) {
+    Integer first = a.numerator * b.denominator;
+    Integer second = b.numerator * a.denominator;
+    return first < second ? -1 : first > second ? 1 : 0;
+}
+Fraction evaluationValue(const Statistics& left, const Statistics& right) {
+    return {left.squares * right.size + right.squares * left.size, left.size * right.size};
+}
+bool improves(Fraction value, const Statistics& parent) { return value.numerator * parent.size > parent.squares * value.denominator; }
+bool goesLeft(Split split, const Row& row, const std::vector<Attribute>& attributes) {
+    Integer value = row.values[split.attribute];
+    return attributes[split.attribute].integer ? 2 * value <= split.point : value == split.point;
+}
+std::vector<Split> candidates(const Rows& rows, const std::vector<Attribute>& attributes, int attribute) {
+    std::set<Integer> distinct;
+    for (const Row* row : rows) distinct.insert(row->values[attribute]);
+    std::vector<Split> result;
+    if (distinct.size() < 2) return result;
+    Counts values(distinct.begin(), distinct.end());
+    if (attributes[attribute].integer) {
+        for (std::size_t i = 1; i < values.size(); ++i) result.push_back({attribute, values[i - 1] + values[i]});
+    } else {
+        for (Integer value : values) result.push_back({attribute, value});
+    }
+    return result;
+}
+std::optional<Candidate> TreeBuilder::bestForAttribute(const Rows& rows, int attribute) const {
+    std::optional<Candidate> best;
+    for (Split split : candidates(rows, data.attributes, attribute)) {
+        Rows left, right;
+        for (const Row* row : rows) (goesLeft(split, *row, data.attributes) ? left : right).push_back(row);
+        if (left.size() < static_cast<std::size_t>(data.settings.minLeaf) || right.size() < static_cast<std::size_t>(data.settings.minLeaf)) continue;
+        Fraction value = evaluationValue(statistics(left, static_cast<int>(data.classes.size())), statistics(right, static_cast<int>(data.classes.size())));
+        if (!best || compare(value, best->value) > 0) best = Candidate{split, std::move(left), std::move(right), value};
+    }
+    return best;
+}
+std::vector<Surrogate> TreeBuilder::surrogates(const Rows& rows, const Candidate& primary) const {
+    std::vector<Surrogate> result;
+    for (int a = 0; a < static_cast<int>(data.attributes.size()); ++a) {
+        if (a == primary.split.attribute) continue;
+        std::optional<Surrogate> best;
+        for (Split split : candidates(rows, data.attributes, a)) {
+            Integer agreement = 0;
+            for (const Row* row : rows) if (goesLeft(split, *row, data.attributes) == goesLeft(primary.split, *row, data.attributes)) ++agreement;
+            Integer reversed = static_cast<Integer>(rows.size()) - agreement;
+            Surrogate surrogate{split, agreement >= reversed, std::max(agreement, reversed)};
+            if (!best || surrogate.score > best->score) best = surrogate;
+        }
+        if (best && best->score > static_cast<Integer>(std::max(primary.left.size(), primary.right.size()))) result.push_back(*best);
+    }
+    std::sort(result.begin(), result.end(), [](const Surrogate& a, const Surrogate& b) {
+        return a.score != b.score ? a.score > b.score : a.split.attribute < b.split.attribute;
+    });
+    result.resize(std::min(result.size(), static_cast<std::size_t>(data.settings.maxSurrogates)));
+    return result;
+}
+std::unique_ptr<Node> TreeBuilder::grow(const Rows& rows, int number, int depth) const {
+    std::unique_ptr<Node> node = std::make_unique<Node>();
+    node->number = number;
+    node->depth = depth;
+    node->stats = statistics(rows, static_cast<int>(data.classes.size()));
+    if (!node->stats.errors || depth == data.settings.maxDepth || rows.size() < static_cast<std::size_t>(data.settings.minSplit)) return node;
+    std::optional<Candidate> best;
+    for (int a = 0; a < static_cast<int>(data.attributes.size()); ++a) {
+        std::optional<Candidate> candidate = bestForAttribute(rows, a);
+        if (candidate && (!best || compare(candidate->value, best->value) > 0)) best = std::move(candidate);
+    }
+    if (!best || !improves(best->value, node->stats)) return node;
+    node->split = best->split;
+    node->defaultLeft = best->left.size() >= best->right.size();
+    node->surrogates = surrogates(rows, *best);
+    node->left = grow(best->left, 2 * number, depth + 1);
+    node->right = grow(best->right, 2 * number + 1, depth + 1);
+    return node;
+}
+bool TreeView::isLeaf(const Node* node) const { return !node->split || cuts.count(node->number); }
+Route TreeView::route(const Row& row, const std::vector<Attribute>& attributes) const {
+    Route result{};
+    const Node* node = root;
+    for (;;) {
+        result.path.push_back(node);
+        if (isLeaf(node)) {
+            result.leaf = node;
+            return result;
+        }
+        bool left = node->defaultLeft;
+        Method method = Method::fallback;
+        if (row.values[node->split->attribute] >= 0) {
+            left = goesLeft(*node->split, row, attributes);
+            method = Method::primary;
+        } else {
+            for (const Surrogate& surrogate : node->surrogates) {
+                if (row.values[surrogate.split.attribute] < 0) continue;
+                left = goesLeft(surrogate.split, row, attributes) == surrogate.forward;
+                method = Method::surrogate;
+                break;
+            }
+        }
+        result.steps.push_back({node, left, method});
+        node = left ? node->left.get() : node->right.get();
+    }
+}
+int TreeView::predict(const Row& row, const std::vector<Attribute>& attributes) const { return route(row, attributes).leaf->stats.prediction; }
+Integer TreeView::correct(const Rows& rows, const std::vector<Attribute>& attributes) const {
+    Integer result = 0;
+    for (const Row* row : rows) if (predict(*row, attributes) == row->label) ++result;
+    return result;
+}
+Lines classification(const std::string& title, const Rows& rows, const std::vector<int>& predictions, const Lines& classes) {
+    std::vector<Counts> matrix(classes.size(), Counts(classes.size()));
+    Integer correct = 0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        ++matrix[rows[i]->label][predictions[i]];
+        if (rows[i]->label == predictions[i]) ++correct;
+    }
+    Lines lines;
+    add(lines, "confusion ", title, " correct ", correct, '/', rows.size(), " accuracy ", fraction({correct, static_cast<Integer>(rows.size())}));
+    add(lines, "actual\\predicted ", join(classes));
+    for (std::size_t k = 0; k < classes.size(); ++k) add(lines, classes[k], ' ', join(matrix[k]));
+    double macro = 0;
+    int available = 0;
+    for (std::size_t k = 0; k < classes.size(); ++k) {
+        Integer hits = matrix[k][k], predicted = 0, support = 0;
+        for (std::size_t j = 0; j < classes.size(); ++j) {
+            predicted += matrix[j][k];
+            support += matrix[k][j];
+        }
+        add(lines, "class ", classes[k], " precision ", fraction({hits, predicted}), " recall ", fraction({hits, support}), " f1 ", fraction({2 * hits, predicted + support}), " support ", support);
+        if (predicted + support) {
+            macro += static_cast<double>(2 * hits) / (predicted + support);
+            ++available;
+        }
+    }
+    add(lines, "macro_f1 ", available ? realText(macro / available) : "-");
+    return lines;
+}
+PruningResult reducedError(const Node* root, const Rows& rows, const std::vector<Attribute>& attributes) {
+    PruningResult result{{root, {}}, {}};
+    std::map<int, Integer> visits, errors;
+    TreeView grown{root, {}};
+    for (const Row* row : rows) for (const Node* node : grown.route(*row, attributes).path) {
+        ++visits[node->number];
+        if (row->label != node->stats.prediction) ++errors[node->number];
+    }
+    std::function<Integer(const Node*)> decide = [&](const Node* node) {
+        Integer leafError = errors[node->number];
+        if (!node->split) return leafError;
+        Integer left = decide(node->left.get());
+        Integer right = decide(node->right.get());
+        Integer subtree = left + right;
+        bool pruned = leafError <= subtree;
+        result.decisions.push_back({node, visits[node->number], leafError, subtree, pruned});
+        if (pruned) result.tree.cuts.insert(node->number);
+        return pruned ? leafError : subtree;
+    };
+    decide(root);
+    return result;
+}
+    explicit Analysis(Dataset input)
+        : data(std::move(input)), train(rowPointers(data.train)), validation(rowPointers(data.validation)), test(rowPointers(data.test)), builder(data), root(builder.grow(train)), grown{root.get(), {}}, pruned{root.get(), {}} {
+        PruningResult result = reducedError(root.get(), validation, data.attributes);
+        pruned = std::move(result.tree);
+        decisions = std::move(result.decisions);
+        for (const Row* row : test) {
+            grownRoutes.push_back(grown.route(*row, data.attributes));
+            prunedRoutes.push_back(pruned.route(*row, data.attributes));
+        }
+        predictions["grown"] = predict(grown);
+        predictions["pruned"] = predict(pruned);
+    std::vector<int> predict(const TreeView& tree) const {
+        std::vector<int> result;
+        for (const Row* row : test) result.push_back(tree.predict(*row, data.attributes));
+        return result;
+    }
+    std::string accuracy(const TreeView& tree, const Rows& rows) const { return ratio(tree.correct(rows, data.attributes), static_cast<Integer>(rows.size())); }
+    Lines predictionLines() const {
+        Lines lines{"id,predicted,actual,grown,leaf,path,missing"};
+        for (std::size_t i = 0; i < test.size(); ++i) {
+            const Route& route = prunedRoutes[i];
+            std::vector<int> path;
+            int missing = 0;
+            for (const Node* node : route.path) path.push_back(node->number);
+            for (const Step& step : route.steps) if (step.method != Method::primary) ++missing;
+            add(lines, test[i]->id, ',', data.classes[route.leaf->stats.prediction], ',', data.classes[test[i]->label], ',', data.classes[grownRoutes[i].leaf->stats.prediction], ',', route.leaf->number, ',', join(path, "-"), ',', missing);
+        }
+        return lines;
+    }
+    Lines routingLines() const {
+        std::map<int, std::array<Integer, 3>> tallies;
+        for (const Route& route : prunedRoutes) for (const Step& step : route.steps) ++tallies[step.node->number][static_cast<int>(step.method)];
+        Lines lines{"routing pruned test"};
+        for (const Node* node : pruned.preorder()) if (!pruned.isLeaf(node)) {
+            const std::array<Integer, 3>& tally = tallies[node->number];
+            add(lines, "node ", node->number, " rows ", tally[0] + tally[1] + tally[2], " primary ", tally[0], " surrogate ", tally[1], " default ", tally[2]);
+        }
+        for (int incomplete = 0; incomplete < 2; ++incomplete) {
+            Rows rows;
+            for (const Row* row : test) {
+                bool missing = std::any_of(row->values.begin(), row->values.end(), [](Integer value) { return value < 0; });
+                if (missing == static_cast<bool>(incomplete)) rows.push_back(row);
+            }
+            add(lines, incomplete ? "incomplete" : "complete", " rows ", rows.size(), " correct ", accuracy(pruned, rows));
+        }
+        return lines;
+    }
+    static void write(const std::string& name, const std::vector<Lines>& sections) {
+        std::ofstream file("output/" + name, std::ios::binary);
+        if (!file) throw std::runtime_error("cannot write " + name);
+        for (std::size_t i = 0; i < sections.size(); ++i) {
+            if (i) file << '\n';
+            for (const std::string& line : sections[i]) file << line << '\n';
+        }
+        file.close();
+        if (!file) throw std::runtime_error("cannot write " + name);
+    }
+        write("predictions.csv", {predictionLines()});
+        write("evaluation.txt", {dataLines(), summaryLines(), classification("grown test", test, predictions.at("grown"), data.classes), classification("pruned test", test, predictions.at("pruned"), data.classes), routingLines(), crossLines, depthLines, complexityLines, bagLines, mcnemarLines(), aucLines(), learningLines()});
+    Analysis analysis(loadDataset());
+    analysis.writeFiles();

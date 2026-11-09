@@ -1,0 +1,17 @@
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+int main() {
+    std::string sentence = "every program starts with a single line";
+    std::cout << std::string(sentence.rbegin(), sentence.rend()) << '\n';
+    std::istringstream input(sentence);
+    std::vector<std::string> words;
+    for (std::string word; input >> word;) words.push_back(word);
+    for (std::size_t i = words.size(); i > 0; --i) {
+        if (i != words.size()) std::cout << ' ';
+        std::cout << words[i - 1];
+    }
+    std::cout << '\n';
+}

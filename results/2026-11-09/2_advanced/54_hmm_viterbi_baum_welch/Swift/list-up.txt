@@ -1,0 +1,139 @@
+func normalize(_ values: [Double]) -> [Double] { let sum = values.reduce(0, +); return values.map { $0 / sum } }
+struct Model {
+    let name: String
+    let states: [String]
+    let symbols: [String]
+    let missing: String
+    let initial: [Double]
+    let transition: [[Double]]
+    let emission: [[Double]]
+    var count: Int { states.count }
+    init(_ name: String, _ states: [String], _ symbols: [String], _ missing: String, _ initial: [Double], _ transition: [[Double]], _ emission: [[Double]]) {
+        self.name = name; self.states = states; self.symbols = symbols; self.missing = missing
+        self.initial = normalize(initial); self.transition = transition.map { normalize($0) }; self.emission = emission.map { normalize($0) }
+    }
+}
+struct RawInputs { let model: Model; let sequences: [[String]]; let labeled: [[String]]; let parameters: [[String]] }
+func readTokens(_ name: String) throws -> [[String]] { try String(contentsOfFile: "input/" + name, encoding: .ascii).split(separator: "\n").map { $0.components(separatedBy: " ") } }
+func readInputs() throws -> RawInputs {
+    let rows = try readTokens("model.txt"), states = Array(rows[0].dropFirst()), symbols = Array(rows[1].dropFirst()), count = states.count
+    let model = Model("INITIAL", states, symbols, rows[2][1], rows[3].dropFirst().map { Double($0)! }, rows[4..<(4 + count)].map { $0.dropFirst(2).map { Double($0)! } }, rows[(4 + count)..<(4 + 2 * count)].map { $0.dropFirst(2).map { Double($0)! } })
+    return try RawInputs(model: model, sequences: readTokens("sequences.txt"), labeled: readTokens("labeled.txt"), parameters: readTokens("params.txt"))
+}
+func writeLines(_ name: String, _ lines: [String]) throws {
+    try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try (lines.joined(separator: "\n") + "\n").write(toFile: "output/" + name, atomically: false, encoding: .ascii)
+}
+func maximumIndex(_ values: [Double]) -> Int { var best = 0; for i in values.indices.dropFirst() { if values[i] > values[best] { best = i } }; return best }
+func emissionFactors(_ model: Model, _ symbol: Int) -> [Double] { symbol == -1 ? Array(repeating: 1, count: model.count) : model.emission.map { $0[symbol] } }
+func logEmissionFactors(_ model: Model, _ symbol: Int) -> [Double] { symbol == -1 ? Array(repeating: 0, count: model.count) : model.emission.map { log($0[symbol]) } }
+struct ForwardResult { let values: [[Double]]; let scales: [Double]; let emissions: [[Double]]; let logLikelihood: Double }
+struct ForwardBackwardResult {
+    let forward: [[Double]]
+    let backward: [[Double]]
+    let scales: [Double]
+    let emissions: [[Double]]
+    let posterior: [[Double]]
+    let logLikelihood: Double
+}
+struct ViterbiResult { let path: [Int]; let logProbability: Double }
+struct Decoding { let viterbi: [Int]; let viterbiLogProbability: Double; let posterior: [Int]; let confidence: [Double]; let fb: ForwardBackwardResult }
+func scaledForward(_ model: Model, _ observations: [Int]) -> ForwardResult {
+    let emissions = observations.map { emissionFactors(model, $0) }
+    var values: [[Double]] = [], scales: [Double] = [], logLikelihood = 0.0
+    for t in observations.indices {
+        var unscaled: [Double] = []
+        for j in 0..<model.count {
+            let before = t == 0 ? model.initial[j] : (0..<model.count).reduce(0) { $0 + values[t - 1][$1] * model.transition[$1][j] }
+            unscaled.append(before * emissions[t][j])
+        }
+        let scale = unscaled.reduce(0, +)
+        scales.append(scale); values.append(unscaled.map { $0 / scale }); logLikelihood += log(scale)
+    }
+    return ForwardResult(values: values, scales: scales, emissions: emissions, logLikelihood: logLikelihood)
+}
+func forwardBackward(_ model: Model, _ observations: [Int]) -> ForwardBackwardResult {
+    let result = scaledForward(model, observations), length = observations.count, count = model.count
+    var backward = Array(repeating: Array(repeating: 0.0, count: count), count: length)
+    backward[length - 1] = Array(repeating: 1, count: count)
+    if length > 1 {
+        for t in (0..<(length - 1)).reversed() {
+            for i in 0..<count {
+                let total = (0..<count).reduce(0.0) { $0 + model.transition[i][$1] * result.emissions[t + 1][$1] * backward[t + 1][$1] }
+                backward[t][i] = total / result.scales[t + 1]
+            }
+        }
+    }
+    let posterior = observations.indices.map { t in (0..<count).map { result.values[t][$0] * backward[t][$0] } }
+    return ForwardBackwardResult(forward: result.values, backward: backward, scales: result.scales, emissions: result.emissions, posterior: posterior, logLikelihood: result.logLikelihood)
+}
+func viterbi(_ model: Model, _ observations: [Int]) -> ViterbiResult {
+    let count = model.count, transitions = model.transition.map { $0.map { log($0) } }, initialFactors = logEmissionFactors(model, observations[0])
+    var scores = (0..<count).map { log(model.initial[$0]) + initialFactors[$0] }, predecessors = [Array(repeating: 0, count: count)]
+    for observation in observations.dropFirst() {
+        let factors = logEmissionFactors(model, observation)
+        var next: [Double] = [], previous: [Int] = []
+        for j in 0..<count { let candidates = (0..<count).map { scores[$0] + transitions[$0][j] }, i = maximumIndex(candidates); previous.append(i); next.append(candidates[i] + factors[j]) }
+        scores = next; predecessors.append(previous)
+    }
+    var path = Array(repeating: 0, count: observations.count)
+    path[path.count - 1] = maximumIndex(scores)
+    let logProbability = scores[path.last!]
+    if path.count > 1 { for t in (1..<path.count).reversed() { path[t - 1] = predecessors[t][path[t]] } }
+    return ViterbiResult(path: path, logProbability: logProbability)
+}
+func decode(_ model: Model, _ observations: [Int]) -> Decoding {
+    let fb = forwardBackward(model, observations), best = viterbi(model, observations), posterior = fb.posterior.map { maximumIndex($0) }
+    return Decoding(viterbi: best.path, viterbiLogProbability: best.logProbability, posterior: posterior, confidence: posterior.enumerated().map { fb.posterior[$0.offset][$0.element] }, fb: fb)
+}
+func confusionMatrix(_ count: Int) -> [[Int]] { Array(repeating: Array(repeating: 0, count: count), count: count) }
+func accumulateConfusion(_ matrix: inout [[Int]], _ truth: [Int], _ prediction: [Int]) { for i in truth.indices { matrix[truth[i]][prediction[i]] += 1 } }
+func correctCount(_ truth: [Int], _ prediction: [Int]) -> Int { truth.indices.filter { truth[$0] == prediction[$0] }.count }
+func validateInputs(_ raw: RawInputs, _ params: Parameters) -> ValidatedInputs {
+    let model = raw.model
+    var sequences: [Record] = [], training: [Record] = [], testing: [Record] = [], rejections: [String] = [], seen = Set<String>()
+    func encode(_ characters: [String]) -> [Int] { characters.map { $0 == model.missing ? -1 : model.symbols.firstIndex(of: $0)! } }
+    seen = []
+    for offset in stride(from: 0, to: raw.labeled.count, by: 2) {
+        let row = raw.labeled[offset], name = row[0], observations = row[2].uppercased().map(String.init), labels = raw.labeled[offset + 1][0].map(String.init)
+        if let reason = rejectionReason(name, observations, labels, &seen, model, params) { rejections.append("REJECT labeled.txt line \(offset + 1) \(name) \(reason)"); continue }
+        let record = Record(name: name, observations: encode(observations), path: labels.map { model.states.firstIndex(of: $0)! })
+        if row[1] == "TRAIN" { training.append(record) } else { testing.append(record) }
+    }
+    return ValidatedInputs(sequences: sequences, training: training, testing: testing, rejections: rejections)
+}
+func evaluateModel(_ model: Model, _ records: [Record], _ params: Parameters) -> EvaluationResult {
+    let decoded = records.map { decode(model, $0.observations) }
+    var blocks: [[String]] = [], totals: [Int] = []
+    for decoder in 0..<2 {
+        var matrix = confusionMatrix(model.count), regions = MatchCounts(), boundaries = MatchCounts(), calibration = Array(repeating: [0, 0], count: 10), recordLines: [String] = [], total = 0
+        for (i, record) in records.enumerated() {
+            let result = decoded[i], path = decoder == 0 ? result.viterbi : result.posterior, truth = record.path!, correct = correctCount(truth, path)
+            total += correct; accumulateConfusion(&matrix, truth, path)
+            regions.add(regionCounts(extractSegments(path, params), runs(truth).filter { $0.state == params.segmentState }.map { $0.segment }))
+            boundaries.add(boundaryCounts(path, truth, params.boundaryTolerance))
+            if decoder == 1 { for t in path.indices { let bucket = min(9, Int(floor(10 * result.confidence[t]))); calibration[bucket][0] += 1; if path[t] == truth[t] { calibration[bucket][1] += 1 } } }
+            recordLines.append("RECORD \(record.name) length \(path.count) correct \(correct)")
+        }
+        var lines = ["EVALUATION \(model.name) \(decoder == 0 ? "VITERBI" : "POSTERIOR")"] + matrixLines(model.states, matrix) + metricLines(model.states, matrix) + ["REGIONS \(model.states[params.segmentState]) \(regions.text)", "BOUNDARIES \(boundaries.text)"]
+        if decoder == 1 { for b in 0..<10 where calibration[b][0] > 0 { let range = b == 9 ? "0.9-1.0" : "0.\(b)-0.\(b + 1)"; lines.append("CALIBRATION \(range) positions \(calibration[b][0]) correct \(calibration[b][1]) accuracy \(fraction(calibration[b][1], calibration[b][0]))") } }
+        blocks.append(lines + recordLines); totals.append(total)
+    }
+    return EvaluationResult(blocks: blocks, correct: totals)
+}
+
+func stateString(_ model: Model, _ path: [Int]) -> String { path.map { model.states[$0] }.joined() }
+func annotateSequences(_ model: Model, _ records: [Record], _ decoded: [Decoding], _ params: Parameters) -> (decodings: [String], segments: [String]) {
+    var generator = MINSTD(state: params.posteriorSeed), decodingLines: [String] = [], segmentLines = ["sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"]
+    for (i, record) in records.enumerated() {
+        let result = decoded[i], length = record.observations.count
+        decodingLines += ["SEQUENCE \(record.name) length \(length) loglik \(real(result.fb.logLikelihood)) viterbi \(real(result.viterbiLogProbability)) differences \(length - correctCount(result.viterbi, result.posterior)) uncertain \(result.confidence.filter { $0 < params.confidence }.count) expected_segments \(real(Double(sampleSegments) / Double(params.posteriorSamples)))",
+                          "VITERBI " + stateString(model, result.viterbi), "POSTERIOR " + stateString(model, result.posterior), "CONFIDENT " + confident, "IMPUTED " + imputedString(model, record.observations, result.fb.posterior)]
+let raw = try readInputs()
+let initial = raw.model, params = Parameters(raw.parameters, raw.model)
+let inputs = validateInputs(raw, params), observations = inputs.sequences.map { $0.observations }, heldout = (inputs.training + inputs.testing).map { $0.observations }
+let models = [initial, baum.model, hard.model, supervised.model]
+let evaluations = models.map { evaluateModel($0, inputs.testing, params) }, decoded = models.map { model in inputs.sequences.map { decode(model, $0.observations) } }
+let annotated = annotateSequences(baum.model, inputs.sequences, decoded[1], params)
+let evaluationBlocks = evaluations.flatMap { $0.blocks } + [supervised.lines, learningCurve(initial, inputs.training, inputs.testing, supervised.selected.alpha)]
+for (name, lines) in [("trained_model.txt", joinBlocks(models.dropFirst().map { modelLines($0) })), ("loglik_trace.csv", baum.trace), ("viterbi_trace.csv", hard.trace), ("decodings.txt", annotated.decodings), ("segments.csv", annotated.segments), ("samples.txt", syntheticOutput(baum.model, params)), ("evaluation.txt", joinBlocks(evaluationBlocks)), ("report.txt", joinBlocks(reportBlocks))] { try writeLines(name, lines) }

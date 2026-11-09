@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Seed 12345 advances twice per trial under state=(state*48271)%2147483647. The first states are 595905495 and 1558181227, mapped by state%6+1 to dice 4 and 2, so bucket 6 increments. The trial counter runs 0..999, exactly 1000 pairs; thirteen zero-initialized slots preserve zero-frequency sums. Totals 2..12 print ascending, then most frequent prints the chosen sum. JavaScript/TypeScript keeps the first ascending sum on equal counts via strict >; PHP array_search finds the first maximum in ascending indexed counts (unused zero buckets cannot beat a positive maximum). Every selected state/count/selection/output operation is required for this end-to-end explanation; standalone braces are omitted.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

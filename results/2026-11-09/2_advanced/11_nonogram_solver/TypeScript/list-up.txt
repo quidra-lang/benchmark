@@ -1,0 +1,340 @@
+export const UNKNOWN = 0;
+export const FILLED = 1;
+export const EMPTY = 2;
+export type CellState = typeof UNKNOWN | typeof FILLED | typeof EMPTY;
+export type Grid = CellState[][];
+export type SolveKind = 'simple' | 'precise';
+export function parseClue(text: string): Clue | null {
+  if (text === '0') return [];
+  if (!/^[1-9][0-9]?( [1-9][0-9]?)*$/.test(text)) return null;
+  return text.split(' ').map(Number);
+}
+export function minimumLength(clue: readonly number[]): number {
+  return clue.length === 0 ? 0 : clue.reduce((sum, block) => sum + block, clue.length - 1);
+}
+export const fits = (clue: readonly number[], length: number): boolean =>
+  minimumLength(clue) <= length;
+function toState(character: string): CellState {
+  return character === '#' ? FILLED : character === '.' ? EMPTY : UNKNOWN;
+}
+function readPuzzles(text: string): RawPuzzle[] {
+  const lines = text.split('\n');
+  const blocks: RawPuzzle[] = [];
+  let cursor = 0;
+  while (cursor < lines.length) {
+    const header = lines[cursor++];
+    if (header === '' || header.startsWith('#')) continue;
+    const name = header.slice(7);
+    const size = lines[cursor++].split(' ');
+    const w = Number(size[1]);
+    const h = Number(size[2]);
+    cursor++;
+    const rowLines: string[] = [];
+    const columnLines: string[] = [];
+    while (lines[cursor] !== 'COLUMNS') rowLines.push(lines[cursor++]);
+    cursor++;
+    while (
+      lines[cursor] !== 'END' &&
+      lines[cursor] !== 'ANSWER' &&
+      !lines[cursor].startsWith('GIVEN ')
+    ) {
+      columnLines.push(lines[cursor++]);
+    }
+    const givens: RawGiven[] = [];
+    while (lines[cursor].startsWith('GIVEN ')) {
+      const fields = lines[cursor++].split(' ');
+      givens.push({ r: Number(fields[1]) - 1, c: Number(fields[2]) - 1, character: fields[3] });
+    }
+    let answer: string[] | null = null;
+    if (lines[cursor] === 'ANSWER') {
+      cursor++;
+      answer = [];
+      while (lines[cursor] !== 'END') answer.push(lines[cursor++]);
+    }
+    cursor++;
+    blocks.push({ name, w, h, rowLines, columnLines, givens, answer });
+  }
+  return blocks;
+}
+function validatePuzzle(raw: RawPuzzle, seen: Set<string>): Validation<Puzzle> {
+  const { name, w, h, rowLines, columnLines, givens, answer } = raw;
+  const duplicate = seen.has(name);
+  seen.add(name);
+  if (!/^[a-z0-9_]{1,20}$/.test(name)) return { error: 'bad name' };
+  if (duplicate) return { error: 'duplicate name' };
+  if (w < 1 || w > 30 || h < 1 || h > 30) return { error: 'bad size' };
+  if (rowLines.length !== h) return { error: `row count ${rowLines.length} expected ${h}` };
+  if (columnLines.length !== w) {
+    return { error: `column count ${columnLines.length} expected ${w}` };
+  }
+  const rows: Clue[] = [];
+  const columns: Clue[] = [];
+  const groups = [
+    { kind: 'row', texts: rowLines, length: w, clues: rows },
+    { kind: 'column', texts: columnLines, length: h, clues: columns },
+  ];
+  for (const { kind, texts, length, clues } of groups) {
+    for (let index = 0; index < texts.length; index++) {
+      const clue = parseClue(texts[index]);
+      if (clue === null) return { error: `bad clue ${kind} ${index + 1}` };
+      if (!fits(clue, length)) return { error: `${kind} ${index + 1} too long` };
+      clues.push(clue);
+    }
+  }
+  let rowTotal = 0;
+  let columnTotal = 0;
+  for (const clue of rows) for (const block of clue) rowTotal += block;
+  for (const clue of columns) for (const block of clue) columnTotal += block;
+  if (rowTotal !== columnTotal) {
+    return { error: `total mismatch rows=${rowTotal} columns=${columnTotal}` };
+  }
+  const cells = new Set<number>();
+  for (let index = 0; index < givens.length; index++) {
+    const { r, c, character } = givens[index];
+    if (r < 0 || r >= h || c < 0 || c >= w || (character !== '#' && character !== '.')) {
+      return { error: `bad given ${index + 1}` };
+    }
+    const key = r * w + c;
+    if (cells.has(key)) return { error: `duplicate given ${index + 1}` };
+    cells.add(key);
+  }
+  if (
+    answer !== null &&
+    (answer.length !== h || answer.some((line) => line.length !== w || !/^[#.?]+$/.test(line)))
+  ) {
+    return { error: 'bad answer' };
+  }
+  return {
+    value: {
+      name,
+      w,
+      h,
+      rows,
+      columns,
+      givens: givens.map((given) => ({ r: given.r, c: given.c, state: toState(given.character) })),
+      answer: answer === null ? null : answer.map((line) => Array.from(line, toState)),
+    },
+  };
+}
+function logicalSolve(puzzle: ClueSet, givens: Given[], kind: SolveKind): LogicalResult {
+  const grid: Grid = Array.from({ length: puzzle.h }, () =>
+    Array<CellState>(puzzle.w).fill(UNKNOWN),
+  );
+  for (const given of givens) grid[given.r][given.c] = given.state;
+  const propagation = propagate(grid, puzzle.rows, puzzle.columns, kind);
+  const known = determinedCount(grid);
+  let result = known === puzzle.h * puzzle.w ? 'solved' : 'stuck';
+  if (propagation.conflict !== null) result = 'contradiction at=' + propagation.conflict.label;
+  return { ...propagation, known, result };
+}
+function analyze(puzzle: ClueSet, givens: Given[]): Analysis {
+  const simple = logicalSolve(puzzle, givens, 'simple');
+  const logic = logicalSolve(puzzle, givens, 'precise');
+  let searched: SearchResult | null = null;
+  let solutions: Grid[] = [];
+  let status: Status;
+  let difficulty: Difficulty = '-';
+  if (logic.conflict !== null) status = 'contradiction';
+  else if (logic.result === 'solved') {
+    status = 'unique';
+    difficulty = simple.result === 'solved' ? 'easy' : 'medium';
+    solutions = [logic.grid];
+  } else {
+    searched = search(logic.grid, puzzle.rows, puzzle.columns);
+    solutions = searched.solutions;
+    status = solutions.length === 0 ? 'none' : solutions.length === 1 ? 'unique' : 'multiple';
+    if (status === 'unique') difficulty = 'hard';
+  }
+  return {
+    simple,
+    logic,
+    search: searched,
+    solutions,
+    status,
+    difficulty,
+    lineSolves: logic.record.length + (searched?.lineSolves ?? 0),
+    guesses: searched?.guesses ?? 0,
+    maxDepth: searched?.maxDepth ?? 0,
+  };
+}
+function puzzleParagraph(puzzle: Puzzle, analysis: Analysis, grade: Grade | null): string {
+  const { simple, logic } = analysis;
+  const lines = [
+    'PUZZLE ' + puzzle.name,
+    `size=${puzzle.w}x${puzzle.h} givens=${puzzle.givens.length} status=${analysis.status} difficulty=${analysis.difficulty}`,
+    'clues ' + clueStatistics(puzzle),
+    `simple known=${simple.known} line_solves=${simple.record.length} result=${simple.result}`,
+    `logic known=${logic.known} line_solves=${logic.record.length} result=${logic.result}`,
+    lineStatistics(logic.record),
+  ];
+  if (analysis.search !== null) {
+    const searched = analysis.search;
+    lines.push(
+      `search guesses=${searched.guesses} max_depth=${searched.maxDepth} backtracks=${searched.backtracks}` +
+        ` solutions=${searched.solutions.length} line_solves=${searched.lineSolves}`,
+    );
+    for (const guess of searched.record) {
+      lines.push(
+        `guess ${guess.number} depth=${guess.depth} cell=${guess.r + 1},${guess.c + 1}` +
+          ` value=${stateChar(guess.value)} solves=${guess.solves} known=${guess.known} result=${guess.outcome}`,
+      );
+    }
+  }
+  if (analysis.status === 'multiple') {
+    const cells = differingCells(analysis.solutions[0], analysis.solutions[1]);
+    lines.push(
+      `differ count=${cells.length} cells=` +
+        cells.map((cell) => `${cell.r + 1},${cell.c + 1}`).join(' '),
+    );
+  }
+  const grids: NamedGrid[] = [];
+  if (analysis.status === 'contradiction') grids.push({ name: 'partial', grid: logic.grid });
+  else {
+    if (simple.result === 'stuck') grids.push({ name: 'simple', grid: simple.grid });
+    if (logic.result === 'stuck') grids.push({ name: 'logic', grid: logic.grid });
+    if (analysis.status === 'multiple') {
+      grids.push(
+        { name: 'first', grid: analysis.solutions[0] },
+        { name: 'second', grid: analysis.solutions[1] },
+      );
+    }
+  }
+  lines.push(...sideBySide(grids));
+  if (analysis.status === 'unique') {
+    lines.push('sheet', ...answerSheet(analysis.solutions[0], puzzle.rows, puzzle.columns));
+    lines.push('picture ' + pictureFeatures(analysis.solutions[0]));
+  }
+  const puzzles = readPuzzles(text);
+  const paragraphs: string[] = [];
+  const stats = [
+    'puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer',
+  ];
+  const seen = new Set<string>();
+  for (const raw of puzzles) {
+    const validated = validatePuzzle(raw, seen);
+    if ('error' in validated) {
+      totals.invalid++;
+      paragraphs.push(`PUZZLE ${raw.name}\nerror ${validated.error}`);
+      stats.push([raw.name, 'invalid', ...Array<string>(11).fill('-')].join(','));
+      continue;
+    }
+    const puzzle = validated.value;
+    const analysis = analyze(puzzle, puzzle.givens);
+    const grade = gradeAnswer(puzzle, analysis);
+    paragraphs.push(puzzleParagraph(puzzle, analysis, grade));
+    stats.push(
+      [
+        puzzle.name,
+        analysis.status,
+        analysis.difficulty,
+        puzzle.w,
+        puzzle.h,
+        puzzle.givens.length,
+        analysis.simple.known,
+        analysis.logic.known,
+        analysis.lineSolves,
+        analysis.guesses,
+        analysis.maxDepth,
+        analysis.solutions.length,
+        grade?.result ?? '-',
+      ].join(','),
+    );
+  }
+  return { solutions: paragraphs.join('\n\n') + '\n', stats: stats.join('\n') + '\n', sameClues };
+  const puzzles = processPuzzles(readFileSync('input/puzzles.txt', 'ascii'));
+  mkdirSync('output', { recursive: true });
+  writeFileSync('output/solutions.txt', puzzles.solutions, 'ascii');
+  writeFileSync('output/stats.csv', puzzles.stats, 'ascii');
+export function getLine(grid: Grid, axis: Axis, index: number): CellState[] {
+  return axis === 'R' ? grid[index].slice() : grid.map((row) => row[index]);
+}
+export function determinedCount(grid: Grid): number {
+  let count = 0;
+  for (const row of grid) for (const state of row) if (state !== UNKNOWN) count++;
+  return count;
+}
+export function propagate(
+  grid: Grid,
+  rows: Clue[],
+  columns: Clue[],
+  kind: SolveKind,
+  rowMarks?: boolean[],
+  columnMarks?: boolean[],
+): Propagation {
+  const markedRows = rowMarks === undefined ? rows.map(() => true) : rowMarks.slice();
+  const markedColumns = columnMarks === undefined ? columns.map(() => true) : columnMarks.slice();
+  const record: SolveRecord[] = [];
+  for (;;) {
+    let axis: Axis = 'R';
+    let index = markedRows.indexOf(true);
+    if (index === -1) {
+      axis = 'C';
+      index = markedColumns.indexOf(true);
+    }
+    if (index === -1) return { grid, record, conflict: null };
+    (axis === 'R' ? markedRows : markedColumns)[index] = false;
+    const label = axis + (index + 1);
+    const line = getLine(grid, axis, index);
+    const clue = axis === 'R' ? rows[index] : columns[index];
+    const solved = solveLine(line, clue, kind);
+    if (solved === null) {
+      record.push({ label, gain: null });
+      return { grid, record, conflict: { axis, index, label } };
+    }
+    record.push({ label, gain: solved.gain });
+    for (let p = 0; p < line.length; p++) {
+      if (line[p] !== UNKNOWN || solved.line[p] === UNKNOWN) continue;
+      if (axis === 'R') {
+        grid[index][p] = solved.line[p];
+        markedColumns[p] = true;
+      } else {
+        grid[p][index] = solved.line[p];
+        markedRows[p] = true;
+      }
+    }
+  }
+}
+export function search(grid: Grid, rows: Clue[], columns: Clue[]): SearchResult {
+  const result: SearchResult = {
+    guesses: 0,
+    maxDepth: 0,
+    backtracks: 0,
+    lineSolves: 0,
+    record: [],
+    solutions: [],
+  };
+  function visit(parent: Grid, depth: number): boolean {
+    const chosen = chooseCell(parent);
+    if (chosen === null) throw new Error('Search requires an unknown cell');
+    const { r, c } = chosen;
+    const values: CellState[] = [FILLED, EMPTY];
+    for (const value of values) {
+      const number = ++result.guesses;
+      result.maxDepth = Math.max(result.maxDepth, depth);
+      const child = parent.map((row) => row.slice());
+      child[r][c] = value;
+      const rowMarks = rows.map(() => false);
+      const columnMarks = columns.map(() => false);
+      rowMarks[r] = true;
+      columnMarks[c] = true;
+      const propagation = propagate(child, rows, columns, 'precise', rowMarks, columnMarks);
+      const known = determinedCount(child);
+      const solves = propagation.record.length;
+      result.lineSolves += solves;
+      let outcome: string;
+      if (propagation.conflict !== null) {
+        outcome = 'contradiction at=' + propagation.conflict.label;
+        result.backtracks++;
+      } else if (known === rows.length * columns.length) {
+        result.solutions.push(child);
+        outcome = 'solution' + result.solutions.length;
+      } else outcome = 'open';
+      result.record.push({ number, depth, r, c, value, solves, known, outcome });
+      if (result.solutions.length === 2) return true;
+      if (outcome === 'open' && visit(child, depth + 1)) return true;
+    }
+    return false;
+  }
+  visit(grid, 1);
+  return result;
+}

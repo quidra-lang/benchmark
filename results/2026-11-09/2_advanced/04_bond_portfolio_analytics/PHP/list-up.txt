@@ -1,0 +1,300 @@
+<?php
+const BUSINESS_DAY_RULES = ['FOLLOWING', 'MODIFIED_FOLLOWING', 'PRECEDING', 'UNADJUSTED'];
+function is_leap(int $year): bool { return $year % 4 === 0 && ($year % 100 !== 0 || $year % 400 === 0); }
+function month_length(int $year, int $month): int { return $month === 2 && is_leap($year) ? 29 : [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][$month - 1]; }
+function split_date(string $text): array { return [(int)substr($text, 0, 4), (int)substr($text, 5, 2), (int)substr($text, 8, 2)]; }
+function valid_date(string $text): bool {
+    [$year, $month, $day] = split_date($text);
+    return $year >= 2001 && $year <= 2099 && $month >= 1 && $month <= 12 && $day >= 1 && $day <= month_length($year, $month);
+}
+function day_number(int $year, int $month, int $day): int {
+    $number = $day - 1;
+    for ($earlier = 2000; $earlier < $year; $earlier++) $number += is_leap($earlier) ? 366 : 365;
+    for ($earlier = 1; $earlier < $month; $earlier++) $number += month_length($year, $earlier);
+    return $number;
+}
+function parse_date(string $text): int { return day_number(...split_date($text)); }
+function civil_date(int $number): array {
+    $year = 2000;
+    while ($number >= ($days = is_leap($year) ? 366 : 365)) { $number -= $days; $year++; }
+    $month = 1;
+    while ($number >= month_length($year, $month)) $number -= month_length($year, $month++);
+    return [$year, $month, $number + 1];
+}
+function format_date(int $number): string { return sprintf('%04d-%02d-%02d', ...civil_date($number)); }
+class Calendar {
+    private array $holidays;
+    public function __construct(array $holidays) { $this->holidays = array_fill_keys($holidays, true); }
+    public function business(int $day): bool { return ($day + 5) % 7 < 5 && !isset($this->holidays[$day]); }
+    public function following(int $day): int { while (!$this->business($day)) $day++; return $day; }
+    public function preceding(int $day): int { while (!$this->business($day)) $day--; return $day; }
+    public function adjust(int $day, string $rule): int {
+        if ($rule === 'FOLLOWING') return $this->following($day);
+        if ($rule === 'PRECEDING') return $this->preceding($day);
+        if ($rule === 'MODIFIED_FOLLOWING') { $next = $this->following($day); return civil_date($next)[1] === civil_date($day)[1] ? $next : $this->preceding($day); }
+        return $day;
+    }
+    public function move(int $day, int $count): int {
+        $direction = $count < 0 ? -1 : 1;
+        if ($count < 0) $count = -$count;
+        while ($count > 0) { $day += $direction; if ($this->business($day)) $count--; }
+        return $day;
+    }
+}
+const DAY_COUNTS = ['30/360', '30E/360', 'ACT/360', 'ACT/365F', 'ACT/ACT'];
+function year_fraction(string $convention, int $start, int $end): array {
+    [$y1, $m1, $d1] = civil_date($start);
+    [$y2, $m2, $d2] = civil_date($end);
+    if ($convention === '30/360' || $convention === '30E/360') {
+        if ($convention === '30/360') {
+            $february = $m1 === 2 && $d1 === month_length($y1, 2);
+            if ($february && $m2 === 2 && $d2 === month_length($y2, 2)) $d2 = 30;
+            if ($february) $d1 = 30;
+            if ($d2 === 31 && $d1 >= 30) $d2 = 30;
+            if ($d1 === 31) $d1 = 30;
+        } else { if ($d1 === 31) $d1 = 30; if ($d2 === 31) $d2 = 30; }
+        return [360 * ($y2 - $y1) + 30 * ($m2 - $m1) + $d2 - $d1, 360];
+    }
+}
+<?php
+const BP = 0.0001;
+function bisection(callable $function, float $low, float $high, float $target): float {
+    for ($step = 0; $step < 80; $step++) { $middle = ($low + $high) / 2; if ($function($middle) > $target) $low = $middle; else $high = $middle; }
+    return ($low + $high) / 2;
+}
+class YieldPricer {
+    public function __construct(public array $flows, public float $fraction, public int $frequency, public int $outstanding) {}
+    public function values(float $rate): array {
+        $first = 1 + $this->fraction * $rate / $this->frequency; $growth = 1 + $rate / $this->frequency; $factor = 1.0; $values = [];
+        foreach ($this->flows as $flow) { $values[] = $flow / ($first * $factor); $factor *= $growth; }
+        return $values;
+    }
+    public function dirty(float $rate): float { $sum = 0.0; foreach ($this->values($rate) as $value) $sum += $value; return $sum * 100 / $this->outstanding; }
+    public function solve(float $target): float { return bisection(fn($rate) => $this->dirty($rate), 0.0, 1.0, $target); }
+    public function inRange(float $target): bool { return $this->dirty(0.0) > $target && $target > $this->dirty(1.0); }
+    public function risk(float $rate): array {
+        $growth = 1 + $rate / $this->frequency; $total = $weighted = $curvature = 0.0;
+        foreach ($this->values($rate) as $index => $value) { $years = ($index + $this->fraction) / $this->frequency; $total += $value; $weighted += $years * $value; $curvature += $years * ($years + 1 / $this->frequency) * $value; }
+        $macaulay = $weighted / $total;
+        return ['macaulay' => $macaulay, 'modified' => $macaulay / $growth, 'convexity' => $curvature / ($total * $growth * $growth), 'dv01' => ($this->dirty($rate - BP) - $this->dirty($rate + BP)) / 2];
+    }
+}
+<?php
+function coupon_schedule(int $issue, int $maturity, int $frequency, bool $eom, bool $long): array {
+    [$year, $month, $day] = civil_date($maturity);
+    $eom = $eom && $day === month_length($year, $month);
+    $dates = []; $boundary = $maturity;
+    while ($boundary > $issue) {
+        $dates[] = $boundary;
+        $index = $year * 12 + $month - 1 - intdiv(12, $frequency) * count($dates);
+        $y = intdiv($index, 12); $m = $index % 12 + 1;
+        $boundary = day_number($y, $m, $eom ? month_length($y, $m) : min($day, month_length($y, $m)));
+    }
+    if ($long && $boundary !== $issue && count($dates) >= 2) array_pop($dates);
+    $dates[] = $issue;
+    return array_reverse($dates);
+}
+    public function __construct(public array $days, public array $rates) {}
+    public function zero(int $day): float {
+        if ($day <= $this->days[0]) return $this->rates[0];
+        $last = count($this->days) - 1;
+        if ($day >= $this->days[$last]) return $this->rates[$last];
+        $index = 1; while ($this->days[$index] < $day) $index++;
+        $low = $this->days[$index - 1];
+        return $this->rates[$index - 1] + ($this->rates[$index] - $this->rates[$index - 1]) * (($day - $low) / ($this->days[$index] - $low));
+    }
+    public function discount(int $day, float $spread = 0.0): float {
+        $rate = $this->zero($day) + $spread; $growth = 1.0;
+        for ($year = 0; $year < intdiv($day, 365); $year++) $growth *= 1 + $rate;
+        return 1 / ($growth * (1 + $rate * ($day % 365) / 365));
+    }
+    public function presentValue(array $flows, float $spread = 0.0): float { $sum = 0.0; foreach ($flows as [$day, $flow]) $sum += $flow * $this->discount($day, $spread); return $sum; }
+function bootstrap(int $settlement, array $pillars): ZeroCurve {
+    $days = $rates = [];
+    foreach ($pillars as [$maturity, $coupon, $frequency]) {
+        $dates = coupon_schedule($settlement, $maturity, $frequency, false, false); $flows = [];
+        for ($index = 1; $index < count($dates); $index++) {
+            [$n, $m] = year_fraction('30/360', $dates[$index - 1], $dates[$index]);
+            $flow = $coupon * $n / (10000 * $m);
+            if ($index === count($dates) - 1) $flow += 1;
+            $flows[] = [$dates[$index] - $settlement, $flow];
+        }
+        $days[] = $maturity - $settlement;
+        $rates[] = bisection(fn($trial) => (new ZeroCurve($days, [...$rates, $trial]))->presentValue($flows), 0.0, 1.0, 1.0);
+    }
+    return new ZeroCurve($days, $rates);
+}
+function z_spread(ZeroCurve $curve, array $flows, int $target): float { return bisection(fn($spread) => $curve->presentValue($flows, $spread), -0.5, 0.5, (float)$target); }
+
+const BOND_TYPES = ['FIXED', 'ZERO', 'AMORT', 'FRN'];
+const FREQUENCIES = [1, 2, 4, 12];
+const OPTION_KEYS = ['FIXED' => ['EOM', 'LONG', 'CALL'], 'ZERO' => ['EOM', 'LONG'], 'AMORT' => ['EOM', 'LONG', 'SINK'], 'FRN' => ['EOM', 'LONG', 'LAG', 'CAP', 'FLOOR']];
+const BUCKETS = ['0-1Y', '1-3Y', '3-5Y', '5-10Y', '10Y+'];
+class InputError extends RuntimeException {}
+
+function round_half_up(int $a, int $b): int { return intdiv(2 * $a + $b, 2 * $b); }
+function decimals(float $value, int $digits): string {
+    $scale = 1; for ($index = 0; $index < $digits; $index++) $scale *= 10;
+    $rounded = (int)(($value < 0 ? -$value : $value) * $scale + 0.5);
+    return ($value < 0 && $rounded !== 0 ? '-' : '') . intdiv($rounded, $scale) . '.' . str_pad((string)($rounded % $scale), $digits, '0', STR_PAD_LEFT);
+}
+function percent(float $value): string { return decimals($value * 100, 4); }
+function thousandths(string $price): int { [$whole, $fraction] = explode('.', $price); return (int)$whole * 1000 + (int)$fraction; }
+function read_lines(string $name): array { $lines = explode("\n", file_get_contents("input/$name")); array_pop($lines); return $lines; }
+function rows(string $name): array { $rows = []; foreach (array_slice(read_lines($name), 1) as $index => $line) $rows[] = [$index + 2, explode(',', $line)]; return $rows; }
+function write_lines(string $name, array $lines): void { file_put_contents("output/$name", $lines ? implode("\n", $lines) . "\n" : ''); }
+function parse_options(string $kind, string $text): array {
+    $options = ['EOM' => false, 'LONG' => false, 'sinks' => [], 'calls' => []]; $seen = [];
+    foreach ($text === '-' ? [] : explode(';', $text) as $item) {
+        $pieces = explode('=', $item, 2); $key = $pieces[0]; $value = $pieces[1] ?? '';
+        if (!in_array($key, OPTION_KEYS[$kind], true) || (isset($seen[$key]) && !in_array($key, ['SINK', 'CALL'], true))) throw new InputError('invalid option');
+        $seen[$key] = true;
+        if ($key === 'EOM' || $key === 'LONG') $options[$key] = true;
+        elseif ($key === 'SINK' || $key === 'CALL') { [$date, $number] = explode(':', $value); $options[$key === 'SINK' ? 'sinks' : 'calls'][] = [$date, $key === 'SINK' ? (int)$number : thousandths($number)]; }
+        else $options[$key] = (int)$value;
+    }
+    if ($kind === 'FRN' && (!isset($options['LAG']) || $options['LAG'] < 1 || $options['LAG'] > 5 || ($options['CAP'] ?? 1200) > 1200 || ($options['FLOOR'] ?? 0) > ($options['CAP'] ?? 1200))) throw new InputError('invalid option');
+    return $options;
+}
+function schedule_days(array $items, array $schedule, string $error): array {
+    $inner = array_fill_keys(array_slice($schedule, 1, -1), true); $result = []; $last = -1;
+    foreach ($items as [$text, $value]) {
+        if (!valid_date($text)) throw new InputError($error);
+        $day = parse_date($text);
+        if (!isset($inner[$day]) || $day <= $last) throw new InputError($error);
+        $result[] = [$day, $value]; $last = $day;
+    }
+    return $result;
+}
+
+class Bond {
+    public array $options, $schedule, $sinks = [], $calls = [], $periods = [];
+    public function __construct(public string $code, public string $kind, public int $issue, public int $maturity, public int $coupon, public int $frequency, public string $daycount, public string $bdc, public int $face) {}
+}
+
+function parse_bond(array $fields, array $seen, Calendar $calendar, array $fixings): Bond {
+    [$code, $kind, $issueText, $maturityText, $coupon, $frequency, $daycount, $bdc, $face, $optionText] = $fields;
+    $coupon = (int)$coupon; $frequency = (int)$frequency; $face = (int)$face;
+    if (isset($seen[$code])) throw new InputError('duplicate id');
+    if (!in_array($kind, BOND_TYPES, true)) throw new InputError('unknown type');
+    if (!valid_date($issueText) || !valid_date($maturityText)) throw new InputError('invalid date');
+    $issue = parse_date($issueText); $maturity = parse_date($maturityText);
+    if ($maturity <= $issue) throw new InputError('maturity not after issue');
+    if (!in_array($frequency, FREQUENCIES, true)) throw new InputError('invalid frequency');
+    if (!in_array($daycount, DAY_COUNTS, true)) throw new InputError('unknown day count');
+    if (!in_array($bdc, BUSINESS_DAY_RULES, true)) throw new InputError('unknown business day rule');
+    if ($face % 100000 !== 0 || $face > 10000000) throw new InputError('invalid face');
+    if ($coupon > 1200 || ($kind === 'ZERO' && $coupon !== 0)) throw new InputError('invalid coupon');
+    $bond = new Bond($code, $kind, $issue, $maturity, $coupon, $frequency, $daycount, $bdc, $face);
+    $bond->options = parse_options($kind, $optionText);
+    $bond->schedule = coupon_schedule($issue, $maturity, $frequency, $bond->options['EOM'], $bond->options['LONG']);
+    $total = 0;
+    foreach (schedule_days($bond->options['sinks'], $bond->schedule, 'invalid sinking fund') as [$day, $value]) {
+        if ($value === 0) throw new InputError('invalid sinking fund');
+        $bond->sinks[$day] = $value; $total += $value;
+    }
+    if ($kind === 'AMORT' && ($total === 0 || $total >= $face)) throw new InputError('invalid sinking fund');
+    $bond->calls = schedule_days($bond->options['calls'], $bond->schedule, 'invalid call schedule');
+    foreach ($bond->calls as [, $price]) if ($price < 100000 || $price > 110000) throw new InputError('invalid call schedule');
+    $opening = $face; $last = count($bond->schedule) - 1;
+    for ($number = 1; $number <= $last; $number++) {
+        $start = $bond->schedule[$number - 1]; $end = $bond->schedule[$number];
+        [$n, $m] = year_fraction($daycount, $start, $end);
+        $rate = $kind === 'ZERO' ? 0 : $coupon;
+        if ($kind === 'FRN') {
+            $fixing = latest_fixing($fixings, $calendar->move($calendar->adjust($start, $bdc), -$bond->options['LAG']));
+            if ($fixing === null) throw new InputError('missing fixing');
+            $rate = $fixing + $coupon;
+            if (isset($bond->options['FLOOR'])) $rate = max($rate, $bond->options['FLOOR']);
+            if (isset($bond->options['CAP'])) $rate = min($rate, $bond->options['CAP']);
+        }
+        $principal = $number === $last ? $opening : ($bond->sinks[$end] ?? 0);
+        $couponAmount = round_half_up($opening * $rate * $n, 10000 * $m);
+        $bond->periods[] = ['number' => $number, 'start' => $start, 'end' => $end, 'payment' => $calendar->adjust($end, $bdc), 'n' => $n, 'm' => $m,
+            'rate' => $rate, 'opening' => $opening, 'coupon' => $couponAmount, 'principal' => $principal, 'cash' => $couponAmount + $principal];
+        $opening -= $principal;
+    }
+    return $bond;
+}
+    public function __construct(public Bond $bond, public int $clean, int $settlement) {
+        $index = 0; while ($bond->periods[$index]['end'] <= $settlement) $index++;
+        $current = $bond->periods[$index]; $this->remaining = array_slice($bond->periods, $index); $this->outstanding = $current['opening'];
+        [$n, $m] = year_fraction($bond->daycount, $current['start'], $settlement);
+        $this->accrued = $current['rate'] * $n / (100 * $m);
+        $this->accruedAmount = round_half_up($this->outstanding * $current['rate'] * $n, 10000 * $m);
+        $this->cleanAmount = round_half_up($this->outstanding * $clean, 100000); $this->unitValue = $this->cleanAmount + $this->accruedAmount;
+        $this->target = $clean / 1000 + $this->accrued;
+        [$n, $m] = year_fraction($bond->daycount, $settlement, $current['end']);
+        $this->fraction = $bond->frequency * $n / $m;
+        $this->cashflows = array_values(array_filter($this->remaining, fn($period) => $period['cash'] >= 1));
+        $this->flows = array_map(fn($period) => [$period['payment'] - $settlement, $period['cash']], $this->cashflows);
+        $this->pricer = new YieldPricer(array_column($this->remaining, 'cash'), $this->fraction, $bond->frequency, $this->outstanding);
+        $this->workout = $bond->maturity; $this->nextPayment = $this->cashflows[0]['payment'];
+    }
+    public function analyze(ZeroCurve $curve, int $settlement): void {
+        $this->ytm = $this->pricer->solve($this->target); $this->risk = $this->pricer->risk($this->ytm); $this->ytw = $this->ytm;
+        foreach ($this->bond->calls as [$day, $price]) if ($day > $settlement) {
+            $flows = [];
+            foreach ($this->remaining as $period) {
+                $flows[] = $period['coupon'];
+                if ($period['end'] === $day) { $flows[count($flows) - 1] += round_half_up($period['opening'] * $price, 100000); break; }
+            }
+            $yield = (new YieldPricer($flows, $this->fraction, $this->bond->frequency, $this->outstanding))->solve($this->target);
+            if ($yield < $this->ytw) { $this->ytw = $yield; $this->workout = $day; }
+        }
+        $principalDays = 0;
+        foreach ($this->cashflows as $index => $period) $principalDays += $period['principal'] * $this->flows[$index][0];
+        $this->wal = $principalDays / (365 * $this->outstanding);
+        $this->curveClean = $curve->presentValue($this->flows) * 100 / $this->outstanding - $this->accrued;
+        $this->spread = z_spread($curve, $this->flows, $this->unitValue);
+    }
+$valuationDate = $settlementDays = 0; $scenarioLines = $limits = [];
+foreach (read_lines('params.txt') as $index => $line) {
+    $words = explode(' ', $line); $kind = array_shift($words);
+    if ($kind === 'valuation_date') $valuationDate = parse_date($words[0]);
+    elseif ($kind === 'settlement_days') $settlementDays = (int)$words[0];
+    elseif ($kind === 'scenario') { $name = array_shift($words); $scenarioLines[] = [$index + 1, $name, array_map('intval', $words)]; }
+    else $limits[] = $words;
+}
+$calendar = new Calendar(array_map('parse_date', read_lines('calendar.txt')));
+$fixings = []; foreach (rows('fixings.csv') as [, $fields]) $fixings[] = [parse_date($fields[0]), (int)$fields[1]];
+$settlement = $calendar->move($valuationDate, $settlementDays); $errors = $pillars = $seen = [];
+foreach (rows('curve_quotes.csv') as [$number, $fields]) {
+    $text = $fields[0]; $frequency = (int)$fields[2]; $reason = null;
+    if (isset($seen[$text])) $reason = 'duplicate pillar';
+    elseif (!valid_date($text)) $reason = 'invalid date';
+    elseif (parse_date($text) <= $settlement) $reason = 'pillar not after settlement';
+    elseif (!in_array($frequency, FREQUENCIES, true)) $reason = 'invalid frequency';
+    if ($reason !== null) record_error($errors, 'curve_quotes.csv', $number, $text, $reason);
+    else $pillars[] = [parse_date($text), (int)$fields[1], $frequency];
+    $seen[$text] = true;
+}
+usort($pillars, fn($a, $b) => $a[0] <=> $b[0]);
+$bonds = $seen = [];
+foreach (rows('bonds.csv') as [$number, $fields]) {
+    try { $bonds[$fields[0]] = parse_bond($fields, $seen, $calendar, $fixings); }
+    catch (InputError $error) { record_error($errors, 'bonds.csv', $number, $fields[0], $error->getMessage()); }
+    $seen[$fields[0]] = true;
+}
+ksort($bonds, SORT_STRING); $valuations = $seen = [];
+foreach (rows('prices.csv') as [$number, $fields]) {
+    [$code, $price] = $fields;
+    try {
+        if (!isset($bonds[$code])) throw new InputError('unknown bond');
+        if (isset($seen[$code])) throw new InputError('duplicate price');
+        $bond = $bonds[$code];
+        if ($bond->issue > $settlement || $settlement >= $bond->maturity) throw new InputError('not outstanding');
+        $value = new Valuation($bond, thousandths($price), $settlement);
+        if (!$value->pricer->inRange($value->target)) throw new InputError('yield out of range');
+        $valuations[$code] = $value;
+    } catch (InputError $error) { record_error($errors, 'prices.csv', $number, $code, $error->getMessage()); }
+    $seen[$code] = true;
+}
+$curve = bootstrap($settlement, $pillars);
+foreach ($valuations as $value) $value->analyze($curve, $settlement);
+$cashflowRows = ['bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal'];
+foreach ($bonds as $bond) foreach ($bond->periods as $period) if ($period['cash'] >= 1) $cashflowRows[] = implode(',', [$bond->code, $period['number'], format_date($period['start']), format_date($period['end']), format_date($period['payment']), decimals($period['n'] / $period['m'], 6), $period['rate'], $period['opening'], $period['coupon'], $period['principal']]);
+$analytics = ['bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread'];
+foreach ($valuations as $code => $v) $analytics[] = implode(',', [$code, decimals($v->clean / 1000, 6), decimals($v->accrued, 6), decimals($v->target, 6), percent($v->ytm), percent($v->ytw), format_date($v->workout), format_date($v->nextPayment), decimals($v->wal, 4), decimals($v->risk['macaulay'], 4), decimals($v->risk['modified'], 4), decimals($v->risk['convexity'], 4), decimals($v->risk['dv01'], 6), decimals($v->curveClean, 6), percent($v->spread)]);
+if (!is_dir('output')) mkdir('output', 0777, true);
+foreach (['errors.txt' => $errors, 'cashflows.csv' => $cashflowRows, 'analytics.csv' => $analytics, 'curve.txt' => $curveRows, 'portfolio.txt' => $report, 'scenarios.csv' => $scenarioRows, 'compliance.txt' => $compliance] as $name => $lines) write_lines($name, $lines);

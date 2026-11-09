@@ -1,0 +1,592 @@
+function best_route(candidates, network)
+    remaining = copy(candidates)
+    length(remaining) == 1 && return remaining[1], "ONLY"
+    for reason in ("LOCALPREF", "ASPATH", "ORIGIN", "MED", "ROUTERID", "LINK")
+        if reason == "MED"
+            minima = Dict{Int,Int}()
+            for route in remaining
+                neighbor = route_neighbor(route)
+                minima[neighbor] = min(get(minima, neighbor, route.med), route.med)
+            end
+            remaining = [route for route in remaining if route.med == minima[route_neighbor(route)]]
+        else
+            key = if reason == "LOCALPREF"
+                route -> -route.local_pref
+            elseif reason == "ASPATH"
+                route -> length(route.path)
+            elseif reason == "ORIGIN"
+                route -> findfirst(==(route.origin), ("IGP", "EGP", "INCOMPLETE"))
+            elseif reason == "ROUTERID"
+                route -> network.router_ids[route_neighbor(route)]
+            else
+                route -> route.link
+            end
+            low = minimum(key, remaining)
+            remaining = [route for route in remaining if key(route) == low]
+        end
+        length(remaining) == 1 && return remaining[1], reason
+    end
+end
+function import_route(simulation, session, prefix, attribute)
+    link = simulation.network.links[session.link]
+    rule = applied_rule(
+        simulation.policies,
+        "IMPORT",
+        session.owner,
+        link,
+        prefix,
+        attribute.path,
+        attribute.communities
+    )
+    local_pref = simulation.defaults[link_role(link, session.owner)]
+    rule !== nothing && haskey(rule.settings, "DENY") && return nothing, rule
+    med, communities = attribute.med, attribute.communities
+    if rule !== nothing
+        local_pref = get(rule.settings, "LOCALPREF", local_pref)
+        med = get(rule.settings, "MED", med)
+        communities = edit_communities(communities, rule)
+    end
+    return learned_route(attribute, med, communities, local_pref, session.link), rule
+end
+function candidate_routes(simulation, owner, prefix)
+    routes = Any[]
+    for session in simulation.routers[owner].sessions
+        if haskey(session.incoming, prefix)
+            route, _ = import_route(simulation, session, prefix, session.incoming[prefix])
+            route !== nothing && push!(routes, route)
+        end
+    end
+    return routes
+end
+function advertised_content(simulation, session, prefix)
+    owner, link = session.owner, simulation.network.links[session.link]
+    route = get(simulation.routers[owner].rib, prefix, nothing)
+    route === nothing && return nothing, nothing
+    !route_local(route) && route_neighbor(route) == other_end(link, owner) && return nothing, nothing
+    NO_EXPORT_COMMUNITY in route.communities && return nothing, nothing
+    rule = applied_rule(simulation.policies, "EXPORT", owner, link, prefix, route.path, route.communities)
+    rule !== nothing && haskey(rule.settings, "DENY") && return nothing, rule
+    allowed = rule !== nothing && haskey(rule.settings, "ALLOW")
+    if !allowed && !route_local(route)
+        learning_link = simulation.network.links[route.link]
+        link_role(
+            learning_link,
+            owner
+        ) in ("peer", "provider") && link_role(link, owner) in ("peer", "provider") && return nothing, rule
+    end
+    prepend = rule === nothing ? 0 : get(rule.settings, "PREPEND", 0)
+    med = rule === nothing ? 0 : get(rule.settings, "MED", 0)
+    communities = rule === nothing ? route.communities : edit_communities(route.communities, rule)
+    path = (fill(owner, 1 + prepend)..., route.path...)
+    return bgp_attribute(path, route.origin, med, communities), rule
+end
+function process_pending!(simulation, session)
+    sent = 0
+    link = simulation.network.links[session.link]
+    for prefix in sort!(collect(session.pending))
+        content, rule = advertised_content(simulation, session, prefix)
+        get(session.outgoing, prefix, nothing) == content && continue
+        if content === nothing
+            delete!(session.outgoing, prefix)
+        else
+            session.outgoing[prefix] = content
+        end
+        message = send_message!(
+            simulation.messages,
+            simulation.time,
+            session.owner,
+            other_end(link, session.owner),
+            link,
+            prefix,
+            content
+        )
+        suffix = content === nothing ? "WITHDRAW" : "ANNOUNCE " * attribute_text(content)
+        log_update!(simulation, "SEND $(message_text(message, simulation.network)) $suffix")
+        session.sent += 1
+        sent += 1
+        add_counter!(simulation.period.counters, "updates")
+        content === nothing && add_counter!(simulation.period.counters, "withdrawals")
+        rule !== nothing && (rule.hits += 1)
+    end
+    empty!(session.pending)
+    session.timer = sent > 0 && link.mrai >= 1 ? simulation.time + link.mrai : -1
+end
+function redecide!(simulation, owner, prefix)
+    router = simulation.routers[owner]
+    if haskey(router.origination, prefix)
+        route = router.origination[prefix]
+    else
+        candidates = candidate_routes(simulation, owner, prefix)
+        route = isempty(candidates) ? nothing : best_route(candidates, simulation.network)[1]
+    end
+    get(router.rib, prefix, nothing) == route && return
+    if route === nothing
+        delete!(router.rib, prefix)
+    else
+        router.rib[prefix] = route
+    end
+    log_update!(simulation, "BEST $owner $(prefix_text(prefix)) $(route_text(route, simulation.network))")
+    router.changes += 1
+    add_counter!(simulation.period.counters, "best_changes")
+    add_counter!(simulation.period.exploration, (owner, prefix))
+    push!(simulation.period.best_lines, (simulation.time, owner, prefix, route))
+    push!(simulation.changed_prefixes, prefix)
+    for session in router.sessions
+        if simulation.network.links[session.link].up
+            push!(session.pending, prefix)
+            session.timer == -1 && process_pending!(simulation, session)
+        end
+    end
+end
+function receive_message!(simulation, message)
+    session = simulation.by_session[(message.receiver, message.link)]
+    prefix, content = message.prefix, message.content
+    session.received += 1
+    simulation.period.convergence_time = simulation.time - simulation.period.event.time
+    if content === nothing
+        delete!(session.incoming, prefix)
+        result = "WITHDRAW"
+    elseif message.receiver in content.path
+        delete!(session.incoming, prefix)
+        result = "ANNOUNCE loop"
+    else
+        session.incoming[prefix] = content
+        route, rule = import_route(simulation, session, prefix, content)
+        rule !== nothing && (rule.hits += 1)
+        result = route === nothing ? "ANNOUNCE deny $(rule.name)" : rule === nothing ? "ANNOUNCE accept" : "ANNOUNCE accept $(rule.name)"
+    end
+    log_update!(simulation, "RECV $(message_text(message, simulation.network)) $result")
+    redecide!(simulation, message.receiver, prefix)
+end
+function originate!(simulation, owner, prefix, origin, communities)
+    simulation.routers[owner].origination[prefix] = originated_route(origin, parse_communities(communities))
+    redecide!(simulation, owner, prefix)
+end
+function execute_event!(simulation, event)
+    log_update!(simulation, "EVENT $(simulation.period.number) $(event.text)")
+    fields = event.fields
+    if event.kind == "INITIAL"
+        for (owner, prefix, origin, communities) in simulation.network.initial
+            originate!(simulation, owner, prefix, origin, communities)
+        end
+    elseif event.kind == "ANNOUNCE"
+        originate!(simulation, parse(Int, fields[2]), parse_prefix(fields[3]), fields[4], fields[5:end])
+    elseif event.kind == "WITHDRAW"
+        owner, prefix = parse(Int, fields[2]), parse_prefix(fields[3])
+        delete!(simulation.routers[owner].origination, prefix)
+        redecide!(simulation, owner, prefix)
+    elseif event.kind in ("LINK_DOWN", "LINK_UP")
+        link = simulation.network.links[simulation.network.by_name[fields[3]]]
+        event.kind == "LINK_DOWN" ? link_down!(simulation, link) : link_up!(simulation, link)
+    else
+        change_policy!(simulation, simulation.policies.by_name[fields[3]], event.kind == "POLICY_ON")
+    end
+end
+function run_period!(simulation, number, event, boundary)
+    before = Dict(owner => copy(simulation.routers[owner].rib) for owner in simulation.network.ases)
+    period = BGPPeriod(
+        number,
+        event,
+        before,
+        Dict{String,Int}(),
+        Dict{Tuple{Int,IPPrefix},Int}(),
+        Any[],
+        0,
+        0,
+        Dict{Any,Int}(),
+        nothing,
+        "",
+        0
+    )
+    simulation.period = period
+    push!(simulation.periods, period)
+    simulation.time = event.time
+    empty!(simulation.changed_prefixes)
+    execute_event!(simulation, event)
+    while true
+        delivered = false
+        while next_message_time(simulation.messages) == simulation.time
+            receive_message!(simulation, take_message!(simulation.messages))
+            delivered = true
+        end
+        for session in simulation.sessions
+            if session.timer == simulation.time
+                session.timer = -1
+                !isempty(session.pending) && process_pending!(simulation, session)
+            end
+        end
+        !isempty(simulation.changed_prefixes) && forwarding_checks!(simulation)
+        if delivered
+            period.delivery_times += 1
+            detect_divergence!(simulation)
+        end
+        is_quiet = quiet(simulation)
+        if boundary === nothing
+            (is_quiet || period.divergence !== nothing || period.delivery_times >= simulation.stepcap) && break
+        elseif simulation.time == boundary
+            break
+        end
+        moments = [session.timer for session in simulation.sessions if session.timer >= 0]
+        delivery = next_message_time(simulation.messages)
+        delivery !== nothing && push!(moments, delivery)
+        boundary !== nothing && push!(moments, boundary)
+        simulation.time = minimum(moments)
+        empty!(simulation.changed_prefixes)
+    end
+    period.status = period.divergence !== nothing ? "DIVERGENT" : quiet(simulation) ? "CONVERGED" : boundary === nothing ? "CAPPED" : "UNSETTLED"
+    for owner in simulation.network.ases
+        old, current = before[owner], simulation.routers[owner].rib
+        for prefix in union(keys(old), keys(current))
+            get(old, prefix, nothing) != get(current, prefix, nothing) && (period.routes_changed += 1)
+        end
+    end
+    empty!(period.states)
+end
+function trace_path(simulation, source, address)
+    visits, hops = [source], Any[]
+    owner = source
+    while true
+        matches = [prefix for prefix in keys(simulation.routers[owner].rib) if prefix_contains(
+            prefix,
+            address
+        )]
+        if isempty(matches)
+            result = isempty(hops) ? "UNREACHABLE" : "BLACKHOLE"
+            return (
+                result=result,
+                visits=Tuple(visits),
+                hops=Tuple(hops),
+                count=count(hop -> hop[3] != 0, hops),
+                arrival=0
+            )
+        end
+        prefix = argmax(prefix -> prefix[2], matches)
+        route = simulation.routers[owner].rib[prefix]
+        if route_local(route)
+            push!(hops, (owner, prefix, 0))
+            return (
+                result="DELIVERED",
+                visits=Tuple(visits),
+                hops=Tuple(hops),
+                count=count(hop -> hop[3] != 0, hops),
+                arrival=owner
+            )
+        end
+        push!(hops, (owner, prefix, route.link))
+        owner = other_end(simulation.network.links[route.link], owner)
+        repeated = owner in visits
+        push!(visits, owner)
+        repeated && return (
+            result="LOOP",
+            visits=Tuple(visits),
+            hops=Tuple(hops),
+            count=length(hops),
+            arrival=0
+        )
+    end
+end
+function forwarding_checks!(simulation)
+    for prefix in sort!(collect(simulation.changed_prefixes))
+        loops = prefix_loops(simulation, prefix)
+        for (key, record) in collect(simulation.ongoing_rings)
+            if key[1] == prefix && !(key[2] in loops)
+                record.end_time = simulation.time
+                delete!(simulation.ongoing_rings, key)
+            end
+        end
+        for loop in sort!(collect(loops))
+            key = (prefix, loop)
+            if !haskey(simulation.ongoing_rings, key)
+                record = RingRecord(prefix, loop, simulation.time, -1)
+                push!(simulation.ring_records, record)
+                simulation.ongoing_rings[key] = record
+            end
+        end
+    end
+    for (index, (source, _, address)) in enumerate(simulation.traces)
+        path = trace_path(simulation, source, address)
+        bad = path.result in ("LOOP", "BLACKHOLE")
+        record = get(simulation.ongoing_traces, index, nothing)
+        if record !== nothing && (!bad || (record.result, record.visits) != (path.result, path.visits))
+            record.end_time = simulation.time
+            delete!(simulation.ongoing_traces, index)
+        end
+        if bad && !haskey(simulation.ongoing_traces, index)
+            record = TraceRecord(index, path.result, path.visits, simulation.time, -1)
+            push!(simulation.trace_records, record)
+            simulation.ongoing_traces[index] = record
+        end
+    end
+end
+function rib_lines(simulation)
+    lines = String[]
+    for owner in simulation.network.ases
+        router = simulation.routers[owner]
+        local_count = count(route_local, values(router.rib))
+        sent, received = sum(session.sent for session in router.sessions), sum(session.received for session in router.sessions)
+        push!(
+            lines,
+            "AS $owner routes $(length(router.rib)) local $local_count sent $sent received $received changes $(router.changes)"
+        )
+        for session in router.sessions
+            accepted = count(
+                entry -> import_route(simulation, session, entry[1], entry[2])[1] !== nothing,
+                collect(session.incoming)
+            )
+            link = simulation.network.links[session.link]
+            state = link.up ? "UP" : "DOWN"
+            push!(
+                lines,
+                "SESSION $(link.name) $(other_end(link, owner)) $(link_role(link, owner)) $state in $(length(session.incoming)) accepted $accepted out $(length(session.outgoing)) sent $(session.sent) received $(session.received) flaps $(link.down_count)"
+            )
+        end
+        for prefix in sort!(collect(keys(router.rib)))
+            route = router.rib[prefix]
+            candidates = candidate_routes(simulation, owner, prefix)
+            line = "$(prefix_text(prefix)) $(route_text(route, simulation.network)) candidates $(length(candidates))"
+            !route_local(route) && (line *= " reason " * best_route(candidates, simulation.network)[2])
+            push!(lines, line)
+            remaining = [candidate for candidate in candidates if candidate != route]
+            while !isempty(remaining)
+                alternate = best_route(remaining, simulation.network)[1]
+                push!(lines, "ALT " * route_text(alternate, simulation.network))
+                deleteat!(remaining, findfirst(==(alternate), remaining))
+            end
+        end
+    end
+    return lines
+end
+function path_lines(simulation)
+    lines = String[]
+    for (source, address, value) in simulation.traces
+        append!(lines, trace_lines(simulation, source, address, value))
+    end
+    originated = Set{IPPrefix}()
+    for owner in simulation.network.ases
+        union!(originated, keys(simulation.routers[owner].origination))
+    end
+    prefixes = sort!(collect(originated))
+    push!(lines, "PREFIXES" * (isempty(prefixes) ? "" : " " * join(prefix_text.(prefixes), ",")))
+    for source in simulation.network.ases
+        symbols = String[]
+        for prefix in prefixes
+            path = trace_path(simulation, source, prefix[1])
+            if path.result == "DELIVERED"
+                symbol = path.count == 0 ? "*" : haskey(
+                    simulation.routers[path.arrival].origination,
+                    prefix
+                ) ? "+" : "X"
+            else
+                symbol = Dict("LOOP" => "L", "BLACKHOLE" => "B", "UNREACHABLE" => "U")[path.result]
+            end
+            push!(symbols, symbol)
+        end
+        push!(lines, "REACH $source" * (isempty(symbols) ? "" : " " * join(symbols)))
+    end
+    return lines
+end
+function audit_lines(simulation)
+    lines = String[]
+    loops, blackholes = 0, 0
+    for record in sort(simulation.trace_records; by=record -> (record.start, record.index))
+        source, address, _ = simulation.traces[record.index]
+        record.result == "LOOP" ? (loops += 1) : (blackholes += 1)
+        endpoint = record.end_time == -1 ? "END" : string(record.end_time)
+        line = "$(record.result) $source $address from $(record.start) to $endpoint"
+        record.result == "BLACKHOLE" && (line *= " at $(record.visits[end])")
+        push!(lines, line * " path " * path_text(record.visits))
+    end
+    rings = sort(simulation.ring_records; by=record -> (record.start, record.prefix, record.path[1]))
+    for record in rings
+        endpoint = record.end_time == -1 ? "END" : string(record.end_time)
+        push!(
+            lines,
+            "RING $(prefix_text(record.prefix)) from $(record.start) to $endpoint path $(path_text(record.path))"
+        )
+    end
+    route_count, valleys = 0, 0
+    for owner in simulation.network.ases, prefix in sort!(collect(keys(simulation.routers[owner].rib)))
+        route = simulation.routers[owner].rib[prefix]
+        route_local(route) && continue
+        route_count += 1
+        path = collapse_runs((owner, route.path...))
+        pattern = join(link_direction(
+            simulation.network.links[simulation.network.between[minmax(path[index], path[index + 1])][1]],
+            path[index]
+        ) for index in 1:length(path) - 1)
+        violation = valley_position(pattern)
+        if violation != length(pattern)
+            valleys += 1
+            push!(
+                lines,
+                "VALLEY $owner $(prefix_text(prefix)) path $(path_text(route.path)) pattern $pattern leaker $(path[violation + 1])"
+            )
+        end
+    end
+    for rule in simulation.policies.rules
+        push!(lines, "RULE $(rule.name) $(rule.direction) $(rule.active ? "ON" : "OFF") hits $(rule.hits)")
+    end
+    divergent = 0
+    for period in simulation.periods
+        period.divergence === nothing && continue
+        divergent += 1
+        first_time, repeat_time, cycle = period.divergence
+        push!(
+            lines,
+            "DIVERGENT event $(period.number) first $first_time repeat $repeat_time period $(repeat_time - first_time)"
+        )
+        oscillations = Dict{Tuple{Int,IPPrefix},Int}()
+        for (time, owner, prefix, route) in cycle
+            push!(lines, "CYCLE $time $owner $(prefix_text(prefix)) $(route_text(route, simulation.network))")
+            add_counter!(oscillations, (owner, prefix))
+        end
+        for (owner, prefix) in sort!(collect(keys(oscillations)))
+            push!(lines, "OSCILLATE $owner $(prefix_text(prefix)) changes $(oscillations[(owner, prefix)])")
+        end
+    end
+    push!(
+        lines,
+        "SUMMARY loops $loops blackholes $blackholes rings $(length(rings)) routes $route_count valleys $valleys divergent $divergent end $(simulation.time)"
+    )
+    return lines
+end
+function main()
+    network, policies, events = read_topology(), read_policies(), read_events()
+    defaults, stepcap, traces = read_params()
+    simulation = new_simulation(network, policies, defaults, stepcap, traces)
+    for (index, event) in enumerate(events)
+        boundary = index < length(events) ? events[index + 1].time - 1 : nothing
+        run_period!(simulation, index - 1, event, boundary)
+    end
+    write_reports(Dict(
+        "updates.txt" => simulation.logs,
+        "convergence.csv" => vcat(CONVERGENCE_HEADER, period_csv.(simulation.periods)),
+        "ribs.txt" => rib_lines(simulation),
+        "paths.txt" => path_lines(simulation),
+        "audit.txt" => audit_lines(simulation)
+    ))
+end
+function read_topology()
+    router_ids, links, initial = Dict{Int,Int}(), BGPLink[], Any[]
+    for line in readlines("input/topology.txt")
+        fields = String.(split(line, ' '))
+        if fields[1] == "AS"
+            router_ids[parse(Int, fields[2])] = address_value(fields[3])
+        elseif fields[1] == "LINK"
+            push!(
+                links,
+                BGPLink(
+                    length(links) + 1,
+                    fields[2],
+                    parse(Int, fields[3]),
+                    parse(Int, fields[4]),
+                    fields[5],
+                    parse(Int, fields[6]),
+                    parse(Int, fields[7]),
+                    true,
+                    0
+                )
+            )
+        else
+            push!(initial, (parse(Int, fields[2]), parse_prefix(fields[3]), fields[4], fields[5:end]))
+        end
+    end
+    ases = sort!(collect(keys(router_ids)))
+    at_as = Dict(owner => [link.number for link in links if owner in (
+        link.first,
+        link.second
+    )] for owner in ases)
+    by_name = Dict(link.name => link.number for link in links)
+    between = Dict{Tuple{Int,Int},Vector{Int}}()
+    for link in links
+        key = minmax(link.first, link.second)
+        push!(get!(between, key, Int[]), link.number)
+    end
+    return (; router_ids, ases, links, initial, at_as, by_name, between)
+end
+function read_policies()
+    lists, rules = Dict{String,Vector{Any}}(), BGPRule[]
+    for line in readlines("input/policies.txt")
+        fields = String.(split(line, ' '))
+        if fields[1] == "PLIST"
+            prefix = parse_prefix(fields[4])
+            bounds = Dict(fields[index] => parse(Int, fields[index + 1]) for index in 5:2:length(fields))
+            low = get(bounds, "GE", prefix[2])
+            high = get(bounds, "LE", haskey(bounds, "GE") ? 32 : prefix[2])
+            push!(get!(lists, fields[2], Any[]), (fields[3] == "PERMIT", prefix, low, high))
+            continue
+        end
+        separator = findfirst(==("THEN"), fields)
+        conditions, actions = Tuple{String,Any}[], Tuple{String,Any}[]
+        for index in 7:2:separator - 1
+            condition, token = fields[index:index + 1]
+            value = condition in (
+                "CONTAINS",
+                "ORIGINAS"
+            ) ? parse(Int, token) : condition == "LENGTH" ? Tuple(parse.(
+                Int,
+                split(token, '-')
+            )) : condition == "COMMUNITY" ? parse_community(token) : token
+            push!(conditions, (condition, value))
+        end
+        index = separator + 1
+        while index <= length(fields)
+            action = fields[index]
+            index += 1
+            value = nothing
+            if !(action in ("DENY", "ALLOW"))
+                value = action in ("ADD", "REMOVE") ? parse_community(fields[index]) : parse(
+                    Int,
+                    fields[index]
+                )
+                index += 1
+            end
+            push!(actions, (action, value))
+        end
+        push!(
+            rules,
+            BGPRule(
+                fields[2],
+                fields[3] == "ON",
+                parse(Int, fields[4]),
+                fields[5],
+                fields[6],
+                conditions,
+                actions,
+                Dict(actions),
+                0
+            )
+        )
+    end
+    return (lists=lists, rules=rules, by_name=Dict(rule.name => rule for rule in rules))
+end
+function send_message!(queue, time, sender, receiver, link, prefix, content)
+    queue.serial += 1
+    message = BGPMessage(queue.serial, sender, receiver, link.number, prefix, content, time + link.delay)
+    heap_push!(queue, message)
+    return message
+end
+function read_events()
+    events = Any[(time=0, text="INITIAL", fields=["INITIAL"], kind="INITIAL")]
+    for line in readlines("input/events.txt")
+        time, text = split(line, ' '; limit=2)
+        fields = String.(split(text, ' '))
+        kind = fields[1] in ("LINK", "POLICY") ? join(fields[1:2], "_") : fields[1]
+        push!(events, (time=parse(Int, time), text=String(text), fields=fields, kind=kind))
+    end
+    return events
+end
+function read_params()
+    lines = readlines("input/params.txt")
+    defaults = Dict(role => parse(Int, value) for (role, value) in zip(
+        ("customer", "peer", "provider"),
+        split(lines[1], ' ')[2:end]
+    ))
+    stepcap = parse(Int, split(lines[2], ' ')[2])
+    traces = Tuple{Int,String,Int}[]
+    for line in lines[3:end]
+        fields = split(line, ' ')
+        push!(traces, (parse(Int, fields[2]), String(fields[3]), address_value(fields[3])))
+    end
+    return defaults, stepcap, traces
+end

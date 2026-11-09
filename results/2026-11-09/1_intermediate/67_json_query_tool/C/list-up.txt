@@ -1,0 +1,461 @@
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <string.h>
+#define APPEND(a, n, v) do { (a) = resize((a), ((n) + 1) * sizeof(*(a))); (a)[(n)++] = (v); } while (0)
+typedef struct {
+    char *data;
+    size_t length, capacity;
+} Buffer;
+typedef enum { NIL, NUMBER, STRING, BOOLEAN, ARRAY, OBJECT, MISSING } Kind;
+typedef struct Value Value;
+typedef struct {
+    char *key;
+    Value *value;
+} Entry;
+struct Value {
+    Kind kind;
+    Value **items;
+    Entry *entries;
+    size_t count;
+typedef struct {
+    const char *text;
+    size_t position, length;
+    const char *path_error;
+} Parser;
+typedef struct {
+    char kind;
+    char *key;
+    int first, last;
+    bool has_first, has_last, descendant;
+} Selector;
+typedef struct {
+    Selector *items;
+    size_t count;
+} Path;
+typedef struct {
+    char *key;
+    size_t index, position;
+    bool member;
+} Step;
+typedef struct {
+    Value *value;
+    Step *steps;
+    size_t count;
+} Match;
+typedef struct {
+    Match *items;
+    size_t count;
+} Matches;
+static Value nil = { .kind = NIL }, missing = { .kind = MISSING }, *document = &nil;
+static Value **history;
+static size_t history_count;
+static jmp_buf failure;
+static char *error_reason;
+static size_t error_position;
+static bool parse_error;
+static void *allocate(size_t n) {
+    void *p = calloc(1, n ? n : 1);
+    return p;
+static void *resize(void *p, size_t n) {
+    p = realloc(p, n ? n : 1);
+    return p;
+static char *slice(const char *s, size_t n) {
+    char *p = allocate(n + 1);
+    memcpy(p, s, n);
+    return p;
+static char *copy_text(const char *s) {
+    return slice(s, strlen(s));
+static char *format(const char *pattern, ...) {
+    va_list args, saved;
+    va_start(args, pattern);
+    va_copy(saved, args);
+    int n = vsnprintf(NULL, 0, pattern, args);
+    va_end(args);
+    char *s = allocate((size_t)n + 1);
+    vsnprintf(s, (size_t)n + 1, pattern, saved);
+    va_end(saved);
+    return s;
+static void fail(const char *pattern, ...) {
+    va_list args, saved;
+    va_start(args, pattern);
+    va_copy(saved, args);
+    int n = vsnprintf(NULL, 0, pattern, args);
+    va_end(args);
+    error_reason = allocate((size_t)n + 1);
+    vsnprintf(error_reason, (size_t)n + 1, pattern, saved);
+    va_end(saved);
+    parse_error = false;
+    longjmp(failure, 1);
+static void append_n(Buffer *b, const char *text, size_t n) {
+    if (b->length + n + 1 > b->capacity) {
+        b->capacity = (b->length + n + 1) * 2;
+        b->data = resize(b->data, b->capacity);
+    }
+    memcpy(b->data + b->length, text, n);
+    b->length += n;
+    b->data[b->length] = 0;
+static void append(Buffer *b, const char *text) {
+    append_n(b, text, strlen(text));
+static void character(Buffer *b, char c) {
+    append_n(b, &c, 1);
+static char *finish(Buffer *b) {
+    return b->data ? b->data : copy_text("");
+static bool letter(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+static bool digit(char c) {
+    return c >= '0' && c <= '9';
+static bool identifier(const char *s) {
+    if (!letter(*s) && *s != '_') return false;
+    for (s++; *s; s++) if (!letter(*s) && !digit(*s) && *s != '_') return false;
+    return true;
+static char *quote(const char *s, char delimiter) {
+    Buffer b = {0};
+    character(&b, delimiter);
+    for (; *s; s++) {
+        if (*s == delimiter || *s == '\\') {
+            character(&b, '\\');
+            character(&b, *s);
+        } else switch (*s) {
+            default:
+                if ((unsigned char)*s < 32 || *s == 127) append(&b, format("\\u%04x", (unsigned char)*s));
+                else character(&b, *s);
+        }
+    }
+    character(&b, delimiter);
+    return finish(&b);
+static Value *make(Kind kind) {
+    Value *v = allocate(sizeof(*v));
+    v->kind = kind;
+    return v;
+static int entry_index(Value *v, const char *key) {
+    if (v->kind == OBJECT) for (size_t i = 0; i < v->count; i++) if (!strcmp(v->entries[i].key, key)) return (int)i;
+    return -1;
+static void push(Value *v, Value *item) {
+    APPEND(v->items, v->count, item);
+static void put(Value *v, char *key, Value *item) {
+    int i = entry_index(v, key);
+    if (i >= 0) v->entries[i].value = item;
+    else APPEND(v->entries, v->count, ((Entry){key, item}));
+static char peek(Parser *p) {
+    return p->text[p->position];
+static void whitespace(Parser *p) {
+    while (peek(p) == ' ' || peek(p) == '\n') p->position++;
+static void need_character(Parser *p) {
+    if (p->position == p->length) parser_fail(p, p->position, "unexpected end of input");
+static char *read_string(Parser *p, char delimiter) {
+    p->position++;
+    Buffer b = {0};
+    while (true) {
+        if (p->position == p->length || peek(p) == '\n') parser_fail(p, p->position, "unterminated string");
+        char c = peek(p);
+        if (c == delimiter) {
+            p->position++;
+            return finish(&b);
+        }
+        if (c != '\\') {
+            character(&b, c);
+            p->position++;
+            continue;
+        }
+    }
+static Value *read_value(Parser *p) {
+    whitespace(p);
+    need_character(p);
+    char c = peek(p);
+    if (c == '{') {
+        p->position++;
+        whitespace(p);
+        Value *v = make(OBJECT);
+        if (peek(p) == '}') {
+            p->position++;
+            return v;
+        }
+        while (true) {
+            whitespace(p);
+            need_character(p);
+            if (peek(p) != '"') parser_fail(p, p->position, "expected key");
+            size_t start = p->position;
+            char *key = read_string(p, '"');
+            if (entry_index(v, key) >= 0) parser_fail(p, start, format("duplicate key %s", quote(key, '"')));
+            whitespace(p);
+            need_character(p);
+            if (peek(p) != ':') parser_fail(p, p->position, "expected ':'");
+            p->position++;
+            put(v, key, read_value(p));
+            whitespace(p);
+            if (peek(p) == '}') {
+                p->position++;
+                return v;
+            }
+            need_character(p);
+            if (peek(p) != ',') parser_fail(p, p->position, "expected ',' or '}'");
+            p->position++;
+            whitespace(p);
+            if (peek(p) == '}') parser_fail(p, p->position, "trailing comma");
+        }
+    }
+    if (c == '[') {
+        p->position++;
+        whitespace(p);
+        Value *v = make(ARRAY);
+        if (peek(p) == ']') {
+            p->position++;
+            return v;
+        }
+        while (true) {
+            push(v, read_value(p));
+            whitespace(p);
+            if (peek(p) == ']') {
+                p->position++;
+                return v;
+            }
+            need_character(p);
+            if (peek(p) != ',') parser_fail(p, p->position, "expected ',' or ']'");
+            p->position++;
+            whitespace(p);
+            if (peek(p) == ']') parser_fail(p, p->position, "trailing comma");
+        }
+    }
+    if (letter(c)) {
+        size_t start = p->position;
+        while (letter(peek(p))) p->position++;
+        char *word = slice(p->text + start, p->position - start);
+        if (!strcmp(word, "null")) return make(NIL);
+    }
+static Value *json(const char *text) {
+    Parser p = {text, 0, strlen(text), NULL};
+    Value *v = read_value(&p);
+    whitespace(&p);
+    if (p.position != p.length) parser_fail(&p, p.position, "trailing characters");
+    return v;
+static Value *clone(Value *v) {
+    Value *out = make(v->kind);
+    if (v->kind == ARRAY) for (size_t i = 0; i < v->count; i++) push(out, clone(v->items[i]));
+    if (v->kind == OBJECT) for (size_t i = 0; i < v->count; i++) put(out, copy_text(v->entries[i].key), clone(v->entries[i].value));
+    return out;
+static char *compact(Value *v) {
+    if (v->kind == NIL) return "null";
+static char *pretty(Value *v, const char *indent) {
+    if ((v->kind != ARRAY && v->kind != OBJECT) || !v->count) return compact(v);
+    Buffer b = {0};
+    char *child = format("%s  ", indent);
+    character(&b, v->kind == OBJECT ? '{' : '[');
+    character(&b, '\n');
+    for (size_t i = 0; i < v->count; i++) {
+        if (i) append(&b, ",\n");
+        append(&b, child);
+        if (v->kind == OBJECT) append(&b, format("%s: ", quote(v->entries[i].key, '"')));
+        append(&b, pretty(v->kind == OBJECT ? v->entries[i].value : v->items[i], child));
+    }
+    append(&b, format("\n%s%c", indent, v->kind == OBJECT ? '}' : ']'));
+    return finish(&b);
+static char *read_identifier(Parser *p) {
+    size_t start = p->position;
+    if (!letter(peek(p)) && peek(p) != '_') fail("%s", p->path_error);
+    p->position++;
+    while (letter(peek(p)) || digit(peek(p)) || peek(p) == '_') p->position++;
+    return slice(p->text + start, p->position - start);
+static Path path(const char *text, bool field) {
+    Parser p = {text, 0, strlen(text), field ? "ERROR bad field" : "ERROR bad path"};
+    Path out = {0};
+    if (peek(&p) != (field ? '@' : '$')) fail("%s", p.path_error);
+    p.position++;
+    while (p.position < p.length) {
+        Selector s = {0};
+        if (peek(&p) == '.') {
+            p.position++;
+            if (peek(&p) == '.') {
+            }
+            if (!(s.descendant && peek(&p) == '[')) {
+                s.kind = 'K';
+                s.key = read_identifier(&p);
+                APPEND(out.items, out.count, s);
+                continue;
+            }
+        } else if (peek(&p) != '[') fail("%s", p.path_error);
+        if (peek(&p) != '[') fail("%s", p.path_error);
+        p.position++;
+        if (peek(&p) == '\'') {
+        }
+        const char *end = strchr(text + p.position, ']');
+        if (!end) fail("%s", p.path_error);
+        char *content = slice(text + p.position, (size_t)(end - text) - p.position);
+        p.position = (size_t)(end - text) + 1;
+        if (!strcmp(content, "*") && !field) s.kind = 'A';
+        APPEND(out.items, out.count, s);
+    }
+    return out;
+static char *rename_key(const char *text) {
+    if (identifier(text)) return copy_text(text);
+static Match child(Match parent, Step step) {
+    Match out = { .count = parent.count + 1 };
+    out.steps = allocate(out.count * sizeof(*out.steps));
+    if (parent.count) memcpy(out.steps, parent.steps, parent.count * sizeof(*out.steps));
+    out.steps[parent.count] = step;
+    out.value = step.member ? parent.value->entries[step.position].value : parent.value->items[step.index];
+    return out;
+static Matches children(Match parent) {
+    Matches out = {0};
+    Value *v = parent.value;
+    if (v->kind == OBJECT || v->kind == ARRAY) for (size_t i = 0; i < v->count; i++) {
+        Step step = {.key = v->kind == OBJECT ? v->entries[i].key : NULL, .index = i, .position = i, .member = v->kind == OBJECT};
+        APPEND(out.items, out.count, child(parent, step));
+    }
+    return out;
+static Matches select_values(Match match, Selector s) {
+    Matches out = {0};
+    Value *v = match.value;
+    if (s.kind == 'K' && v->kind == OBJECT) {
+        int index = entry_index(v, s.key);
+        if (index >= 0) APPEND(out.items, out.count, child(match, ((Step){s.key, 0, (size_t)index, true})));
+    } else if (s.kind == 'A') out = children(match);
+    return out;
+static Matches apply(Matches matches, Selector s) {
+    Matches out = {0};
+    for (size_t i = 0; i < matches.count; i++) {
+        Matches bases = {0};
+        if (s.descendant) preorder(matches.items[i], &bases);
+        else APPEND(bases.items, bases.count, matches.items[i]);
+        for (size_t j = 0; j < bases.count; j++) {
+            Matches values = select_values(bases.items[j], s);
+            for (size_t k = 0; k < values.count; k++) APPEND(out.items, out.count, values.items[k]);
+        }
+    }
+    return out;
+static Matches evaluate(Path path) {
+    Matches out = {0};
+    APPEND(out.items, out.count, ((Match){.value = document}));
+    for (size_t i = 0; i < path.count; i++) out = apply(out, path.items[i]);
+    return out;
+static char *location(Match match) {
+    Buffer b = {0};
+    character(&b, '$');
+    for (size_t i = 0; i < match.count; i++) {
+        Step s = match.steps[i];
+        if (s.member) append(&b, identifier(s.key) ? format(".%s", s.key) : format("[%s]", quote(s.key, '\'')));
+        else append(&b, format("[%zu]", s.index));
+    }
+    return finish(&b);
+static Value *at(Value *root, Step *steps, size_t count) {
+    Value *v = root;
+    for (size_t i = 0; i < count; i++) v = steps[i].member ? v->entries[entry_index(v, steps[i].key)].value : v->items[steps[i].index];
+    return v;
+static int compare_locations(const Match *a, const Match *b) {
+    size_t n = a->count < b->count ? a->count : b->count;
+    for (size_t i = 0; i < n; i++) if (a->steps[i].position != b->steps[i].position) return a->steps[i].position > b->steps[i].position ? 1 : -1;
+    return (a->count > b->count) - (a->count < b->count);
+static int reverse_locations(const void *a, const void *b) {
+    return compare_locations(b, a);
+static Matches targets(Matches matches) {
+    Matches out = {0};
+    if (matches.count) qsort(matches.items, matches.count, sizeof(*matches.items), reverse_locations);
+    for (size_t i = 0; i < matches.count; i++) if (!i || compare_locations(matches.items + i, matches.items + i - 1)) APPEND(out.items, out.count, matches.items[i]);
+    return out;
+static bool one_of(const char *word, const char *words) {
+    if (!*word || strchr(word, ' ')) return false;
+    return strstr(words, format(" %s ", word)) != NULL;
+static char **arguments(const char *text, size_t limit, size_t *count) {
+    char **out = NULL;
+    *count = 0;
+    if (!text) return out;
+    size_t start = 0;
+    for (size_t i = 0;; i++) if (!text[i] || (text[i] == ' ' && *count + 1 < limit)) {
+        APPEND(out, *count, slice(text + start, i - start));
+        start = i + 1;
+        if (!text[i]) break;
+    }
+    return out;
+static void add_output(Buffer *out, const char *line) {
+    append(out, line);
+    character(out, '\n');
+static char *execute(const char *line) {
+    const char *space = strchr(line, ' '), *argument = space ? space + 1 : NULL;
+    char *command = space ? slice(line, (size_t)(space - line)) : copy_text(line);
+    if (!one_of(command, " GET  COMPACT  PRETTY  TYPE  LENGTH  KEYS  FLATTEN  COUNT  SUM  MIN  MAX  AVG  FILTER  SET  DELETE  INSERT  MERGE  SORT  RENAME  UNDO ")) fail("ERROR unknown command '%s'", command);
+    size_t argc, limit = one_of(command, " SET  MERGE ") ? 2 : !strcmp(command, "INSERT") ? 3 : !strcmp(command, "FILTER") ? 4 : SIZE_MAX;
+    char **args = arguments(argument, limit, &argc);
+    bool shape = one_of(command, " SET  MERGE  RENAME ") ? argc == 2 : !strcmp(command, "INSERT") ? argc == 3 : !strcmp(command, "FILTER") ? argc >= 3 && (!strcmp(args[2], "EXISTS") ? argc == 3 : argc == 4) : one_of(command, " COMPACT  PRETTY  FLATTEN ") ? argc <= 1 : !strcmp(command, "UNDO") ? argc == 0 : !strcmp(command, "SORT") ? argc >= 1 && argc <= 3 && (argc < 3 || (strcmp(args[1], "DESC") && !strcmp(args[2], "DESC"))) : argc == 1;
+    if (!shape) fail("ERROR bad arguments");
+    if (!strcmp(command, "UNDO")) {
+        if (!history_count) fail("ERROR nothing to undo");
+        document = history[--history_count];
+        return format("UNDO %zu\n", history_count);
+    }
+    Path p = path(argc ? args[0] : "$", false), fields = {0};
+    char *rename = NULL, *op = NULL;
+    if (!strcmp(command, "FILTER")) {
+    } else if (!strcmp(command, "SORT")) fields = path(argc >= 2 && strcmp(args[1], "DESC") ? args[1] : "@", true);
+    else if (!strcmp(command, "RENAME")) rename = rename_key(args[1]);
+    Matches matches = evaluate(p);
+    if (!strcmp(command, "RENAME")) for (size_t i = 0; i < matches.count; i++) if (!matches.items[i].count || !matches.items[i].steps[matches.items[i].count - 1].member) fail("ERROR not a member at %s", location(matches.items[i]));
+    if (one_of(command, " SET  DELETE  INSERT  MERGE  SORT  RENAME ")) {
+        Matches places = targets(matches);
+        Value *changed = clone(document);
+        for (size_t i = 0; i < places.count; i++) {
+            Match target = places.items[i];
+            if (!strcmp(command, "SET")) {
+            } else if (!strcmp(command, "DELETE")) {
+            } else if (!strcmp(command, "INSERT")) {
+            } else if (!strcmp(command, "MERGE")) merge(current, value);
+            else if (!strcmp(command, "SORT")) {
+            } else {
+                Value *parent = at(changed, target.steps, target.count - 1);
+                char *old = target.steps[target.count - 1].key;
+                if (strcmp(old, rename) && entry_index(parent, rename) >= 0) fail("ERROR key exists at %s", location(target));
+                parent->entries[entry_index(parent, old)].key = rename;
+            }
+        }
+        APPEND(history, history_count, clone(document));
+        document = changed;
+        return format("%s %zu\n", command, places.count);
+    }
+    Buffer out = {0};
+    if (!strcmp(command, "FILTER")) {
+    } else for (size_t i = 0; i < matches.count; i++) {
+        Match match = matches.items[i];
+        Value *v = match.value;
+        char *place = location(match);
+        if (!strcmp(command, "GET")) add_output(&out, format("%s = %s", place, compact(v)));
+        else if (!strcmp(command, "COMPACT")) add_output(&out, compact(v));
+        else if (!strcmp(command, "PRETTY")) add_output(&out, pretty(v, ""));
+    }
+    return out.length ? finish(&out) : "no match\n";
+static void size(Value *v, size_t *count, size_t *depth, size_t level) {
+    (*count)++;
+    if (level > *depth) *depth = level;
+    if (v->kind == ARRAY || v->kind == OBJECT) for (size_t i = 0; i < v->count; i++) size(v->kind == ARRAY ? v->items[i] : v->entries[i].value, count, depth, level + 1);
+static char *read_line(void) {
+    Buffer b = {0};
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') character(&b, (char)c);
+    if (c == EOF && !b.length) return NULL;
+    return finish(&b);
+static void load(void) {
+    Buffer text = {0};
+    char *line;
+    bool first = true;
+    while ((line = read_line()) && strcmp(line, "%%")) {
+        if (!first) character(&text, '\n');
+        append(&text, line);
+        first = false;
+    }
+    char *source = finish(&text);
+    if (setjmp(failure)) {
+    }
+    Value *value = json(source);
+    APPEND(history, history_count, clone(document));
+    document = value;
+    size_t count = 0, depth = 0;
+    size(value, &count, &depth, 1);
+    printf("LOADED nodes=%zu depth=%zu\n", count, depth);
+int main(void) {
+    load();
+    char *line;
+    while ((line = read_line()) && strcmp(line, "END")) {
+        if (!strcmp(line, "LOAD")) load();
+        else if (setjmp(failure)) {
+            if (parse_error) printf("PARSE ERROR col %zu: %s\n", error_position + 1, error_reason);
+            else puts(error_reason);
+        } else fputs(execute(line), stdout);
+    }

@@ -1,0 +1,173 @@
+function train_discrete(rows,max_rounds;weights=nothing,shrinkage=1.0,space=nothing)
+    isnothing(space) && (space=search_space(rows))
+    labels = [row.label for row in rows]
+    weights = isnothing(weights) ? fill(1/length(rows),length(rows)) : copy(weights)
+    rounds = NamedTuple[]
+    bound = 1.0
+    stop = "completed"
+    for _ in 1:max_rounds
+        error,j,threshold,polarity = discrete_search(space,labels,weights)
+        if error>=0.5
+            stop = "weak"
+            break
+        end
+        alpha = error<=1e-10 ? 1.0 : shrinkage*(0.5*log((1-error)/error))
+        stump = Stump(j,[threshold],[-polarity*alpha,polarity*alpha])
+        for (i,row) in enumerate(rows)
+            decision = row.x[j]>threshold ? polarity : -polarity
+            factor = decision==row.label ? exp(-alpha) : exp(alpha)
+            weights[i] = weights[i]==0 ? 0.0 : weights[i]*factor
+        end
+        normalizer = ordered_sum(weights)
+        weights ./= normalizer
+        push!(
+            rounds,
+            round_record(
+                stump;weights=before,
+                error=error,
+                alpha=alpha,
+                polarity=polarity,
+                z=normalizer,
+                bound=bound
+            )
+        )
+        if error<=1e-10
+            stop = "perfect"
+            break
+        end
+    end
+    (rounds=rounds,stop=stop,cuts=nothing)
+end
+function ordered_sum(values)
+    total = 0.0
+    for value in values
+        total += value
+    end
+    total
+end
+function search_space(rows)
+    orders,groups,thresholds = Vector{Int}[],Vector{Vector{Int}}[],Vector{Float64}[]
+    for j in eachindex(rows[1].x)
+        order = sort(collect(eachindex(rows));by=i->(rows[i].x[j],i))
+        batches = Vector{Int}[]
+        distinct = Float64[]
+        for i in order
+            value = rows[i].x[j]
+            if isempty(distinct) || value!=distinct[end]
+                push!(distinct,value)
+                push!(batches,Int[])
+            end
+            push!(batches[end],i)
+        end
+        cuts = vcat([distinct[1]-1],[(distinct[i]+distinct[i+1])/2 for i in 1:length(distinct)-1])
+        push!(orders,order)
+        push!(groups,batches)
+        push!(thresholds,cuts)
+    end
+    (rows=rows,orders=orders,groups=groups,thresholds=thresholds)
+end
+function left_cumulative(groups,values)
+    result = [0.0]
+    total = 0.0
+    for group in groups[1:end-1]
+        for i in group
+            total += values[i]
+        end
+        push!(result,total)
+    end
+    result
+end
+function discrete_search(space,labels,weights)
+    positive = [y==1 ? w : 0.0 for (y,w) in zip(labels,weights)]
+    negative = [y==-1 ? w : 0.0 for (y,w) in zip(labels,weights)]
+    wp,wn = ordered_sum(positive),ordered_sum(negative)
+    candidates = Tuple{Float64,Int,Float64,Int}[]
+    for j in eachindex(space.thresholds)
+        lp,ln = left_cumulative(space.groups[j],positive),left_cumulative(space.groups[j],negative)
+        for (k,threshold) in enumerate(space.thresholds[j])
+            push!(candidates,(lp[k]+(wn-ln[k]),j,threshold,1),(ln[k]+(wp-lp[k]),j,threshold,-1))
+        end
+    end
+    choose(candidates)
+end
+prediction(score) = score>0 ? 1 : -1
+row_score(rounds,values) = ordered_sum(stump_output(r.stump,values) for r in rounds)
+score_rows(rounds,rows) = [row_score(rounds,row.x) for row in rows]
+count_errors(rows,scores) = count(pair->prediction(pair[2])!=pair[1].label,zip(rows,scores))
+function add_round_scores!(record,rows,scores)
+    for (i,row) in enumerate(rows)
+        scores[i] += stump_output(record.stump,row.x)
+    end
+end
+function training_curve(rounds,training,testing,variant)
+    train_scores,test_scores = zeros(length(training)),zeros(length(testing))
+    scale = 0.0
+    curve = NamedTuple[]
+    for (t,record) in enumerate(rounds)
+        add_round_scores!(record,training,train_scores)
+        add_round_scores!(record,testing,test_scores)
+        scale += magnitude(record)
+        minimum_margin = minimum(row.label*score for (row,score) in zip(training,train_scores))/scale
+        push!(curve,(round=t,train_errors=count_errors(training,train_scores),test_errors=count_errors(testing,test_scores),
+            train_loss=loss(
+                training,
+                train_scores,
+                variant
+            ),test_loss=loss(testing,test_scores,variant),margin=minimum_margin))
+    end
+    curve
+end
+function cross_validate(rows,params)
+    space = search_space(rows)
+    max_rounds,k = Int(params["ROUNDS"][1]),Int(params["FOLDS"][1])
+    folds = NamedTuple[]
+    errors = zeros(Int,max_rounds)
+    for fold in 0:k-1
+        indices = [i for i in eachindex(rows) if (i-1)%k==fold]
+        n = length(rows)-length(indices)
+        weights = [(i-1)%k==fold ? 0.0 : 1/n for i in eachindex(rows)]
+        model = train_discrete(rows,max_rounds;weights=weights,space=space)
+        validation = rows[indices]
+        scores = zeros(length(indices))
+        fold_errors = Int[]
+        for t in 1:max_rounds
+            t<=length(model.rounds) && add_round_scores!(model.rounds[t],validation,scores)
+            count = count_errors(validation,scores)
+            push!(fold_errors,count)
+            errors[t] += count
+        end
+        push!(folds,(indices=indices,train=n,model=model,errors=fold_errors))
+    end
+    selected = argmin(errors)
+    scores = zeros(length(rows))
+    for fold in folds
+        rounds = fold.model.rounds[1:min(selected,length(fold.model.rounds))]
+        for i in fold.indices
+            scores[i] = row_score(rounds,rows[i].x)
+        end
+    end
+    (folds=folds,errors=errors,selected=selected,scores=scores)
+end
+function analyze_variants(inputs,selected)
+    analysis = Dict{String,Any}()
+    for variant in inputs.params["VARIANTS"]
+        model = train_variant(variant,inputs.train,inputs.params)
+        rounds = variant=="discrete" ? model.rounds[1:min(selected,length(model.rounds))] : model.rounds
+        analysis[variant] = (full=model,rounds=rounds,scale=total_magnitude(rounds),train=score_rows(rounds,inputs.train),
+            test=score_rows(rounds,inputs.test),curve=training_curve(
+                model.rounds,
+                inputs.train,
+                inputs.test,
+                variant
+            ),
+            importance=magnitude_importance(rounds,length(inputs.features)))
+    end
+    analysis
+end
+        r = analysis[variant]
+        rounds = length(r.rounds)
+        push!(
+            lines,
+            metrics_line("train",variant,rounds,training,r.train),
+            metrics_line("test",variant,rounds,testing,r.test)
+        )

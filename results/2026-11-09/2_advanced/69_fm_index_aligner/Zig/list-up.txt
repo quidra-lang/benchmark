@@ -1,0 +1,641 @@
+pub fn readInputs(io: std.Io) !Input {
+    var references: std.ArrayList(Reference) = .empty;
+    var sequence: Text = .{};
+    for (try readLines(io, "input/reference.fasta")) |line| {
+        if (line[0] == '>') {
+            if (references.items.len > 0) references.items[references.items.len - 1].bases = sequence.value();
+            sequence = .{};
+            const end = std.mem.indexOfScalar(u8, line, ' ') orelse line.len;
+            append(Reference, &references, .{ .name = line[1..end] });
+        } else for (line) |character| {
+            const lower = character >= 'a' and character <= 'z';
+            references.items[references.items.len - 1].masked += @intFromBool(lower);
+            sequence.add("{c}", .{if (lower) character - 32 else character});
+        };
+    }
+    references.items[references.items.len - 1].bases = sequence.value();
+    const lines = try readLines(io, "input/reads.fastq");
+    const reads = alloc(Read, lines.len / 4);
+    for (reads, 0..) |*read, i| read.* = .{ .name = lines[4 * i][1..], .bases = lines[4 * i + 1],
+         .quality = lines[4 * i + 3] };
+    var parameters: [16][]const i64 = undefined;
+    for (try readLines(io, "input/params.txt"), &parameters) |line, *values| {
+        const row = words(line);
+        const numbers = alloc(i64, row.len - 1);
+        for (row[1..], numbers) |value, *parsed| parsed.* = number(value);
+        values.* = numbers;
+    }
+    return .{ .references = references.items, .reads = reads, .parameters = parameters };
+}
+pub fn reverseComplement(sequence: []const u8) []const u8 {
+    const out = alloc(u8, sequence.len);
+    for (out, 0..) |*base, i| base.* = switch (sequence[sequence.len - i - 1]) {
+        'A' => 'T',
+        'C' => 'G',
+        'G' => 'C',
+        'T' => 'A',
+        else => 'N',
+    };
+    return out;
+}
+    pub fn init(text: []const u8, suffixes: []const usize, occurrence_interval: usize, sample_interval: ?usize) Index {
+        const bwt = d.alloc(u8, text.len);
+        const checkpoints = d.alloc([6]usize, text.len / occurrence_interval + 1);
+        var out: Index = .{ .size = text.len, .interval = occurrence_interval, .bwt = bwt, .checkpoints = checkpoints };
+        var frequencies = [_]usize{0} ** 6;
+        for (text) |character| frequencies[suffix.symbolNumber(character)] += 1;
+        var offset: usize = 0;
+        for (frequencies, 0..) |count, i| {
+            out.C[i] = offset;
+            offset += count;
+        }
+        for (suffixes, bwt) |position, *character| character.* = text[if (position == 0) text.len - 1 else position - 1];
+        if (sample_interval) |step| {
+            const samples = d.alloc(?usize, text.len);
+            @memset(samples, null);
+            for (suffixes, 0..) |position, row| if (position % step == 0) {
+                samples[row] = position;
+                out.sample_count += 1;
+            };
+            out.samples = samples;
+        }
+        var counts = [_]usize{0} ** 6;
+        checkpoints[0] = counts;
+        var checkpoint: usize = 1;
+        for (bwt, 1..) |character, i| {
+            counts[suffix.symbolNumber(character)] += 1;
+            if (i % occurrence_interval == 0) {
+                checkpoints[checkpoint] = counts;
+                checkpoint += 1;
+            }
+        }
+        return out;
+    }
+    pub fn occurrence(self: Index, symbol: u8, position: usize) usize {
+        const checkpoint = position / self.interval;
+        var count = self.checkpoints[checkpoint][suffix.symbolNumber(symbol)];
+        for (self.bwt[checkpoint * self.interval .. position]) |character| count += @intFromBool(character == symbol);
+        return count;
+    }
+    pub fn lf(self: Index, row: usize) usize {
+        const symbol = self.bwt[row];
+        return self.C[suffix.symbolNumber(symbol)] + self.occurrence(symbol, row);
+    }
+    pub fn extend(self: Index, interval: Interval, base: u8) Interval {
+        if (base == 'N') return .{ .lower = 0, .upper = 0 };
+        const start = self.C[suffix.symbolNumber(base)];
+        return .{ .lower = start + self.occurrence(base, interval.lower), .upper = start + self.occurrence(base,
+             interval.upper) };
+    }
+    pub fn backwardSearch(self: Index, sequence: []const u8) Interval {
+        var out: Interval = .{ .lower = 0, .upper = self.size };
+        var i = sequence.len;
+        while (i > 0) {
+            i -= 1;
+            out = self.extend(out, sequence[i]);
+            if (out.empty()) break;
+        }
+        return out;
+    }
+    pub fn locate(self: Index, start: usize) Located {
+        const samples = self.samples.?;
+        var row = start;
+        var steps: usize = 0;
+        while (samples[row] == null) {
+            row = self.lf(row);
+            steps += 1;
+        }
+        return .{ .position = samples[row].? + steps, .steps = steps };
+pub fn lowerBounds(sequence: []const u8, reverse: fm.Index, allocator: std.mem.Allocator) []i64 {
+    const out = allocator.alloc(i64, sequence.len) catch @panic("allocation failed");
+    var interval: fm.Interval = .{ .lower = 0, .upper = reverse.size };
+    var mismatches: i64 = 0;
+    for (sequence, out) |base, *value| {
+        interval = reverse.extend(interval, base);
+        if (interval.empty()) {
+            mismatches += 1;
+            interval = .{ .lower = 0, .upper = reverse.size };
+        }
+        value.* = mismatches;
+    }
+    return out;
+}
+pub fn backtrack(sequence: []const u8, maximum: i64, forward: fm.Index, reverse: fm.Index,
+     allocator: std.mem.Allocator) Search {
+    const State = struct { position: i64, remaining: i64, interval: fm.Interval };
+    const bounds = lowerBounds(sequence, reverse, allocator);
+    defer allocator.free(bounds);
+    var stack: std.ArrayList(State) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, .{ .position = d.n(sequence.len) - 1, .remaining = maximum, .interval = .{ .lower = 0,
+         .upper = forward.size } }) catch @panic("allocation failed");
+    var leaves: std.ArrayList(Leaf) = .empty;
+    defer leaves.deinit(allocator);
+    var out: Search = .{};
+    while (stack.pop()) |state| {
+        out.nodes += 1;
+        if (state.remaining < (if (state.position < 0) @as(i64, 0) else bounds[d.u(state.position)])) continue;
+        if (state.position == -1) {
+            leaves.append(allocator, .{ .lower = state.interval.lower, .upper = state.interval.upper,
+                 .mismatches = maximum - state.remaining }) catch @panic("allocation failed");
+            out.positions += d.n(state.interval.upper - state.interval.lower);
+            continue;
+        }
+        for ("TGCA") |base| {
+            const next = forward.extend(state.interval, base);
+            if (next.empty()) continue;
+            const mismatch = base != sequence[d.u(state.position)];
+            if (!mismatch or state.remaining >= 1) stack.append(allocator, .{ .position = state.position - 1,
+                 .remaining = state.remaining - @as(i64, @intFromBool(mismatch)), .interval = next }) catch @panic("allocation failed");
+        }
+    }
+    out.leaves = allocator.dupe(Leaf, leaves.items) catch @panic("allocation failed");
+    return out;
+}
+    fn init(input: d.Input) Params {
+        const p = input.parameters;
+        return .{ .mismatches = p[0][0], .minimum_length = u(p[1][0]), .trim_quality = p[2][0],
+             .seed_length = u(p[3][0]), .seed_step = u(p[4][0]), .maximum_seed_hits = u(p[5][0]),
+             .band_width = p[6][0], .match = p[7][0], .mismatch = p[7][1], .gap_open = p[7][2],
+             .gap_extend = p[7][3], .minimum_score = p[8][0], .maximum_alternatives = u(p[9][0]),
+             .occ_interval = u(p[10][0]), .sample_interval = u(p[11][0]), .direct_limit = u(p[12][0]),
+             .coverage_window = u(p[13][0]), .coverage_mapq = p[14][0], .variant_depth = p[15][0],
+             .variant_quality = p[15][1], .variant_percent = p[15][2], .homozygous_percent = p[15][3] };
+    }
+    fn init(references: []const d.Reference) ReferenceText {
+        const offsets = d.alloc(usize, references.len);
+        var text: d.Text = .{};
+        for (references, offsets) |reference, *offset| {
+            offset.* = text.value().len;
+            text.add("{s}#", .{reference.bases});
+        }
+        text.data.items[text.data.items.len - 1] = '$';
+        const reverse = d.alloc(u8, text.value().len);
+        for (reverse[0 .. reverse.len - 1], 0..) |*character, i| character.* = text.value()[text.value().len - i - 2];
+        reverse[reverse.len - 1] = '$';
+        return .{ .references = references, .offsets = offsets, .text = text.value(), .reverse = reverse };
+    }
+    fn position(self: ReferenceText, value: usize) ?Position {
+        var reference = self.references.len - 1;
+        while (reference > 0 and self.offsets[reference] > value) reference -= 1;
+        const offset = value - self.offsets[reference];
+        if (offset >= self.references[reference].bases.len) return null;
+        return .{ .reference = reference, .offset = offset };
+    }
+fn runs(operations: []const u8) []const Run {
+    var out: std.ArrayList(Run) = .empty;
+    for (operations) |operation| {
+        if (out.items.len == 0 or out.items[out.items.len - 1].operation != operation) d.append(Run,
+             &out, .{ .operation = operation, .count = 1 }) else out.items[out.items.len - 1].count += 1;
+    }
+    return out.items;
+}
+fn describe(reference: usize, position: usize, strand: usize, operations: []const u8, result: d.Result,
+     references: []const d.Reference) d.Alignment {
+    const oriented = if (strand == 0) result.core else d.reverseComplement(result.core);
+    var out: d.Alignment = .{ .reference = reference, .position = position, .strand = strand,
+         .operations = operations, .oriented = oriented };
+    const sequence = references[reference].bases;
+    const pairs = d.alloc(d.AlignedPair, result.length);
+    var pair_count: usize = 0;
+    var i: usize = 0;
+    var j = position;
+    var matches: usize = 0;
+    var cigar: d.Text = .{};
+    var md: d.Text = .{};
+    for (runs(operations)) |run| {
+        cigar.add("{d}{c}", .{ run.count, run.operation });
+        switch (run.operation) {
+            'I' => {
+                i += run.count;
+                out.nm += n(run.count);
+            },
+            'D' => {
+                md.add("{d}^{s}", .{ matches, sequence[j .. j + run.count] });
+                matches = 0;
+                j += run.count;
+                out.nm += n(run.count);
+            },
+            else => for (0..run.count) |_| {
+                pairs[pair_count] = .{ .read = i, .reference = j };
+                pair_count += 1;
+                if (oriented[i] == sequence[j]) matches += 1 else {
+                    md.add("{d}{c}", .{ matches, sequence[j] });
+                    matches = 0;
+                    out.nm += 1;
+                }
+                i += 1;
+                j += 1;
+            },
+        }
+    }
+    md.add("{d}", .{matches});
+    out.cigar = cigar.value();
+    if (result.trimmed > 0) out.cigar = if (strand == 0) d.fmt("{s}{d}S", .{ out.cigar, result.trimmed }) else d.fmt("{d}S{s}",
+         .{ result.trimmed, out.cigar });
+    out.md = md.value();
+    out.pairs = pairs[0..pair_count];
+    return out;
+}
+fn hitLess(_: void, a: Hit, b: Hit) bool {
+    if (a.mismatches != b.mismatches) return a.mismatches < b.mismatches;
+    if (a.reference != b.reference) return a.reference < b.reference;
+    return if (a.position != b.position) a.position < b.position else a.strand < b.strand;
+}
+    fn locate(self: *const Mapper, row: usize) Position {
+        return self.reference.position(self.forward.locate(row).position).?;
+    }
+    fn mapRead(self: *Mapper, read: d.Read) d.Result {
+        const qualities = d.alloc(i64, read.quality.len);
+        for (read.quality, qualities) |character, *quality| quality.* = @as(i64, character) - 33;
+        var length = read.bases.len;
+        while (length > 0 and qualities[length - 1] < self.p.trim_quality) length -= 1;
+        var out: d.Result = .{ .read = read, .core = read.bases[0..length], .qualities = qualities,
+             .length = length, .trimmed = read.bases.len - length };
+        if (length < self.p.minimum_length) return out;
+        const oriented = [_][]const u8{ out.core, d.reverseComplement(out.core) };
+        const exact = [_]fm.Interval{ self.forward.backwardSearch(oriented[0]), self.forward.backwardSearch(oriented[1]) };
+        const maximum = if (!exact[0].empty() or !exact[1].empty()) @as(i64, 1) else self.p.mismatches;
+        var hits: std.ArrayList(Hit) = .empty;
+        defer hits.deinit(work_allocator);
+        for (oriented, 0..) |sequence, strand| {
+            const found = search.backtrack(sequence, maximum, self.forward, self.reverse, work_allocator);
+            self.searches.calls += 1;
+            self.searches.nodes += found.nodes;
+            self.searches.leaves += n(found.leaves.len);
+            self.searches.positions += found.positions;
+            for (found.leaves) |leaf| for (leaf.lower..leaf.upper) |row| {
+                const located = self.locate(row);
+                workAppend(Hit, &hits, .{ .mismatches = leaf.mismatches, .reference = located.reference,
+                     .position = located.offset, .strand = strand });
+            };
+            work_allocator.free(found.leaves);
+        }
+        if (hits.items.len > 0) {
+            std.mem.sort(Hit, hits.items, {}, hitLess);
+            const best = hits.items[0].mismatches;
+            var eligible: usize = 0;
+            for (hits.items) |hit| {
+                out.x0 += @intFromBool(hit.mismatches == best);
+                out.x1 += @intFromBool(hit.mismatches == best + 1);
+                eligible += @intFromBool(hit.mismatches <= best + 1);
+                if (hit.mismatches == best) out.targets |= bit(hit.reference);
+            }
+            const operations = d.alloc(u8, length);
+            @memset(operations, 'M');
+            const first = hits.items[0];
+            out.primary = describe(first.reference, first.position, first.strand, operations,
+                 out, self.reference.references);
+            out.other_count = eligible - 1;
+            if (out.other_count <= self.p.maximum_alternatives) {
+                const others = d.alloc(d.Alignment, out.other_count);
+                for (hits.items[1..eligible], others) |hit, *other| other.* = describe(hit.reference,
+                     hit.position, hit.strand, operations, out, self.reference.references);
+                out.others = others;
+            }
+            out.mapped = true;
+            out.method = if (best == 0) "EXACT" else "MISMATCH";
+            out.score = (n(length) - best) * self.p.match - best * self.p.mismatch;
+            out.mapq = if (out.x0 >= 2) 0 else if (out.x1 == 0) 60 - 12 * best else @max(30 - 12 * best - 3 * out.x1,
+                 1);
+            return out;
+        }
+    }
+fn coverageAndVariants(results: []const d.Result, references: []const d.Reference, p: Params) PileupReports {
+    const Pileup = [4][2]i64;
+    const depths = d.alloc([]i64, references.len);
+    const starts = d.alloc([]i64, references.len);
+    const pileups = d.alloc([]Pileup, references.len);
+    for (references, depths, starts, pileups) |reference, *depth, *start, *pileup| {
+        depth.* = d.alloc(i64, reference.bases.len);
+        @memset(depth.*, 0);
+        start.* = d.alloc(i64, reference.bases.len);
+        @memset(start.*, 0);
+        pileup.* = d.alloc(Pileup, reference.bases.len);
+        @memset(pileup.*, std.mem.zeroes(Pileup));
+    }
+    for (results) |result| {
+        if (!result.mapped) continue;
+        const alignment = result.primary;
+        const r = alignment.reference;
+        if (result.mapq == 0) starts[r][alignment.position] += 1;
+        if (result.mapq < p.coverage_mapq) continue;
+        for (alignment.pairs) |pair| {
+            const i = pair.read;
+            const j = pair.reference;
+            depths[r][j] += 1;
+            const base = alignment.oriented[i];
+            const cycle = if (alignment.strand == 0) i + 1 else result.length - i;
+            if (base != 'N' and result.qualities[cycle - 1] >= p.variant_quality) pileups[r][j][baseIndex(base)][alignment.strand] += 1;
+        }
+    }
+    var out: PileupReports = .{ .coverage = .{}, .variants = .{} };
+    out.coverage.add("window {d} min_mapq {d}", .{ p.coverage_window, p.coverage_mapq });
+    out.variants.add("min_depth {d} min_base_quality {d} min_alt_percent {d} hom_percent {d}",
+         .{ p.variant_depth, p.variant_quality, p.variant_percent, p.homozygous_percent });
+    var callable: i64 = 0;
+    var variant_count: i64 = 0;
+    var heterozygous: i64 = 0;
+    var homozygous: i64 = 0;
+    for (references, 0..) |reference, r| {
+        const length = reference.bases.len;
+        var covered: i64 = 0;
+        var total: i64 = 0;
+        var maximum: i64 = 0;
+        for (depths[r]) |depth| {
+            covered += @intFromBool(depth > 0);
+            total += depth;
+            maximum = @max(maximum, depth);
+        }
+        out.coverage.add("reference {s} length {d} covered {d} breadth {s} mean_depth {s} max_depth {d}",
+             .{ reference.name, length, covered, ratio(covered, n(length)), ratio(total, n(length)),
+             maximum });
+        var histogram = [_]i64{0} ** 401;
+        for (depths[r]) |depth| histogram[u(depth)] += 1;
+        var row: d.Text = .{};
+        row.add("depth_histogram", .{});
+        for (0..u(maximum) + 1) |depth| row.add(" {d}:{d}", .{ depth, histogram[depth] });
+        out.coverage.add("{s}", .{row.value()});
+        var first: usize = 0;
+        while (first < length) : (first += p.coverage_window) {
+            const last = @min(first + p.coverage_window, length);
+            const size = last - first;
+            var gc: i64 = 0;
+            var sum: i64 = 0;
+            var zero: i64 = 0;
+            var mapq_zero: i64 = 0;
+            var largest: i64 = 0;
+            for (first..last) |j| {
+                gc += @intFromBool(reference.bases[j] == 'G' or reference.bases[j] == 'C');
+                sum += depths[r][j];
+                largest = @max(largest, depths[r][j]);
+                zero += @intFromBool(depths[r][j] == 0);
+                mapq_zero += starts[r][j];
+            }
+            const bar = d.alloc(u8, u(@divTrunc(10 * sum, n(size))));
+            @memset(bar, '#');
+            out.coverage.add("{s} {d} {d} gc {s} sum {d} mean {s} max {d} zero {d} mapq0 {d} |{s}",
+                 .{ reference.name, first + 1, last, ratio(gc, n(size)), sum, ratio(sum, n(size)),
+                 largest, zero, mapq_zero, bar });
+        }
+        for (pileups[r], 0..) |strands, j| {
+            var counts = [_]i64{0} ** 4;
+            var depth: i64 = 0;
+            for (strands, counts[0..]) |pair, *count| {
+                count.* = pair[0] + pair[1];
+                depth += count.*;
+            }
+            if (depth < p.variant_depth) continue;
+            callable += 1;
+            var alternative: ?usize = null;
+            for (0..4) |base| if (bases[base] != reference.bases[j] and (alternative == null or counts[base] > counts[alternative.?])) {
+                alternative = base;
+            };
+            const base = alternative.?;
+            const count = counts[base];
+            if (count < 2 or 100 * count < p.variant_percent * depth) continue;
+            const homo = 100 * count >= p.homozygous_percent * depth;
+            homozygous += @intFromBool(homo);
+            heterozygous += @intFromBool(!homo);
+            variant_count += 1;
+            out.variants.add("{s} {d} {c}>{c} depth {d} alt {d} fraction {s} genotype {s} strands {d} {d} counts {d} {d} {d} {d}",
+                 .{ reference.name, j + 1, reference.bases[j], bases[base], depth, count, ratio(count,
+                 depth), if (homo) "1/1" else "0/1", strands[base][0], strands[base][1], counts[0],
+                 counts[1], counts[2], counts[3] });
+        }
+    }
+    out.variants.add("callable {d} variants {d} heterozygous {d} homozygous {d}", .{ callable,
+         variant_count, heterozygous, homozygous });
+    return out;
+}
+fn errorStatistics(results: []const d.Result, references: []const d.Reference) d.Lines {
+    var maximum_cycle: usize = 0;
+    var cycles = [_][2]i64{[_]i64{0} ** 2} ** 101;
+    var substitutions = [_][5]i64{[_]i64{0} ** 5} ** 4;
+    var quality_counts = [_]i64{0} ** 2;
+    var quality_sums = [_]i64{0} ** 2;
+    var quality_bins = [_][2]i64{[_]i64{0} ** 2} ** 5;
+    var operations = [_]i64{0} ** 4;
+    var events = [_]i64{0} ** 2;
+    var indel_bases = [_]i64{0} ** 2;
+    for (results) |result| {
+        maximum_cycle = @max(maximum_cycle, result.read.bases.len);
+        if (!result.mapped) continue;
+        const alignment = result.primary;
+        for (alignment.operations) |operation| operations[
+            switch (operation) {
+                'M' => 0,
+                'I' => 1,
+                else => 2,
+            }
+        ] += 1;
+        operations[3] += n(result.trimmed);
+        if (result.x0 != 1) continue;
+        const reference = references[alignment.reference].bases;
+        for (alignment.pairs) |pair| {
+            const i = pair.read;
+            const j = pair.reference;
+            const observed = alignment.oriented[i];
+            const expected = reference[j];
+            const mismatch: usize = @intFromBool(observed != expected);
+            const cycle = if (alignment.strand == 0) i + 1 else result.length - i;
+            const quality = result.qualities[cycle - 1];
+            cycles[cycle][0] += 1;
+            cycles[cycle][1] += n(mismatch);
+            substitutions[baseIndex(expected)][baseIndex(observed)] += 1;
+            quality_counts[mismatch] += 1;
+            quality_sums[mismatch] += quality;
+            const bin = @min(u(@divTrunc(quality, 10)), 4);
+            quality_bins[bin][0] += 1;
+            quality_bins[bin][1] += n(mismatch);
+        }
+        for (runs(alignment.operations)) |run| if (run.operation == 'I' or run.operation == 'D') {
+            const kind: usize = if (run.operation == 'I') 0 else 1;
+            events[kind] += 1;
+            indel_bases[kind] += n(run.count);
+        };
+    }
+    const aligned = quality_counts[0] + quality_counts[1];
+    const mismatches = quality_counts[1];
+    var out: d.Lines = .{};
+    out.add("error_profile aligned_bases {d} mismatches {d} rate {s}", .{ aligned, mismatches,
+         ratio(mismatches, aligned) });
+    out.add("substitutions", .{});
+    out.add("ref A C G T N", .{});
+    for (substitutions, 0..) |counts, base| out.add("{c} {d} {d} {d} {d} {d}", .{ bases[base],
+         counts[0], counts[1], counts[2], counts[3], counts[4] });
+    out.add("mismatch_by_cycle", .{});
+    for (1..maximum_cycle + 1) |cycle| out.add("cycle {d} aligned {d} mismatches {d} rate {s}",
+         .{ cycle, cycles[cycle][0], cycles[cycle][1], ratio(cycles[cycle][1], cycles[cycle][0]) });
+    out.add("quality matched {d} mean {s} mismatched {d} mean {s}", .{ quality_counts[0], ratio(quality_sums[0],
+         quality_counts[0]), quality_counts[1], ratio(quality_sums[1], quality_counts[1]) });
+    out.add("quality_bins", .{});
+    for ([_][]const u8{ "0-9", "10-19", "20-29", "30-39", "40-" }, quality_bins) |range, counts| out.add("{s} aligned {d} mismatches {d} rate {s}",
+         .{ range, counts[0], counts[1], ratio(counts[1], counts[0]) });
+    out.add("cigar M {d} I {d} D {d} S {d}", .{ operations[0], operations[1], operations[2], operations[3] });
+    out.add("indels insertions {d} {d} deletions {d} {d}", .{ events[0], indel_bases[0], events[1], indel_bases[1] });
+    return out;
+}
+fn mappingStatistics(results: []const d.Result, references: []const d.Reference, searches: SearchTotals,
+     seeds: SeedTotals) d.Lines {
+    var mapped: i64 = 0;
+    var unique: i64 = 0;
+    var short_reads: i64 = 0;
+    var no_hit: i64 = 0;
+    var trimmed: i64 = 0;
+    var trimmed_bases: i64 = 0;
+    var forward: i64 = 0;
+    var reverse: i64 = 0;
+    var minimum_length: usize = 101;
+    var maximum_length: usize = 0;
+    var n_reads: i64 = 0;
+    var n_bases: i64 = 0;
+    var n_mapped: i64 = 0;
+    var method_counts = [_]i64{0} ** 3;
+    const reference_counts = d.alloc([4]i64, references.len);
+    @memset(reference_counts, [_]i64{0} ** 4);
+    var length_bins = [_][3]i64{[_]i64{0} ** 3} ** 11;
+    var mapq_counts = [_]i64{0} ** 61;
+    var maximum_nm: i64 = 0;
+    var targets: std.ArrayList(Target) = .empty;
+    for (results) |result| {
+        trimmed += @intFromBool(result.trimmed > 0);
+        trimmed_bases += n(result.trimmed);
+        minimum_length = @min(minimum_length, result.length);
+        maximum_length = @max(maximum_length, result.length);
+        var count: i64 = 0;
+        for (result.read.bases) |base| count += @intFromBool(base == 'N');
+        if (count > 0) {
+            n_reads += 1;
+            n_bases += count;
+            n_mapped += @intFromBool(result.mapped);
+        }
+        const bin = result.length / 10;
+        length_bins[bin][0] += 1;
+        length_bins[bin][1] += @intFromBool(result.mapped);
+        length_bins[bin][2] += @intFromBool(result.mapped and result.x0 == 1);
+        if (!result.mapped) {
+            short_reads += @intFromBool(d.eq(result.reason, "SHORT"));
+            no_hit += @intFromBool(d.eq(result.reason, "NOHIT"));
+            continue;
+        }
+        mapped += 1;
+        unique += @intFromBool(result.x0 == 1);
+        const method: usize = if (d.eq(result.method, "EXACT")) 0 else if (d.eq(result.method, "MISMATCH")) 1 else 2;
+        method_counts[method] += 1;
+        forward += @intFromBool(result.primary.strand == 0);
+        reverse += @intFromBool(result.primary.strand == 1);
+        mapq_counts[u(result.mapq)] += 1;
+        maximum_nm = @max(maximum_nm, result.primary.nm);
+        const r = result.primary.reference;
+        reference_counts[r][0] += 1;
+        reference_counts[r][1] += @intFromBool(result.x0 == 1);
+        reference_counts[r][2 + result.primary.strand] += 1;
+        if (result.x0 >= 2) {
+            var names: d.Text = .{};
+            for (references, 0..) |reference, i| if (result.targets & bit(i) != 0) {
+                names.add("{s}{s}", .{ if (names.value().len == 0) "" else "+", reference.name });
+            };
+            var found: ?usize = null;
+            for (targets.items, 0..) |target, i| if (d.eq(target.names, names.value())) {
+                found = i;
+                break;
+            };
+            if (found == null) {
+                found = targets.items.len;
+                d.append(Target, &targets, .{ .names = names.value() });
+            }
+            targets.items[found.?].count += 1;
+        }
+    }
+    const nm_counts = d.alloc(i64, u(maximum_nm) + 1);
+    @memset(nm_counts, 0);
+    for (results) |result| if (result.mapped) {
+        nm_counts[u(result.primary.nm)] += 1;
+    };
+    var out: d.Lines = .{};
+    out.add("reads total {d} trimmed {d} trimmed_bases {d} short {d}", .{ results.len, trimmed,
+         trimmed_bases, short_reads });
+    out.add("mapped {d} rate {s} unique {d} multi {d} unmapped {d}", .{ mapped, ratio(mapped,
+         n(results.len)), unique, mapped - unique, n(results.len) - mapped });
+    out.add("unmapped short {d} nohit {d}", .{ short_reads, no_hit });
+    out.add("method exact {d} mismatch {d} seed {d}", .{ method_counts[0], method_counts[1], method_counts[2] });
+    out.add("strand forward {d} reverse {d}", .{ forward, reverse });
+    for (references, reference_counts) |reference, counts| out.add("reference {s} mapped {d} unique {d} forward {d} reverse {d}",
+         .{ reference.name, counts[0], counts[1], counts[2], counts[3] });
+    out.add("length_bins", .{});
+    var lower = minimum_length / 10 * 10;
+    while (lower <= maximum_length / 10 * 10) : (lower += 10) {
+        const counts = length_bins[lower / 10];
+        out.add("{d}-{d} reads {d} mapped {d} unique {d}", .{ lower, lower + 9, counts[0], counts[1], counts[2] });
+    }
+    out.add("n_reads {d} n_bases {d} mapped {d}", .{ n_reads, n_bases, n_mapped });
+    out.add("multi_targets", .{});
+    if (targets.items.len == 0) out.add("none", .{}) else {
+        std.mem.sort(Target, targets.items, {}, targetLess);
+        for (targets.items) |target| out.add("{s} {d}", .{ target.names, target.count });
+    }
+    out.add("mapq_histogram", .{});
+    var quality: usize = 61;
+    while (quality > 0) {
+        quality -= 1;
+        if (mapq_counts[quality] > 0) out.add("{d} {d}", .{ quality, mapq_counts[quality] });
+    }
+    out.add("nm_histogram", .{});
+    for (nm_counts, 0..) |count, value| if (count > 0) out.add("{d} {d}", .{ value, count });
+    out.extend(errorStatistics(results, references));
+    out.add("search dfs_calls {d} dfs_nodes {d} dfs_leaves {d} dfs_positions {d}", .{ searches.calls,
+         searches.nodes, searches.leaves, searches.positions });
+    out.add("seeds reads {d} seeds {d} with_n {d} repetitive {d} without_hit {d} candidates {d} passing {d}",
+         .{ seeds.reads, seeds.seeds, seeds.with_n, seeds.repetitive, seeds.without_hit, seeds.candidates,
+         seeds.passing });
+    return out;
+}
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer arena.deinit();
+    d.allocator = arena.allocator();
+    work_allocator = init.gpa;
+    const input = try d.readInputs(init.io);
+    const p = Params.init(input);
+    const reference = ReferenceText.init(input.references);
+    const suffixes = suffix.build(reference.text);
+    const reverse_suffixes = suffix.build(reference.reverse);
+    const forward = fm.Index.init(reference.text, suffixes.order, p.occ_interval, p.sample_interval);
+    const reverse = fm.Index.init(reference.reverse, reverse_suffixes.order, p.occ_interval, null);
+    const index = indexStatistics(reference, suffixes, forward, reverse_suffixes, reverse, p);
+    var mapper: Mapper = .{ .reference = reference, .forward = forward, .reverse = reverse, .p = p };
+    const results = d.alloc(d.Result, input.reads.len);
+    for (input.reads, results) |read, *result| result.* = mapper.mapRead(read);
+    var sam_lines = sam.header(input.references);
+    for (results) |result| sam_lines.add("{s}", .{sam.record(result, input.references, p.maximum_alternatives)});
+    const pileup = coverageAndVariants(results, input.references, p);
+    const summary = mappingStatistics(results, input.references, mapper.searches, mapper.seeds);
+    try std.Io.Dir.cwd().createDirPath(init.io, "output");
+    try sam.save(init.io, "alignments.sam", sam_lines);
+    try sam.save(init.io, "coverage.txt", pileup.coverage);
+    try sam.save(init.io, "variants.txt", pileup.variants);
+    try sam.save(init.io, "index_stats.txt", index);
+    try sam.save(init.io, "summary.txt", summary);
+}
+pub fn record(result: d.Result, references: []const d.Reference, maximum_alternatives: usize) []const u8 {
+    const read = result.read;
+    if (!result.mapped) return d.fmt("{s}\t4\t*\t0\t0\t*\t*\t0\t0\t{s}\t{s}\tYM:Z:{s}", .{ read.name,
+         read.bases, read.quality, result.reason });
+    const alignment = result.primary;
+    const reverse = alignment.strand == 1;
+    const quality = d.alloc(u8, read.quality.len);
+    for (quality, 0..) |*character, i| character.* = read.quality[if (reverse) read.quality.len - i - 1 else i];
+    var out: d.Text = .{};
+    out.add("{s}\t{d}\t{s}\t{d}\t{d}\t{s}\t*\t0\t0\t{s}\t{s}\tNM:i:{d}\tMD:Z:{s}\tAS:i:{d}\tX0:i:{d}\tX1:i:{d}\tYM:Z:{s}",
+         .{ read.name, if (reverse) @as(usize, 16) else 0, references[alignment.reference].name,
+         alignment.position + 1, result.mapq, alignment.cigar, if (reverse) d.reverseComplement(read.bases) else read.bases,
+         quality, alignment.nm, alignment.md, result.score, result.x0, result.x1, result.method });
+    if (result.other_count >= 1 and result.other_count <= maximum_alternatives) {
+        out.add("\tXA:Z:", .{});
+        for (result.others) |other| out.add("{s},{c}{d},{s},{d};", .{ references[other.reference].name,
+             if (other.strand == 0) @as(u8, '+') else '-', other.position + 1, other.cigar,
+             other.nm });
+    }
+    return out.value();
+}

@@ -1,0 +1,131 @@
+sql_null <- NA
+fail <- function(reason) stop(reason, call. = FALSE)
+is_null <- function(x) length(x) == 1L && is.na(x)
+value_text <- function(x) if (is_null(x)) "NULL" else as.character(x)
+truth <- function(x) !is_null(x) && is.numeric(x) && x != 0
+value_type <- function(x) if (is_null(x)) "NULL" else if (is.numeric(x)) "INT" else "TEXT"
+compatible <- function(a,b) a == b || a == "NULL" || b == "NULL"
+require_type <- function(a,b,op) if (!compatible(a,b)) fail(paste0("type mismatch for ",op))
+comma <- function(p,reader) {
+  a <- list(reader(p))
+  while (accept(p,",")) a[[length(a)+1L]] <- reader(p)
+  a
+}
+  } else if (accept(p,"UPDATE")) {
+    name <- kind(p,"name")
+    expect(p,"SET")
+    assignments <- comma(p,function(p) {
+      name <- kind(p,"name")
+      expect(p,"=")
+      list(name=name,expr=parse_expression(p))
+    })
+    result <- list(kind="update",name=name,assignments=assignments,where=clause(p,"WHERE"))
+scope <- function() {
+  s <- new.env(parent=emptyenv())
+  s$entries <- list()
+  s$width <- 0L
+  s
+}
+scope_add <- function(s,name,t) {
+  if (any(vapply(s$entries,function(e) e$name == name,FALSE)))
+    fail(paste0("duplicate table name ",name))
+  s$entries[[length(s$entries)+1L]] <- list(name=name,table=t,offset=s$width)
+  s$width <- s$width+length(t$columns)
+}
+resolve <- function(s,ref) {
+  entries <- if (is.null(ref$table)) s$entries else Filter(function(e) e$name == ref$table,s$entries)
+  if (!is.null(ref$table) && length(entries) == 0L) fail(paste0("unknown table ",ref$table))
+  matches <- list()
+  for (entry in entries) {
+    indices <- which(vapply(entry$table$columns,function(c) c$name == ref$column,FALSE))
+    for (i in indices)
+      matches[[length(matches)+1L]] <- list(index=entry$offset+i,type=entry$table$columns[[i]]$type)
+  }
+  if (length(matches) == 0L) fail(paste0("unknown column ",ref$text))
+  if (length(matches) > 1L) fail(paste0("ambiguous column ",ref$column))
+  ref$index <- matches[[1]]$index
+  matches[[1]]$type
+}
+
+check_expr <- function(e,s,aggregates_allowed=FALSE,grouped=NULL,inside=FALSE) {
+  if (e$kind == "literal") return(value_type(e$value))
+  if (e$kind == "ref") {
+    type <- resolve(s,e)
+    if (!is.null(grouped) && !inside && !(e$index %in% grouped))
+      fail(paste0("column ",e$text," is not grouped"))
+    return(type)
+  }
+  if (e$kind == "aggregate") {
+    if (!aggregates_allowed || inside) fail(paste0("misuse of aggregate ",e$op))
+condition_check <- function(e,s,name,aggregates=FALSE,grouped=NULL) {
+  if (!is.null(e)) require_type(check_expr(e,s,aggregates,grouped),"INT",name)
+}
+evaluate <- function(e,row=list(),group=NULL) {
+  if (e$kind == "literal") return(e$value)
+  if (e$kind == "ref") return(row[[e$index]])
+satisfies <- function(e,row,group=NULL) is.null(e) || truth(evaluate(e,row,group))
+row_count <- function(n) paste0(n,if(n == 1) " row" else " rows")
+database <- new.env(parent=emptyenv())
+database$tables <- new.env(hash=TRUE,parent=emptyenv())
+table_lookup <- function(name) {
+  if (!exists(name,envir=database$tables,inherits=FALSE)) fail(paste0("unknown table ",name))
+  get(name,envir=database$tables,inherits=FALSE)
+}
+column_index <- function(t,name) which(vapply(t$columns,function(c) c$name == name,FALSE))
+column_indices <- function(t,names) {
+  result <- integer()
+  for (name in names) {
+    i <- column_index(t,name)
+    if (length(i) == 0L) fail(paste0("unknown column ",name))
+    if (i %in% result) fail(paste0("duplicate column ",name))
+    result <- c(result,i)
+  }
+  result
+}
+constraints <- function(t,rows,indices) {
+  for (i in indices) {
+    row <- rows[[i]]
+    for (j in seq_along(t$columns))
+      if (t$columns[[j]]$not_null && is_null(row[[j]]))
+        fail(paste0("NULL value in column ",t$columns[[j]]$name))
+    if (!is.null(t$key) && sum(vapply(rows,function(r) {
+      a <- r[[t$key]]
+      b <- row[[t$key]]
+      (is_null(a) && is_null(b)) || (!is_null(a) && !is_null(b) && a == b)
+    },FALSE)) > 1L)
+      fail(paste0("duplicate primary key ",value_text(row[[t$key]])))
+  }
+}
+    t <- new.env(parent=emptyenv())
+    t$name <- s$name
+    t$columns <- columns
+    t$key <- key
+    t$rows <- list()
+    assign(s$name,t,envir=database$tables)
+  } else if (s$kind == "update" || s$kind == "delete") {
+    t <- table_lookup(s$name)
+    context <- scope()
+    scope_add(context,t$name,t)
+    if (s$kind == "delete") {
+    } else {
+      indices <- column_indices(t,vapply(s$assignments,function(a) a$name,""))
+      for (j in seq_along(indices))
+        require_type(check_expr(s$assignments[[j]]$expr,context),
+                     t$columns[[indices[j]]]$type,
+                     paste0("column ",t$columns[[indices[j]]]$name))
+      condition_check(s$where,context,"WHERE")
+      rows <- t$rows
+      changed <- integer()
+      for (i in seq_along(t$rows)) {
+        row <- t$rows[[i]]
+        if (!satisfies(s$where,row)) next
+        replacement <- row
+        for (j in seq_along(indices))
+          replacement[[indices[j]]] <- evaluate(s$assignments[[j]]$expr,row)
+        rows[[i]] <- replacement
+        changed <- c(changed,i)
+      }
+      constraints(t,rows,changed)
+      t$rows <- rows
+      cat(row_count(length(changed))," updated.\n",sep="")
+    }

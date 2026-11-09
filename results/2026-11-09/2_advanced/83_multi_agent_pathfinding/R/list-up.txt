@@ -1,0 +1,524 @@
+state_allowed <- function(restrictions, cell, time) {
+    permanent <- restrictions$permanent[[as.character(cell)]]
+    !exists(
+        paste(cell, time),
+        restrictions$states,
+        inherits = FALSE
+    ) && (is.null(permanent) || time < permanent)
+}
+action_allowed <- function(
+    restrictions,
+    source,
+    destination,
+    time
+) state_allowed(restrictions, destination, time) && (source == destination || !exists(
+    paste(source, destination, time),
+    restrictions$moves,
+    inherits = FALSE
+))
+arrival_allowed <- function(restrictions, goal) {
+    arrival <- 0L
+    for (key in ls(restrictions$states)) {
+        fields <- as.integer(strsplit(key, " ", fixed = TRUE)[[1L]])
+        if (fields[1L] == goal) arrival <- max(arrival, fields[2L] + 1L)
+    }
+    arrival
+}
+reserve_path <- function(restrictions, path, start_time = 0L, permanent = FALSE) {
+    for (index in seq_along(path)) {
+        time <- start_time + index - 1L
+        restrictions$states[[paste(path[index], time)]] <- TRUE
+        if (index > 1L && path[index - 1L] != path[index]) restrictions$moves[[paste(
+            path[index],
+            path[index - 1L],
+            time
+        )]] <- TRUE
+    }
+    if (permanent) {
+        key <- as.character(tail(path, 1L))
+        old <- restrictions$permanent[[key]]
+        restrictions$permanent[[key]] <- if (is.null(old)) start_time + length(path) - 1L else min(
+            old,
+            start_time + length(path) - 1L
+        )
+    }
+}
+low_search <- function(grid, agent, distances, start, t0, restrictions, tmax, budget, window = FALSE) {
+    budget$searches <- budget$searches + 1L
+    beginning <- budget$expansions
+    arrival <- arrival_allowed(restrictions, agent$goal)
+    area <- length(grid$free)
+    parents <- rep(-1L, area * (tmax - t0 + 1L))
+    root <- start + 1L
+    parents[root] <- 0L
+    heap <- new_heap()
+    binary_push(heap, c(distances[start + 1L], 0L, 0L, root))
+    insertion <- 0L
+    while (length(heap$items)) {
+        entry <- binary_pop(heap)
+        state <- entry[4L]
+        budget$expansions <- budget$expansions + 1L
+        if (budget$expansions > budget$limit) return(list(
+            path = NULL,
+            expansions = budget$expansions - beginning,
+            aborted = TRUE
+        ))
+        cell <- (state - 1L) %% area
+        time <- t0 - entry[2L]
+        if ((cell == agent$goal && time >= arrival) || (window && time == tmax)) {
+            reversed <- integer()
+            current <- state
+            while (current != 0L) {
+                reversed <- c(reversed, (current - 1L) %% area)
+                current <- parents[current]
+            }
+            return(list(path = rev(reversed), expansions = budget$expansions - beginning, aborted = FALSE))
+        }
+        if (time == tmax) next
+        for (entry in destinations(grid, cell)) {
+            destination <- entry$cell
+            if (distances[destination + 1L] < 0L) next
+            next_time <- time + 1L
+            next_state <- destination + 1L + (next_time - t0) * area
+            if (parents[next_state] != -1L || !action_allowed(
+                restrictions,
+                cell,
+                destination,
+                next_time
+            )) next
+            insertion <- insertion + 1L
+            parents[next_state] <- state
+            g <- next_time - t0
+            binary_push(heap, c(g + distances[destination + 1L], -g, insertion, next_state))
+        }
+    }
+    list(path = NULL, expansions = budget$expansions - beginning, aborted = FALSE)
+}
+read_grid <- function() {
+    lines <- readLines("input/map.txt", warn = FALSE)
+    dimensions <- as.integer(strsplit(lines[1L], " ", fixed = TRUE)[[1L]])
+    rows <- lines[-1L]
+    free <- unlist(
+        lapply(rows, function(row) strsplit(row, "", fixed = TRUE)[[1L]] == "."),
+        use.names = FALSE
+    )
+    list(width = dimensions[1L], height = dimensions[2L], rows = rows, free = free)
+}
+read_agents <- function(grid) {
+    lapply(readLines("input/agents.csv", warn = FALSE)[-1L], function(line) {
+        fields <- as.integer(strsplit(line, ",", fixed = TRUE)[[1L]])
+        list(
+            id = fields[1L],
+            start = fields[3L] * grid$width + fields[2L],
+            goal = fields[5L] * grid$width + fields[4L],
+            name = intToUtf8(65L + fields[1L])
+        )
+    })
+}
+read_parameters <- function(agent_count) {
+    settings <- list(orders = list(seq_len(agent_count)), runs = list(), delays = list())
+    for (line in readLines("input/params.txt", warn = FALSE)) {
+        fields <- strsplit(line, " ", fixed = TRUE)[[1L]]
+        kind <- fields[1L]
+        arguments <- fields[-1L]
+        if (kind %in% c("HORIZON", "HL_BUDGET", "LL_BUDGET")) {
+            settings[[tolower(kind)]] <- as.integer(arguments[1L])
+        } else if (kind == "WINDOW") {
+            settings$window <- as.integer(arguments[1L])
+            settings$step <- as.integer(arguments[2L])
+        } else if (kind == "ORDER") {
+            settings$orders[[length(settings$orders) + 1L]] <- as.integer(arguments) + 1L
+        } else if (kind == "RUN") {
+            settings$runs[[length(settings$runs) + 1L]] <- list(
+                name = paste(arguments, collapse = "-"),
+                solver = arguments[1L],
+                cost_function = arguments[2L]
+            )
+        } else if (kind == "ANIMATE") {
+            settings$animate <- arguments[1L]
+            settings$frames <- as.integer(arguments[2L])
+        } else {
+            values <- as.integer(arguments)
+            settings$delays[[length(settings$delays) + 1L]] <- c(values[1L] + 1L, values[2:3])
+        }
+    }
+    settings
+}
+solve_pp <- function(run, grid, agents, distances, settings) {
+    for (order_number in seq_along(settings$orders)) {
+        order <- settings$orders[[order_number]]
+        run$high_level <- run$high_level + 1L
+        before <- run$budget$expansions
+        result <- try_priority_order(grid, agents, distances, settings$horizon, order, run$budget)
+        for (attempt in result$attempts) {
+            prefix <- sprintf("order %d agent %s", order_number, agent_name(attempt$agent))
+            detail <- if (is.null(attempt$path)) "failed" else paste("cost", length(attempt$path) - 1L)
+            run$trace <- c(run$trace, sprintf("%s %s expansions %d", prefix, detail, attempt$expansions))
+        }
+        if (result$failure == "ll_budget") {
+            run$reason <- "ll_budget"
+            break
+        }
+        planned <- length(result$attempts) - as.integer(nzchar(result$failure))
+        summary <- sprintf(
+            "order %d %s planned %d expansions %d",
+            order_number,
+            paste0(vapply(order, agent_name, ""), collapse = ""),
+            planned,
+            run$budget$expansions - before
+        )
+        if (!nzchar(result$failure)) {
+            run$specific <- c(run$specific, paste(summary, "ok"))
+            run$paths <- result$paths
+            run$status <- "OK"
+            run$ending <- paste("end OK order", order_number)
+            return(invisible(NULL))
+        }
+        run$specific <- c(run$specific, paste(summary, "failed", agent_name(result$failed_agent)))
+    }
+    if (!nzchar(run$reason)) run$reason <- "orders"
+    run$ending <- paste("end FAIL", run$reason)
+}
+validate_plan <- function(paths, agents, grid) {
+    start_count <- sum(vapply(
+        seq_along(paths),
+        function(index) paths[[index]][1L] != agents[[index]]$start,
+        FALSE
+    ))
+    goal_count <- sum(vapply(
+        seq_along(paths),
+        function(index) tail(paths[[index]], 1L) != agents[[index]]$goal,
+        FALSE
+    ))
+    illegal <- 0L
+    for (path in paths) if (length(path) > 1L) for (index in 2:length(path)) {
+        if (!any(vapply(
+            destinations(grid, path[index - 1L]),
+            function(entry) entry$cell == path[index],
+            FALSE
+        ))) illegal <- illegal + 1L
+    }
+    collisions <- plan_conflicts(paths)
+    vertex <- sum(vapply(collisions, function(conflict) conflict$kind == "vertex", FALSE))
+    edge <- length(collisions) - vertex
+    follows <- 0L
+    for (time in seq_len(max(lengths(paths) - 1L))) for (a in seq_along(paths)) {
+        past_a <- path_position(paths[[a]], time - 1L)
+        next_a <- path_position(paths[[a]], time)
+        if (next_a == past_a) next
+        for (b in seq_along(paths)) {
+            if (a == b) next
+            if (next_a == path_position(
+                paths[[b]],
+                time - 1L
+            ) && path_position(paths[[b]], time) != past_a) follows <- follows + 1L
+        }
+    }
+    list(
+        verdict = if (start_count + goal_count + illegal + vertex + edge == 0L) "VALID" else "INVALID",
+        start = start_count,
+        goal = goal_count,
+        moves = illegal,
+        vertex = vertex,
+        edge = edge,
+        follows = follows,
+        conflicts = collisions
+    )
+}
+plan_statistics <- function(paths, agents, overview, cost_function, grid) {
+    lengths <- lengths(paths) - 1L
+    soc <- sum(lengths)
+    makespan <- max(lengths)
+    cost <- if (cost_function == "SOC") soc else makespan
+    lower <- if (cost_function == "SOC") overview$soc_lower else overview$makespan_lower
+    per_agent <- lapply(
+        seq_along(agents),
+        function(index) path_statistics(
+            paths[[index]],
+            agents[[index]]$goal,
+            overview$agents[[index]]$shortest,
+            grid
+        )
+    )
+    arrivals <- vapply(0L:makespan, function(time) sum(lengths <= time), 0L)
+    traffic <- new.env(parent = emptyenv())
+    cell_waits <- new.env(parent = emptyenv())
+    increment <- function(table, cell) {
+        key <- as.character(cell)
+        old <- table[[key]]
+        table[[key]] <- if (is.null(old)) 1L else old + 1L
+    }
+    for (path in paths) {
+        for (cell in unique(path)) increment(traffic, cell)
+        if (length(path) > 1L) for (index in 2:length(path)) if (path[index - 1L] == path[index]) increment(
+            cell_waits,
+            path[index]
+        )
+    }
+    cells <- as.integer(ls(traffic))
+    hotspots <- head(
+        cells[order(
+            -vapply(cells, function(cell) traffic[[as.character(cell)]], 0L),
+            cells %/% grid$width,
+            cells %% grid$width
+        )],
+        5L
+    )
+    totals <- function(name) sum(vapply(per_agent, function(item) item[[name]], 0L))
+    list(
+        soc = soc,
+        makespan = makespan,
+        cost = cost,
+        ratio = reduced_fraction(cost, lower),
+        agents = per_agent,
+        sum_extra = totals("extra"),
+        max_extra = max(vapply(per_agent, function(item) item$extra, 0L)),
+        waits = totals("waits"),
+        turns = totals("turns"),
+        arrivals = arrivals,
+        traffic = traffic,
+        cell_waits = cell_waits,
+        hotspots = hotspots
+    )
+}
+successful_run_lines <- function(run, agents, grid) {
+    metrics <- run$metrics
+    execution <- run$execution
+    lines <- c(
+        sprintf(
+            "run %s solver %s cost_function %s result OK cost %d soc %d makespan %d ratio %s",
+            run$name,
+            run$solver,
+            run$cost_function,
+            metrics$cost,
+            metrics$soc,
+            metrics$makespan,
+            metrics$ratio
+        ),
+        run$specific
+    )
+    for (index in seq_along(agents)) {
+        info <- metrics$agents[[index]]
+        lines <- c(
+            lines,
+            sprintf(
+                "agent %s cost %d extra %d waits %d turns %d arrive %d leave %d moves %s",
+                agents[[index]]$name,
+                info$cost,
+                info$extra,
+                info$waits,
+                info$turns,
+                info$arrive,
+                info$leave,
+                info$actions
+            )
+        )
+    }
+    lines <- c(
+        lines,
+        paste("arrivals", paste(metrics$arrivals, collapse = " ")),
+        paste(
+            "hotspots",
+            paste(
+                vapply(
+                    metrics$hotspots,
+                    function(cell) paste0(cell_text(cell, grid), ":", metrics$traffic[[as.character(cell)]]),
+                    ""
+                ),
+                collapse = " "
+            )
+        )
+    )
+    if (execution$deadlock >= 0L) c(lines, paste("execution deadlock time", execution$deadlock)) else c(
+        lines,
+        sprintf(
+            "execution soc %d makespan %d blocked %d finish %s",
+            execution$soc,
+            execution$makespan,
+            execution$blocked,
+            paste(execution$finish, collapse = " ")
+        )
+    )
+}
+validation_lines <- function(runs, independent, agents, grid, overview) {
+    baseline <- validate_plan(independent, agents, grid)
+    baseline$conflicts <- overview$conflicts
+    plans <- c(
+        list(list(name = "INDEPENDENT", validation = baseline)),
+        lapply(runs, function(run) list(name = run$name, validation = run$validation))
+    )
+    lines <- character()
+    for (plan in plans) {
+        name <- plan$name
+        validation <- plan$validation
+        if (is.null(validation)) {
+            lines <- c(lines, paste("plan", name, "verdict NONE"))
+            next
+        }
+        lines <- c(
+            lines,
+            sprintf(
+                "plan %s verdict %s start %d goal %d moves %d vertex %d edge %d follows %d",
+                name,
+                validation$verdict,
+                validation$start,
+                validation$goal,
+                validation$moves,
+                validation$vertex,
+                validation$edge,
+                validation$follows
+            )
+        )
+        for (conflict in validation$conflicts) {
+            text <- paste0("  ", conflict_text(conflict, grid))
+            if (name == "INDEPENDENT") text <- paste(text, conflict$classification)
+            lines <- c(lines, text)
+        }
+    }
+    lines
+}
+animation_lines <- function(runs, grid, agents, settings) {
+    selected <- Filter(function(run) run$name == settings$animate, runs)[[1L]]
+    if (selected$status != "OK") return(paste("run", selected$name, "FAIL"))
+    paths <- selected$paths
+    lines <- sprintf("run %s frames %d", selected$name, settings$frames)
+    for (time in seq_len(settings$frames) - 1L) {
+        done <- sum(lengths(paths) - 1L <= time)
+        moving <- sum(vapply(
+            paths,
+            function(path) time < length(path) - 1L && time >= 1L && path_position(
+                path,
+                time
+            ) != path_position(
+                path,
+                time - 1L
+            ),
+            FALSE
+        ))
+        waiting <- length(paths) - done - moving
+        lines <- c(lines, "", sprintf("frame %d done %d moving %d waiting %d", time, done, moving, waiting))
+        placements <- new.env(parent = emptyenv())
+        for (agent in agents) placements[[as.character(agent$goal)]] <- tolower(agent$name)
+        for (index in seq_along(agents)) placements[[as.character(path_position(
+            paths[[index]],
+            time
+        ))]] <- agents[[index]]$name
+        lines <- c(lines, grid_picture(grid, placements))
+    }
+    for (name in c("traffic", "waits")) {
+        counts <- if (name == "traffic") selected$metrics$traffic else selected$metrics$cell_waits
+        placements <- new.env(parent = emptyenv())
+        for (key in ls(counts)) {
+            value <- counts[[key]]
+            if (value > 0L) placements[[key]] <- if (value <= 9L) as.character(value) else "+"
+        }
+        lines <- c(lines, "", name, grid_picture(grid, placements))
+    }
+    lines
+}
+main <- function() {
+    grid <- read_grid()
+    agents <- read_agents(grid)
+    settings <- read_parameters(length(agents))
+    distances <- lapply(agents, function(agent) distance_table(grid, agent$goal))
+    independent <- independent_plan(grid, agents, distances, settings$horizon)
+    overview <- instance_overview(grid, agents, distances, independent)
+    runs <- list()
+    for (definition in settings$runs) {
+        run <- new_run(definition, settings)
+        if (run$solver == "PP") {
+            solve_pp(run, grid, agents, distances, settings)
+        } else if (run$solver %in% c("CBS", "ICBS")) {
+            solve_cbs(run, grid, agents, distances, settings)
+        } else {
+            solve_whca(run, grid, agents, distances, settings)
+        }
+        if (run$status == "OK") {
+            run$metrics <- plan_statistics(run$paths, agents, overview, run$cost_function, grid)
+            run$validation <- validate_plan(run$paths, agents, grid)
+            run$execution <- delayed_execution(run$paths, settings)
+        }
+        runs[[length(runs) + 1L]] <- run
+    }
+    save_file("solutions.txt", solution_lines(grid, agents, overview, runs))
+    save_file("stats.csv", stats_lines(runs))
+    save_file("validation.txt", validation_lines(runs, independent, agents, grid, overview))
+    save_file("trace.txt", trace_lines(runs))
+    save_file("frames.txt", animation_lines(runs, grid, agents, settings))
+}
+path_position <- function(path, time) path[min(time + 1L, length(path))]
+plan_conflicts <- function(paths) {
+    horizon <- max(lengths(paths) - 1L)
+    result <- list()
+    if (horizon > 0L) for (time in seq_len(horizon)) for (a in seq_along(paths)) {
+        if (a >= length(paths)) next
+        for (b in seq.int(a + 1L, length(paths))) {
+            current_a <- path_position(paths[[a]], time)
+            current_b <- path_position(paths[[b]], time)
+            if (current_a == current_b) {
+                result[[length(result) + 1L]] <- list(
+                    kind = "vertex",
+                    time = time,
+                    a = a,
+                    b = b,
+                    u = current_a,
+                    v = current_a
+                )
+            } else if (current_a == path_position(paths[[b]], time - 1L) && current_b == path_position(
+                paths[[a]],
+                time - 1L
+            )) {
+                result[[length(result) + 1L]] <- list(
+                    kind = "edge",
+                    time = time,
+                    a = a,
+                    b = b,
+                    u = path_position(paths[[a]], time - 1L),
+                    v = current_a
+                )
+            }
+        }
+    }
+    result
+}
+plan_cost <- function(
+    paths,
+    cost_function
+) if (cost_function == "SOC") sum(lengths(paths) - 1L) else max(lengths(paths) - 1L)
+try_priority_order <- function(grid, agents, distances, horizon, order, budget) {
+    restrictions <- new_prohibitions()
+    paths <- vector("list", length(agents))
+    attempts <- list()
+    for (agent in order) {
+        result <- low_search(
+            grid,
+            agents[[agent]],
+            distances[[agent]],
+            agents[[agent]]$start,
+            0L,
+            restrictions,
+            horizon,
+            budget
+        )
+        if (result$aborted) return(list(
+            paths = NULL,
+            attempts = attempts,
+            failure = "ll_budget",
+            failed_agent = 0L
+        ))
+        attempts[[length(attempts) + 1L]] <- list(
+            agent = agent,
+            path = result$path,
+            expansions = result$expansions
+        )
+        if (is.null(result$path)) return(list(
+            paths = NULL,
+            attempts = attempts,
+            failure = "path",
+            failed_agent = agent
+        ))
+        paths[[agent]] <- result$path
+        reserve_path(restrictions, result$path, permanent = TRUE)
+    }
+    list(paths = paths, attempts = attempts, failure = "", failed_agent = 0L)
+}

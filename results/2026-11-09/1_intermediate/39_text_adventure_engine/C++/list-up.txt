@@ -1,0 +1,261 @@
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <tuple>
+#include <variant>
+#include <vector>
+using namespace std;
+using Lines = vector<string>;
+struct Failure { Lines rows; };
+[[noreturn]] void fail(string message) { throw Failure{{move(message)}}; }
+void append(Lines& target, const Lines& rows) { target.insert(target.end(), rows.begin(), rows.end()); }
+Lines words(const string& line) {
+    istringstream input(line);
+    Lines result;
+    for (string word; input >> word;) result.push_back(word);
+    return result;
+Lines normalized(string line) {
+    for (char& ch : line) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+    auto result = words(line);
+    result.erase(remove_if(result.begin(), result.end(), [](const string& word) { return word == "the" || word == "a" || word == "an"; }), result.end());
+    return result;
+Lines tail(const Lines& parts, size_t first) { return Lines(parts.begin() + first, parts.end()); }
+string join(const Lines& parts, const string& separator = " ") {
+    string result;
+    for (const auto& part : parts) { if (!result.empty()) result += separator; result += part; }
+    return result;
+enum class Direction { North, South, East, West, Up, Down };
+const array<string, 6> directionNames = {"north", "south", "east", "west", "up", "down"};
+string directionName(Direction direction) { return directionNames[static_cast<size_t>(direction)]; }
+optional<Direction> directionWord(const string& word) {
+    for (size_t index = 0; index < directionNames.size(); ++index)
+        if (word == directionNames[index] || word == directionNames[index].substr(0, 1)) return static_cast<Direction>(index);
+    return nullopt;
+enum class Verb { Go, Look, Examine, Take, Drop, Put, Inventory, Open, Close, Unlock, Lock, Use, Light, Extinguish, Wait, Score, Save, Restore, Verbose, Brief };
+const array<string, 20> verbNames = {"go", "look", "examine", "take", "drop", "put", "inventory", "open", "close", "unlock", "lock", "use", "light", "extinguish", "wait", "score", "save", "restore", "verbose", "brief"};
+const map<string, Verb> verbWords = [] {
+    const array<string, 20> synonyms = {"go walk run", "look l", "examine x inspect read", "take get grab", "drop discard", "put insert place", "inventory inv i", "open", "close shut", "unlock", "lock", "use apply", "light ignite", "extinguish douse snuff", "wait z", "score", "save", "restore load", "verbose", "brief"};
+    map<string, Verb> result;
+    for (size_t index = 0; index < synonyms.size(); ++index)
+        for (const auto& word : words(synonyms[index])) result.emplace(word, static_cast<Verb>(index));
+    return result;
+}();
+const set<Verb> noObjects = {Verb::Look, Verb::Inventory, Verb::Wait, Verb::Score, Verb::Save, Verb::Restore, Verb::Verbose, Verb::Brief};
+const set<Verb> actions = {Verb::Go, Verb::Take, Verb::Drop, Verb::Put, Verb::Open, Verb::Close, Verb::Unlock, Verb::Lock, Verb::Use, Verb::Light, Verb::Extinguish, Verb::Wait};
+enum class PlaceKind { Room, Player, Inside, Nowhere };
+struct Place {
+    PlaceKind kind = PlaceKind::Nowhere;
+    string id;
+    friend bool operator==(const Place& a, const Place& b) { return a.kind == b.kind && a.id == b.id; }
+    friend bool operator<(const Place& a, const Place& b) { return tie(a.kind, a.id) < tie(b.kind, b.id); }
+Place floorOf(string id) { return {PlaceKind::Room, move(id)}; }
+Place inside(string id) { return {PlaceKind::Inside, move(id)}; }
+Place player() { return {PlaceKind::Player, ""}; }
+enum class ContainerState { Open, Closed, Locked };
+enum class EndState { None, Won, Dead };
+struct Room { string name; bool dark = false; Lines description; };
+struct Item {
+    string id, name;
+    int weight = 0, points = 0;
+    bool light = false, fixed = false;
+    optional<int> capacity;
+    set<string> nouns, adjectives;
+struct ItemState { Place place; ContainerState container = ContainerState::Open; bool lit = false; int fuel = 0; };
+struct Message { string text; };
+struct AddItem { string id, room; };
+using Effect = variant<Message, OpenExit, RemoveItem, AddItem, SetFlag, AddPoints>;
+template<class... Functions> struct Overloaded : Functions... { using Functions::operator()...; };
+template<class... Functions> Overloaded(Functions...) -> Overloaded<Functions...>;
+struct Condition { string flag; bool on; };
+struct Rule { string first, second; optional<Condition> condition; Effect effect; };
+struct GameState {
+    string room;
+    map<string, ItemState> items;
+    set<string> flags, visited;
+    int bonus = 0, moves = 0, darkness = 0;
+    EndState ended = EndState::None;
+struct Score { int stored = 0, treasures = 0, points = 0, total = 0; };
+struct RuleResult { Lines rows; int executed = 0; };
+class Adventure {
+    map<string, Room> rooms;
+    map<string, Item> items;
+    vector<Rule> rules, enterRules;
+    set<string> vocabulary;
+    string trophy;
+    GameState state;
+    void define(const string& line) {
+        const auto parts = words(line);
+        const auto& kind = parts[0]; const auto& id = parts[1];
+        if (kind == "ROOM") {
+            const bool dark = parts[2] == "DARK";
+            rooms[id] = {join(tail(parts, dark ? 3 : 2)), dark, {}};
+        else if (kind == "ITEM") {
+            Item item; item.id = id; item.weight = stoi(parts[3]); item.nouns.insert(id);
+            ItemState value;
+            value.place = parts[2] == "PLAYER" ? player() : parts[2] == "NOWHERE" ? Place{} : floorOf(parts[2]);
+            size_t index = 4;
+            if (parts[index] == "TREASURE") { item.points = stoi(parts[index + 1]); index += 2; }
+            if (parts[index] == "LIGHT") { item.light = true; value.fuel = stoi(parts[index + 1]); index += 2; }
+            item.name = join(tail(parts, index));
+            item.adjectives.insert(parts.begin() + index, parts.end());
+            items.emplace(id, move(item)); state.items.emplace(id, move(value));
+        else if (kind == "RULE" || kind == "ENTER") {
+            Rule rule; rule.first = id;
+            size_t index = kind == "RULE" ? 3 : 2;
+            if (kind == "RULE") rule.second = parts[2];
+            if (parts[index] == "IF" || parts[index] == "UNLESS") {
+                rule.condition = Condition{parts[index + 1], parts[index] == "IF"}; index += 2;
+            const string& effect = parts[index++];
+            if (effect == "MESSAGE") rule.effect = Message{join(tail(parts, index))};
+            else if (effect == "ADD") rule.effect = AddItem{parts[index], parts[index + 1]};
+            (kind == "RULE" ? rules : enterRules).push_back(move(rule));
+        } else if (kind == "TROPHY") trophy = id;
+        else if (kind == "START") state.room = id;
+    map<Place, Lines> children() const {
+        map<Place, Lines> result;
+        for (const auto& [id, item] : state.items) result[item.place].push_back(id);
+        return result;
+    bool isOpen(const string& id) const { return items.at(id).capacity && state.items.at(id).container == ContainerState::Open; }
+    set<string> reachable(const Place& place) const {
+        const auto grouped = children();
+        set<string> result;
+        function<void(const Place&)> visit = [&](const Place& location) {
+            const auto found = grouped.find(location);
+            if (found == grouped.end()) return;
+            for (const auto& id : found->second) {
+                result.insert(id);
+                if (isOpen(id)) visit(inside(id));
+        visit(place);
+        return result;
+    set<string> carried() const { return reachable(player()); }
+    set<string> roomItems() const { return reachable(floorOf(state.room)); }
+    bool isLit() const {
+        if (!rooms.at(state.room).dark) return true;
+        auto nearby = carried();
+        const auto ground = roomItems();
+        nearby.insert(ground.begin(), ground.end());
+        return any_of(nearby.begin(), nearby.end(), [&](const string& id) { return state.items.at(id).lit; });
+    set<string> visible() const {
+        auto result = carried();
+        if (isLit()) { const auto ground = roomItems(); result.insert(ground.begin(), ground.end()); }
+        return result;
+    Score score() const {
+        Score result;
+        for (const auto& [id, item] : items) if (item.points > 0) {
+            ++result.treasures;
+            Place place = state.items.at(id).place;
+            while (place.kind == PlaceKind::Inside) place = state.items.at(place.id).place;
+            if (place == floorOf(trophy)) { ++result.stored; result.points += item.points; }
+        result.total = result.points + state.bonus;
+        return result;
+    string resolve(const Lines& phrase) {
+        const auto available = visible();
+        for (const auto& word : phrase) if (!vocabulary.count(word)) fail("I don't know the word \"" + word + "\".");
+        Lines matches, names;
+        for (const auto& [id, item] : items) if (available.count(id) && item.nouns.count(phrase.back()) &&
+            all_of(phrase.begin(), phrase.end() - 1, [&](const string& word) { return item.adjectives.count(word); })) {
+            matches.push_back(id); names.push_back(item.name);
+        if (matches.empty()) fail("You can't see any such thing.");
+        if (matches.size() > 1) fail("Which do you mean: " + join(names, ", ") + "?");
+        pronoun = matches[0];
+        return matches[0];
+    RuleResult runRules(const vector<Rule>& source, const string& first, const string& second = "") {
+        RuleResult result;
+        for (const auto& rule : source) {
+            if (rule.first != first || rule.second != second) continue;
+            if (rule.condition && static_cast<bool>(state.flags.count(rule.condition->flag)) != rule.condition->on) continue;
+            ++result.executed;
+            visit(Overloaded{
+                [&](const Message& effect) { result.rows.push_back(effect.text); },
+                [&](const AddItem& effect) { state.items.at(effect.id).place = floorOf(effect.room); },
+            }, rule.effect);
+        return result;
+    Lines execute(Verb verb, const Lines& first, const optional<Lines>& second) {
+        switch (verb) {
+            case Verb::Score: {
+                const auto value = score();
+                return {"You have scored " + to_string(value.total) + " points (treasure " + to_string(value.points) + ", bonus " +
+                    to_string(state.bonus) + ") in " + to_string(state.moves) + " moves.",
+                    "Treasures stored: " + to_string(value.stored) + " of " + to_string(value.treasures) + "."};
+            case Verb::Use: {
+                const string id = resolve(first);
+                const string target = resolve(*second);
+                if (!carried().count(id)) fail("You aren't carrying the " + items.at(id).name + ".");
+                auto result = runRules(rules, id, target);
+                if (!result.executed) fail("Nothing happens.");
+                return result.rows.empty() ? Lines{"Done."} : result.rows;
+    Lines endTurn(bool baseline) {
+        ++state.moves;
+        auto nearby = carried();
+        const auto ground = roomItems();
+        nearby.insert(ground.begin(), ground.end());
+        Lines rows;
+        for (auto& [id, value] : state.items) if (value.lit && --value.fuel == 0) {
+            value.lit = false;
+            if (nearby.count(id)) rows.push_back("The " + items.at(id).name + " goes out.");
+        const bool lit = isLit();
+        if (baseline && !lit) rows.push_back("It is now pitch dark.");
+        else if (!baseline && lit) append(rows, describe());
+        state.darkness = lit ? 0 : state.darkness + 1;
+        if (state.darkness == 2) rows.push_back("You hear something moving in the dark.");
+        if (state.darkness == 3) state.ended = EndState::Dead;
+        const auto value = score();
+        if (state.ended == EndState::None && value.treasures > 0 && value.stored == value.treasures) state.ended = EndState::Won;
+        if (state.ended != EndState::None) {
+            rows.push_back(state.ended == EndState::Dead ? "*** You have died ***" : "*** You have won ***");
+            rows.push_back("You scored " + to_string(value.total) + " points in " + to_string(state.moves) + " moves.");
+        return rows;
+    Lines interpret(const string& line) {
+        auto parts = normalized(line);
+        if (parts.empty()) fail("I beg your pardon?");
+        if (directionWord(parts[0])) parts.insert(parts.begin(), "go");
+        const auto found = verbWords.find(parts[0]);
+        if (found == verbWords.end()) fail("I don't know the verb \"" + parts[0] + "\".");
+        Verb verb = found->second;
+        auto rest = tail(parts, 1);
+        if (state.ended != EndState::None && verb != Verb::Restore) fail("The game is over.");
+        Lines first = rest;
+        optional<Lines> second;
+        if (noObjects.count(verb)) {
+            if (!rest.empty()) fail("I don't understand that.");
+        } else {
+            if (rest.empty()) fail(verb == Verb::Go ? "Which way do you want to go?" : "What do you want to " + verbNames[static_cast<size_t>(verb)] + "?");
+            if (verb == Verb::Go) {
+            } else {
+                set<string> prepositions;
+                if (verb == Verb::Put) prepositions = {"in", "into"};
+                else if (verb == Verb::Use) prepositions = {"on", "with"};
+                if (!prepositions.empty()) {
+                    const auto split = find_if(rest.begin(), rest.end(), [&](const string& word) { return prepositions.count(word); });
+                    if (split == rest.end() || split == rest.begin() || split + 1 == rest.end()) fail("I don't understand that.");
+                    first = Lines(rest.begin(), split); second = Lines(split + 1, rest.end());
+        bool baseline = isLit();
+        Lines rows;
+        if (verb == Verb::Go) {
+        } else rows = execute(verb, first, second);
+        if (actions.count(verb)) append(rows, endTurn(baseline));
+        return rows;
+    explicit Adventure(const Lines& definitions) {
+        for (const auto& line : definitions) define(line);
+        for (const auto& [id, item] : items) {
+            vocabulary.insert(item.nouns.begin(), item.nouns.end());
+            vocabulary.insert(item.adjectives.begin(), item.adjectives.end());
+    string finalScore() const { return "Final score: " + to_string(score().total) + " points in " + to_string(state.moves) + " moves."; }
+    Lines command(const string& line) {
+        try {
+            return interpret(line);
+        } catch (const Failure& error) { return error.rows; }
+int main() {
+    string line;
+    Lines definitions;
+    while (getline(cin, line) && line != "BEGIN") definitions.push_back(line);
+    Adventure adventure(definitions);
+    while (getline(cin, line)) {
+        if (line == "QUIT") { cout << adventure.finalScore() << '\n'; break; }
+        cout << "> " << line << '\n';
+        for (const auto& row : adventure.command(line)) cout << row << '\n';

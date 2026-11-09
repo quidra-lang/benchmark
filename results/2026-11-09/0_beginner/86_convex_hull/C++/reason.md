@@ -1,0 +1,5 @@
+Points are sorted lexicographically by x then y before reverse traversal, so upper construction starts (8,4), then (7,-1), rather than reversing the original input list. Each candidate compares cross(o,a,p) for the current last two chain points. While at least two exist and cross<=0, remove the last point repeatedly; append p after all such removals. This retains a counterclockwise upper chain without collinear interior points under the source convention. Input coordinates, ascending sort/comparator, cross arithmetic and the upper loop suffice; lower construction, concatenation and area output are omitted.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

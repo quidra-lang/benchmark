@@ -1,0 +1,5 @@
+Undo/redo are recognized first; other commands enter the local edit path. `type ` is tested as a five-character prefix and payload starts at offset 5, taking the whole remaining `hello world` including its internal space. It is appended/copied to the current buffer. For delete 5, the other branch takes text from offset 7 and parses decimal integer 5, then shortens the buffer by min(5,current length), so no word splitting loses payload spaces. History snapshots and redo mechanics are outside this parsing question.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

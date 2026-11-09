@@ -1,0 +1,258 @@
+function read_binary(name)
+    examples = NamedTuple[]
+    for line in readlines(joinpath("input",name))[2:end]
+        words = String.(split(line,','))
+        push!(
+            examples,
+            (id=words[1],point=(parse(Float64,words[2]),parse(Float64,words[3])),label=parse(Int,words[4]))
+        )
+    end
+    examples
+end
+function read_inputs()
+    training,testing = read_binary("train.csv"),read_binary("test.csv")
+    settings = Dict{String,Any}("kernels"=>SVMKernel[])
+    for line in readlines(joinpath("input","params.txt"))
+        words = String.(split(line))
+        key,values = lowercase(words[1]),words[2:end]
+        if key=="kernel"
+            kind = values[2]
+            degree = kind=="poly" ? parse(Int,values[3]) : 0
+            gamma = kind=="poly" ? parse(Float64,values[4]) : kind=="rbf" ? parse(Float64,values[3]) : 0.0
+            coef0 = kind=="poly" ? parse(Float64,values[5]) : 0.0
+            push!(settings["kernels"],SVMKernel(values[1],kind,degree,gamma,coef0))
+        elseif key in ("max_passes","folds","newton_iterations")
+            settings[key] = parse(Int,values[1])
+        elseif key in ("c_grid","plot_x","plot_y")
+            settings[key] = parse.(Float64,values)
+        else
+            settings[key] = parse(Float64,values[1])
+        end
+    end
+    training,testing,multi_training,multi_testing,settings
+end
+struct SVMKernel
+    name::String
+    kind::String
+    degree::Int
+    gamma::Float64
+    coef0::Float64
+end
+function kernel_value(kernel,first,second)
+    if kernel.kind=="rbf"
+        e1,e2 = first[1]-second[1],first[2]-second[2]
+        return exp(-kernel.gamma*(e1*e1+e2*e2))
+    end
+    product = first[1]*second[1]+first[2]*second[2]
+    kernel.kind=="linear" && return product
+    factor = kernel.gamma*product+kernel.coef0
+    value = 1.0
+    for _ in 1:kernel.degree
+        value *= factor
+    end
+    value
+end
+kernel_matrix(kernel,points) = [kernel_value(kernel,first,second) for first in points,second in points]
+submatrix(matrix,indices) = matrix[indices,indices]
+svm_sign(value) = value>0 ? 1 : -1
+folds(size,count) = [(
+    [i for i in 1:size if (i-1)%count!=f],
+    [i for i in 1:size if (i-1)%count==f]
+) for f in 0:count-1]
+correct_count(labels,values) = count(pair->svm_sign(pair[2])==pair[1],zip(labels,values))
+passes(model) = model.full_passes+model.nonbound_passes
+function train_model(points,labels,kernel,matrix,C,settings)
+    model = SMOModel(
+        points=points,
+        labels=labels,
+        kernel=kernel,
+        matrix=matrix,
+        C=C,
+        tolerance=settings["tolerance"],
+        eps=settings["eps"],
+        max_passes=settings["max_passes"],
+        alpha=zeros(length(points)),
+        errors=-Float64.(labels)
+    )
+    model
+end
+function decision(model,point)
+    total = 0.0
+    for (i,alpha) in enumerate(model.alpha)
+        alpha>0 && (total+=alpha*model.labels[i]*kernel_value(model.kernel,model.points[i],point))
+    end
+    total-model.b
+end
+function support_counts(model)
+    total = count(>(0),model.alpha)
+    bound = count(alpha->alpha>0 && alpha==model.C,model.alpha)
+    total,bound,total-bound
+end
+ranking_key(result) = (-result.correct,result.C,result.kernel_index)
+function cross_validate(training,settings)
+    points,labels = [example.point for example in training],[example.label for example in training]
+    partitions = folds(length(training),settings["folds"])
+    matrices,combinations,best = Matrix{Float64}[],NamedTuple[],NamedTuple[]
+    for (ki,kernel) in enumerate(settings["kernels"])
+        matrix = kernel_matrix(kernel,points)
+        push!(matrices,matrix)
+        candidates = NamedTuple[]
+        for C in settings["c_grid"]
+            values,fold_results = zeros(length(training)),NamedTuple[]
+            correct,support,pass_count,steps = 0,0,0,0
+            for (fitting,testing) in partitions
+                model = train_model(
+                    points[fitting],
+                    labels[fitting],
+                    kernel,
+                    submatrix(matrix,fitting),
+                    C,
+                    settings
+                )
+                fold_correct = 0
+                for i in testing
+                    values[i] = decision(model,points[i])
+                    fold_correct += svm_sign(values[i])==labels[i]
+                end
+                sv = support_counts(model)[1]
+                push!(
+                    fold_results,
+                    (train=length(fitting),test=length(testing),correct=fold_correct,support=sv,model=model)
+                )
+                correct += fold_correct
+                support += sv
+                pass_count += passes(model)
+                steps += model.steps
+            end
+            result = (
+                kernel=kernel,
+                kernel_index=ki,
+                C=C,
+                values=values,
+                folds=fold_results,
+                correct=correct,
+                support=support,
+                passes=pass_count,
+                steps=steps
+            )
+            push!(candidates,result)
+            push!(combinations,result)
+        end
+        push!(best,sort(candidates;by=ranking_key)[1])
+    end
+    matrices,combinations,best,sort(best;by=ranking_key)[1],sort(combinations;by=ranking_key)
+end
+function cross_validation_lines(n,k,best,selected,ranking)
+    lines = ["cross_validation folds $k examples $n"]
+    for result in best
+        push!(
+            lines,
+            "best $(result.kernel.name) C $(fixed_text(result.C)) correct $(result.correct)/$n accuracy $(ratio(result.correct,n))"
+        )
+    end
+    push!(lines,"selected $(selected.kernel.name) C $(fixed_text(selected.C))","ranking")
+    for (rank,result) in enumerate(ranking)
+        push!(lines,"$rank $(result.kernel.name) C $(fixed_text(result.C)) correct $(result.correct)/$n")
+    end
+    push!(lines,"cv_detail $(selected.kernel.name) C $(fixed_text(selected.C))")
+    for (f,result) in enumerate(selected.folds)
+        push!(
+            lines,
+            "fold $f train $(result.train) test $(result.test) correct $(result.correct) support_vectors $(result.support) $(run_info(result.model))"
+        )
+    end
+    lines
+end
+function evaluate_final(model,training,testing,tolerance)
+    n,m = length(training),length(testing)
+    train_values,test_values = training_decisions(model),[decision(
+        model,
+        example.point
+    ) for example in testing]
+    lines = ["model $(model.kernel.name)","kernel $(kernel_description(model.kernel))","C $(fixed_text(model.C))","alignment $(fixed_text(alignment,6))",
+    (model=model,train_values=train_values,test_values=test_values,weights=(w1,w2),lines=lines)
+end
+function calibrate(training,testing,selected,test_values,iterations)
+    positive = count(e->e.label==1,training)
+    negative = length(training)-positive
+    targets = [e.label==1 ? (positive+1)/(positive+2) : 1/(negative+2) for e in training]
+    values = selected.values
+    A,B = 0.0,log((negative+1)/(positive+1))
+    probabilities = [probability(value,A,B) for value in test_values]
+function cv_grid_lines(combinations,k,n)
+    header = vcat(
+        ["kernel","C"],
+        ["fold$f" for f in 1:k],
+        ["correct","accuracy","support_vectors","passes","steps"]
+    )
+    lines = [join(header,",")]
+    for result in combinations
+        row = vcat(
+            [result.kernel.name,fixed_text(result.C)],
+            string.([fold.correct for fold in result.folds]),
+            [
+                string(result.correct),
+                ratio(result.correct,n),
+                string(result.support),
+                string(result.passes),
+                string(result.steps)
+            ]
+        )
+        push!(lines,join(row,","))
+    end
+    lines
+end
+function prediction_lines(testing,results,selected,pegasos_values,probabilities)
+    lines = [join(
+        vcat(
+            ["id","label"],
+            [result.model.kernel.name for result in results],
+            ["pegasos","predicted","probability"]
+        ),
+        ","
+    )]
+    selected_values = results[selected.kernel_index].test_values
+    for (i,e) in enumerate(testing)
+        row = vcat(
+            [e.id,string(e.label)],
+            [fixed_text(result.test_values[i]) for result in results],
+            [fixed_text(pegasos_values[i]),string(svm_sign(selected_values[i])),fixed_text(probabilities[i])]
+        )
+        push!(lines,join(row,","))
+    end
+    lines
+end
+function main()
+    training,testing,multi_training,multi_testing,settings = read_inputs()
+    matrices,combinations,best,selected,ranking = cross_validate(training,settings)
+    points,labels = [e.point for e in training],[e.label for e in training]
+    results = NamedTuple[]
+    for (i,result) in enumerate(best)
+        model = train_model(points,labels,result.kernel,matrices[i],result.C,settings)
+        push!(results,evaluate_final(model,training,testing,settings["tolerance"]))
+    end
+    chosen,matrix = results[selected.kernel_index],matrices[selected.kernel_index]
+    sections = [cross_validation_lines(length(training),settings["folds"],best,selected,ranking)]
+    append!(sections,[result.lines for result in results])
+    push!(
+        sections,
+        training_log(chosen.model),
+        additional_training_lines(training,testing,selected,matrix,settings),
+        additional_training_lines(training,testing,selected,matrix,settings,true)
+    )
+    A,B,probabilities,calibration_lines = calibrate(
+        training,
+        testing,
+        selected,
+        chosen.test_values,
+        settings["newton_iterations"]
+    )
+    push!(sections,calibration_lines)
+    model_lines = String[]
+    for section in sections
+        isempty(model_lines) || push!(model_lines,"")
+        append!(model_lines,section)
+    end
+    write_lines("model.txt",model_lines)
+    write_lines("cv_grid.csv",cv_grid_lines(combinations,settings["folds"],length(training)))
+    write_lines("predictions.csv",prediction_lines(testing,results,selected,pegasos_values,probabilities))

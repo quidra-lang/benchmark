@@ -1,0 +1,287 @@
+    static void send(Clients.Client client, String line) {
+        sent.add(time + " " + client.identifier + " " + line);
+        client.sent++;
+    }
+    static void disconnect(Clients.Client client, String reason, String kind) {
+        if (!kind.equals("closed")) {
+            send(client, "ERROR :Closing Link: " + client.addressee() + "[" + client.hostname +
+                             "] (" + reason + ")");
+            add(statistics, "errors", 1);
+        }
+        if (client.registered)
+            peers(client, ":" + client.prefix() + " QUIT :" + reason);
+        for (Channels.Channel channel : new ArrayList<>(client.channels))
+            removeMember(client, channel);
+        add(statistics, "discarded", client.queue.size());
+        client.queue.clear();
+        clients.remove(client.identifier);
+        client.active = false;
+        gone.add(new Gone(time, client.identifier, client.addressee(), reason));
+        add(disconnections, kind, 1);
+    }
+    static void process(Clients.Client client, String raw) {
+        add(statistics, "processed", 1);
+        Protocol.Message message = Protocol.parse(raw);
+        String command = message.command();
+        List<String> p = message.parameters();
+        if (command.isEmpty()) {
+            add(statistics, "empty", 1);
+            return;
+        }
+        add(commands, command, 1);
+        if (!client.registered &&
+            !Set.of("NICK", "USER", "PING", "PONG", "QUIT").contains(command)) {
+            error(client, 451);
+            return;
+        }
+        switch (command) {
+        case "NICK":
+            nick(client, p);
+            break;
+        case "USER":
+            user(client, p);
+            break;
+        case "PING":
+            ping(client, p);
+            break;
+        case "PONG":
+            break;
+        case "QUIT":
+            disconnect(client,
+                       !p.isEmpty() && !p.getFirst().isEmpty() ? "Quit: " + p.getFirst()
+                                                               : "Client Quit",
+                       "quit");
+            break;
+        case "JOIN":
+            join(client, p);
+            break;
+        case "PART":
+            part(client, p);
+            break;
+        case "PRIVMSG", "NOTICE":
+            message(client, p, command);
+            break;
+        case "TOPIC":
+            topic(client, p);
+            break;
+        case "NAMES":
+            names(client, p);
+            break;
+        case "WHOIS":
+            whois(client, p);
+            break;
+        case "AWAY":
+            away(client, p);
+            break;
+        case "INVITE":
+            invite(client, p);
+            break;
+        case "KICK":
+            kick(client, p);
+            break;
+        case "MODE":
+            if (require(client, p, 1, "MODE")) {
+                if (p.getFirst().startsWith("#"))
+                    channelMode(client, p);
+                else
+                    userMode(client, p);
+            }
+            break;
+        default:
+            error(client, 421, command);
+        }
+    }
+    static void arrival(Traffic record) {
+        String kind = record.kind();
+        if (kind.equals("connect")) {
+            Clients.Client client = new Clients.Client(
+                record.identifier(), record.body().substring(8), time, setting("BUCKET"));
+            clients.put(client.identifier, client);
+            if (clients.size() > peakConnections) {
+                peakConnections = clients.size();
+                peakConnectionsTime = time;
+            }
+            return;
+        }
+        Clients.Client client = clients.get(record.identifier());
+        if (kind.equals("disconnect")) {
+            if (client != null)
+                disconnect(client, "Remote host closed the connection", "closed");
+            return;
+        }
+        if (client == null) {
+            add(statistics, "dropped", 1);
+            return;
+        }
+        client.received++;
+        client.lastReceived = time;
+        client.pingSent = -1;
+        if (client.queue.isEmpty() && client.tokens >= 1) {
+            client.useToken(time, setting("BUCKET"), setting("REFILL"));
+            process(client, record.body());
+        } else if (client.queue.size() >= setting("QUEUE")) {
+            add(statistics, "discarded", 1);
+            disconnect(client, "Excess Flood", "flood");
+        } else {
+            client.queue.addLast(record.body());
+            add(statistics, "queued", 1);
+        }
+    }
+    static void run() {
+        int position = 0;
+        for (time = 0; time <= end; time++) {
+            for (Clients.Client client : new ArrayList<>(clients.values())) {
+                client.refill(time, setting("BUCKET"), setting("REFILL"));
+                while (client.active && !client.queue.isEmpty() && client.tokens >= 1) {
+                    client.useToken(time, setting("BUCKET"), setting("REFILL"));
+                    process(client, client.queue.removeFirst());
+                }
+            }
+            while (position < traffic.size() && traffic.get(position).time() == time)
+                arrival(traffic.get(position++));
+            for (Clients.Client client : new ArrayList<>(clients.values()))
+                if (client.pingSent >= 0) {
+                    if (time - client.pingSent >= setting("TIMEOUT"))
+                        disconnect(client,
+                                   "Ping timeout: " + (time - client.lastReceived) + " seconds",
+                                   "timeout");
+                } else if (time - client.lastReceived >= setting("PINGFREQ")) {
+                    send(client, "PING :" + settings.get("NAME"));
+                    add(statistics, "pings", 1);
+                    client.pingSent = time;
+                }
+        }
+    }
+    static List<String> clientReport() {
+        List<String> lines = new ArrayList<>();
+        int registered = 0, invisible = 0, away = 0;
+        for (Clients.Client client : clients.values()) {
+            if (client.registered)
+                registered++;
+            if (client.invisible)
+                invisible++;
+            if (!client.away.isEmpty())
+                away++;
+            String joined = joined(client, ",");
+            List<String> invites = new ArrayList<>();
+            for (Channels.Channel channel : client.invites)
+                invites.add(channel.name);
+            lines.add("CLIENT " + client.identifier + " " + client.addressee() + " " +
+                      (client.username == null ? "*" : client.username) + " " + client.hostname +
+                      " " + client.mode() + " connected " + client.connectionTime + " signon " +
+                      (client.registered ? Integer.toString(client.registrationTime) : "-") +
+                      " received " + client.received + " sent " + client.sent + " tokens " +
+                      client.tokens + " queue " + client.queue.size() + " channels " +
+                      (joined.isEmpty() ? "none" : joined) + " invites " +
+                      (invites.isEmpty() ? "none" : String.join(",", invites)));
+            if (!client.away.isEmpty())
+                lines.add("AWAY " + client.identifier + " " + client.away);
+        }
+        lines.add("TOTAL clients " + clients.size() + " registered " + registered + " invisible " +
+                  invisible + " away " + away);
+        return lines;
+    }
+    static List<String> statisticsReport() {
+        List<String> lines = new ArrayList<>();
+        int pending = 0, numericTotal = 0;
+        for (Clients.Client client : clients.values())
+            pending += client.queue.size();
+        for (int count : numerics.values())
+            numericTotal += count;
+        lines.add("END " + end);
+        lines.add("LINES total " + traffic.size() + " connect " +
+                  lineCounts.getOrDefault("connect", 0) + " disconnect " +
+                  lineCounts.getOrDefault("disconnect", 0) + " messages " +
+                  lineCounts.getOrDefault("messages", 0));
+        lines.add("MESSAGES dropped " + stat("dropped") + " queued " + stat("queued") +
+                  " processed " + stat("processed") + " discarded " + stat("discarded") +
+                  " pending " + pending + " empty " + stat("empty"));
+        lines.add("SENT lines " + sent.size() + " numerics " + numericTotal + " pings " +
+                  stat("pings") + " errors " + stat("errors"));
+        for (var entry : commands.entrySet())
+            lines.add("COMMAND " + entry.getKey() + " " + entry.getValue());
+        for (var entry : numerics.entrySet())
+            lines.add("NUMERIC " + number(entry.getKey()) + " " + entry.getValue());
+        lines.add("PEAK connections " + peakConnections + " at " + peakConnectionsTime);
+        lines.add("PEAK registered " + peakRegistered + " at " + peakRegisteredTime);
+        List<String> kinds = new ArrayList<>();
+        for (String kind : List.of("quit", "closed", "flood", "timeout"))
+            kinds.add(kind + " " + disconnections.getOrDefault(kind, 0));
+        lines.add("DISCONNECTS " + String.join(" ", kinds));
+        for (Gone record : gone)
+            lines.add("GONE " + record.time() + " " + record.identifier() + " " +
+                      record.addressee() + " " + record.reason());
+        return lines;
+    }
+    public static void main(String[] args) throws Exception {
+        for (String line : Files.readAllLines(Path.of("input", "server.txt"))) {
+            int separator = line.indexOf(' ');
+            String key = line.substring(0, separator), value = line.substring(separator + 1);
+            if (key.equals("MOTD"))
+                motd.add(value);
+            else
+                settings.put(key, value);
+        }
+        for (String line : Files.readAllLines(Path.of("input", "traffic.txt"))) {
+            String[] fields = line.split(" ", 3);
+            String body = fields[2], kind = "messages";
+            if (body.startsWith("CONNECT ") && body.substring(8).matches("[A-Za-z0-9.-]{1,63}"))
+                kind = "connect";
+            else if (body.equals("DISCONNECT"))
+                kind = "disconnect";
+            traffic.add(new Traffic(Integer.parseInt(fields[0]), fields[1], kind, body));
+            add(lineCounts, kind, 1);
+        }
+        end = traffic.getLast().time();
+        run();
+        Files.createDirectories(Path.of("output"));
+        write("sent.txt", sent);
+        write("channels.txt", channelReport());
+        write("clients.txt", clientReport());
+        write("stats.txt", statisticsReport());
+    }
+        void useToken(int time, int capacity, int interval) {
+            if (tokens == capacity)
+                refillTime = time + interval;
+            tokens--;
+        }
+        void refill(int time, int capacity, int interval) {
+            if (refillTime == time) {
+                tokens++;
+                refillTime = tokens < capacity ? time + interval : -1;
+            }
+        }
+    static Message parse(String raw) {
+        int position = 0;
+        if (raw.startsWith(":")) {
+            position = raw.indexOf(' ');
+            if (position < 0)
+                return new Message("", List.of());
+        }
+        while (position < raw.length() && raw.charAt(position) == ' ')
+            position++;
+        int start = position;
+        while (position < raw.length() && raw.charAt(position) != ' ')
+            position++;
+        String command = raw.substring(start, position).toUpperCase(Locale.ROOT);
+        List<String> parameters = new ArrayList<>();
+        while (position < raw.length()) {
+            while (position < raw.length() && raw.charAt(position) == ' ')
+                position++;
+            if (position == raw.length())
+                break;
+            if (raw.charAt(position) == ':') {
+                parameters.add(raw.substring(position + 1));
+                break;
+            }
+            if (parameters.size() == 14) {
+                parameters.add(raw.substring(position));
+                break;
+            }
+            start = position;
+            while (position < raw.length() && raw.charAt(position) != ' ')
+                position++;
+            parameters.add(raw.substring(start, position));
+        }
+        return new Message(command, parameters);
+    }

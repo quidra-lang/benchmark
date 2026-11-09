@@ -1,0 +1,11 @@
+The parser splits commas and applies to_i into named source/destination fields. Both ID lookups precede the nil/unknown test, then equal indexes mean self and nested lookup[source][destination] means duplicate. A reason appends ignored and next exits before insertion; otherwise both lookup and edges are updated. With existing pages, row2,3 is accepted, row3,2 is separately accepted, and the next2,3 is ignored as duplicate of the first accepted pair. A self-link whose ID is unknown is ignored as unknown because endpoint presence is decided first; self and duplicate logic do not override that decision. Parsing and record traversal preserve the input sequence, so only earlier accepted pairs affect later duplicates.
+
+Hash misses are nil, distinct from valid index0. Array.new creates one separate Hash per source, and nested destination keys retain direction.
+
+Evidence: graph_io.rb: 14–17; main.rb: 18, 31–52. The selected complete lines contain the decision and its necessary data dependencies. The parser, rejection chain, accepted-key initialization/insertion and the concrete edge-key representation are necessary. Selecting only the duplicate test would omit parsing, precedence and directionality. PageRank iteration, graph statistics and output formatting do not affect this operation and are excluded.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 396 tokenizer tokens. The full selected source file(s) would be 12042 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.
+
+## Task A source conformity review
+
+Remove Ruby magic comment to meet no-source-comments rule; explicit freeze operations remain. No literal-freeze introspection or required literal-string identity was found; intended file outputs are unchanged by source review. Source line counts were preserved for excerpt provenance. The current excerpt contains 396 tokens; edited Task A sources were remeasured. These are source-review corrections, not a claim of compilation or execution verification.

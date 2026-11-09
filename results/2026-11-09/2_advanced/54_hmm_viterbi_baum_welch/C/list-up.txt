@@ -1,0 +1,295 @@
+void *allocate(size_t count, size_t size) {
+    void *value = calloc(count ? count : 1, size);
+    return value;
+}
+static Rows read_rows(const char *name) {
+    FILE *input = fopen(format("input/%s", name), "r");
+    Rows out = {.data = allocate(100, sizeof(Tokens))};
+    char *text;
+    while ((text = read_line(input)) != NULL) {
+        Tokens row = {.data = allocate(strlen(text) + 1, sizeof(char *))};
+        for (char *token = strtok(text, " "); token; token = strtok(NULL, " "))
+            row.data[row.count++] = token;
+        out.data[out.count++] = row;
+    }
+    fclose(input);
+    return out;
+}
+void normalize(double *values, int count) {
+    double sum = 0;
+    for (int i = 0; i < count; ++i)
+        sum += values[i];
+    for (int i = 0; i < count; ++i)
+        values[i] /= sum;
+}
+void load(Input *out) {
+    Rows rows = read_rows("model.txt");
+    Model *model = &out->model;
+    model->name = "INITIAL";
+    model->k = rows.data[0].count - 1;
+    model->m = rows.data[1].count - 1;
+    for (int i = 0; i < model->k; ++i)
+        model->states[i] = rows.data[0].data[i + 1][0];
+    for (int i = 0; i < model->m; ++i)
+        model->symbols[i] = rows.data[1].data[i + 1][0];
+    model->missing = rows.data[2].data[1][0];
+    for (int i = 0; i < model->k; ++i)
+        model->initial[i] = strtod(rows.data[3].data[i + 1], NULL);
+    normalize(model->initial, model->k);
+    for (int i = 0; i < model->k; ++i) {
+        for (int j = 0; j < model->k; ++j)
+            model->transition[i][j] = strtod(rows.data[4 + i].data[j + 2], NULL);
+        normalize(model->transition[i], model->k);
+        for (int j = 0; j < model->m; ++j)
+            model->emission[i][j] = strtod(rows.data[4 + model->k + i].data[j + 2], NULL);
+        normalize(model->emission[i], model->m);
+    }
+    out->sequences = read_rows("sequences.txt");
+    out->labeled = read_rows("labeled.txt");
+    out->parameters = read_rows("params.txt");
+}
+int maximum(const double *values, int count) {
+    int chosen = 0;
+    for (int i = 1; i < count; ++i)
+        if (values[i] > values[chosen])
+            chosen = i;
+    return chosen;
+}
+double emission(Model model, int observation, int state) {
+    return observation < 0 ? 1 : model.emission[state][observation];
+}
+FB forward_backward(Model model, Path observation) {
+    int length = observation.count, k = model.k;
+    FB out = {.forward = allocate(length, sizeof(double[4])),
+              .backward = allocate(length, sizeof(double[4])),
+              .posterior = allocate(length, sizeof(double[4])),
+              .emissions = allocate(length, sizeof(double[4])),
+              .scales = allocate(length, sizeof(double)),
+              .length = length};
+    for (int t = 0; t < length; ++t) {
+        for (int j = 0; j < k; ++j) {
+            out.emissions[t][j] = emission(model, observation.data[t], j);
+            double value = model.initial[j];
+            if (t) {
+                value = 0;
+                for (int i = 0; i < k; ++i)
+                    value += out.forward[t - 1][i] * model.transition[i][j];
+            }
+            out.forward[t][j] = value * out.emissions[t][j];
+            out.scales[t] += out.forward[t][j];
+        }
+        for (int j = 0; j < k; ++j)
+            out.forward[t][j] /= out.scales[t];
+        out.loglik += log(out.scales[t]);
+    }
+    for (int i = 0; i < k; ++i)
+        out.backward[length - 1][i] = 1;
+    for (int t = length - 2; t >= 0; --t)
+        for (int i = 0; i < k; ++i) {
+            double sum = 0;
+            for (int j = 0; j < k; ++j)
+                sum += model.transition[i][j] * out.emissions[t + 1][j] * out.backward[t + 1][j];
+            out.backward[t][i] = sum / out.scales[t + 1];
+        }
+    for (int t = 0; t < length; ++t)
+        for (int i = 0; i < k; ++i)
+            out.posterior[t][i] = out.forward[t][i] * out.backward[t][i];
+    return out;
+}
+Viterbi viterbi(Model model, Path observation) {
+    int k = model.k, length = observation.count;
+    double transitions[4][4] = {0}, scores[4] = {0};
+    int predecessors[300][4] = {0};
+    for (int i = 0; i < k; ++i)
+        for (int j = 0; j < k; ++j)
+            transitions[i][j] = log(model.transition[i][j]);
+    for (int j = 0; j < k; ++j)
+        scores[j] = log(model.initial[j]) +
+                    (observation.data[0] < 0 ? 0 : log(model.emission[j][observation.data[0]]));
+    for (int t = 1; t < length; ++t) {
+        double next[4] = {0};
+        for (int j = 0; j < k; ++j) {
+            double candidates[4];
+            for (int i = 0; i < k; ++i)
+                candidates[i] = scores[i] + transitions[i][j];
+            int previous = maximum(candidates, k);
+            predecessors[t][j] = previous;
+            next[j] = candidates[previous] +
+                      (observation.data[t] < 0 ? 0 : log(model.emission[j][observation.data[t]]));
+        }
+        memcpy(scores, next, sizeof(scores));
+    }
+    Viterbi out = {.path = path_new(length)};
+    out.path.data[length - 1] = maximum(scores, k);
+    out.logprob = scores[out.path.data[length - 1]];
+    for (int t = length - 1; t > 0; --t)
+        out.path.data[t - 1] = predecessors[t][out.path.data[t]];
+    return out;
+}
+Decoding decode(Model model, Path observation) {
+    Decoding out = {.fb = forward_backward(model, observation),
+                    .viterbi = viterbi(model, observation),
+                    .posterior = path_new(observation.count),
+                    .confidence = allocate(observation.count, sizeof(double))};
+    for (int t = 0; t < observation.count; ++t) {
+        int state = maximum(out.fb.posterior[t], model.k);
+        out.posterior.data[t] = state;
+        out.confidence[t] = out.fb.posterior[t][state];
+    }
+    return out;
+}
+void accumulate(Confusion *matrix, Path truth, Path prediction) {
+    for (int i = 0; i < truth.count; ++i)
+        ++matrix->data[truth.data[i]][prediction.data[i]];
+}
+I correct(Path truth, Path prediction) {
+    I out = 0;
+    for (int i = 0; i < truth.count; ++i)
+        out += truth.data[i] == prediction.data[i];
+    return out;
+}
+static char *state_string(Path path, const char *alphabet) {
+    char *out = allocate(path.count + 1, 1);
+    for (int i = 0; i < path.count; ++i)
+        out[i] = alphabet[path.data[i]];
+    return out;
+}
+static int index_of(const char *text, char value) {
+    const char *found = strchr(text, value);
+    return found ? (int)(found - text) : -1;
+}
+static Params parameters(Rows rows, Model model) {
+static char *parse_observation(const char *raw, Model model, Path *path) {
+    *path = path_new((int)strlen(raw));
+    for (int i = 0; i < path->count; ++i) {
+        char ch = raw[i] >= 'a' && raw[i] <= 'z' ? (char)(raw[i] - 'a' + 'A') : raw[i];
+        int symbol = index_of(model.symbols, ch);
+        if (ch == model.missing)
+            path->data[i] = -1;
+        else if (symbol >= 0)
+            path->data[i] = symbol;
+        else
+            return format("invalid symbol %c at position %d", ch, i + 1);
+    }
+    return NULL;
+}
+    for (int i = 0; i < input->labeled.count; i += 2) {
+        Tokens fields = input->labeled.data[i];
+        const char *labels = input->labeled.data[i + 1].data[0];
+        Sequence sequence = {.name = fields.data[0], .role = fields.data[1]};
+        char *reason = NULL;
+        for (int j = 0; j < i; j += 2)
+            if (!strcmp(sequence.name, input->labeled.data[j].data[0])) {
+                reason = "duplicate name";
+                break;
+            }
+        if (!reason)
+            reason = parse_observation(fields.data[2], input->model, &sequence.observation);
+        if (!reason) {
+            sequence.truth = path_new((int)strlen(labels));
+            for (int t = 0; t < sequence.truth.count; ++t) {
+                int state = index_of(input->model.states, labels[t]);
+                if (state < 0) {
+                    reason = format("invalid label %c at position %d", labels[t], t + 1);
+                    break;
+                }
+                sequence.truth.data[t] = state;
+            }
+        }
+        if (!reason && strlen(fields.data[2]) != strlen(labels))
+            reason = format("length mismatch %zu %zu", strlen(fields.data[2]), strlen(labels));
+        if (!reason)
+            reason = final_checks(sequence.observation, p);
+        if (!reason) {
+            if (!strcmp(sequence.role, "TRAIN"))
+                out.train[out.train_count++] = sequence;
+            else
+                out.test[out.test_count++] = sequence;
+        } else {
+            ++out.labeled_rejected;
+            line(&out.rejected, "REJECT labeled.txt line %d %s %s", i + 1, sequence.name, reason);
+        }
+    }
+    return out;
+}
+static Evaluation evaluate(Model model, const Sequence *records, int count, const Params *p, int decoder) {
+    Evaluation out = {0};
+    for (int i = 0; i < count; ++i) {
+        void *mark = allocation_mark();
+        Sequence sequence = records[i];
+        Decoding decoded = decode(model, sequence.observation);
+        Path prediction = decoder == 0 ? decoded.viterbi.path : decoded.posterior;
+        accumulate(&out.matrix, sequence.truth, prediction);
+        I correct_count = correct(sequence.truth, prediction);
+        out.positions += prediction.count;
+        out.correct_count += correct_count;
+        out.record_correct[i] = correct_count;
+        add(&out.regions,
+            region_counts(segments(prediction, p), true_regions(sequence.truth, p->segment_state)));
+        add(&out.boundaries, boundary_counts(prediction, sequence.truth, p->boundary_tolerance));
+        if (decoder == 1)
+            for (int t = 0; t < prediction.count; ++t) {
+                int bin = (int)floor(10 * decoded.confidence[t]);
+                if (bin > 9)
+                    bin = 9;
+                ++out.bins[bin];
+                out.correct_bins[bin] += prediction.data[t] == sequence.truth.data[t];
+            }
+        release_to(mark);
+    }
+    return out;
+}
+static Lines evaluation_lines(Model model, Evaluation evaluation, const Sequence *records, int count,
+                              const Params *p, int decoder) {
+    Lines out = {0};
+    line(&out, "EVALUATION %s %s", model.name, decoder == 0 ? "VITERBI" : "POSTERIOR");
+    extend(&out, matrix_lines(model, evaluation.matrix));
+    extend(&out, metric_lines(model, evaluation.matrix));
+    line(&out, "REGIONS %c predicted %" PRId64 " true %" PRId64 " precision %s recall %s",
+         model.states[p->segment_state], evaluation.regions.predicted, evaluation.regions.truth,
+         fraction(evaluation.regions.matched_predicted, evaluation.regions.predicted),
+         fraction(evaluation.regions.matched_truth, evaluation.regions.truth));
+    line(&out, "BOUNDARIES predicted %" PRId64 " true %" PRId64 " precision %s recall %s",
+         evaluation.boundaries.predicted, evaluation.boundaries.truth,
+         fraction(evaluation.boundaries.matched_predicted, evaluation.boundaries.predicted),
+         fraction(evaluation.boundaries.matched_truth, evaluation.boundaries.truth));
+    if (decoder == 1)
+        for (int b = 0; b < 10; ++b)
+            if (evaluation.bins[b])
+                line(&out, "CALIBRATION 0.%d-%s positions %" PRId64 " correct %" PRId64 " accuracy %s", b,
+                     b == 9 ? "1.0" : format("0.%d", b + 1), evaluation.bins[b], evaluation.correct_bins[b],
+                     fraction(evaluation.correct_bins[b], evaluation.bins[b]));
+    for (int i = 0; i < count; ++i)
+        line(&out, "RECORD %s length %d correct %" PRId64, records[i].name, records[i].observation.count,
+             evaluation.record_correct[i]);
+    return out;
+}
+    Input input = {0};
+    load(&input);
+    Params p = parameters(input.parameters, input.model);
+    Validated data = validate(&input, &p);
+    Model models[4];
+    models[0] = input.model;
+    models[1] = input.model;
+    Evaluation evaluations[4][2];
+    for (int model = 0; model < 4; ++model)
+        for (int decoder = 0; decoder < 2; ++decoder) {
+            evaluations[model][decoder] = evaluate(models[model], data.test, data.test_count, &p, decoder);
+            if (evaluation_file.count)
+                line(&evaluation_file, "");
+            extend(&evaluation_file, evaluation_lines(models[model], evaluations[model][decoder], data.test,
+                                                      data.test_count, &p, decoder));
+        }
+    Decoding(*cached)[30] = allocate(4, sizeof(*cached));
+    for (int model = 0; model < 4; ++model)
+        for (int i = 0; i < data.unlabeled_count; ++i)
+            cached[model][i] = decode(models[model], unlabeled[i]);
+    Generator posterior_generator = {p.posterior_seed};
+    Model bw = models[1];
+    for (int index = 0; index < data.unlabeled_count; ++index) {
+        Sequence sequence = data.unlabeled[index];
+        Decoding decoded = cached[1][index];
+        line(&decodings, "VITERBI %s", state_string(decoded.viterbi.path, bw.states));
+        line(&decodings, "POSTERIOR %s", state_string(decoded.posterior, bw.states));
+    save("decodings.txt", decodings);
+    save("evaluation.txt", evaluation_file);

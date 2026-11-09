@@ -1,0 +1,308 @@
+record Attribute(int index, String name, boolean integer, List<String> values) {
+    int parse(String text) {
+        return text.equals("?") ? -1 : integer ? Integer.parseInt(text) : values.indexOf(text);
+    }
+}
+record Row(String id, int[] values, int label) {
+    int value(Attribute attribute) { return values[attribute.index()]; }
+    int missingCount() { return (int) Arrays.stream(values).filter(value -> value < 0).count(); }
+record Settings(int maxDepth, int minSplit, int minLeaf, int maxSurrogates, int folds,
+                List<Integer> curve, int bagTrees, long bagSeed, int repeats, long permutationSeed) {}
+    static List<String> lines(String path) throws IOException {
+        return Files.readAllLines(Path.of(path), StandardCharsets.US_ASCII);
+    }
+    static List<Row> rows(String path, List<Attribute> attributes, List<String> classes) throws IOException {
+        List<Row> rows = new ArrayList<>();
+        for (String line : lines(path).stream().skip(1).toList()) {
+            String[] fields = line.split(",");
+            int[] values = new int[attributes.size()];
+            for (Attribute attribute : attributes) values[attribute.index()] = attribute.parse(fields[attribute.index() + 1]);
+            rows.add(new Row(fields[0], values, classes.indexOf(fields[fields.length - 1])));
+        }
+        return rows;
+    }
+    static Dataset load(String directory) throws IOException {
+        List<Attribute> attributes = new ArrayList<>();
+        List<String> schema = lines(directory + "/schema.txt");
+        for (String line : schema.subList(0, schema.size() - 1)) {
+            List<String> fields = List.of(line.split(" "));
+            attributes.add(new Attribute(attributes.size(), fields.get(1), fields.get(2).equals("INT"),
+                fields.subList(3, fields.size())));
+        }
+        List<String> last = List.of(schema.getLast().split(" "));
+        String target = last.get(1);
+        List<String> classes = last.subList(2, last.size());
+        Map<String, List<String>> params = new HashMap<>();
+        for (String line : lines(directory + "/params.txt")) {
+            List<String> fields = List.of(line.split(" "));
+            params.put(fields.getFirst(), fields.subList(1, fields.size()));
+        }
+        Settings settings = new Settings(setting(params, "MAX_DEPTH"), setting(params, "MIN_SAMPLES_SPLIT"),
+            setting(params, "MIN_SAMPLES_LEAF"), setting(params, "MAX_SURROGATES"), setting(params, "FOLDS"),
+            params.get("CURVE").stream().map(Integer::parseInt).toList(), setting(params, "BAG_TREES"),
+            setting(params, "BAG_SEED"), setting(params, "PERMUTATION_REPEATS"), setting(params, "PERMUTATION_SEED"));
+        return new Dataset(attributes, target, classes, rows(directory + "/train.csv", attributes, classes),
+            rows(directory + "/validation.csv", attributes, classes), rows(directory + "/test.csv", attributes, classes), settings);
+    }
+    private static int setting(Map<String, List<String>> params, String key) {
+        return Integer.parseInt(params.get(key).getFirst());
+    }
+record Fraction(long numerator, long denominator) implements Comparable<Fraction> {
+    public int compareTo(Fraction other) {
+        return Long.compare(numerator * other.denominator, other.numerator * denominator);
+    }
+}
+    static int[] counts(List<Row> rows, int classes) {
+        int[] counts = new int[classes];
+        for (Row row : rows) counts[row.label()]++;
+        return counts;
+    }
+    static long squareSum(int[] counts) {
+        return Arrays.stream(counts).mapToLong(count -> (long) count * count).sum();
+    }
+    static int majority(int[] counts) {
+        int best = 0;
+        for (int i = 1; i < counts.length; i++) if (counts[i] > counts[best]) best = i;
+        return best;
+    }
+    static int errors(int[] counts) { return Arrays.stream(counts).sum() - counts[majority(counts)]; }
+    static Fraction quality(int[] left, int[] right) {
+        long leftSize = Arrays.stream(left).sum(), rightSize = Arrays.stream(right).sum();
+        return new Fraction(squareSum(left) * rightSize + squareSum(right) * leftSize, leftSize * rightSize);
+    }
+    static boolean improves(Fraction value, int[] counts) {
+        return value.numerator() * Arrays.stream(counts).sum() > squareSum(counts) * value.denominator();
+    }
+record Split(Attribute attribute, int point) {
+    boolean goesLeft(int value) { return attribute.integer() ? 2 * value <= point : value == point; }
+record Surrogate(Split split, boolean left, int score) {
+    boolean goesLeft(int value) { return split.goesLeft(value) == left; }
+}
+record Candidate(Split split, int[] leftCounts, int[] rightCounts) {
+    int leftSize() { return Arrays.stream(leftCounts).sum(); }
+    int rightSize() { return Arrays.stream(rightCounts).sum(); }
+    Fraction quality() { return Impurity.quality(leftCounts, rightCounts); }
+}
+final class Node {
+    final int number, depth, size, prediction, errors;
+    final int[] counts;
+    Split split;
+    List<Surrogate> surrogates = List.of();
+    boolean defaultLeft;
+    Node left, right;
+    Node(int number, int depth, int[] counts) {
+        this.number = number;
+        this.depth = depth;
+        this.counts = counts;
+        size = Arrays.stream(counts).sum();
+        prediction = Impurity.majority(counts);
+        errors = Impurity.errors(counts);
+    }
+}
+final class TreeBuilder {
+    final List<Attribute> attributes;
+    final int classes;
+    final Settings settings;
+    TreeBuilder(List<Attribute> attributes, int classes, Settings settings) {
+        this.attributes = attributes;
+        this.classes = classes;
+        this.settings = settings;
+    }
+    List<Candidate> candidates(Attribute attribute, List<Row> rows, List<Integer> labels, int classCount) {
+        Map<Integer, int[]> groups = new TreeMap<>();
+        int[] total = new int[classCount];
+        for (int i = 0; i < rows.size(); i++) {
+            groups.computeIfAbsent(rows.get(i).value(attribute), ignored -> new int[classCount])[labels.get(i)]++;
+            total[labels.get(i)]++;
+        }
+        List<Candidate> found = new ArrayList<>();
+        if (groups.size() < 2) return found;
+        List<Integer> values = new ArrayList<>(groups.keySet());
+        if (attribute.integer()) {
+            int[] left = new int[classCount];
+            for (int i = 0; i + 1 < values.size(); i++) {
+                for (int k = 0; k < classCount; k++) left[k] += groups.get(values.get(i))[k];
+                int[] right = new int[classCount];
+                for (int k = 0; k < classCount; k++) right[k] = total[k] - left[k];
+                found.add(new Candidate(new Split(attribute, values.get(i) + values.get(i + 1)), left.clone(), right));
+            }
+        } else {
+            for (int value : values) {
+                int[] left = groups.get(value), right = new int[classCount];
+                for (int k = 0; k < classCount; k++) right[k] = total[k] - left[k];
+                found.add(new Candidate(new Split(attribute, value), left, right));
+            }
+        }
+        return found;
+    }
+    Candidate bestSplit(List<Row> rows, List<Attribute> considered) {
+        Candidate best = null;
+        List<Integer> labels = rows.stream().map(Row::label).toList();
+        for (Attribute attribute : considered)
+            for (Candidate candidate : candidates(attribute, rows, labels, classes))
+                if (candidate.leftSize() >= settings.minLeaf() && candidate.rightSize() >= settings.minLeaf()
+                    && (best == null || candidate.quality().compareTo(best.quality()) > 0)) best = candidate;
+        return best;
+    }
+    List<Surrogate> findSurrogates(List<Row> rows, Split primary) {
+        List<Integer> directions = rows.stream().map(row -> primary.goesLeft(row.value(primary.attribute())) ? 0 : 1).toList();
+        int leftSize = (int) directions.stream().filter(value -> value == 0).count();
+        int baseline = Math.max(leftSize, rows.size() - leftSize);
+        List<Surrogate> found = new ArrayList<>();
+        for (Attribute attribute : attributes) {
+            if (attribute.index() == primary.attribute().index()) continue;
+            Surrogate best = null;
+            for (Candidate candidate : candidates(attribute, rows, directions, 2)) {
+                int agreement = candidate.leftCounts()[0] + candidate.rightCounts()[1];
+                Surrogate surrogate = new Surrogate(candidate.split(), agreement >= rows.size() - agreement,
+                    Math.max(agreement, rows.size() - agreement));
+                if (best == null || surrogate.score() > best.score()) best = surrogate;
+            }
+            if (best != null && best.score() > baseline) found.add(best);
+        }
+        return found.stream().sorted(Comparator.comparingInt(Surrogate::score).reversed()
+            .thenComparingInt(surrogate -> surrogate.split().attribute().index())).limit(settings.maxSurrogates()).toList();
+    }
+    Node grow(List<Row> rows) { return growNode(rows, 1, 0); }
+    Node growNode(List<Row> rows, int number, int depth) {
+        Node node = new Node(number, depth, Impurity.counts(rows, classes));
+        if (node.errors == 0 || depth == settings.maxDepth() || node.size < settings.minSplit()) return node;
+        Candidate best = bestSplit(rows, attributes);
+        if (best == null || !Impurity.improves(best.quality(), node.counts)) return node;
+        Split split = best.split();
+        List<Row> left = rows.stream().filter(row -> split.goesLeft(row.value(split.attribute()))).toList();
+        List<Row> right = rows.stream().filter(row -> !split.goesLeft(row.value(split.attribute()))).toList();
+        node.split = split;
+        node.surrogates = findSurrogates(rows, split);
+        node.defaultLeft = left.size() >= right.size();
+        node.left = growNode(left, 2 * number, depth + 1);
+        node.right = growNode(right, 2 * number + 1, depth + 1);
+        return node;
+    }
+record Step(Node node, boolean left, String method) {}
+record Route(List<Node> path, List<Step> steps) { Node leaf() { return path.getLast(); } }
+final class PrunedTree {
+    final Node root;
+    final Set<Integer> cut;
+    PrunedTree(Node root) { this(root, Set.of()); }
+    PrunedTree(Node root, Set<Integer> cut) { this.root = root; this.cut = new HashSet<>(cut); }
+    boolean isLeaf(Node node) { return node.split == null || cut.contains(node.number); }
+    Route route(Row row) {
+        Node node = root;
+        List<Node> path = new ArrayList<>(List.of(node));
+        List<Step> steps = new ArrayList<>();
+        while (!isLeaf(node)) {
+            boolean left = node.defaultLeft;
+            String method = "default";
+            int value = row.value(node.split.attribute());
+            if (value >= 0) { left = node.split.goesLeft(value); method = "primary"; }
+            else for (Surrogate surrogate : node.surrogates)
+                if (row.value(surrogate.split().attribute()) >= 0) {
+                    left = surrogate.goesLeft(row.value(surrogate.split().attribute()));
+                    method = "surrogate";
+                    break;
+                }
+            steps.add(new Step(node, left, method));
+            node = left ? node.left : node.right;
+            path.add(node);
+        }
+        return new Route(path, steps);
+    }
+    Node leafOf(Row row) { return route(row).leaf(); }
+    int predict(Row row) { return leafOf(row).prediction; }
+    int correct(List<Row> rows) { return (int) rows.stream().filter(row -> predict(row) == row.label()).count(); }
+    static List<String> classification(String title, List<String> classes, List<Row> rows, List<Integer> predictions) {
+        int size = classes.size(), correct = 0;
+        int[][] matrix = new int[size][size];
+        for (int i = 0; i < rows.size(); i++) matrix[rows.get(i).label()][predictions.get(i)]++;
+        for (int i = 0; i < size; i++) correct += matrix[i][i];
+        List<String> lines = new ArrayList<>(List.of("confusion " + title + " correct " + correct + "/" + rows.size()
+            + " accuracy " + fraction(correct, rows.size()), "actual\\predicted " + String.join(" ", classes)));
+        for (int i = 0; i < size; i++) lines.add(classes.get(i) + " " + Main.countsText(matrix[i]));
+        double total = 0;
+        int available = 0;
+        for (int i = 0; i < size; i++) {
+            int hits = matrix[i][i], predicted = 0, support = Arrays.stream(matrix[i]).sum();
+            for (int[] row : matrix) predicted += row[i];
+            if (predicted + support > 0) { total += (double) (2 * hits) / (predicted + support); available++; }
+            lines.add("class " + classes.get(i) + " precision " + fraction(hits, predicted) + " recall " + fraction(hits, support)
+                + " f1 " + fraction(2 * hits, predicted + support) + " support " + support);
+        }
+        lines.add("macro_f1 " + real(total / available));
+        return lines;
+    }
+    static PruningResult reducedError(Node root, List<Row> rows) {
+        Map<Integer, int[]> reached = new HashMap<>();
+        PrunedTree tree = new PrunedTree(root);
+        for (Row row : rows)
+            for (Node node : tree.route(row).path()) {
+                int[] tally = reached.computeIfAbsent(node.number, ignored -> new int[2]);
+                tally[0]++;
+                if (node.prediction != row.label()) tally[1]++;
+            }
+        List<Decision> decisions = new ArrayList<>();
+        Set<Integer> cut = new HashSet<>();
+        decide(root, reached, decisions, cut);
+        return new PruningResult(new PrunedTree(root, cut), decisions);
+    }
+    static int decide(Node node, Map<Integer, int[]> reached, List<Decision> decisions, Set<Integer> cut) {
+        int[] tally = reached.getOrDefault(node.number, new int[2]);
+        int leafError = tally[1];
+        if (node.split == null) return leafError;
+        int subtreeError = decide(node.left, reached, decisions, cut) + decide(node.right, reached, decisions, cut);
+        boolean pruned = leafError <= subtreeError;
+        decisions.add(new Decision(node, tally[0], leafError, subtreeError, pruned));
+        if (pruned) cut.add(node.number);
+        return pruned ? leafError : subtreeError;
+    }
+    Analysis(Dataset data) {
+        this.data = data;
+        attributes = data.attributes(); classes = data.classes(); settings = data.settings();
+        train = data.train(); validation = data.validation(); test = data.test();
+        builder = new TreeBuilder(attributes, classes.size(), settings);
+        grown = new PrunedTree(builder.grow(train));
+        PruningResult result = Pruning.reducedError(grown.root, validation);
+        pruned = result.tree(); decisions = result.decisions();
+        Map<String, PrunedTree> models = Map.of("grown", grown, "pruned", pruned, "depth", selectedDepth.tree(),
+            "cost_complexity", sequence.get(selectedIndex).tree());
+        models.forEach((name, tree) -> predictions.put(name, test.stream().map(tree::predict).toList()));
+    String accuracy(PrunedTree tree, List<Row> rows) { return ratio(tree.correct(rows), rows.size()); }
+    List<String> predictionsFile() {
+        List<String> lines = new ArrayList<>(List.of("id,predicted,actual,grown,leaf,path,missing"));
+        for (Row row : test) {
+            Route route = pruned.route(row);
+            String path = route.path().stream().map(node -> Integer.toString(node.number)).collect(Collectors.joining("-"));
+            long missing = route.steps().stream().filter(step -> !step.method().equals("primary")).count();
+            lines.add(row.id() + "," + classes.get(route.leaf().prediction) + "," + classes.get(row.label()) + ","
+                + classes.get(grown.predict(row)) + "," + route.leaf().number + "," + path + "," + missing);
+        }
+        return lines;
+    }
+    List<String> modelEvaluation(String model) { return Evaluation.classification(model + " test", classes, test, predictions.get(model)); }
+    List<String> routingLines() {
+        Map<Integer, int[]> tally = new HashMap<>();
+        grown.preorder().forEach(node -> tally.put(node.number, new int[3]));
+        List<String> methods = List.of("primary", "surrogate", "default");
+        for (Row row : test) for (Step step : pruned.route(row).steps()) tally.get(step.node().number)[methods.indexOf(step.method())]++;
+        List<String> lines = new ArrayList<>(List.of("routing pruned test"));
+        for (Node node : pruned.internalNodes()) {
+            int[] counts = tally.get(node.number);
+            lines.add("node " + node.number + " rows " + Arrays.stream(counts).sum() + " primary " + counts[0] + " surrogate " + counts[1] + " default " + counts[2]);
+        }
+        for (boolean complete : List.of(true, false)) {
+            List<Row> rows = test.stream().filter(row -> (row.missingCount() == 0) == complete).toList();
+            lines.add((complete ? "complete" : "incomplete") + " rows " + rows.size() + " correct " + accuracy(pruned, rows));
+        }
+        return lines;
+    }
+    List<String> evaluationFile() {
+        return Main.sections(List.of(dataLines(), List.of(summary("grown", grown), summary("pruned", pruned)),
+            modelEvaluation("grown"), modelEvaluation("pruned"), routingLines(), crossValidationLines(), depthLines(),
+            complexityLines(), baggingLines(), mcnemarLines(), aucLines(), learningLines()));
+    }
+        Analysis analysis = new Analysis(Dataset.load("input"));
+        Map<String, List<String>> files = Map.of("tree.txt", sections(List.of(analysis.rootCandidates(), analysis.treeLines(analysis.grown), analysis.surrogateLines())),
+            "pruned_tree.txt", analysis.prunedTreeFile(), "predictions.csv", analysis.predictionsFile(), "rules.txt", analysis.rulesFile(),
+            "evaluation.txt", analysis.evaluationFile(), "importance.txt", sections(List.of(analysis.impurityLines("grown", analysis.grown),
+                analysis.impurityLines("pruned", analysis.pruned), analysis.permutationLines())));
+        for (var entry : files.entrySet()) Files.writeString(Path.of("output", entry.getKey()), String.join("\n", entry.getValue()) + "\n", StandardCharsets.US_ASCII);

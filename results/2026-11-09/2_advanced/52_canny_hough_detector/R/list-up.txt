@@ -1,0 +1,278 @@
+integer_text <- function(value) sprintf("%.0f",value)
+read_inputs <- function() {
+  lines <- readLines("input/image.pgm")
+  dimensions <- as.integer(strsplit(lines[2L]," ",fixed=TRUE)[[1L]])
+  image <- do.call(rbind,lapply(strsplit(lines[-seq_len(3L)]," ",fixed=TRUE),as.integer))
+  trig <- do.call(
+      rbind,
+      lapply(strsplit(readLines("input/trig.txt")," ",fixed=TRUE),function(row) as.integer(row[2:3]))
+  )
+  params <- list()
+  for (line in readLines("input/params.txt")) {
+    words <- strsplit(line," ",fixed=TRUE)[[1L]]
+    params[[words[1L]]] <- as.numeric(words[-1L])
+  }
+  list(image=image,trig=trig,params=params)
+}
+write_pgm <- function(name,image) {
+  lines <- c(
+      "P2",
+      paste(ncol(image),nrow(image)),
+      "255",
+      vapply(seq_len(nrow(image)),function(y) paste(integer_text(image[y,]),collapse=" "),character(1))
+  )
+  write_lines(name,lines)
+}
+clamped <- function(image,x,y) image[min(max(y+1L,1L),nrow(image)),min(max(x+1L,1L),ncol(image))]
+smoothing <- function(image,params) {
+  height <- nrow(image)
+  width <- ncol(image)
+  ks <- params$gauss_size[1L]
+  half <- ks %/% 2L
+  weights <- params$gauss_kernel
+  divisor <- params$gauss_divisor[1L]
+  output <- matrix(0L,height,width)
+  for (y in seq_len(height)-1L) for (x in seq_len(width)-1L) {
+    total <- 0
+    for (j in seq_len(ks)-1L) for (i in seq_len(ks)-1L) total <- total+weights[j*ks+i+1L]*clamped(
+        image,
+        x+i-half,
+        y+j-half
+    )
+    output[y+1L,x+1L] <- total %/% divisor
+  }
+  output
+}
+gradient <- function(image) {
+  height <- nrow(image)
+  width <- ncol(image)
+  gx <- gy <- magnitude <- matrix(0L,height,width)
+  for (y in seq_len(height)-1L) for (x in seq_len(width)-1L) {
+    q1 <- clamped(image,x-1L,y-1L)
+    q2 <- clamped(image,x,y-1L)
+    q3 <- clamped(image,x+1L,y-1L)
+    q4 <- clamped(image,x-1L,y)
+    q6 <- clamped(image,x+1L,y)
+    q7 <- clamped(image,x-1L,y+1L)
+    q8 <- clamped(image,x,y+1L)
+    q9 <- clamped(image,x+1L,y+1L)
+    dx <- (q3+2L*q6+q9)-(q1+2L*q4+q7)
+    dy <- (q7+2L*q8+q9)-(q1+2L*q2+q3)
+    gx[y+1L,x+1L] <- dx
+    gy[y+1L,x+1L] <- dy
+    magnitude[y+1L,x+1L] <- abs(dx)+abs(dy)
+  }
+  list(gx=gx,gy=gy,magnitude=magnitude)
+}
+NEIGHBORS <- list(c(-1L,-1L),c(0L,-1L),c(1L,-1L),c(-1L,0L),c(1L,0L),c(-1L,1L),c(0L,1L),c(1L,1L))
+raster_points <- function(mask) {
+  indices <- which(mask,arr.ind=TRUE)
+  indices <- indices[order(indices[,1L],indices[,2L]),,drop=FALSE]
+  lapply(seq_len(nrow(indices)),function(i) c(indices[i,2L]-1L,indices[i,1L]-1L))
+}
+has_edge <- function(mask,x,y) x >= 0L && x < ncol(mask) && y >= 0L && y < nrow(mask) && mask[y+1L,x+1L]
+directions <- function(gx,gy) {
+  direction <- matrix(0L,nrow(gx),ncol(gx))
+  for (i in seq_along(gx)) {
+    ax <- abs(gx[i])
+    ay <- abs(gy[i])
+    direction[i] <- if (29*ay <= 12*ax) 0L else if (29*ay >= 70*ax) 90L else if (gx[i]*gy[i] < 0L) 45L else 135L
+  }
+  direction
+}
+suppress <- function(magnitude,direction) {
+  output <- matrix(0L,nrow(magnitude),ncol(magnitude))
+  offsets <- list("0"=c(-1L,0L),"45"=c(1L,-1L),"90"=c(0L,-1L),"135"=c(-1L,-1L))
+  for (y in seq.int(1L,nrow(magnitude)-2L)) for (x in seq.int(1L,ncol(magnitude)-2L)) {
+    offset <- offsets[[as.character(direction[y+1L,x+1L])]]
+    dx <- offset[1L]
+    dy <- offset[2L]
+    value <- magnitude[y+1L,x+1L]
+    if (value > magnitude[y+dy+1L,x+dx+1L] && value >= magnitude[y-dy+1L,x-dx+1L]) output[y+1L,x+1L] <- value
+  }
+  output
+}
+hysteresis <- function(nonmax,low,high) {
+  strong <- nonmax >= high
+  weak <- nonmax >= low & nonmax < high
+  edges <- strong
+  queue <- raster_points(strong)
+  cursor <- 1L
+  while (cursor <= length(queue)) {
+    point <- queue[[cursor]]
+    cursor <- cursor+1L
+    for (offset in NEIGHBORS) {
+      q <- point+offset
+      if (has_edge(weak,q[1L],q[2L]) && !has_edge(edges,q[1L],q[2L])) {
+        edges[q[2L]+1L,q[1L]+1L] <- TRUE
+        queue[[length(queue)+1L]] <- q
+      }
+    }
+  }
+  list(edges=edges,strong=strong,weak=weak)
+}
+components <- function(edges) {
+  waiting <- edges
+  found <- list()
+  for (start in raster_points(edges)) {
+    if (!waiting[start[2L]+1L,start[1L]+1L]) next
+    waiting[start[2L]+1L,start[1L]+1L] <- FALSE
+    queue <- list(start)
+    cursor <- 1L
+    while (cursor <= length(queue)) {
+      point <- queue[[cursor]]
+      cursor <- cursor+1L
+      for (offset in NEIGHBORS) {
+        q <- point+offset
+        if (has_edge(waiting,q[1L],q[2L])) {
+          waiting[q[2L]+1L,q[1L]+1L] <- FALSE
+          queue[[length(queue)+1L]] <- q
+        }
+      }
+    }
+    found[[length(found)+1L]] <- queue
+  }
+  found
+}
+harris_corners <- function(gx,gy,window,threshold,maximum_count) {
+  candidates <- list()
+  for (y in seq_len(height)-1L) for (x in seq_len(width)-1L) {
+    value <- response[y+1L,x+1L]
+    if (value < threshold) next
+    keep <- TRUE
+    for (offset in NEIGHBORS) {
+      nx <- x+offset[1L]
+      ny <- y+offset[2L]
+      if (nx < 0L || nx >= width || ny < 0L || ny >= height) next
+      other <- response[ny+1L,nx+1L]
+      before <- ny < y || (ny == y && nx < x)
+      if (other > value || (other == value && before)) {
+        keep <- FALSE
+        break
+      }
+    }
+    if (keep) candidates[[length(candidates)+1L]] <- list(x=x,y=y,response=value)
+  }
+component_attributes <- function(groups,edges,magnitude,direction,shapes) {
+  explanations <- lapply(shapes,function(shape) shape_explanations(shape,edges))
+  result <- list()
+  for (pixels in groups) {
+    ends <- sum(vapply(
+        pixels,
+        function(point) sum(vapply(
+            NEIGHBORS,
+            function(offset) has_edge(edges,point[1L]+offset[1L],point[2L]+offset[2L]),
+            logical(1)
+        )) == 1L,
+        logical(1)
+    ))
+overlay_image <- function(image,segments,circles,corners,divisor) {
+  output <- image %/% divisor
+  mark <- function(point) {
+    x <- point[1L]
+    y <- point[2L]
+    if (x >= 0L && x < ncol(output) && y >= 0L && y < nrow(output)) output[y+1L,x+1L] <<- 255L
+  }
+  for (s in segments) for (point in bresenham(s$start,s$ending)) mark(point)
+  for (circle in circles) for (offset in circle$outline) mark(circle$center+offset)
+  for (corner in corners) for (offset in seq.int(-2L,2L)) {
+    mark(c(corner$x+offset,corner$y))
+    mark(c(corner$x,corner$y+offset))
+  }
+  output
+}
+main <- function() {
+  inputs <- read_inputs()
+  image <- inputs$image
+  trig <- inputs$trig
+  params <- inputs$params
+  height <- nrow(image)
+  width <- ncol(image)
+  smoothed <- smoothing(image,params)
+  gradients <- gradient(smoothed)
+  gx <- gradients$gx
+  gy <- gradients$gy
+  magnitude <- gradients$magnitude
+  direction <- directions(gx,gy)
+  nonmax <- suppress(magnitude,direction)
+  thresholded <- hysteresis(nonmax,params$canny_low[1L],params$canny_high[1L])
+  edges <- thresholded$edges
+  strong <- thresholded$strong
+  weak <- thresholded$weak
+  groups <- components(edges)
+  voted <- circle_votes(edges,params)
+  circle_peaks_result <- circle_peaks(
+      voted$cells,
+      voted$outlines,
+      voted$radii,
+      width,
+      height,
+      params$circle_min_percent[1L]
+  )
+  selected <- selected_circles(voted$outlines,circle_peaks_result$peaks,edges,params$circle_max_count[1L])
+  circles <- selected$circles
+  circle_edges <- selected$circle_edges
+  line_edges <- selected$line_edges
+  votes <- line_votes(line_edges,trig,params$hough_rho_step[1L])
+  peaks <- line_peaks(votes,params$hough_threshold[1L])
+  extracted <- extract_segments(peaks,line_edges,trig,params)
+  lines <- extracted$lines
+  segments <- extracted$segments
+  used <- extracted$used
+  joins <- build_junctions(segments,params$junction_min_angle[1L],params$junction_distance[1L])
+  polygons <- lapply(polygon_cycles(segments,joins),function(p) polygon_properties(p,segments,edges,params))
+  polygon_count <- length(polygons)
+  shapes <- measure_shapes(c(polygons,circles),image,params$contrast_margin[1L])
+  polygons <- head(shapes,polygon_count)
+  circles <- tail(shapes,length(shapes)-polygon_count)
+  harris <- harris_corners(
+      gx,
+      gy,
+      params$harris_window[1L],
+      params$harris_threshold[1L],
+      params$harris_max_count[1L]
+  )
+  matched <- match_corners(harris$chosen,polygons,segments,params$corner_match_distance[1L])
+  corners <- matched$corners
+  polygons <- matched$polygons
+  component_list <- component_attributes(groups,edges,magnitude,direction,shapes)
+  overlay <- overlay_image(image,segments,circles,corners,params$overlay_divisor[1L])
+  hough_image <- if (votes$maximum > 0L) (255L*votes$votes) %/% votes$maximum else votes$votes
+  write_pgm("edges.pgm",255L*edges)
+  write_pgm("hough.pgm",hough_image)
+  write_pgm("overlay.pgm",overlay)
+  report <- c(paste("image",width,height),paste("gradient_nonzero",sum(magnitude > 0L)),paste("gradient_max",max(magnitude)),paste("nms_kept",sum(nonmax > 0L)),
+    paste("strong",sum(strong)),paste("weak",sum(weak)),paste("edges",sum(edges)),paste("weak_kept",sum(weak & edges)),paste(
+        "weak_dropped",
+        sum(weak & !edges)
+    ),paste("edge_components",length(groups)))
+  for (d in c(0L,45L,90L,135L)) report <- c(report,paste0("direction_",d," ",sum(edges & direction == d)))
+  report <- c(report,paste("circle_candidates",length(circle_peaks_result$candidates)),paste("circle_peaks",length(circle_peaks_result$peaks)),paste("circles",length(circles)),paste("circle_edge_pixels",sum(circle_edges)),
+    paste(
+        "line_edge_pixels",
+        sum(line_edges)
+    ),paste("hough_max_votes",votes$maximum),paste("hough_peaks",length(peaks)),paste("lines",length(lines)),paste("segments",length(segments)),paste("claimed_pixels",sum(used)),paste("junctions",length(joins)),paste("polygons",length(polygons)))
+  for (kind in POLYGON_KINDS) report <- c(
+      report,
+      paste(kind,sum(vapply(polygons,function(p) p$kind == kind,logical(1))))
+  )
+  report <- c(report,paste("corner_candidates",length(harris$candidates)),paste("corners",length(corners)),paste("corners_on_vertices",sum(vapply(corners,function(c) c$match_kind == "vertex",logical(1)))),
+    paste(
+        "corners_on_segments",
+        sum(vapply(corners,function(c) c$match_kind == "segment",logical(1)))
+    ),paste("corners_unmatched",sum(vapply(corners,function(c) c$match_kind == "none",logical(1)))),paste("vertices_with_corner",matched$matched))
+  files <- list(
+      "lines.txt"=line_text,
+      "circles.txt"=circle_text,
+      "polygons.txt"=polygon_text,
+      "corners.txt"=corner_text,
+      "components.txt"=component_text,
+      "report.txt"=report
+  )
+  for (name in names(files)) write_lines(name,files[[name]])
+rho <- function(
+    point,
+    angle,
+    trig,
+    step
+) (point[1L]*trig[angle+1L,1L]+point[2L]*trig[angle+1L,2L]) %/% (16384*step)

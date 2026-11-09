@@ -1,0 +1,495 @@
+class Prohibitions {
+  final Set<(int, int)> states = {};
+  final Set<(int, int, int)> moves = {};
+  bool allowed(int u, int v, int t) {
+    if (states.contains((v, t))) return false;
+    final at = permanent[v];
+    if (at != null && at <= t) return false;
+    return u == v || !moves.contains((u, v, t));
+  }
+  int arrival(int goal) {
+    var r = 0;
+    for (final s in states) {
+      if (s.$1 == goal) r = max(r, s.$2 + 1);
+    }
+    return r;
+  }
+  void reserve(List<int> path, int start, bool forever) {
+    for (var k = 0; k < path.length; k++) {
+      final c = path[k];
+      states.add((c, start + k));
+      if (k > 0 && c != path[k - 1]) moves.add((c, path[k - 1], start + k));
+    }
+    if (forever) {
+      final goal = path.last, at = start + path.length - 1;
+      permanent[goal] = min(permanent[goal] ?? at, at);
+    }
+  }
+List<int>? lowLevel(
+  Grid grid,
+  int agent,
+  int start,
+  int t0,
+  int tmax,
+  Prohibitions b,
+  bool window,
+  Counters counter,
+) {
+  counter.searches++;
+  final r = b.arrival(grid.agents[agent].goal),
+      states = [SearchState(start, t0, grid.distances[agent][start], 0, 0, -1)],
+      generated = {(start, t0)};
+  final open = MinHeap<int>((i, j) {
+    final a = states[i], b = states[j];
+    var c = a.f.compareTo(b.f);
+    if (c != 0) return c;
+    c = b.g.compareTo(a.g);
+    return c != 0 ? c : a.serial.compareTo(b.serial);
+  });
+  open.add(0);
+  while (open.isNotEmpty) {
+    var index = open.remove();
+    final s = states[index];
+    counter.expansions++;
+    if (counter.expansions > counter.limit) {
+      counter.aborted = true;
+      return null;
+    }
+    if ((s.cell == grid.agents[agent].goal && s.time >= r) ||
+        (window && s.time == tmax)) {
+      final out = <int>[];
+      while (index >= 0) {
+        out.add(states[index].cell);
+        index = states[index].parent;
+      }
+      return out.reversed.toList();
+    }
+    if (s.time == tmax) continue;
+    for (final v in grid.destinations(s.cell)) {
+      final key = (v, s.time + 1);
+      if (grid.distances[agent][v] < 0 ||
+          generated.contains(key) ||
+          !b.allowed(s.cell, v, s.time + 1))
+        continue;
+      generated.add(key);
+      final serial = states.length, distance = s.time + 1 - t0;
+      states.add(
+        SearchState(
+          v,
+          s.time + 1,
+          distance + grid.distances[agent][v],
+          distance,
+          serial,
+          index,
+        ),
+      );
+      open.add(serial);
+    }
+  }
+  return null;
+}
+Grid readGrid() {
+  final a = lines('input/map.txt'),
+      size = a[0].split(' ').map(int.parse).toList(),
+      g = Grid(size[0], size[1], a.sublist(1));
+  for (final line in lines('input/agents.csv').skip(1)) {
+    final v = line.split(',').map(int.parse).toList();
+    g.agents.add(Agent(v[2] * g.width + v[1], v[4] * g.width + v[3]));
+  }
+  for (final a in g.agents) {
+    g.distances.add(g.distanceTable(a.goal));
+  }
+  return g;
+}
+Parameters readParameters(int n) {
+  final p = Parameters();
+  p.orders.add(List.generate(n, (i) => i));
+  for (final line in lines('input/params.txt')) {
+    final a = line.split(' ');
+    switch (a[0]) {
+      case 'HORIZON':
+        p.horizon = int.parse(a[1]);
+        break;
+      case 'HL_BUDGET':
+        p.highBudget = int.parse(a[1]);
+        break;
+      case 'LL_BUDGET':
+        p.lowBudget = int.parse(a[1]);
+        break;
+      case 'WINDOW':
+        p.window = int.parse(a[1]);
+        p.step = int.parse(a[2]);
+        break;
+      case 'ORDER':
+        p.orders.add(a.skip(1).map(int.parse).toList());
+        break;
+      case 'RUN':
+        p.definitions.add(RunDefinition(a[1], a[2]));
+        break;
+      case 'ANIMATE':
+        p.animate = a[1];
+        p.frames = int.parse(a[2]);
+        break;
+      case 'DELAY':
+        p.delays.add(Delay(int.parse(a[1]), int.parse(a[2]), int.parse(a[3])));
+        break;
+    }
+  }
+  return p;
+}
+void solvePP(Grid g, Parameters p, Run r) {
+  for (var k = 0; k < p.orders.length; k++) {
+    r.high++;
+    final order = p.orders[k], before = r.counter.expansions;
+    final (paths, planned, failed) = prioritized(g, p, order, k + 1, r);
+    if (r.counter.aborted) {
+      r.reason = 'll_budget';
+      break;
+    }
+    final line =
+        'order ${k + 1} ${order.map(agentName).join()} planned $planned expansions ${r.counter.expansions - before}';
+    if (paths != null) {
+      r.paths = paths;
+      r.specific.add('$line ok');
+      r.end = 'end OK order ${k + 1}';
+      return;
+    }
+    r.specific.add('$line failed ${agentName(failed)}');
+  }
+  if (r.reason.isEmpty) r.reason = 'orders';
+}
+PlanMetrics metrics(Grid g, List<List<int>> paths) {
+  final (soc, makespan) = planCosts(paths);
+  final m = PlanMetrics(soc, makespan, g.width * g.height);
+  for (var i = 0; i < paths.length; i++) {
+    final p = paths[i],
+        a = AgentMetrics(
+          paths[i].length - 1,
+          paths[i].length - 1 - g.distances[i][g.agents[i].start],
+          actions(g, paths[i]),
+        ),
+        seen = <int>{};
+    var last = '';
+    for (var t = 0; t < p.length; t++) {
+      final c = p[t];
+      seen.add(c);
+      if (c == g.agents[i].goal && a.arrival < 0) a.arrival = t;
+      if (t == 0) continue;
+      if (c == p[t - 1]) {
+        a.waits++;
+        m.cellWaits[c]++;
+      } else {
+        final direction = action(g, p[t - 1], c);
+        if (last.isNotEmpty && last != direction) a.turns++;
+        last = direction;
+      }
+      if (p[t - 1] == g.agents[i].goal && c != g.agents[i].goal) a.leave++;
+    }
+    for (final c in seen) {
+      m.traffic[c]++;
+    }
+    for (var t = a.cost; t <= makespan; t++) {
+      m.arrivals[t]++;
+    }
+    m.sumExtra += a.extra;
+    m.maxExtra = max(m.maxExtra, a.extra);
+    m.waits += a.waits;
+    m.turns += a.turns;
+    m.agents.add(a);
+  }
+  for (var c = 0; c < m.traffic.length; c++) {
+    if (m.traffic[c] > 0) m.hotspots.add(c);
+  }
+  m.hotspots.sort((a, b) {
+    final c = m.traffic[b].compareTo(m.traffic[a]);
+    return c != 0 ? c : a.compareTo(b);
+  });
+  if (m.hotspots.length > 5) m.hotspots.removeRange(5, m.hotspots.length);
+  return m;
+}
+List<String> validation(
+  Grid g,
+  String name,
+  List<List<int>> paths,
+  bool independent,
+) {
+  var start = 0, goal = 0, moves = 0, follows = 0, vertex = 0, edge = 0;
+  for (var i = 0; i < paths.length; i++) {
+    final p = paths[i];
+    if (p.first != g.agents[i].start) start++;
+    if (p.last != g.agents[i].goal) goal++;
+    for (var t = 1; t < p.length; t++) {
+      if (!g.destinations(p[t - 1]).contains(p[t])) moves++;
+    }
+  }
+  final cs = conflicts(paths);
+  for (final c in cs) {
+    if (c.edge) {
+      edge++;
+    } else {
+      vertex++;
+    }
+  }
+  final last = planCosts(paths).$2;
+  for (var t = 1; t <= last; t++) {
+    for (var a = 0; a < paths.length; a++) {
+      for (var b = 0; b < paths.length; b++) {
+        if (a != b &&
+            position(paths[a], t) != position(paths[a], t - 1) &&
+            position(paths[a], t) == position(paths[b], t - 1) &&
+            position(paths[b], t) != position(paths[a], t - 1))
+          follows++;
+      }
+    }
+  }
+  final verdict = start + goal + moves + vertex + edge == 0
+          ? 'VALID'
+          : 'INVALID',
+      out = [
+        'plan $name verdict $verdict start $start goal $goal moves $moves vertex $vertex edge $edge follows $follows',
+      ],
+      cache = <int, List<Set<int>>>{},
+      constraints = List.generate(paths.length, (_) => <Constraint>[]);
+  for (final c in cs) {
+    out.add(
+      '  ${conflictText(g, c)}${independent ? ' ${classNames[classify(g, c, paths, constraints, cache)]}' : ''}',
+    );
+  }
+  return out;
+}
+List<String> frames(Grid g, Parameters p, Run r) {
+  final paths = r.paths;
+  if (paths == null) return ['run ${p.animate} FAIL'];
+  final out = ['run ${p.animate} frames ${p.frames}'];
+  for (var t = 0; t < p.frames; t++) {
+    final picture = [for (final row in g.rows) row.split('')];
+    for (var i = 0; i < g.agents.length; i++) {
+      final a = g.agents[i];
+      picture[a.goal ~/ g.width][a.goal % g.width] = agentName(i).toLowerCase();
+    }
+    var done = 0, moving = 0, waiting = 0;
+    for (var i = 0; i < paths.length; i++) {
+      final path = paths[i], c = position(paths[i], t);
+      picture[c ~/ g.width][c % g.width] = agentName(i);
+      if (t >= path.length - 1) {
+        done++;
+      } else if (t >= 1 && position(path, t) != position(path, t - 1)) {
+        moving++;
+      } else {
+        waiting++;
+      }
+    }
+    out.addAll([
+      '',
+      'frame $t done $done moving $moving waiting $waiting',
+      for (final row in picture) row.join(),
+    ]);
+  }
+  out.addAll([
+    '',
+    'traffic',
+    ...countPicture(g, r.metrics!.traffic),
+    '',
+    'waits',
+    ...countPicture(g, r.metrics!.cellWaits),
+  ]);
+  return out;
+}
+List<String> runBlock(Grid g, Run r) {
+  final d = r.definition,
+      base =
+          'run ${r.definition.name} solver ${r.definition.solver} cost_function ${r.definition.costFunction} result';
+  if (r.paths == null) return ['$base FAIL reason ${r.reason}', ...r.specific];
+  final m = r.metrics!;
+  var cost = m.soc, lower = 0;
+  for (var i = 0; i < g.agents.length; i++) {
+    lower += g.distances[i][g.agents[i].start];
+  }
+  if (d.costFunction == 'MAKESPAN') {
+    cost = m.makespan;
+    lower = 0;
+    for (var i = 0; i < g.agents.length; i++) {
+      lower = max(lower, g.distances[i][g.agents[i].start]);
+    }
+  }
+  final out = [
+    '$base OK cost $cost soc ${m.soc} makespan ${m.makespan} ratio ${fraction(cost, lower)}',
+    ...r.specific,
+  ];
+  for (var i = 0; i < m.agents.length; i++) {
+    final a = m.agents[i];
+    out.add(
+      'agent ${agentName(i)} cost ${a.cost} extra ${a.extra} waits ${a.waits} turns ${a.turns} arrive ${a.arrival} leave ${a.leave} moves ${a.moves}',
+    );
+  }
+  out.add('arrivals ${m.arrivals.join(' ')}');
+  out.add(
+    'hotspots ${m.hotspots.map((c) => '${cell(g, c)}:${m.traffic[c]}').join(' ')}',
+  );
+  final e = r.execution!;
+  out.add(
+    e.deadlock
+        ? 'execution deadlock time ${e.time}'
+        : 'execution soc ${e.soc} makespan ${e.makespan} blocked ${e.blocked} finish ${e.finish.join(' ')}',
+  );
+  return out;
+}
+void main() {
+  final g = readGrid(),
+      p = readParameters(g.agents.length),
+      independent = <List<int>>[],
+      counter = Counters(0x7fffffffffffffff);
+  for (var i = 0; i < g.agents.length; i++) {
+    independent.add(
+      lowLevel(
+        g,
+        i,
+        g.agents[i].start,
+        0,
+        p.horizon,
+        Prohibitions(),
+        false,
+        counter,
+      )!,
+    );
+  }
+  final solutions = overview(g, independent),
+      validations = validation(g, 'INDEPENDENT', independent, true),
+      stats = [
+        'run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions',
+      ],
+      trace = <String>[],
+      runs = <Run>[],
+      successful = <int>[];
+  Run? animated;
+  for (final definition in p.definitions) {
+    final r = Run(definition, p.lowBudget);
+    switch (definition.solver) {
+      case 'PP':
+        solvePP(g, p, r);
+        break;
+      case 'CBS':
+      case 'ICBS':
+        solveCBS(g, p, r);
+        break;
+      case 'WHCA':
+        solveWHCA(g, p, r);
+        break;
+    }
+    final paths = r.paths;
+    if (paths != null) {
+      r.metrics = metrics(g, paths);
+      r.execution = delayed(paths, p.delays);
+      successful.add(runs.length);
+      validations.addAll(validation(g, definition.name, paths, false));
+    } else {
+      validations.add('plan ${definition.name} verdict NONE');
+      r.end = 'end FAIL ${r.reason}';
+    }
+    solutions.addAll(['', ...runBlock(g, r)]);
+    stats.add(statsLine(r));
+    if (trace.isNotEmpty) trace.add('');
+    trace.addAll(['run ${definition.name}', ...r.trace, r.end]);
+    runs.add(r);
+    if (definition.name == p.animate) animated = r;
+  }
+  solutions.addAll([
+    '',
+    'summary ok ${successful.length} failed ${runs.length - successful.length}',
+  ]);
+  if (successful.isNotEmpty) {
+    var bestSOC = runs[successful.first].metrics!.soc,
+        bestMax = runs[successful.first].metrics!.makespan;
+    for (final i in successful) {
+      bestSOC = min(bestSOC, runs[i].metrics!.soc);
+      bestMax = min(bestMax, runs[i].metrics!.makespan);
+    }
+    final socNames = [
+          for (final i in successful)
+            if (runs[i].metrics!.soc == bestSOC) runs[i].definition.name,
+        ],
+        maxNames = [
+          for (final i in successful)
+            if (runs[i].metrics!.makespan == bestMax) runs[i].definition.name,
+        ];
+    solutions.addAll([
+      'best_soc $bestSOC ${socNames.join(' ')}',
+      'best_makespan $bestMax ${maxNames.join(' ')}',
+    ]);
+    successful.sort((i, j) {
+      final a = runs[i].metrics!, b = runs[j].metrics!;
+      var c = a.soc.compareTo(b.soc);
+      if (c != 0) return c;
+      c = a.makespan.compareTo(b.makespan);
+      return c != 0 ? c : i.compareTo(j);
+    });
+    solutions.add(
+      'ranking ${successful.map((i) => runs[i].definition.name).join(' ')}',
+    );
+  }
+  Directory('output').createSync(recursive: true);
+  writeLines('solutions.txt', solutions);
+  writeLines('stats.csv', stats);
+  writeLines('validation.txt', validations);
+  writeLines('trace.txt', trace);
+  writeLines('frames.txt', frames(g, p, animated!));
+}
+int position(List<int> path, int t) => path[min(t, path.length - 1)];
+List<Conflict> conflicts(List<List<int>> paths) {
+  final last = planCosts(paths).$2, out = <Conflict>[];
+  for (var t = 1; t <= last; t++) {
+    for (var a = 0; a < paths.length; a++) {
+      for (var b = a + 1; b < paths.length; b++) {
+        final u = position(paths[a], t - 1),
+            v = position(paths[a], t),
+            bu = position(paths[b], t - 1),
+            bv = position(paths[b], t);
+        if (v == bv) {
+          out.add(Conflict(t, a, b, v, v, false));
+        } else if (v == bu && bv == u) {
+          out.add(Conflict(t, a, b, u, v, true));
+        }
+      }
+    }
+  }
+  return out;
+}
+(List<List<int>>?, int, int) prioritized(
+  Grid grid,
+  Parameters p,
+  List<int> order,
+  int number,
+  Run run,
+) {
+  final b = Prohibitions(),
+      paths = List.generate(grid.agents.length, (_) => <int>[]);
+  var planned = 0;
+  for (final agent in order) {
+    final before = run.counter.expansions,
+        path = lowLevel(
+          grid,
+          agent,
+          grid.agents[agent].start,
+          0,
+          p.horizon,
+          b,
+          false,
+          run.counter,
+        );
+    if (run.counter.aborted) return (null, planned, agent);
+    final text = 'order $number agent ${agentName(agent)}';
+    if (path == null) {
+      run.trace.add(
+        '$text failed expansions ${run.counter.expansions - before}',
+      );
+      return (null, planned, agent);
+    }
+    run.trace.add(
+      '$text cost ${path.length - 1} expansions ${run.counter.expansions - before}',
+    );
+    paths[agent] = path;
+    planned++;
+    b.reserve(path, 0, true);
+  }
+  return (paths, planned, -1);
+}

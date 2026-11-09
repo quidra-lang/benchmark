@@ -1,0 +1,240 @@
+const UNKNOWN = 0
+const FILLED = 1
+const EMPTY = 2
+is_clue_line(text) = !isempty(text) && all(c -> c == ' ' || '0' <= c <= '9', text)
+function parse_clue(text)
+    text == "0" && return Int[]
+    tokens = split(text, ' '; keepempty=true)
+    all(t -> 1 <= length(t) <= 2 && '1' <= t[1] <= '9' && all(c -> '0' <= c <= '9', t), tokens) || return nothing
+    parse.(Int, tokens)
+end
+span(clue) = sum(clue)+length(clue)-1
+fits(clue, count) = span(clue) <= count
+char_state(ch) = ch == '?' ? UNKNOWN : ch == '#' ? FILLED : EMPTY
+function read_blocks(path)
+    blocks = Vector{String}[]
+    block = nothing
+    for line in readlines(path)
+        if block === nothing
+            (!isempty(line) && !startswith(line, "#")) && (block = [line])
+        elseif line == "END"
+            push!(blocks, block)
+            block = nothing
+        else
+            push!(block, line)
+        end
+    end
+    blocks
+function Puzzle(lines)
+    size_fields = split(lines[2])
+    column_at = findfirst(==("COLUMNS"), lines)
+    row_lines = lines[4:column_at-1]
+    column_lines = String[]
+    given_lines = Tuple{Int,Int,Char}[]
+    position = column_at+1
+    while position <= length(lines) && is_clue_line(lines[position])
+        push!(column_lines, lines[position])
+        position += 1
+    end
+    while position <= length(lines) && startswith(lines[position], "GIVEN ")
+        tokens = split(lines[position])
+        push!(given_lines, (parse(Int, tokens[2]), parse(Int, tokens[3]), tokens[4][1]))
+        position += 1
+    end
+    answer_lines = position <= length(lines) ? lines[position+1:end] : nothing
+    Puzzle(name=lines[1][8:end], width=parse(Int, size_fields[2]), height=parse(Int, size_fields[3]), row_lines=row_lines, column_lines=column_lines, given_lines=given_lines, answer_lines=answer_lines)
+end
+valid_name(name) = occursin(r"^[a-z0-9_]{1,20}$", name)
+function validate!(p, earlier)
+    valid_name(p.name) || return "bad name"
+    p.name in earlier && return "duplicate name"
+    1 <= p.width <= 30 && 1 <= p.height <= 30 || return "bad size"
+    length(p.row_lines) == p.height || return "row count $(length(p.row_lines)) expected $(p.height)"
+    length(p.column_lines) == p.width || return "column count $(length(p.column_lines)) expected $(p.width)"
+    for (texts, kind, size, result) in ((p.row_lines, "row", p.width, p.rows), (p.column_lines, "column", p.height, p.columns))
+        for (i, text) in enumerate(texts)
+            clue = parse_clue(text)
+            clue === nothing && return "bad clue $kind $i"
+            fits(clue, size) || return "$kind $i too long"
+            push!(result, clue)
+        end
+    end
+    row_total, column_total = sum(sum, p.rows), sum(sum, p.columns)
+    row_total == column_total || return "total mismatch rows=$row_total columns=$column_total"
+    taken = Set{Tuple{Int,Int}}()
+    for (k, (r, c, value)) in enumerate(p.given_lines)
+        1 <= r <= p.height && 1 <= c <= p.width && value in ('#', '.') || return "bad given $k"
+        (r, c) in taken && return "duplicate given $k"
+        push!(taken, (r, c))
+        push!(p.givens, (r, c, char_state(value)))
+    end
+    nothing
+end
+function logical_solve(rows, columns, givens, precise)
+    grid = fill(UNKNOWN, length(rows), length(columns))
+    for (r, c, value) in givens
+        grid[r, c] = value
+    end
+    propagation = propagate!(grid, rows, columns, precise, trues(length(rows)), trues(length(columns)))
+    grid, propagation
+end
+function solving_result(grid, propagation)
+    if propagation.conflict !== nothing
+        step = propagation.conflict
+        return "contradiction at=" * line_label(step.is_row, step.index)
+    end
+    determined_count(grid) == length(grid) ? "solved" : "stuck"
+end
+function Analysis(rows, columns, givens)
+    simple_grid, simple = logical_solve(rows, columns, givens, false)
+    logic_grid, logic = logical_solve(rows, columns, givens, true)
+    simple_result, logic_result = solving_result(simple_grid, simple), solving_result(logic_grid, logic)
+    search = nothing
+    solutions = Matrix{Int}[]
+    difficulty = "-"
+    if logic.conflict !== nothing
+        status = "contradiction"
+    elseif logic_result == "solved"
+        status = "unique"
+        solutions = [logic_grid]
+        difficulty = simple_result == "solved" ? "easy" : "medium"
+    else
+        search = SearchResult()
+        search!(search, logic_grid, rows, columns)
+        solutions = search.solutions
+        status = ("none", "unique", "multiple")[length(solutions)+1]
+        status == "unique" && (difficulty = "hard")
+    end
+    solves = length(logic.steps) + (search === nothing ? 0 : search.line_solves)
+    guesses = search === nothing ? 0 : length(search.guesses)
+    depth = search === nothing ? 0 : search.max_depth
+    Analysis(simple_grid, logic_grid, simple, logic, simple_result, logic_result, search, solutions, status, difficulty, solves, guesses, depth)
+end
+function Report(p)
+    a = Analysis(p.rows, p.columns, p.givens)
+    lines = ["PUZZLE $(p.name)", "size=$(p.width)x$(p.height) givens=$(length(p.givens)) status=$(a.status) difficulty=$(a.difficulty)",
+        "clues " * clue_statistics(p.rows, p.columns),
+        "simple known=$(determined_count(a.simple_grid)) line_solves=$(length(a.simple.steps)) result=$(a.simple_result)",
+        "logic known=$(determined_count(a.logic_grid)) line_solves=$(length(a.logic.steps)) result=$(a.logic_result)", "steps " * step_statistics(a.logic)]
+    if a.search !== nothing
+        search = a.search
+        push!(lines, "search guesses=$(length(search.guesses)) max_depth=$(search.max_depth) backtracks=$(search.backtracks) solutions=$(length(search.solutions)) line_solves=$(search.line_solves)")
+        for g in search.guesses
+            push!(lines, "guess $(g.number) depth=$(g.depth) cell=$(g.row),$(g.column) value=$(state_char(g.value)) solves=$(g.solves) known=$(g.known) result=$(g.result)")
+        end
+    end
+    if a.status == "multiple"
+        cells = differing_cells(a.solutions...)
+        push!(lines, "differ count=$(length(cells)) cells=$(join([cell_text(r, c) for (r, c) in cells], " "))")
+    end
+    names, grids = String[], Matrix{Int}[]
+    if a.status == "contradiction"
+        push!(names, "partial"); push!(grids, a.logic_grid)
+    else
+        a.simple_result == "stuck" && (push!(names, "simple"); push!(grids, a.simple_grid))
+        a.logic_result == "stuck" && (push!(names, "logic"); push!(grids, a.logic_grid))
+        if a.status == "multiple"
+            append!(names, ["first", "second"]); append!(grids, a.solutions)
+        end
+    end
+    !isempty(names) && append!(lines, grid_display(names, grids))
+    if a.status == "unique"
+        push!(lines, "sheet")
+        append!(lines, answer_sheet(p.rows, p.columns, a.solutions[1]))
+        push!(lines, "picture " * features_text(a.solutions[1]))
+function stats_row(report)
+    p, a = report.puzzle, report.analysis
+    join([p.name, a.status, a.difficulty, p.width, p.height, length(p.givens), determined_count(a.simple_grid), determined_count(a.logic_grid), a.line_solves, a.guesses, a.max_depth, length(a.solutions), report.grading], ",")
+end
+    for block in blocks
+        p = Puzzle(block)
+        reason = validate!(p, names)
+        push!(names, p.name)
+        if reason !== nothing
+            push!(paragraphs, ["PUZZLE $(p.name)", "error $reason"])
+            push!(stats, p.name * ",invalid" * repeat(",-", 11))
+        else
+            report = Report(p)
+            push!(reports, report)
+            push!(paragraphs, report.lines)
+            push!(stats, stats_row(report))
+        end
+    reports, solutions, stats = process_puzzles(read_blocks("input/puzzles.txt"))
+    for (name, lines) in zip(["solutions.txt", "stats.csv", "generated.txt"], [solutions, stats, generated])
+        open(joinpath("output", name), "w") do io
+line_cells(grid, is_row, index) = is_row ? grid[index, :] : grid[:, index]
+determined_count(grid) = count(!=(UNKNOWN), grid)
+function propagate!(grid, row_clues, column_clues, precise, row_marks, column_marks)
+    steps = SolveStep[]
+    while true
+        index = findfirst(row_marks)
+        is_row = index !== nothing
+        !is_row && (index = findfirst(column_marks))
+        index === nothing && return PropagationResult(steps, nothing)
+        if is_row
+            row_marks[index] = false
+            clue = row_clues[index]
+        else
+            column_marks[index] = false
+            clue = column_clues[index]
+        end
+        cells = line_cells(grid, is_row, index)
+        solved = solve_line(cells, clue, precise)
+        if solved === nothing
+            step = SolveStep(is_row, index, 0, true)
+            push!(steps, step)
+            return PropagationResult(steps, step)
+        end
+        gain = 0
+        for position in eachindex(solved)
+            (cells[position] != UNKNOWN || solved[position] == UNKNOWN) && continue
+            gain += 1
+            if is_row
+                grid[index, position] = solved[position]
+                column_marks[position] = true
+            else
+                grid[position, index] = solved[position]
+                row_marks[position] = true
+            end
+        end
+        push!(steps, SolveStep(is_row, index, gain, false))
+    end
+end
+Base.@kwdef mutable struct SearchResult
+    guesses::Vector{Guess} = Guess[]
+    solutions::Vector{Matrix{Int}} = Matrix{Int}[]
+    backtracks::Int = 0
+    max_depth::Int = 0
+    line_solves::Int = 0
+end
+function search!(result, grid, rows, columns, depth=1)
+    r, c = guess_cell(grid)
+    h, w = size(grid)
+    for value in (FILLED, EMPTY)
+        child = copy(grid)
+        child[r, c] = value
+        row_marks, column_marks = falses(h), falses(w)
+        row_marks[r] = column_marks[c] = true
+        propagation = propagate!(child, rows, columns, true, row_marks, column_marks)
+        known = determined_count(child)
+        if propagation.conflict !== nothing
+            step = propagation.conflict
+            text = "contradiction at=" * line_label(step.is_row, step.index)
+            result.backtracks += 1
+        elseif known == h*w
+            push!(result.solutions, child)
+            text = "solution$(length(result.solutions))"
+        else
+            text = "open"
+        end
+        push!(result.guesses, Guess(length(result.guesses)+1, depth, r, c, value, length(propagation.steps), known, text))
+        result.max_depth = max(result.max_depth, depth)
+        result.line_solves += length(propagation.steps)
+        if text == "open"
+            search!(result, child, rows, columns, depth+1) && return true
+        elseif length(result.solutions) == 2
+            return true
+        end
+    end
+    false
+end

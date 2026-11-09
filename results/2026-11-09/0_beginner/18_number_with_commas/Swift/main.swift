@@ -1,0 +1,11 @@
+import Foundation
+
+let formatter = NumberFormatter()
+formatter.locale = Locale(identifier: "en_US_POSIX")
+formatter.numberStyle = .decimal
+formatter.maximumFractionDigits = 0
+for n in [0, 7, 999, 1000, -456789, 3141592, 9876543210] {
+    let negative = n < 0
+    let digits = formatter.string(from: NSNumber(value: abs(n)))!
+    print((negative ? "-" : "") + digits)
+}

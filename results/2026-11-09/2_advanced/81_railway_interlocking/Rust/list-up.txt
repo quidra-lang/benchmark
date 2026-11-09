@@ -1,0 +1,153 @@
+    fn add_request(&mut self, route: usize, requester: &str) {
+        self.request_count += 1;
+        self.queue.push(Request {
+            number: self.request_count,
+            route,
+            time: self.time,
+            reason: "none".to_owned()
+        });
+        self.locks.routes[route].statistics[0] += 1;
+        log(&mut self.events,self.time,format!("REQUEST q{} {} {}",self.request_count,self.locks.routes[route].name,requester));
+    }
+    fn throw(&mut self, point: usize, target: bool) {
+        self.layout.points[point].motion = Some(Motion {
+            target,
+            completion: Some(self.time+self.throw_time)
+        });
+        log(&mut self.events,self.time,format!("MOVE {} {} until {}",self.layout.points[point].name,position(target),self.time+self.throw_time));
+    }
+    fn cancel(&mut self, route: usize) {
+        let requests: Vec<_> = self.queue.iter().filter(|q| q.route == route).map(|q| q.number).collect();
+        if !requests.is_empty() {
+            for number in requests {
+                log(&mut self.events,self.time,format!("DROP q{} {}",number,self.locks.routes[route].name));
+                self.dropped += 1;
+            }
+            self.queue.retain(|q| q.route != route);
+            return;
+        }
+        if self.locks.routes[route].state == 1 {
+            self.locks.routes[route].statistics[3] += 1;
+            let start = self.locks.routes[route].start;
+            let approach = self.layout.signals[start].section;
+            if self.layout.signals[start].aspect != 0 && (self.layout.sections[approach].failed || !self.occupancy[approach].is_empty()) {
+                let until = self.time+self.locks.routes[route].approach;
+                self.locks.routes[route].state = 3;
+                self.locks.routes[route].release = Some(until);
+                log(&mut self.events,self.time,format!("CANCEL {} approach until {}",self.locks.routes[route].name,until));
+            } else {
+                self.locks.release(route,&self.layout);
+                log(&mut self.events,self.time,format!("CANCEL {} released",self.locks.routes[route].name));
+            }
+        } else {
+            log(&mut self.events,self.time,format!("CANCEL {} {}",self.locks.routes[route].name,if self.locks.routes[route].state == 0 {
+                "none"
+            } else {
+                "refused"
+            }));
+        }
+    }
+    fn reason(&self, route: usize) -> Option<String> {
+        let r = &self.locks.routes[route];
+        let occupied = occupied(&self.layout,&self.occupancy);
+        let opposite = |other: usize| self.locks.routes[other].up != r.up;
+        if r.state != 0 {
+            return Some("busy".to_owned());
+        }
+        if let Some(&other) = r.conflicts.iter().find(|&&other| self.locks.routes[other].state == 1 || self.locks.routes[other].state == 3) {
+            return Some(format!("conflict {}",self.locks.routes[other].name));
+        }
+        for &section in &r.sections {
+            if occupied[section] {
+                return Some(format!("occupied {}",self.layout.sections[section].name));
+            }
+            if self.locks.section_route[section].is_some() || self.locks.section_overlap[section].iter().any(|&other| opposite(other)) {
+                return Some(format!("locked {}",self.layout.sections[section].name));
+            }
+        }
+        for &section in &r.overlap {
+            if occupied[section] {
+                return Some(format!("occupied {}",self.layout.sections[section].name));
+            }
+            if self.locks.section_route[section].map_or(false,|other| opposite(other)) || self.locks.section_overlap[section].iter().any(|&other| opposite(other)) {
+                return Some(format!("locked {}",self.layout.sections[section].name));
+            }
+        }
+        for &(p,target) in r.points.iter().chain(&r.flank) {
+            let point = &self.layout.points[p];
+            if self.locks.point_locks[p].iter().any(|&(_,position)| position != target) {
+                return Some(format!("point {} locked",point.name));
+            }
+            if point.motion.as_ref().map_or(point.position == target,|m| m.target == target) {
+                continue;
+            }
+            let reason = if point.failed {
+                Some("failed")
+            } else if point.motion.is_some() {
+                Some("moving")
+            } else if occupied[point.common] {
+                Some("occupied")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Some(format!("point {} {}",point.name,reason));
+            }
+        }
+        None
+    }
+    fn judge_requests(&mut self) {
+        let mut index = 0;
+        while index < self.queue.len() {
+            let route = self.queue[index].route;
+            if let Some(reason) = self.reason(route) {
+                if reason != self.queue[index].reason {
+                    log(&mut self.events,self.time,format!("WAIT q{} {} {}",self.queue[index].number,self.locks.routes[route].name,reason));
+                    self.queue[index].reason = reason;
+                }
+                index += 1;
+            } else {
+                let request = self.queue.remove(index);
+                self.locks.lock(route);
+                let wait = self.time-request.time;
+                self.granted += 1;
+                let r = &mut self.locks.routes[route];
+                r.statistics[1] += 1;
+                r.statistics[4] += wait;
+                r.statistics[5] = r.statistics[5].max(wait);
+                log(&mut self.events,self.time,format!("GRANT q{} {} wait {}",request.number,r.name,wait));
+                let points: Vec<_> = r.points.iter().chain(&r.flank).copied().collect();
+                for (p,target) in points {
+                    if self.layout.points[p].motion.is_none() && self.layout.points[p].position != target {
+                        self.throw(p,target);
+                    }
+                }
+            }
+        }
+    }
+            for (route,train) in requests {
+                let name = self.trains[train].name.clone();
+                self.add_request(route,&name);
+            }
+            let events: Vec<_> = self.script.iter().filter(|(t,_)| *t == time).map(|(_,w)| w.clone()).collect();
+            for event in events {
+                self.event(&event);
+            }
+            self.judge_requests();
+    pub fn lock(&mut self, route: usize) {
+        let r = &mut self.routes[route];
+        r.state = 1;
+        r.passed.clear();
+        r.overlap_locked = true;
+        r.counter = 0;
+        r.release = None;
+        for &section in &r.sections {
+            self.section_route[section] = Some(route);
+        }
+        for &section in &r.overlap {
+            self.section_overlap[section].insert(route);
+        }
+        for &(point,position) in r.points.iter().chain(&r.flank) {
+            self.point_locks[point].push((route,position));
+        }
+    }

@@ -1,0 +1,608 @@
+local L = {}
+local keywords, builtins, pairs_set = {}, {}, {}
+for word in ("BEGIN END function if else while for do break continue next exit return delete in getline print printf"):gmatch("%S+") do keywords[word] = true end
+for word in ("length substr index split sprintf toupper tolower close int"):gmatch("%S+") do builtins[word] = true end
+for word in ("+= -= *= /= %= ^= == <= >= != ++ -- && || >>"):gmatch("%S+") do pairs_set[word] = true end
+local escapes = { n = "\n", t = "\t", ["\\"] = "\\", ['"'] = '"', ["/"] = "/" }
+function L.tokenize(source)
+    local tokens, index, line, column = {}, 1, 1, 1
+    while index <= #source do
+        local ch, start, position = source:sub(index, index), index, { line, column }
+        local pair = source:sub(index, index + 1)
+        if ch == " " then index, column = index + 1, column + 1
+        elseif pair == "\\\n" then index, line, column = index + 2, line + 1, 1
+        elseif ch == "#" then
+            local ending = source:find("\n", index, true) or #source + 1
+            column, index = column + ending - index, ending
+        elseif ch == "\n" then
+            tokens[#tokens + 1] = { kind = "newline", spelling = "\n", position = position }
+            index, line, column = index + 1, line + 1, 1
+        else
+            local kind, value, ending = false, false, index + 1
+            if ch:match("[0-9]") then
+                local digits = source:sub(index):match("^[0-9]+")
+                kind, value, ending = "number", tonumber(digits), index + #digits
+            elseif ch:match("[A-Za-z_]") then
+                local word = source:sub(index):match("^[A-Za-z_][A-Za-z_0-9]*")
+                ending = index + #word
+                if keywords[word] then kind = "keyword" elseif builtins[word] then kind = "builtin"
+                else kind = source:sub(ending, ending) == "(" and "function_name" or "name" end
+            elseif ch == '"' then
+                local pieces = {}
+                while ending <= #source and source:sub(ending, ending) ~= '"' do
+                    local current = source:sub(ending, ending)
+                    if current == "\n" then L.fail(position) end
+                    if current == "\\" then
+                        local escaped = escapes[source:sub(ending + 1, ending + 1)]
+                        if not escaped then L.fail({ line, column + ending - start }) end
+                        pieces[#pieces + 1], ending = escaped, ending + 2
+                    else pieces[#pieces + 1], ending = current, ending + 1 end
+                end
+                if ending > #source then L.fail(position) end
+                ending, kind, value = ending + 1, "string", table.concat(pieces)
+            elseif pairs_set[pair] then kind, ending = "symbol", index + 2
+            elseif ("+-*/%^!><?:=()[]{},;$"):find(ch, 1, true) then kind = "symbol"
+            else L.fail(position) end
+            tokens[#tokens + 1] = { kind = kind, spelling = source:sub(index, ending - 1), value = value, position = position }
+            column, index = column + ending - index, ending
+        end
+    end
+    local _, count = source:gsub("\n", "")
+    tokens[#tokens + 1] = { kind = "end", spelling = "", position = { count + 1, 1 } }
+    return tokens
+end
+return L
+P.__index = P
+P.assignments = { ["="] = true, ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true, ["%="] = true, ["^="] = true }
+P.comparisons = { ["<"] = true, ["<="] = true, ["=="] = true, ["!="] = true, [">="] = true, [">"] = true }
+P.statements = { ["if"] = true, ["while"] = true, ["do"] = true, ["for"] = true, for_in = true, print = true,
+    printf = true, delete = true, next = true, ["break"] = true, ["continue"] = true, exit = true, ["return"] = true, expression_statement = true }
+local lvalues = { name = true, array = true, field = true }
+local function node(kind, position, children, fields)
+    fields = fields or {}
+    fields.kind, fields.position, fields.children = kind, position, {}
+    for _, child in ipairs(children or {}) do if child then fields.children[#fields.children + 1] = child end end
+    return fields
+end
+function P.new(tokens) return setmetatable({ tokens = tokens, cursor = 1, in_function = false, phase = false, loop_depth = 0 }, P) end
+function P:peek() return self.tokens[self.cursor] end
+function P:take()
+    local token = self:peek()
+    self.cursor = self.cursor + 1
+    return token
+end
+function P:fail(position) L.fail(position or self:peek().position) end
+function P:accept(spelling) if self:peek().spelling == spelling then return self:take() end; return false end
+function P:expect(spelling) if self:peek().spelling ~= spelling then self:fail() end; return self:take() end
+function P:name()
+    if self:peek().kind ~= "name" then self:fail() end
+    local token = self:take()
+    return node("name", token.position, {}, { name = token.spelling })
+end
+function P:newlines() while self:accept("\n") do end end
+function P:parse()
+    local items = {}
+    while self:peek().kind ~= "end" do
+        if self:peek().spelling == "\n" or self:peek().spelling == ";" then self:take()
+        else
+            local start = self:peek()
+            else
+                local patterns, flavor = {}, false
+                if start.spelling == "BEGIN" or start.spelling == "END" then flavor = self:take().spelling
+                elseif start.spelling == "{" then flavor = "all"
+                end
+                self.phase = flavor
+                local action = false
+                if flavor == "BEGIN" or flavor == "END" or flavor == "all" or self:peek().spelling == "{" then action = self:block()
+                elseif self:peek().spelling ~= "\n" and self:peek().spelling ~= ";" and self:peek().kind ~= "end" then self:fail() end
+                self.phase = false
+                local children = { table.unpack(patterns) }
+                children[#children + 1] = action
+                items[#items + 1] = node("rule", start.position, children, { flavor = flavor, patterns = patterns, action = action })
+            end
+        end
+    end
+    return items
+end
+function P:block()
+    local opening, statements = self:expect("{"), {}
+    while self:peek().spelling ~= "}" do
+        if self:peek().spelling == "\n" or self:peek().spelling == ";" then self:take()
+        else statements[#statements + 1] = self:statement() end
+    end
+    self:expect("}")
+    return node("block", opening.position, statements, { statements = statements })
+end
+function P:terminator()
+    if self:peek().spelling == ";" or self:peek().spelling == "\n" then self:take()
+    elseif self:peek().spelling ~= "}" then self:fail() end
+end
+function P:statement()
+    local token = self:peek()
+    local spelling = token.spelling
+    if spelling == "{" then return self:block()
+    elseif self:accept(";") then return node("empty", token.position)
+    end
+    local result
+    if spelling == "print" or spelling == "printf" then self:take(); result = self:output_statement(token)
+    else
+        local expression = self:expression()
+        result = node("expression_statement", token.position, { expression }, { expression = expression })
+    end
+    self:terminator()
+    return result
+end
+function P:parenthesized_output()
+    if self:peek().spelling ~= "(" then return false end
+    local depth = 0
+function P:output_statement(token)
+    local arguments = {}
+    if self:parenthesized_output() then self:expect("("); arguments = self:expression_list(); self:expect(")")
+    elseif self:peek().spelling ~= ";" and self:peek().spelling ~= "\n" and self:peek().spelling ~= "}"
+        and self:peek().spelling ~= ">" and self:peek().spelling ~= ">>" then arguments = self:expression_list(false) end
+    if token.spelling == "printf" and #arguments == 0 then self:fail() end
+    local redirect = (self:peek().spelling == ">" or self:peek().spelling == ">>") and self:take() or false
+    local filename = redirect and self:concatenation() or false
+    local children = { table.unpack(arguments) }
+    children[#children + 1] = filename
+    return node(token.spelling, token.position, children, { arguments = arguments, redirect = redirect and redirect.spelling or false,
+        redirect_position = redirect and redirect.position or false, filename = filename })
+end
+function P:expression_list(greater)
+    if greater == nil then greater = true end
+    local result = { self:expression(greater) }
+    while self:accept(",") do self:newlines(); result[#result + 1] = self:expression(greater) end
+    return result
+end
+function P:expression(greater)
+    if greater == nil then greater = true end
+    local left = self:conditional(greater)
+    if lvalues[left.kind] and P.assignments[self:peek().spelling] then
+        local operator = self:take()
+        local right = self:expression(greater)
+        return node("assignment", operator.position, { left, right }, { operator = operator.spelling, location = left, value = right })
+    end
+    return left
+end
+function P:conditional(greater)
+    local condition = self:logical(1, greater)
+    local operator = self:accept("?")
+    if not operator then return condition end
+end
+function P:logical(level, greater)
+    if level == 3 then return self:membership(greater) end
+    local operator_name = level == 1 and "||" or "&&"
+    local left = self:logical(level + 1, greater)
+    while self:peek().spelling == operator_name do
+    end
+    return left
+end
+function P:membership(greater)
+    local left = self:comparison(greater)
+    while self:peek().spelling == "in" do
+    end
+    return left
+end
+function P:comparison(greater)
+    local left = self:concatenation()
+    while P.comparisons[self:peek().spelling] and (greater or self:peek().spelling ~= ">") do
+    end
+    return left
+end
+function P:concatenation()
+    local left = self:additive()
+    local function starts(token)
+        return token.kind == "number" or token.kind == "string" or token.kind == "name" or token.kind == "function_name"
+            or token.kind == "builtin" or token.spelling == "$" or token.spelling == "(" or token.spelling == "++" or token.spelling == "--"
+    end
+    while starts(self:peek()) do
+    end
+    return left
+end
+function P:additive()
+    local left = self:multiplicative()
+    while self:peek().spelling == "+" or self:peek().spelling == "-" do
+    end
+    return left
+end
+function P:multiplicative()
+    local left = self:unary()
+    while self:peek().spelling == "*" or self:peek().spelling == "/" or self:peek().spelling == "%" do
+    end
+    return left
+end
+function P:unary()
+    local spelling = self:peek().spelling
+    if spelling == "!" or spelling == "-" or spelling == "+" then
+    end
+    local left = self:postfix()
+    if self:peek().spelling == "^" then
+    end
+    return left
+end
+function P:postfix()
+    if self:peek().spelling == "++" or self:peek().spelling == "--" then return self:prefix() end
+    local left = self:atom()
+    if lvalues[left.kind] and (self:peek().spelling == "++" or self:peek().spelling == "--") then
+    end
+    return left
+end
+function P:lvalue()
+    if self:peek().kind == "name" then
+        local name = self:name()
+        if self:accept("[") then
+        end
+        return name
+    end
+    local dollar = self:accept("$")
+    if dollar then
+        local index = (self:peek().spelling == "++" or self:peek().spelling == "--") and self:prefix() or self:atom()
+        return node("field", dollar.position, { index }, { index = index })
+    end
+    self:fail()
+end
+function P:atom()
+    local token = self:peek()
+    if token.kind == "number" or token.kind == "string" then self:take(); return node(token.kind, token.position, {}, { value = token.value })
+    elseif token.kind == "name" or token.spelling == "$" then return self:lvalue()
+local V = {}
+V.UNINITIALIZED = { kind = "uninitialized", numeric = 0 }
+function V.number(value) return { kind = "number", numeric = value } end
+function V.string(value) return { kind = "string", text = value } end
+local function whitespace(ch) return ch == " " or ch == "\t" or ch == "\n" end
+local function digit(ch) return ch ~= "" and ch >= "0" and ch <= "9" end
+function V.input(text)
+    local first, last = 1, #text
+    while first <= last and whitespace(text:sub(first, first)) do first = first + 1 end
+    while last >= first and whitespace(text:sub(last, last)) do last = last - 1 end
+    local index = first
+    if text:sub(index, index) == "+" or text:sub(index, index) == "-" then index = index + 1 end
+    local numeric = index <= last
+    for i = index, last do if not digit(text:sub(i, i)) then numeric = false; break end end
+    return numeric and { kind = "strnum", text = text, numeric = V.numeric_prefix(text) } or V.string(text)
+end
+function V.to_number(value)
+    if value.kind == "string" then return V.numeric_prefix(value.text) end
+    return value.numeric
+end
+function V.to_string(value)
+    if value.kind == "number" then return tostring(value.numeric)
+    elseif value.kind == "uninitialized" then return "" end
+    return value.text
+end
+function V.split(text, separator)
+    local pieces = {}
+    if text == "" then return pieces end
+    if separator == "" then for i = 1, #text do pieces[#pieces + 1] = text:sub(i, i) end
+    elseif separator == " " then
+    else
+        local start = 1
+        while true do
+            local at = text:find(separator, start, true)
+            if not at then pieces[#pieces + 1] = text:sub(start); break end
+            pieces[#pieces + 1], start = text:sub(start, at - 1), at + #separator
+        end
+    end
+    return pieces
+end
+local R = {}
+R.__index = R
+function V.record(special) return setmetatable({ special = special, zero = V.string(""), fields = {} }, R) end
+function R:set(text)
+    self.zero, self.fields = V.input(text), {}
+    for i, piece in ipairs(V.split(text, V.to_string(self.special("FS")))) do self.fields[i] = V.input(piece) end
+end
+function R:read(index)
+    if index == 0 then return self.zero end
+    return self.fields[index] or V.UNINITIALIZED
+end
+function R:rebuild()
+    local parts = {}
+    for i, field in ipairs(self.fields) do parts[i] = V.to_string(field) end
+    self.zero = V.input(table.concat(parts, V.to_string(self.special("OFS"))))
+end
+function R:write(index, value)
+    if index == 0 then self:set(V.to_string(value)); return end
+    for i = #self.fields + 1, index do self.fields[i] = V.string("") end
+    self.fields[index] = value
+    self:rebuild()
+end
+function R:resize(size)
+    for i = #self.fields, size + 1, -1 do self.fields[i] = nil end
+    for i = #self.fields + 1, size do self.fields[i] = V.string("") end
+    self:rebuild()
+end
+function V.quoted(text)
+    local parts, escapes = { '"' }, { ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n", ["\t"] = "\\t" }
+    for i = 1, #text do
+        local ch, code = text:sub(i, i), text:byte(i)
+        parts[#parts + 1] = escapes[ch] or (code >= 32 and code <= 126 and ch or string.format("\\%03o", code))
+    end
+    parts[#parts + 1] = '"'
+    return table.concat(parts)
+end
+function V.describe(value)
+    if value.kind == "number" then return tostring(value.numeric)
+    elseif value.kind == "uninitialized" then return "(uninitialized)" end
+    return V.quoted(value.text) .. (value.kind == "strnum" and " (strnum)" or "")
+end
+return V
+function S.arguments()
+    local options, operands = {}, {}
+    for line in io.lines("input/args.txt") do
+        local at = line:find("=", 1, true)
+        if line:sub(1, 3) == "-F " then options[#options + 1] = { "FS", line:sub(4) }
+        elseif line:sub(1, 3) == "-v " then options[#options + 1] = { line:sub(4, at - 1), line:sub(at + 1) }
+        elseif at and valid_name(line:sub(1, at - 1)) then
+            operands[#operands + 1] = { kind = "assignment", name = line:sub(1, at - 1), value = line:sub(at + 1), records = 0 }
+        else operands[#operands + 1] = { kind = "file", name = line, records = 0 } end
+    end
+    return options, operands
+end
+function S.read_records(name)
+    local file = io.open("input/" .. name, "r")
+    if not file then return nil end
+    local contents = file:read("*a")
+    file:close()
+    if contents == nil then return nil end
+    local lines = {}
+    local position = 1
+    while position <= #contents do
+        local ending = contents:find("\n", position, true)
+        if not ending then lines[#lines + 1] = contents:sub(position); break end
+        lines[#lines + 1], position = contents:sub(position, ending - 1), ending + 1
+    end
+    return lines
+end
+local function output_stream() return { parts = {}, open = false, writes = 0, bytes = 0 } end
+local function add(output, text)
+    output.parts[#output.parts + 1], output.writes, output.bytes = text, output.writes + 1, output.bytes + #text
+end
+function S.new() return setmetatable({ stdout = output_stream(), outputs = {}, inputs = {}, output_order = {}, input_order = {} }, S) end
+function S:write(text, name, mode, position)
+    if name == nil then add(self.stdout, text); return end
+function S:save()
+    local function write(name, stream)
+        local file = assert(io.open("output/" .. name, "w"))
+        for _, part in ipairs(stream.parts) do file:write(part) end
+        file:close()
+    end
+    write("stdout.txt", self.stdout)
+    for _, name in ipairs(self.output_order) do write(name, self.outputs[name]) end
+end
+return S
+local V = require("values_fields")
+local Builtins = require("builtins")
+local Streams = require("streams")
+local special_names = { "FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP" }
+local function keys(values, comparator)
+    local result = {}
+    for key in pairs(values) do result[#result + 1] = key end
+    table.sort(result, comparator)
+    return result
+end
+function A.new(items)
+    local result = setmetatable({ items = items, functions = {}, rules = {}, function_table = {}, global_names = {},
+        bindings = {}, global_bindings = {}, local_bindings = {}, array_names = {}, statement_lines = {}, nodes = {}, errors = {} }, A)
+    for _, name in ipairs(special_names) do result.global_names[name] = true end
+    for _, item in ipairs(items) do
+        local target = item.kind == "function" and result.functions or result.rules
+        target[#target + 1] = item
+    end
+    return result
+end
+function A:binding(scope, name)
+    local values = self.global_bindings
+    if scope then
+        if not self.local_bindings[scope] then self.local_bindings[scope] = {} end
+        values = self.local_bindings[scope]
+    end
+    if not values[name] then
+        local binding = { scope = scope, name = name }
+        binding.parent = binding
+        values[name], self.bindings[binding] = binding, true
+    end
+    return values[name]
+end
+function A:error(position, priority, message) self.errors[#self.errors + 1] = { position = position, priority = priority, message = message } end
+function A:prepare()
+    for _, name in ipairs(special_names) do self:binding(false, name) end
+        local fn = item.kind == "function" and item or false
+        local pending = { item }
+        while #pending > 0 do
+            local node = table.remove(pending)
+            self.nodes[#self.nodes + 1] = node
+            if Parser.statements[node.kind] then self.statement_lines[node.position[1]] = true end
+            if node.kind == "name" or node.kind == "array" or node.kind == "parameter" then
+                local scope = fn and fn.parameter_names[node.name] and fn or false
+                node.binding = self:binding(scope, node.name)
+                if not scope then self.global_names[node.name] = true end
+                if self.function_table[node.name] then self:error(node.position, 3, "function " .. node.name .. " used as variable") end
+            elseif node.kind == "call" then
+        end
+    end
+    if #self.errors > 0 then
+        table.sort(self.errors, function(a, b)
+            if a.position[1] ~= b.position[1] then return a.position[1] < b.position[1] end
+            if a.position[2] ~= b.position[2] then return a.position[2] < b.position[2] end
+            return a.priority < b.priority
+        end)
+        local err = self.errors[1]
+        error({ category = "static", position = err.position, message = err.message }, 0)
+    end
+local E = {}
+E.__index = E
+function E.new(analysis, options, operands)
+    local result = setmetatable({ analysis = analysis, options = options, operands = operands, global_names = {}, globals = {},
+        locals = {}, streams = Streams.new(), lines = {}, phase = "BEGIN", exit_status = 0, operand_position = 1,
+        current_operand = false, input_lines = {}, input_position = 1 }, E)
+    for name in pairs(analysis.global_names) do
+        result.global_names[name] = true
+        result.globals[name] = analysis.array_names[analysis.global_bindings[name]] and {} or V.UNINITIALIZED
+    end
+    local values = { FILENAME = V.string(""), FNR = V.number(0), FS = V.string(" "), NF = V.number(0), NR = V.number(0),
+        OFS = V.string(" "), ORS = V.string("\n"), SUBSEP = V.string(string.char(28)) }
+    for name, value in pairs(values) do result.globals[name] = value end
+    result.record = V.record(function(name) return result:global_value(name) end)
+    for line in pairs(analysis.statement_lines) do result.lines[line] = 0 end
+    for _, rule in ipairs(analysis.rules) do rule.count, rule.inside = 0, false end
+    for _, fn in ipairs(analysis.functions) do fn.call_count, fn.active_calls, fn.max_depth = 0, 0, 0 end
+    return result
+end
+function E:global_value(name)
+    if name == "NF" then return V.number(#self.record.fields) end
+    return self.globals[name]
+end
+function E:variable(binding)
+    if binding.scope then return self.locals[#self.locals][binding.name] end
+    return self:global_value(binding.name)
+end
+function E:assign_global_input(name, text) self.global_names[name], self.globals[name] = true, V.input(text) end
+function E:location(node)
+    if node.kind == "name" then return { kind = "variable", binding = node.binding }
+    elseif node.kind == "array" then
+    end
+    local index = V.to_number(self:evaluate(node.index))
+    if index < 0 then Builtins.fail(node.position, "negative field index") end
+    return { kind = "field", index = index }
+end
+function E:read(location)
+    if location.kind == "variable" then return self:variable(location.binding)
+    elseif location.kind == "field" then return self.record:read(location.index) end
+function E:store(location, value, position)
+    if location.kind == "field" then self.record:write(location.index, value)
+    elseif location.kind == "array" then location.array[location.key] = value
+    elseif location.binding.scope then self.locals[#self.locals][location.binding.name] = value
+    elseif location.binding.name == "NF" then
+        local size = V.to_number(value)
+        if size < 0 then Builtins.fail(position, "negative NF") end
+        self.record:resize(size)
+    else self.globals[location.binding.name] = value end
+end
+function E:evaluate(node)
+    local kind = node.kind
+    if kind == "number" then return V.number(node.value)
+    elseif kind == "string" then return V.string(node.value)
+    elseif kind == "name" or kind == "array" or kind == "field" then return self:read(self:location(node))
+    elseif kind == "paren" then return self:evaluate(node.expression)
+    elseif kind == "assignment" then
+        local location = self:location(node.location)
+        local value = self:evaluate(node.value)
+        if node.operator ~= "=" then value = arithmetic(node.operator:sub(1, -2), self:read(location), value, node.position) end
+        self:store(location, value, node.position)
+        return self:read(location)
+function E:output(node)
+    local arguments = {}
+    for i, argument in ipairs(node.arguments) do arguments[i] = self:evaluate(argument) end
+    local text
+    if node.kind == "print" then
+        if #arguments == 0 then arguments[1] = self.record.zero end
+        local parts = {}
+        for i, value in ipairs(arguments) do parts[i] = V.to_string(value) end
+        text = table.concat(parts, V.to_string(self:global_value("OFS"))) .. V.to_string(self:global_value("ORS"))
+    else text = Builtins.format(arguments, node.position) end
+    local filename = node.filename and V.to_string(self:evaluate(node.filename)) or nil
+    self.streams:write(text, filename, node.redirect, node.redirect_position)
+end
+function E:statement(node)
+    local kind = node.kind
+    if kind == "block" then for _, child in ipairs(node.statements) do self:statement(child) end; return
+    elseif kind == "empty" then return end
+    self.lines[node.position[1]] = self.lines[node.position[1]] + 1
+    if kind == "expression_statement" then self:evaluate(node.expression)
+    elseif kind == "print" or kind == "printf" then self:output(node)
+function E:next_record()
+    while true do
+        if self.input_position <= #self.input_lines then
+            local line = self.input_lines[self.input_position]
+            self.input_position = self.input_position + 1
+            self.current_operand.records = self.current_operand.records + 1
+            self.globals.NR = V.number(V.to_number(self:global_value("NR")) + 1)
+            self.globals.FNR = V.number(V.to_number(self:global_value("FNR")) + 1)
+            return line
+        end
+        if self.operand_position > #self.operands then return nil end
+        local operand = self.operands[self.operand_position]
+        self.operand_position = self.operand_position + 1
+        if operand.kind == "assignment" then self:assign_global_input(operand.name, operand.value)
+        else
+            self.current_operand, self.input_lines, self.input_position = operand, assert(Streams.read_records(operand.name)), 1
+            self.globals.FILENAME, self.globals.FNR = V.string(operand.name), V.number(0)
+        end
+    end
+end
+function E:run_actions(phase)
+    self.phase = phase
+    for _, rule in ipairs(self.analysis.rules) do
+        if rule.flavor == phase then rule.count = rule.count + 1; self:statement(rule.action) end
+    end
+end
+function E:matches(rule)
+    if rule.flavor == "all" then return true
+function E:run_records()
+    local has_records, rules = false, {}
+    for _, rule in ipairs(self.analysis.rules) do
+        if rule.flavor ~= "BEGIN" then has_records = true end
+        if rule.flavor ~= "BEGIN" and rule.flavor ~= "END" then rules[#rules + 1] = rule end
+    end
+    if not has_records then return end
+    self.phase = "records"
+    while true do
+        local line = self:next_record()
+        if line == nil then return end
+        self.record:set(line)
+        local ok, err = pcall(function()
+            for _, rule in ipairs(rules) do
+                if self:matches(rule) then
+                    rule.count = rule.count + 1
+                    if rule.action then self:statement(rule.action)
+                    else self.streams:write(V.to_string(self.record.zero) .. V.to_string(self:global_value("ORS"))) end
+                end
+            end
+        end)
+        if not ok and not (type(err) == "table" and err.category == "transfer" and err.kind == "next") then error(err, 0) end
+    end
+end
+function E:execute()
+    local function allow_exit(ok, err)
+        if not ok and not (type(err) == "table" and err.category == "transfer" and err.kind == "exit") then error(err, 0) end
+    end
+    local ok, err = pcall(function()
+        for _, option in ipairs(self.options) do self:assign_global_input(option[1], option[2]) end
+        allow_exit(pcall(function() self:run_actions("BEGIN"); self:run_records() end))
+        allow_exit(pcall(self.run_actions, self, "END"))
+    end)
+function E:statistics()
+    local status = "status: exit " .. self.exit_status
+    if self.error then status = string.format("status: runtime error at %d:%d: %s", self.error.position[1], self.error.position[2], self.error.message) end
+    local lines = { status, "[inputs]" }
+    for _, operand in ipairs(self.operands) do if operand.kind == "file" then lines[#lines + 1] = operand.name .. " records=" .. operand.records end end
+    lines[#lines + 1] = "[rules]"
+    for _, rule in ipairs(self.analysis.rules) do lines[#lines + 1] = string.format("%d:%d %s count=%d", rule.position[1], rule.position[2], rule.flavor, rule.count) end
+    lines[#lines + 1] = "[outputs]"
+    lines[#lines + 1] = string.format("stdout.txt writes=%d bytes=%d", self.streams.stdout.writes, self.streams.stdout.bytes)
+    lines[#lines + 1] = "[lines]"
+    for _, line in ipairs(keys(self.lines)) do lines[#lines + 1] = line .. " count=" .. self.lines[line] end
+    lines[#lines + 1] = "[globals]"
+    for _, name in ipairs(keys(self.global_names)) do
+        local value = self:global_value(name)
+        local binding = self.analysis.global_bindings[name]
+        local text = binding and self.analysis.array_names[binding] and "array (" .. count(value) .. ")" or V.describe(value)
+        lines[#lines + 1] = name .. " = " .. text
+    end
+    return lines
+end
+local options, operands = Streams.arguments()
+local input = assert(io.open("input/program.awk", "r"))
+local source = input:read("*a")
+input:close()
+local ok, analysis = pcall(function() return A.new(Parser.new(Lexer.tokenize(source)):parse()):prepare() end)
+else
+    local engine = E.new(analysis, options, operands)
+    engine:execute()
+    statistics, streams = engine:statistics(), engine.streams
+end
+streams:save()
+local output = assert(io.open("output/stats.txt", "w"))
+output:write(table.concat(statistics, "\n"), "\n")
+output:close()

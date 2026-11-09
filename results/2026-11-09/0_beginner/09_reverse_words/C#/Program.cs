@@ -1,0 +1,6 @@
+using System;
+using System.Linq;
+
+string sentence = "every program starts with a single line";
+Console.WriteLine(new string(sentence.Reverse().ToArray()));
+Console.WriteLine(string.Join(" ", sentence.Split(' ').Reverse()));

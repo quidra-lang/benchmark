@@ -1,0 +1,7 @@
+With no eligible enemy, target selection returns NULL. The result represents an enemy object; the immediate firing guard is !is.null(target), so no shot is created for an empty choice. It cannot be confused with the first enemy’s number: absence is a separate sentinel/optional value, and where the result is an index its mapping to an enemy is shown in the firing path.
+
+NULL is distinct from every enemy object and number; the explicit is.null test is independent of numeric truthiness.
+
+Evidence: towers.R: 44–56; main.R: 350–351. The selected complete lines contain the decision and its necessary data dependencies. The initialization/empty collection result, eligibility filtering, return and immediate guard establish the complete empty-set path. Target-priority arithmetic is irrelevant when no candidate survives, so its internal formulas are omitted where they would add lines; there is no need to inspect projectile travel or damage.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 205 tokenizer tokens. The full selected source file(s) would be 11796 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

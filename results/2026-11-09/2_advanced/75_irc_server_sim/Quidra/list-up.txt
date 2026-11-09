@@ -1,0 +1,259 @@
+Settings read_settings()
+    map<string, string> values
+    string[] motd := []
+    for line := input_lines("input/server.txt")[]
+        split := first_space(line, 0)
+        key := line[0:<split]
+        value := line[split + 1:]
+        if key == "MOTD"
+            motd = motd.append(value)
+        else
+            .values.set(key, value)
+    return Settings(values, motd)
+Traffic[] read_traffic()
+    Traffic[] result := []
+    for line := input_lines("input/traffic.txt")[]
+        first := first_space(line, 0)
+        second := first_space(line, first + 1)
+        body := line[second + 1:]
+        kind := "messages"
+        if body.starts_with("CONNECT ")
+            host := body[8:]
+            valid := #host >= 1 and #host <= 63
+            for: i < int(#host)
+                if not (protocol.letters() + "0123456789.-").contains(host[i])
+                    valid = false
+            if valid
+                kind = "connect"
+        elif body == "DISCONNECT"
+            kind = "disconnect"
+        result = result.append(Traffic(int(line[0:<first]), line[first + 1:<second], kind, body))
+    return result
+void send(Server &server, int client, string line)
+    server.sent = server.sent.append("{server.tick} {server.people[client].identifier} {line}")
+    server.people[client].sent += 1
+void disconnect(Server &server, int index, string reason, string kind)
+    client := server.people[index]
+    if kind != "closed"
+        send(&server, index, "ERROR :Closing Link: " + clients.addressee(client) + "[{client.host}] ({reason})")
+        .server.counts.increment("errors")
+    if client.registered
+        send_peers(&server, index, ":" + clients.prefix(client) + " QUIT :" + reason)
+    for room := client.channels[]
+        remove_member(&server, index, room)
+    .server.counts.increment("discarded", by = int(#server.people[index].queue))
+    server.people[index].queue = []
+    server.people[index].active = false
+    server.gone = server.gone.append("GONE {server.tick} {client.identifier} " + clients.addressee(client) + " " + reason)
+    .server.disconnections.increment(kind)
+void process_line(Server &server, int client, string raw)
+    .server.counts.increment("processed")
+    parsed := protocol.parse(raw)
+    command := parsed.command
+    parameters := parsed.parameters
+    if command == ""
+        .server.counts.increment("empty")
+        return
+    .server.commands.increment(command)
+    if not server.people[client].registered and command != "NICK" and command != "USER" and command != "PING" and command != "PONG" and command != "QUIT"
+        reply(&server, client, 451, ":You have not registered")
+        return
+    if command == "NICK"
+        nick(&server, client, parameters)
+    elif command == "USER"
+        user(&server, client, parameters)
+    elif command == "PING"
+        if #parameters == 0 or parameters[0] == ""
+            reply(&server, client, 409, ":No origin specified")
+        else
+            name := setting(server.settings, "NAME")
+            send(&server, client, ":{name} PONG {name} :{parameters[0]}")
+    elif command == "PONG"
+        return
+    elif command == "QUIT"
+        reason := if #parameters > 0 and parameters[0] != "" then "Quit: " + parameters[0] else "Client Quit"
+        disconnect(&server, client, reason, "quit")
+    elif command == "JOIN"
+        join(&server, client, parameters)
+    elif command == "PART"
+        part(&server, client, parameters)
+    elif command == "PRIVMSG" or command == "NOTICE"
+        message(&server, client, command, parameters)
+    elif command == "TOPIC"
+        topic(&server, client, parameters)
+    elif command == "NAMES"
+        handle_names(&server, client, parameters)
+    elif command == "WHOIS"
+        whois(&server, client, parameters)
+    elif command == "AWAY"
+        server.people[client].away = if #parameters > 0 then parameters[0] else ""
+        if server.people[client].away == ""
+            reply(&server, client, 305, ":You are no longer marked as being away")
+        else
+            reply(&server, client, 306, ":You have been marked as being away")
+    elif command == "INVITE"
+        invite(&server, client, parameters)
+    elif command == "KICK"
+        kick(&server, client, parameters)
+    elif command == "MODE"
+        if #parameters == 0
+            reply(&server, client, 461, "MODE :Not enough parameters")
+        elif parameters[0].starts_with("#")
+            channel_mode(&server, client, parameters)
+        else
+            user_mode(&server, client, parameters)
+    else
+        reply(&server, client, 421, "{command} :Unknown command")
+void arrival(Server &server, Traffic event)
+    .server.counts.increment(event.kind)
+    if event.kind == "connect"
+        server.people = server.people.append(clients.Client(event.identifier, event.body[8:], server.tick, number(server.settings, "BUCKET")))
+        active := 0
+        for client := server.people[]
+            if client.active
+                active += 1
+        if active > server.peak_connections
+            server.peak_connections = active
+            server.peak_connection_time = server.tick
+        return
+    index := connection(server, event.identifier)
+    if event.kind == "disconnect"
+        if index >= 0
+            disconnect(&server, index, "Remote host closed the connection", "closed")
+        return
+    if index < 0
+        .server.counts.increment("dropped")
+        return
+    &client := &server.people[index]
+    client.received += 1
+    client.last_received = server.tick
+    client.ping_sent = -1
+    if #client.queue == 0 and client.tokens >= 1
+        clients.use_token(&client, server.tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+        process_line(&server, index, event.body)
+    elif int(#client.queue) >= number(server.settings, "QUEUE")
+        .server.counts.increment("discarded")
+        disconnect(&server, index, "Excess Flood", "flood")
+    else
+        client.queue = client.queue.append(event.body)
+        .server.counts.increment("queued")
+void run(Server &server)
+    traffic_index := 0
+    for: tick <= server.end
+        server.tick = tick
+        for: index < int(#server.people)
+            if not server.people[index].active
+                continue
+            clients.refill(&server.people[index], tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+            while server.people[index].active and #server.people[index].queue > 0 and server.people[index].tokens > 0
+                clients.use_token(&server.people[index], tick, number(server.settings, "BUCKET"), number(server.settings, "REFILL"))
+                raw := server.people[index].queue[0]
+                server.people[index].queue = server.people[index].queue[1:]
+                process_line(&server, index, raw)
+        while traffic_index < int(#server.traffic) and server.traffic[traffic_index].tick == tick
+            arrival(&server, server.traffic[traffic_index])
+            traffic_index += 1
+        for: index < int(#server.people)
+            client := server.people[index]
+            if not client.active
+                continue
+            if client.ping_sent >= 0
+                if tick - client.ping_sent >= number(server.settings, "TIMEOUT")
+                    disconnect(&server, index, "Ping timeout: {tick - client.last_received} seconds", "timeout")
+            elif tick - client.last_received >= number(server.settings, "PINGFREQ")
+                send(&server, index, "PING :" + setting(server.settings, "NAME"))
+                .server.counts.increment("pings")
+                server.people[index].ping_sent = tick
+string[] client_report(Server server)
+    string[] lines := []
+    active := 0
+    registered := 0
+    invisible := 0
+    away := 0
+    for: index < int(#server.people)
+        client := server.people[index]
+        if not client.active
+            continue
+        active += 1
+        if client.registered
+            registered += 1
+        if client.invisible
+            invisible += 1
+        if client.away != ""
+            away += 1
+        username := if client.username == "" then "*" else client.username
+        signon := if client.registered then "{client.signon}" else "-"
+        joined := joined_channels(server, index, ",")
+        invites := [for room := client.invites[] then server.rooms[room].name].join(",")
+        if joined == ""
+            joined = "none"
+        if invites == ""
+            invites = "none"
+        lines = lines.append("CLIENT {client.identifier} " + clients.addressee(client) + " {username} {client.host} " + clients.mode(client) + " connected {client.connected} signon {signon} received {client.received} sent {client.sent} tokens {client.tokens} queue {#client.queue} channels {joined} invites {invites}")
+        if client.away != ""
+            lines = lines.append("AWAY {client.identifier} {client.away}")
+    return lines.append("TOTAL clients {active} registered {registered} invisible {invisible} away {away}")
+string[] statistics(Server server)
+    pending := 0
+    numerics := 0
+    for client := server.people[]
+        if client.active
+            pending += int(#client.queue)
+    for value := server.numerics.values()[]
+        numerics += value
+    c := server.counts
+    lines := [
+        "END {server.end}",
+        "LINES total {#server.traffic} connect {count(c, "connect")} disconnect {count(c, "disconnect")} messages {count(c, "messages")}",
+        "MESSAGES dropped {count(c, "dropped")} queued {count(c, "queued")} processed {count(c, "processed")} discarded {count(c, "discarded")} pending {pending} empty {count(c, "empty")}",
+        "SENT lines {#server.sent} numerics {numerics} pings {count(c, "pings")} errors {count(c, "errors")}"
+    ]
+    for command := server.commands.keys().sorted()[]
+        lines = lines.append("COMMAND {command} {count(server.commands, command)}")
+    for code := server.numerics.keys().sorted()[]
+        match server.numerics.get(code)
+            int value
+                lines = lines.append("NUMERIC {code:03.} {value}")
+            none
+                continue
+    lines = lines.append("PEAK connections {server.peak_connections} at {server.peak_connection_time}")
+    lines = lines.append("PEAK registered {server.peak_registered} at {server.peak_registration_time}")
+    d := server.disconnections
+    lines = lines.append("DISCONNECTS quit {count(d, "quit")} closed {count(d, "closed")} flood {count(d, "flood")} timeout {count(d, "timeout")}")
+    return lines.concat(server.gone)
+void use_token(Client &client, int tick, int capacity, int interval)
+    if client.tokens == capacity
+        client.refill_time = tick + interval
+    client.tokens -= 1
+void refill(Client &client, int tick, int capacity, int interval)
+    if client.refill_time == tick
+        client.tokens += 1
+        client.refill_time = if client.tokens < capacity then tick + interval else -1
+Message parse(string raw)
+    position := 0
+    if raw.starts_with(":")
+        while position < int(#raw) and raw[position] != " "
+            position += 1
+    while position < int(#raw) and raw[position] == " "
+        position += 1
+    first := position
+    while position < int(#raw) and raw[position] != " "
+        position += 1
+    command := raw[first:<position].upper_ascii()
+    string[] parameters := []
+    while position < int(#raw)
+        while position < int(#raw) and raw[position] == " "
+            position += 1
+        if position == int(#raw)
+            break
+        if raw[position] == ":"
+            parameters = parameters.append(raw[position + 1:])
+            break
+        if #parameters == 14
+            parameters = parameters.append(raw[position:])
+            break
+        first = position
+        while position < int(#raw) and raw[position] != " "
+            position += 1
+        parameters = parameters.append(raw[first:<position])
+    return Message(command, parameters)

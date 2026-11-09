@@ -1,0 +1,353 @@
+typedef long long Integer;
+typedef struct { char **items; int count, capacity; } Lines;
+typedef struct { char name[21]; bool integer; char values[8][21]; int value_count; } Attribute;
+typedef struct { char id[11]; Integer values[12]; int label; } Row;
+typedef struct { const Row *items[500]; int count; } Rows;
+typedef struct {
+    int max_depth, min_split, min_leaf, max_surrogates, folds, bag_trees, repeats;
+    Integer bag_seed, permutation_seed;
+    int curve[500], curve_count;
+} Settings;
+typedef struct { Integer numerator, denominator; } Fraction;
+typedef struct { Integer counts[6], size, squares, errors; int prediction; } Statistics;
+typedef struct { int attribute; Integer point; } Split;
+typedef struct { Split split; bool forward; Integer score; } Surrogate;
+typedef struct { Split split; Rows left, right; Fraction value; } Candidate;
+typedef struct Node {
+    int number, depth;
+    Statistics stats;
+    bool branch, default_left;
+    Split split;
+    Surrogate surrogates[11]; int surrogate_count;
+    struct Node *left, *right;
+} Node;
+typedef struct { const Node *root; bool cuts[2048]; } TreeView;
+typedef struct { const Node *items[1000]; int count; } Nodes;
+typedef enum { PRIMARY, SURROGATE, DEFAULT } Method;
+typedef struct { const Node *node; bool left; Method method; } Step;
+typedef struct { const Node *leaf, *path[11]; Step steps[10]; int count; } Route;
+static int fields(char *line, const char *separator, char **parts) {
+    int count = 0;
+    for (char *word = strtok(line, separator); word; word = strtok(NULL, separator)) parts[count++] = word;
+    return count;
+}
+static int position(char names[][21], int count, const char *name) {
+    for (int i = 0; i < count; ++i) if (!strcmp(names[i], name)) return i;
+    exit(EXIT_FAILURE);
+}
+static int read_rows(const char *name, Dataset *data, Row *rows) {
+    Lines lines = read_lines(format("input/%s.csv", name));
+    for (int i = 1; i < lines.count; ++i) {
+        char *parts[14];
+        fields(lines.items[i], ",", parts);
+        Row *row = &rows[i - 1];
+        strcpy(row->id, parts[0]);
+        for (int a = 0; a < data->attribute_count; ++a) {
+            Attribute *attribute = &data->attributes[a];
+            const char *value = parts[a + 1];
+            row->values[a] = !strcmp(value, "?") ? -1 : attribute->integer ? atoll(value) : position(attribute->values, attribute->value_count, value);
+        }
+        row->label = position(data->classes, data->class_count, parts[data->attribute_count + 1]);
+    }
+    return lines.count - 1;
+}
+void load_dataset(Dataset *data) {
+    Lines schema = read_lines("input/schema.txt");
+    for (int i = 0; i < schema.count; ++i) {
+        char *parts[12];
+        int count = fields(schema.items[i], " ", parts);
+        if (!strcmp(parts[0], "ATTRIBUTE")) {
+            Attribute *attribute = &data->attributes[data->attribute_count++];
+            strcpy(attribute->name, parts[1]);
+            attribute->integer = !strcmp(parts[2], "INT");
+            attribute->value_count = count - 3;
+            for (int j = 3; j < count; ++j) strcpy(attribute->values[j - 3], parts[j]);
+        } else {
+            strcpy(data->target, parts[1]);
+            data->class_count = count - 2;
+            for (int j = 2; j < count; ++j) strcpy(data->classes[j - 2], parts[j]);
+        }
+    }
+    Lines settings = read_lines("input/params.txt");
+    Integer values[10][500] = {{0}};
+    int counts[10] = {0};
+    for (int i = 0; i < 10; ++i) {
+        char *parts[501];
+        int count = fields(settings.items[i], " ", parts);
+        for (int j = 1; j < count; ++j) values[i][counts[i]++] = atoll(parts[j]);
+    }
+    data->settings = (Settings){(int)values[0][0], (int)values[1][0], (int)values[2][0], (int)values[3][0], (int)values[4][0], (int)values[6][0], (int)values[8][0], values[7][0], values[9][0], {0}, counts[5]};
+    for (int i = 0; i < counts[5]; ++i) data->settings.curve[i] = (int)values[5][i];
+    data->train_count = read_rows("train", data, data->train);
+    data->validation_count = read_rows("validation", data, data->validation);
+    data->test_count = read_rows("test", data, data->test);
+}
+Rows row_sequence(const Row *rows, int count) {
+    Rows result = { .count = count };
+    for (int i = 0; i < count; ++i) result.items[i] = &rows[i];
+    return result;
+}
+int majority(const Integer *counts, int classes) {
+    int best = 0;
+    for (int i = 1; i < classes; ++i) if (counts[i] > counts[best]) best = i;
+    return best;
+}
+Statistics statistics(Rows rows, int classes) {
+    Statistics result = { .size = rows.count };
+    for (int i = 0; i < rows.count; ++i) ++result.counts[rows.items[i]->label];
+    for (int i = 0; i < classes; ++i) result.squares += result.counts[i] * result.counts[i];
+    result.prediction = majority(result.counts, classes);
+    result.errors = result.size - result.counts[result.prediction];
+    return result;
+}
+int compare(Fraction first, Fraction second) {
+    Integer a = first.numerator * second.denominator;
+    Integer b = second.numerator * first.denominator;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+Fraction evaluation_value(Statistics left, Statistics right) {
+    return (Fraction){left.squares * right.size + right.squares * left.size, left.size * right.size};
+}
+bool improves(Fraction value, Statistics parent) { return value.numerator * parent.size > parent.squares * value.denominator; }
+bool goes_left(const Dataset *data, Split split, const Row *row) {
+    Integer value = row->values[split.attribute];
+    return data->attributes[split.attribute].integer ? 2 * value <= split.point : value == split.point;
+}
+static int integer_compare(const void *first, const void *second) {
+    Integer a = *(const Integer *)first, b = *(const Integer *)second;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+int split_candidates(const Dataset *data, Rows rows, int attribute, Split *result) {
+    Integer values[500];
+    for (int i = 0; i < rows.count; ++i) values[i] = rows.items[i]->values[attribute];
+    qsort(values, (size_t)rows.count, sizeof(Integer), integer_compare);
+    int count = 0;
+    for (int i = 0; i < rows.count; ++i) if (!i || values[i] != values[i - 1]) values[count++] = values[i];
+    if (count < 2) return 0;
+    int size = data->attributes[attribute].integer ? count - 1 : count;
+    for (int i = 0; i < size; ++i) result[i] = (Split){attribute, data->attributes[attribute].integer ? values[i] + values[i + 1] : values[i]};
+    return size;
+}
+bool best_for_attribute(const Dataset *data, Rows rows, int attribute, Candidate *result) {
+    Split splits[500];
+    int count = split_candidates(data, rows, attribute, splits);
+    bool found = false;
+    for (int i = 0; i < count; ++i) {
+        Candidate candidate = { .split = splits[i] };
+        for (int j = 0; j < rows.count; ++j) {
+            Rows *target = goes_left(data, splits[i], rows.items[j]) ? &candidate.left : &candidate.right;
+            target->items[target->count++] = rows.items[j];
+        }
+        if (candidate.left.count < data->settings.min_leaf || candidate.right.count < data->settings.min_leaf) continue;
+        candidate.value = evaluation_value(statistics(candidate.left, data->class_count), statistics(candidate.right, data->class_count));
+        if (!found || compare(candidate.value, result->value) > 0) {
+            *result = candidate;
+            found = true;
+        }
+    }
+    return found;
+}
+static void find_surrogates(const Dataset *data, Rows rows, const Candidate *primary, Node *node) {
+    Surrogate chosen[12];
+    int count = 0;
+    for (int a = 0; a < data->attribute_count; ++a) {
+        if (a == primary->split.attribute) continue;
+        Split splits[500];
+        int size = split_candidates(data, rows, a, splits);
+        Surrogate best = {0};
+        bool found = false;
+        for (int i = 0; i < size; ++i) {
+            Integer agreement = 0;
+            for (int j = 0; j < rows.count; ++j)
+                if (goes_left(data, splits[i], rows.items[j]) == goes_left(data, primary->split, rows.items[j])) ++agreement;
+            Integer reverse = rows.count - agreement;
+            Surrogate current = {splits[i], agreement >= reverse, agreement > reverse ? agreement : reverse};
+            if (!found || current.score > best.score) { best = current; found = true; }
+        }
+        int limit = primary->left.count > primary->right.count ? primary->left.count : primary->right.count;
+        if (found && best.score > limit) {
+            int i = count++;
+            while (i > 0 && chosen[i - 1].score < best.score) { chosen[i] = chosen[i - 1]; --i; }
+            chosen[i] = best;
+        }
+    }
+    node->surrogate_count = count < data->settings.max_surrogates ? count : data->settings.max_surrogates;
+    memcpy(node->surrogates, chosen, (size_t)node->surrogate_count * sizeof(Surrogate));
+}
+Node *grow_tree(const Dataset *data, Rows rows, int number, int depth) {
+    Node *node = allocate(sizeof(*node));
+    node->number = number;
+    node->depth = depth;
+    node->stats = statistics(rows, data->class_count);
+    if (!node->stats.errors || depth == data->settings.max_depth || rows.count < data->settings.min_split) return node;
+    Candidate best;
+    bool found = false;
+    for (int a = 0; a < data->attribute_count; ++a) {
+        Candidate candidate;
+        if (best_for_attribute(data, rows, a, &candidate) && (!found || compare(candidate.value, best.value) > 0)) {
+            best = candidate;
+            found = true;
+        }
+    }
+    if (!found || !improves(best.value, node->stats)) return node;
+    node->branch = true;
+    node->split = best.split;
+    node->default_left = best.left.count >= best.right.count;
+    find_surrogates(data, rows, &best, node);
+    node->left = grow_tree(data, best.left, 2 * number, depth + 1);
+    node->right = grow_tree(data, best.right, 2 * number + 1, depth + 1);
+    return node;
+}
+bool is_leaf(const TreeView *tree, const Node *node) { return !node->branch || tree->cuts[node->number]; }
+Route route_row(const Dataset *data, const TreeView *tree, const Row *row) {
+    Route result = {0};
+    const Node *node = tree->root;
+    for (;;) {
+        result.path[result.count] = node;
+        if (is_leaf(tree, node)) { result.leaf = node; return result; }
+        bool left = node->default_left;
+        Method method = DEFAULT;
+        if (row->values[node->split.attribute] >= 0) {
+            left = goes_left(data, node->split, row);
+            method = PRIMARY;
+        } else {
+            for (int i = 0; i < node->surrogate_count; ++i) {
+                Surrogate surrogate = node->surrogates[i];
+                if (row->values[surrogate.split.attribute] < 0) continue;
+                left = goes_left(data, surrogate.split, row) == surrogate.forward;
+                method = SURROGATE;
+                break;
+            }
+        }
+        result.steps[result.count++] = (Step){node, left, method};
+        node = left ? node->left : node->right;
+    }
+}
+int predict(const Dataset *data, const TreeView *tree, const Row *row) { return route_row(data, tree, row).leaf->stats.prediction; }
+Integer correct_count(const Dataset *data, const TreeView *tree, Rows rows) {
+    Integer result = 0;
+    for (int i = 0; i < rows.count; ++i) if (predict(data, tree, rows.items[i]) == rows.items[i]->label) ++result;
+    return result;
+}
+Lines classification(const Dataset *data, const char *title, Rows rows, const int *predictions) {
+    Integer matrix[6][6] = {{0}}, correct = 0;
+    for (int i = 0; i < rows.count; ++i) {
+        ++matrix[rows.items[i]->label][predictions[i]];
+        if (rows.items[i]->label == predictions[i]) ++correct;
+    }
+    Lines result = {0};
+    add_line(&result, "confusion %s correct %lld/%d accuracy %s", title, correct, rows.count, fraction((Fraction){correct, rows.count}, 4));
+    char *header = "actual\\predicted";
+    for (int k = 0; k < data->class_count; ++k) header = format("%s %s", header, data->classes[k]);
+    add_line(&result, "%s", header);
+    for (int k = 0; k < data->class_count; ++k) add_line(&result, "%s %s", data->classes[k], counts_text(matrix[k], data->class_count));
+    double macro = 0;
+    int available = 0;
+    for (int k = 0; k < data->class_count; ++k) {
+        Integer hits = matrix[k][k], predicted = 0, support = 0;
+        for (int j = 0; j < data->class_count; ++j) { predicted += matrix[j][k]; support += matrix[k][j]; }
+        add_line(&result, "class %s precision %s recall %s f1 %s support %lld", data->classes[k], fraction((Fraction){hits, predicted}, 4), fraction((Fraction){hits, support}, 4), fraction((Fraction){2 * hits, predicted + support}, 4), support);
+        if (predicted + support) { macro += (double)(2 * hits) / (predicted + support); ++available; }
+    }
+    add_line(&result, "macro_f1 %s", available ? real_text(macro / available, 4) : "-");
+    return result;
+}
+static Integer decide(const Node *node, const Integer *visits, const Integer *errors, PruningResult *result) {
+    Integer leaf_error = errors[node->number];
+    if (!node->branch) return leaf_error;
+    Integer left = decide(node->left, visits, errors, result);
+    Integer right = decide(node->right, visits, errors, result);
+    Integer subtree = left + right;
+    bool pruned = leaf_error <= subtree;
+    result->decisions[result->count++] = (Decision){node, visits[node->number], leaf_error, subtree, pruned};
+    if (pruned) result->tree.cuts[node->number] = true;
+    return pruned ? leaf_error : subtree;
+}
+void reduced_error(const Dataset *data, const Node *root, Rows rows, PruningResult *result) {
+    *result = (PruningResult){ .tree = {.root = root} };
+    TreeView grown = {.root = root};
+    Integer visits[2048] = {0}, errors[2048] = {0};
+    for (int i = 0; i < rows.count; ++i) {
+        Route path = route_row(data, &grown, rows.items[i]);
+        for (int j = 0; j <= path.count; ++j) {
+            const Node *node = path.path[j];
+            ++visits[node->number];
+            if (rows.items[i]->label != node->stats.prediction) ++errors[node->number];
+        }
+    }
+    decide(root, visits, errors, result);
+}
+static char *accuracy(const Analysis *a, const TreeView *tree, Rows rows) { return ratio(correct_count(&a->data, tree, rows), rows.count); }
+static void model_predictions(Analysis *a, int model, const TreeView *tree) {
+    for (int i = 0; i < a->test.count; ++i) a->predictions[model][i] = predict(&a->data, tree, a->test.items[i]);
+}
+static Lines prediction_lines(const Analysis *a) {
+    Lines result = {0};
+    add_line(&result, "id,predicted,actual,grown,leaf,path,missing");
+    for (int i = 0; i < a->test.count; ++i) {
+        const Route *route = &a->pruned_routes[i];
+        char *path = "";
+        int missing = 0;
+        for (int j = 0; j <= route->count; ++j) path = format("%s%s%d", path, j ? "-" : "", route->path[j]->number);
+        for (int j = 0; j < route->count; ++j) if (route->steps[j].method != PRIMARY) ++missing;
+        add_line(&result, "%s,%s,%s,%s,%d,%s,%d", a->test.items[i]->id, a->data.classes[route->leaf->stats.prediction], a->data.classes[a->test.items[i]->label], a->data.classes[a->grown_routes[i].leaf->stats.prediction], route->leaf->number, path, missing);
+    }
+    return result;
+}
+static Lines routing_lines(const Analysis *a) {
+    Integer tallies[2048][3] = {{0}};
+    for (int i = 0; i < a->test.count; ++i) for (int j = 0; j < a->pruned_routes[i].count; ++j) {
+        Step step = a->pruned_routes[i].steps[j];
+        ++tallies[step.node->number][step.method];
+    }
+    Lines result = {0};
+    add_line(&result, "routing pruned test");
+    Nodes nodes = preorder(&a->pruned, NULL);
+    for (int i = 0; i < nodes.count; ++i) if (!is_leaf(&a->pruned, nodes.items[i])) {
+        const Integer *tally = tallies[nodes.items[i]->number];
+        add_line(&result, "node %d rows %lld primary %lld surrogate %lld default %lld", nodes.items[i]->number, tally[0] + tally[1] + tally[2], tally[0], tally[1], tally[2]);
+    }
+    for (int incomplete = 0; incomplete < 2; ++incomplete) {
+        Rows rows = {0};
+        for (int i = 0; i < a->test.count; ++i) {
+            bool missing = false;
+            for (int j = 0; j < a->data.attribute_count; ++j) if (a->test.items[i]->values[j] < 0) missing = true;
+            if (missing == (bool)incomplete) rows.items[rows.count++] = a->test.items[i];
+        }
+        add_line(&result, "%s rows %d correct %s", incomplete ? "incomplete" : "complete", rows.count, accuracy(a, &a->pruned, rows));
+    }
+    return result;
+}
+static void write_sections(const char *name, const Lines *sections, int count) {
+    FILE *file = fopen(format("output/%s", name), "wb");
+    if (!file) exit(EXIT_FAILURE);
+    for (int i = 0; i < count; ++i) {
+        if (i && fputc('\n', file) == EOF) exit(EXIT_FAILURE);
+        for (int j = 0; j < sections[i].count; ++j) if (fprintf(file, "%s\n", sections[i].items[j]) < 0) exit(EXIT_FAILURE);
+    }
+    if (fclose(file)) exit(EXIT_FAILURE);
+}
+int main(void) {
+    static Analysis analysis;
+    Analysis *a = &analysis;
+    load_dataset(&a->data);
+    a->train = row_sequence(a->data.train, a->data.train_count);
+    a->validation = row_sequence(a->data.validation, a->data.validation_count);
+    a->test = row_sequence(a->data.test, a->data.test_count);
+    a->root = grow_tree(&a->data, a->train, 1, 0);
+    a->grown = (TreeView){.root = a->root};
+    PruningResult result;
+    reduced_error(&a->data, a->root, a->validation, &result);
+    a->pruned = result.tree;
+    a->decision_count = result.count;
+    memcpy(a->decisions, result.decisions, (size_t)result.count * sizeof(Decision));
+    for (int i = 0; i < a->test.count; ++i) {
+        a->grown_routes[i] = route_row(&a->data, &a->grown, a->test.items[i]);
+        a->pruned_routes[i] = route_row(&a->data, &a->pruned, a->test.items[i]);
+    }
+    model_predictions(a, GROWN, &a->grown);
+    model_predictions(a, PRUNED, &a->pruned);
+    Lines predictions[] = {prediction_lines(a)};
+    Lines evaluation[] = {data_lines(a), summary_lines(a), classification(&a->data, "grown test", a->test, a->predictions[GROWN]), classification(&a->data, "pruned test", a->test, a->predictions[PRUNED]), routing_lines(a), a->cross_lines, a->depth_lines, a->complexity_lines, a->bag_lines, mcnemar_lines(a), auc_lines(a), learning_lines(a)};
+    write_sections("predictions.csv", predictions, 1);
+    write_sections("evaluation.txt", evaluation, 12);

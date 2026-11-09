@@ -1,0 +1,404 @@
+function actions(text: string): Action[] {
+    if (text === "") return [];
+    return text.split("; ").map((part): Action => {
+        const space = part.indexOf(" "),
+            first = part.slice(0, space),
+            rest = part.slice(space + 1);
+        if (first === "log") {
+            if (rest.startsWith('"')) {
+                const close = rest.indexOf('"', 1);
+                return {
+                    kind: "log",
+                    text: rest.slice(1, close),
+                    expression:
+                        close + 1 === rest.length ? null : expression(rest.slice(close + 2)),
+                };
+            }
+        }
+function actionReferences(list: Action[]): Reference[] {
+    const references: Reference[] = [];
+    for (const action of list) {
+        if (action.kind === "assign") references.push({ kind: "variable", name: action.name });
+        if (action.expression !== null) references.push(...action.expression.references);
+    }
+    return references;
+function transitionParts(text: string): TransitionParts {
+    const first = text.indexOf(" ");
+    let trigger: string, rest: string;
+    if (text.startsWith("after ")) {
+        const end = text.indexOf(" ", 6);
+        trigger = end < 0 ? text : text.slice(0, end);
+        rest = end < 0 ? "" : text.slice(end);
+    } else {
+        trigger = first < 0 ? text : text.slice(0, first);
+        rest = first < 0 ? "" : text.slice(first);
+    }
+    let guard: Expression | null = null;
+    let target: string | null = null;
+    let kind = "internal";
+    if (rest.startsWith(" [")) {
+    }
+    if (rest.startsWith(" -> ") || rest.startsWith(" ~> ")) {
+    }
+    return { trigger, guard, target, kind, actions: actions(rest === "" ? "" : rest.slice(3)) };
+function stateNode(
+    name: string,
+    kind: string,
+    parent: State | null,
+    line: number,
+    initial: string | null,
+    mode: string,
+    fallback: string | null,
+): State {
+    return {
+        name,
+        kind,
+        parent,
+        line,
+        initial,
+        mode,
+        fallback,
+        children: [],
+        entries: [],
+        exits: [],
+        transitions: [],
+        depth: parent === null ? 0 : parent.depth + 1,
+        history: null,
+function childStates(state: State): State[] {
+    return state.children.filter((child) => child.kind !== "history");
+}
+function compound(state: State): boolean {
+    return state.parent === null || (state.kind === "state" && childStates(state).length > 0);
+}
+function parallel(state: State): boolean {
+    return state.kind === "parallel" && childStates(state).length > 0;
+}
+function atomic(state: State): boolean {
+    return state.kind !== "history" && childStates(state).length === 0;
+function initial(state: State, states: Map<string, State>): State {
+    return state.initial === null ? childStates(state)[0] : states.get(state.initial)!;
+function document(root: State): State[] {
+    const result: State[] = [];
+    function visit(state: State): void {
+        result.push(state);
+        for (const child of state.children) visit(child);
+    }
+    for (const state of root.children) visit(state);
+    return result;
+function build(lines: SourceLine[]): Chart {
+    const root = stateNode("", "state", null, 0, null, "", null);
+    const states = new Map<string, State>(),
+        variables = new Map<string, number>(),
+        errors = new Map<number, string>();
+    const definitions: Definition[] = [];
+    for (const source of lines) {
+        const words = source.text.split(" "),
+            kind = words[0],
+            name = words[1];
+        const definition: Definition = { ...source, kind, name, state: null };
+        definitions.push(definition);
+        if (["state", "parallel", "final", "history"].includes(kind)) {
+            let parentName: string | null = null,
+                selected: string | null = null,
+                defaultTarget: string | null = null;
+            let mode = "";
+            if (kind === "state") {
+                if (words[2] === "initial") selected = words[3];
+                else {
+                    parentName = words[2] ?? null;
+                    if (words[3] === "initial") selected = words[4];
+                }
+            } else {
+            }
+            if (states.has(name)) errors.set(source.line, "duplicate state " + name);
+            else if (parentName !== null && !states.has(parentName))
+                errors.set(source.line, "unknown state " + parentName);
+            else {
+                const parent = parentName === null ? root : states.get(parentName)!,
+                    state = stateNode(
+                        name,
+                        kind,
+                        parent,
+                        source.line,
+                        selected,
+                        mode,
+                        defaultTarget,
+                    );
+                parent.children.push(state);
+                states.set(name, state);
+                definition.state = state;
+            }
+        } else if (kind === "var") {
+        }
+    }
+    function checkReferences(references: Reference[]): string | null {
+        for (const reference of references)
+            if (!(reference.kind === "state" ? states : variables).has(reference.name))
+                return "unknown " + reference.kind + " " + reference.name;
+        return null;
+    }
+    for (const definition of definitions) {
+        if (errors.has(definition.line)) continue;
+        const { kind, name } = definition;
+        let error: string | null = null;
+        } else if (kind === "entry" || kind === "exit" || kind === "on") {
+            const source = states.get(name);
+            if (source === undefined) error = "unknown state " + name;
+            else if (source.kind === "history" && kind !== "on")
+                error = name + " cannot have actions";
+            else if (kind === "on" && ["final", "history"].includes(source.kind))
+                error = name + " cannot have transitions";
+            else if (kind === "on") {
+                const part = transitionParts(definition.text.slice(("on " + name + " ").length));
+                const references: Reference[] =
+                    part.guard === null ? [] : [...part.guard.references];
+                if (part.target !== null) references.push({ kind: "state", name: part.target });
+                references.push(...actionReferences(part.actions));
+                error = checkReferences(references);
+                if (error === null)
+                    source.transitions.push({
+                        source,
+                        kind: part.kind,
+                        target: part.target === null ? null : states.get(part.target)!,
+                        guard: part.guard,
+                        type:
+                            part.trigger === "always"
+                                ? "always"
+                                : part.trigger.startsWith("after ")
+                                  ? "timer"
+                                  : "event",
+                        delay: part.trigger.startsWith("after ")
+                            ? Number(part.trigger.slice(6))
+                            : 0,
+                        descriptors: part.trigger.split("|"),
+                        actions: part.actions,
+                    });
+            } else {
+            }
+        }
+        if (error !== null) errors.set(definition.line, error);
+    }
+    return { root, states, variables, errors, order: document(root), checkReferences };
+class Machine {
+    constructor(chart: Chart, output: string[]) {
+        this.chart = chart;
+        this.output = output;
+        this.configuration = new Set();
+        this.variables = new Map(chart.variables);
+        this.data = 0;
+        this.queue = [];
+        this.reservations = [];
+        this.serial = 0;
+        this.time = 0;
+        this.trace = false;
+        this.halted = false;
+        this.macrosteps = 0;
+        this.microsteps = 0;
+    enqueue(name: string, value = 0): void {
+        this.queue.push({ name, value });
+    actionList(list: Action[]): void {
+        for (const action of list) {
+            try {
+                const value = action.expression === null ? 0 : this.evaluate(action.expression);
+                switch (action.kind) {
+                    case "raise":
+                        this.enqueue(action.event, value);
+                    case "log":
+                        this.output.push(
+                            action.text + (action.expression === null ? "" : String(value)),
+                        );
+                }
+            } catch (error) {
+            }
+        }
+    choice(transition: Transition): Choice {
+        if (transition.kind === "internal") return { transition, scope: null, exits: new Set() };
+    matches(transition: Transition, trigger: SelectionTrigger): boolean {
+        if (trigger.kind === "always") return transition.type === "always";
+        if (trigger.kind === "timer") return transition === trigger.transition;
+        return (
+            transition.type === "event" &&
+            transition.descriptors.some(
+                (descriptor) =>
+                    descriptor === "*" ||
+                    descriptor === trigger.event.name ||
+                    trigger.event.name.startsWith(descriptor + "."),
+            )
+        );
+    }
+    select(trigger: SelectionTrigger): Choice[] {
+        const candidates: Choice[] = [];
+        const seen = new Set<Transition>();
+        for (const leaf of this.chart.order)
+            if (atomic(leaf) && this.configuration.has(leaf)) {
+                let found: Transition | null = null;
+                for (
+                    let state = leaf;
+                    state !== this.chart.root && found === null;
+                    state = state.parent!
+                ) {
+                    for (const transition of state.transitions)
+                        if (this.matches(transition, trigger)) {
+                            let enabled = true;
+                            try {
+                                enabled =
+                                    transition.guard === null ||
+                                    this.evaluate(transition.guard) !== 0;
+                            } catch (error) {
+                            }
+                            if (enabled) {
+                                found = transition;
+                                break;
+                            }
+                        }
+                }
+                if (found !== null && !seen.has(found)) {
+                    seen.add(found);
+                    candidates.push(this.choice(found));
+                }
+            }
+        const chosen: Choice[] = [];
+        const exited = new Set<State>();
+        for (const choice of candidates)
+            if (![...choice.exits].some((state) => exited.has(state))) {
+                chosen.push(choice);
+                for (const state of choice.exits) exited.add(state);
+            }
+        return chosen;
+    closeEntry(set: Set<State>): State[] {
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const state of [...set]) {
+                const children = parallel(state)
+                    ? childStates(state)
+                    : compound(state) && !childStates(state).some((child) => set.has(child))
+                      ? [initial(state, this.chart.states)]
+                      : [];
+                for (const child of children)
+                    if (!set.has(child)) {
+                        set.add(child);
+                        changed = true;
+                    }
+            }
+        }
+        return this.chart.order.filter((state) => set.has(state));
+    enter(states: State[]): void {
+        for (const state of states) {
+            this.configuration.add(state);
+            state.entered++;
+            state.enteredAt = this.time;
+            for (const transition of state.transitions)
+                if (transition.type === "timer")
+                    this.reserve({ kind: "timer", due: this.time + transition.delay, transition });
+            for (const list of state.entries) this.actionList(list);
+            if (state.kind === "final") {
+                this.enqueue("done.state." + state.parent!.name);
+            }
+        }
+    microstep(chosen: Choice[], trigger: SelectionTrigger): void {
+        const exits = new Set(chosen.flatMap((choice) => [...choice.exits]));
+        for (const history of this.chart.order)
+            if (history.kind === "history" && exits.has(history.parent!))
+        const set = new Set<State>();
+        for (const choice of chosen)
+            if (choice.transition.kind !== "internal")
+        const entries = this.closeEntry(set),
+            leaving = this.chart.order.filter((state) => exits.has(state)).reverse();
+        if (this.trace)
+        for (const state of leaving) {
+            for (const list of state.exits) this.actionList(list);
+            this.configuration.delete(state);
+        }
+        for (const choice of chosen) {
+            this.actionList(choice.transition.actions);
+            choice.transition.source.taken++;
+        }
+        this.enter(entries);
+    macrostep(trigger: Trigger): void {
+        this.macrosteps++;
+        let count = 0;
+        const perform = (chosen: Choice[], cause: SelectionTrigger): void => {
+            count++;
+            this.microsteps++;
+            this.microstep(chosen, cause);
+        };
+        if (trigger.kind === "start") {
+            this.data = 0;
+            this.enter(this.closeEntry(new Set([initial(this.chart.root, this.chart.states)])));
+        } else {
+            this.data = trigger.kind === "timer" ? 0 : trigger.event.value;
+            const chosen = this.select(trigger);
+            if (chosen.length) perform(chosen, trigger);
+        }
+        while (!this.halted) {
+            this.data = 0;
+            const always: SelectionTrigger = { kind: "always" };
+            const chosen = this.select(always);
+            if (chosen.length) {
+                perform(chosen, always);
+                continue;
+            }
+            if (!this.queue.length) break;
+            const event = this.queue.shift()!;
+            const cause: SelectionTrigger = { kind: "event", event };
+            this.data = event.value;
+            const selected = this.select(cause);
+            if (selected.length) perform(selected, cause);
+        }
+    script(line: string): void {
+        if (this.halted) return;
+        const words = line.split(" "),
+            command = words[0];
+        if (command === "event")
+            this.macrostep({
+                kind: "event",
+                event: { name: words[1], value: words.length === 3 ? Number(words[2]) : 0 },
+            });
+        else if (command === "tick") {
+            const finish = this.time + Number(words[1]);
+            while (!this.halted) {
+                const first = this.nextReservation();
+                if (first === undefined || first.due > finish) break;
+                this.reservations.splice(this.reservations.indexOf(first), 1);
+                this.time = first.due;
+                this.macrostep(
+                    first.kind === "timer"
+                        ? { kind: "timer", transition: first.transition }
+                        : { kind: "event", event: first.event },
+                );
+            }
+        } else if (command === "set") {
+        } else if (command === "trace") this.trace = words[1] === "on";
+        } else if (command === "dump") {
+            this.output.push("dump t=" + this.time);
+            for (const state of this.chart.order)
+                if (this.configuration.has(state))
+                    this.output.push(" ".repeat(2 * state.depth) + state.name);
+        }
+const input = fs.readFileSync(0, "utf8").split(/\r?\n/);
+const output: string[] = [];
+let at = 1;
+for (let chartNumber = 0; chartNumber < Number(input[0]); chartNumber++) {
+    const name = input[at++].slice(6);
+    const definitions: SourceLine[] = [];
+    const script: string[] = [];
+    while (input[at] !== "RUN") {
+        definitions.push({ text: input[at], line: at + 1 });
+        at++;
+    }
+    at++;
+    while (input[at] !== "END") script.push(input[at++]);
+    at++;
+    output.push("chart " + name);
+    const chart = build(definitions);
+    if (chart.errors.size) {
+        for (const [line, error] of [...chart.errors].sort((a, b) => a[0] - b[0]))
+            output.push(`error line ${line}: ${error}`);
+        continue;
+    }
+    const machine = new Machine(chart, output);
+    machine.macrostep({ kind: "start" });
+    for (const line of script) machine.script(line);
+}
+process.stdout.write(output.join("\n") + "\n");

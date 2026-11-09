@@ -1,0 +1,550 @@
+foreach (['rational', 'lp_parser', 'tableau', 'simplex', 'branch_bound'] as $module)
+    require_once __DIR__ . "/$module.php";
+function coefficients(array $terms, array $variables): array
+{
+    $values = array_fill_keys($variables, new Rational());
+    foreach ($terms as [$name, $v])
+        $values[$name] = $values[$name]->add($v);
+    return array_map(fn($name) => $values[$name], $variables);
+}
+
+function dot(array $a, array $b): Rational
+{
+    $v = new Rational();
+    foreach ($a as $i => $x)
+        $v = $v->add($x->mul($b[$i]));
+    return $v;
+}
+function contentCheck(object $parsed): object
+{
+    if ($parsed->error !== null)
+        return $parsed;
+    $variables = [];
+    foreach ([$parsed->objective, ...array_column($parsed->constraints, 'terms')] as $terms)
+        foreach ($terms as [$name, $v])
+            if (!in_array($name, $variables, true))
+                $variables[] = $name;
+    $model = (object) [
+        'name' => $parsed->name,
+        'error' => null,
+        'direction' => $parsed->direction,
+        'variables' => $variables,
+        'constraints' => $parsed->constraints,
+        'costs' => coefficients($parsed->objective, $variables),
+        'matrix' => array_map(fn($row) => coefficients($row->terms, $variables), $parsed->constraints),
+        'rhs' => array_column($parsed->constraints, 'rhs'),
+        'comparisons' => array_column($parsed->constraints, 'comparison'),
+        'lower' => array_fill(0, count($variables), new Rational()),
+        'upper' => array_fill(0, count($variables), null),
+        'integer' => array_fill(0, count($variables), false),
+    ];
+    return $model;
+function standardForm(object $model, array $lower, array $upper): object
+{
+    $columnNames = $owners = $directions = $mappings = [];
+    foreach ($model->variables as $j => $name) {
+        $first = count($columnNames);
+        if ($lower[$j] !== null) {
+            $kind = 'shift';
+            $offset = $lower[$j];
+            $columns = [$first];
+            $signs = [1];
+            $names = [$name];
+        }
+        array_push($columnNames, ...$names);
+        array_push($owners, ...array_fill(0, count($columns), $j));
+        array_push($directions, ...$signs);
+        $mappings[] = (object) [
+            'kind' => $kind,
+            'offset' => $offset,
+            'columns' => $columns,
+            'directions' => $signs,
+            'upperRow' => null,
+        ];
+    }
+    $offsets = array_column($mappings, 'offset');
+    $rowNames = array_column($model->constraints, 'name');
+    $matrix = $rhs = [];
+    $comparisons = $model->comparisons;
+    foreach ($model->matrix as $i => $row) {
+        $values = [];
+        foreach ($owners as $k => $j)
+            $values[] = $row[$j]->scale($directions[$k]);
+        $matrix[] = $values;
+        $rhs[] = $model->rhs[$i]->sub(dot($row, $offsets));
+    }
+    foreach ($mappings as $j => $mapping)
+        if ($mapping->kind === 'shift' && $upper[$j] !== null) {
+    $signs = array_fill(0, count($rowNames), 1);
+    foreach ($rhs as $i => $v)
+        if ($v->n < 0) {
+    $slack = $initial = array_fill(0, count($rowNames), null);
+    $artificial = [];
+    foreach ($comparisons as $i => $comparison)
+        if ($comparison !== '=') {
+        }
+    foreach ($comparisons as $i => $comparison)
+        if ($comparison !== '<=') {
+            $column = count($columnNames);
+            $artificial[$column] = true;
+            $initial[$i] = $column;
+            $columnNames[] = 'a:' . $rowNames[$i];
+            foreach ($matrix as $t => $_)
+                $matrix[$t][] = new Rational($t === $i ? 1 : 0);
+        }
+    $direction = $model->direction === 'minimize' ? 1 : -1;
+    $phase1 = $phase2 = [];
+    foreach ($columnNames as $k => $_) {
+        $phase1[] = new Rational(isset($artificial[$k]) ? 1 : 0);
+        $phase2[] = isset($owners[$k])
+            ? $model->costs[$owners[$k]]->scale($direction * $directions[$k])
+            : new Rational();
+    }
+    return (object) compact(
+        'columnNames',
+        'rowNames',
+        'mappings',
+        'matrix',
+        'rhs',
+        'signs',
+        'slack',
+        'artificial',
+        'initial',
+        'phase1',
+        'phase2',
+        'direction',
+    );
+}
+function tableauSolution(object $form, Tableau $t): array
+{
+    $values = array_fill(0, count($form->columnNames), new Rational());
+    foreach ($t->basic as $i => $basic)
+        $values[$basic] = $t->rhs[$i];
+    $solution = [];
+    foreach ($form->mappings as $m) {
+        $v = $m->offset;
+        foreach ($m->columns as $i => $k)
+            $v = $v->add($values[$k]->scale($m->directions[$i]));
+        $solution[] = $v;
+    }
+    return $solution;
+}
+function solveLp(object $model, array $lower, array $upper, int $number, int $level): object
+{
+    $f = standardForm($model, $lower, $upper);
+    $f->constant = dot($model->costs, array_column($f->mappings, 'offset'));
+    $t = new Tableau($f->rowNames, $f->columnNames, $f->matrix, $f->rhs, $f->initial);
+    $lines = [];
+    $emit = function (int $required, string $text) use (&$lines, $level): void {
+        if ($level >= $required)
+            $lines[] = $text;
+    };
+    $display = function (string $heading, array $costs, callable $objective) use (&$lines, $t, $level): void {
+        if ($level >= 2)
+            array_push($lines, ...$t->display($heading, $costs, $objective));
+    };
+    $identity = fn($v) => $v;
+    $phase2Value = fn($v) => $f->constant->add($v->scale($f->direction));
+    $emit(
+        0,
+        "SOLVE node $number rows "
+            . count($f->rowNames)
+            . ' columns '
+            . count($f->columnNames)
+            . ' artificials '
+            . count($f->artificial),
+    );
+    foreach ($f->mappings as $j => $m) {
+        $name = $model->variables[$j];
+        $line = "MAP $name {$m->kind}";
+        if ($m->kind === 'reflect')
+            $line .= ' ' . $upper[$j];
+        elseif ($m->kind === 'shift') {
+            $line .= ' ' . $lower[$j];
+            if ($upper[$j] !== null)
+                $line .= ' upper ' . $upper[$j];
+        }
+        $emit(1, $line);
+    }
+    foreach ($f->signs as $i => $sign)
+        if ($sign === -1)
+            $emit(1, 'FLIP ' . $f->rowNames[$i]);
+    $phase1 = $phase2 = $drives = $redundant = 0;
+    $infeasibility = new Rational();
+    $status = 'OPTIMAL';
+    $unbounded = null;
+    if ($f->artificial) {
+        $emit(1, 'PHASE 1');
+        $display('phase 1 start', $f->phase1, $identity);
+        $phase = runPhase($t, $f->phase1, array_keys($f->columnNames), $identity);
+        $phase1 = $phase->iterations;
+        foreach ($phase->lines as $line)
+            $emit(1, $line);
+        $infeasibility = $t->phaseValue($f->phase1);
+        $emit(1, "PHASE 1 END objective $infeasibility iterations $phase1");
+        if ($infeasibility->n > 0) {
+            $status = 'INFEASIBLE';
+            $display('final', $f->phase1, $identity);
+        } else {
+            foreach ($t->basic as $i => $b)
+                if (isset($f->artificial[$b])) {
+                    $q = null;
+                    foreach ($t->values[$i] as $k => $v)
+                        if (!isset($f->artificial[$k]) && $v->n !== 0) {
+                            $q = $k;
+                            break;
+                        }
+                    if ($q === null) {
+                        ++$redundant;
+                        $emit(1, 'REDUNDANT row ' . $f->rowNames[$i]);
+                    } else {
+                        $leaving = $f->columnNames[$b];
+                        $t->pivot($i, $q);
+                        ++$drives;
+                        $emit(1, "DRIVE row {$f->rowNames[$i]} enter {$f->columnNames[$q]} leave $leaving");
+                    }
+                }
+        }
+    }
+    if ($status !== 'INFEASIBLE') {
+        $emit(1, 'PHASE 2');
+        $display('phase 2 start', $f->phase2, $phase2Value);
+        $candidates = array_values(array_filter(
+            array_keys($f->columnNames),
+            fn($k) => !isset($f->artificial[$k]),
+        ));
+        $phase = runPhase($t, $f->phase2, $candidates, $phase2Value);
+        $phase2 = $phase->iterations;
+        foreach ($phase->lines as $line)
+            $emit(1, $line);
+        $unbounded = $phase->unbounded;
+        if ($unbounded !== null) {
+            $status = 'UNBOUNDED';
+            $emit(1, 'UNBOUNDED enter ' . $f->columnNames[$unbounded]);
+        }
+        $value = $phase2Value($t->phaseValue($f->phase2));
+        $emit(1, "PHASE 2 END objective $value iterations $phase2");
+        $display('final', $f->phase2, $phase2Value);
+    }
+    $objective = $status === 'OPTIMAL' ? $phase2Value($t->phaseValue($f->phase2)) : null;
+    $shown = $objective === null ? '-' : (string) $objective;
+    $emit(
+        0,
+        "RESULT $status objective $shown phase1 $phase1 phase2 $phase2 drives $drives redundant $redundant",
+    );
+    return (object) [
+        'status' => $status,
+        'objective' => $objective,
+        'solution' => tableauSolution($f, $t),
+        'form' => $f,
+        'tableau' => $t,
+        'unbounded' => $unbounded,
+        'infeasibility' => $infeasibility,
+        'phase1' => $phase1,
+        'phase2' => $phase2,
+        'drives' => $drives,
+        'redundant' => $redundant,
+        'pivots' => $phase1 + $phase2 + $drives,
+        'lines' => $lines,
+    ];
+}
+function solutionLines(object $model, object $r, int $pivots): array
+{
+    $root = $r->root;
+    $integers = count(array_filter($model->integer));
+    $out = [
+        "MODEL {$model->name} {$model->direction} variables "
+            . count($model->variables)
+            . ' constraints '
+            . count($model->constraints)
+            . " integers $integers",
+        statisticsLine($model),
+        'STATUS ' . $r->status,
+    ];
+    if ($r->solution !== null)
+        $out[] = "OBJECTIVE {$r->objective} approx " . $r->objective->approximate();
+    $values = $r->status === 'UNBOUNDED' ? $root->solution : $r->solution;
+    if ($values !== null)
+        foreach ($model->variables as $j => $name)
+            $out[] = "VALUE $name {$values[$j]}";
+        $out[] = 'NODES ' . $r->nodes;
+    $out[] = "PIVOTS $pivots";
+    return $out;
+}
+
+function main(): void
+{
+    $settings = readSettings();
+    $iterations = $solutions = $sensitivity = $tree = [];
+    $summary = ['model,status,objective,approx,relaxation,nodes,pivots'];
+    $statuses = array_fill_keys(['OPTIMAL', 'INFEASIBLE', 'UNBOUNDED', 'NODE_LIMIT', 'ERROR'], 0);
+    $solves = $phase1 = $phase2 = $drives = $analyzed = $integerModels = $integerNodes = $limited = 0;
+    foreach (readModels() as $parsed) {
+        $model = contentCheck($parsed);
+        $name = $model->name;
+        $level = $settings->logs[$name] ?? $settings->level;
+        $limit = $settings->limits[$name] ?? $settings->limit;
+        $solve = fn($lo, $hi, $n) => solveLp($model, $lo, $hi, $n, $level);
+        $integerCount = count(array_filter($model->integer));
+        if ($integerCount)
+        else {
+            $root = $solve($model->lower, $model->upper, 1);
+            $result = (object) [
+                'status' => $root->status,
+                'objective' => $root->objective,
+                'solution' => $root->status === 'OPTIMAL' ? $root->solution : null,
+                'solves' => [$root],
+                'root' => $root,
+                'nodes' => 1,
+                'lines' => [],
+            ];
+        }
+        ++$statuses[$result->status];
+        $iterations[] = "MODEL $name level $level";
+        $pivots = 0;
+        foreach ($result->solves as $lp) {
+            array_push($iterations, ...$lp->lines);
+            ++$solves;
+            $phase1 += $lp->phase1;
+            $phase2 += $lp->phase2;
+            $drives += $lp->drives;
+            $pivots += $lp->pivots;
+        }
+        array_push($solutions, ...solutionLines($model, $result, $pivots));
+        $objective = $result->objective === null ? '-' : (string) $result->objective;
+        $approx = $result->objective === null ? '-' : $result->objective->approximate();
+        $relaxation = $result->root->objective === null ? '-' : (string) $result->root->objective;
+        $summary[] =
+            "$name,{$result->status},$objective,$approx,$relaxation," . count($result->solves) . ",$pivots";
+    }
+    $models = array_sum($statuses);
+    $pivots = $phase1 + $phase2 + $drives;
+    $iterations[] = "TOTAL solves $solves phase1 $phase1 phase2 $phase2 drives $drives pivots $pivots";
+        mkdir('output');
+    foreach ([
+        'iterations.txt' => $iterations,
+        'solutions.txt' => $solutions,
+        'sensitivity.txt' => $sensitivity,
+        'bnb_tree.txt' => $tree,
+        'summary.csv' => $summary,
+    ] as $name => $lines)
+        file_put_contents('output/' . $name, implode("\n", $lines) . "\n");
+}
+function expression(array $words): ?array
+{
+    $i = 0;
+    $sign = 1;
+    $terms = [];
+    if (($words[0] ?? null) === '-') {
+        $i = 1;
+        $sign = -1;
+    }
+    while ($i < count($words)) {
+        $coefficient = readNumber($words[$i]);
+        if ($coefficient !== null) {
+            if (!isset($words[$i + 1]) || !isName($words[$i + 1]))
+                return null;
+            $name = $words[$i + 1];
+            $i += 2;
+        } elseif (isName($words[$i])) {
+            $name = $words[$i++];
+            $coefficient = new Rational(1);
+        } else
+            return null;
+        $terms[] = [$name, $coefficient->scale($sign)];
+        if ($i === count($words))
+            return $terms;
+        if (!in_array($words[$i], ['+', '-'], true))
+            return null;
+        $sign = $words[$i++] === '+' ? 1 : -1;
+    }
+    return null;
+}
+
+function namedExpression(array $words): ?array
+{
+    if (count($words) < 2 || !str_ends_with($words[0], ':'))
+        return null;
+    $name = substr($words[0], 0, -1);
+    $terms = expression(array_slice($words, 1));
+    return isName($name) && $terms !== null ? [$name, $terms] : null;
+}
+
+function constraintLine(array $w, int $line): ?object
+{
+    $n = count($w);
+    if ($n < 4 || !in_array($w[$n - 2], ['<=', '>=', '='], true))
+        return null;
+    $rhs = readNumber($w[$n - 1], true);
+    $named = namedExpression(array_slice($w, 0, -2));
+    return (
+        $rhs === null || $named === null
+            ? null
+            : (object) [
+                'line' => $line,
+                'name' => $named[0],
+                'terms' => $named[1],
+                'comparison' => $w[$n - 2],
+                'rhs' => $rhs,
+            ]
+    );
+}
+function parseBlock(string $name, array $body, int $endLine): object
+{
+    $r = (object) [
+        'name' => $name,
+        'error' => null,
+        'direction' => null,
+        'objective' => null,
+        'constraints' => [],
+        'bounds' => [],
+        'integers' => [],
+        'binaries' => [],
+    ];
+    $state = 'A';
+    foreach ($body as [$line, $text]) {
+        $w = explode(' ', $text);
+        $accepted = false;
+        switch ($state) {
+            case 'A':
+                if (in_array($text, ['maximize', 'minimize'], true)) {
+                    $r->direction = $text;
+                    $state = 'B';
+                    $accepted = true;
+                }
+                break;
+            case 'B':
+                $named = namedExpression($w);
+                if ($named !== null) {
+                    $r->objective = $named[1];
+                    $state = 'C';
+                    $accepted = true;
+                }
+                break;
+            case 'C':
+                if ($text === 'subject to') {
+                    $state = 'D';
+                    $accepted = true;
+                }
+                break;
+            case 'D':
+            case 'E':
+                if ($state === 'E' && in_array($text, ['bounds', 'integer', 'binary'], true)) {
+                    $state = ['bounds' => 'F', 'integer' => 'G', 'binary' => 'H'][$text];
+                    $accepted = true;
+                } else {
+                    $c = constraintLine($w, $line);
+                    if ($c !== null) {
+                        $r->constraints[] = $c;
+                        $state = 'E';
+                        $accepted = true;
+                    }
+                }
+                break;
+        }
+    }
+    if (in_array($state, ['A', 'B', 'C', 'D'], true))
+        $r->error = [$endLine, 'syntax error'];
+    return $r;
+}
+
+function readModels(): array
+{
+    $models = [];
+    $name = null;
+    $body = [];
+    foreach (file('input/models.lp', FILE_IGNORE_NEW_LINES) as $i => $line) {
+        if ($line === '' || $line[0] === '#')
+            continue;
+        if ($name === null) {
+            $name = explode(' ', $line)[1];
+            $body = [];
+        } elseif ($line === 'end') {
+            $models[] = parseBlock($name, $body, $i + 1);
+            $name = null;
+        } else
+            $body[] = [$i + 1, $line];
+    }
+    return $models;
+}
+function runPhase(Tableau $t, array $costs, array $candidates, callable $objective): object
+{
+    $iterations = 0;
+    $lines = [];
+    sort($candidates, SORT_NUMERIC);
+    while (true) {
+        $reduced = $t->reduced($costs);
+        $q = null;
+        foreach ($candidates as $k)
+            if ($reduced[$k]->n < 0) {
+                $q = $k;
+                break;
+            }
+        if ($q === null)
+            return (object) ['iterations' => $iterations, 'lines' => $lines, 'unbounded' => null];
+        $p = null;
+        $ratio = null;
+        foreach ($t->values as $i => $row)
+            if ($row[$q]->n > 0) {
+                $v = $t->rhs[$i]->div($row[$q]);
+                if (
+                    $p === null
+                    || $v->cmp($ratio) < 0
+                    || $v->cmp($ratio) === 0 && $t->basic[$i] < $t->basic[$p]
+                ) {
+                    $p = $i;
+                    $ratio = $v;
+                }
+            }
+        if ($p === null)
+            return (object) ['iterations' => $iterations, 'lines' => $lines, 'unbounded' => $q];
+        $leaving = $t->basic[$p];
+        $before = $reduced[$q];
+        $t->pivot($p, $q);
+        ++$iterations;
+        $value = $objective($t->phaseValue($costs));
+        $lines[] = "PIVOT $iterations enter {$t->columnNames[$q]} reduced $before leave {$t->columnNames[$leaving]} row {$t->rowNames[$p]} ratio $ratio objective $value";
+    }
+}
+final class Tableau
+{
+    public function __construct(
+        public array $rowNames,
+        public array $columnNames,
+        public array $values,
+        public array $rhs,
+        public array $basic,
+    ) {}
+
+    public function pivot(int $p, int $q): void
+    {
+        $divisor = $this->values[$p][$q];
+        $this->values[$p] = array_map(fn($v) => $v->div($divisor), $this->values[$p]);
+        $this->rhs[$p] = $this->rhs[$p]->div($divisor);
+        foreach ($this->values as $i => $row) {
+            if ($i === $p)
+                continue;
+            $f = $row[$q];
+            foreach ($row as $k => $v)
+                $this->values[$i][$k] = $v->sub($f->mul($this->values[$p][$k]));
+            $this->rhs[$i] = $this->rhs[$i]->sub($f->mul($this->rhs[$p]));
+        }
+        $this->basic[$p] = $q;
+    }
+
+    public function reduced(array $costs): array
+    {
+        $r = $costs;
+        foreach ($r as $k => $v)
+            foreach ($this->basic as $i => $b)
+                $r[$k] = $r[$k]->sub($costs[$b]->mul($this->values[$i][$k]));
+        return $r;
+    }
+
+    public function phaseValue(array $costs): Rational
+    {
+        $v = new Rational();
+        foreach ($this->basic as $i => $b)
+            $v = $v->add($costs[$b]->mul($this->rhs[$i]));
+        return $v;
+    }

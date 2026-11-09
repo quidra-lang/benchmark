@@ -1,0 +1,87 @@
+function handle_access!(state, event, issue, primary)
+    config = state.config
+    core, block, word, operation = event.core, event.block, event.word, event.operation
+    counters, cache = state.cores[core + 1], state.l1[core + 1]
+    before = primary ? Dict(block => line_states(state, block) for block in config.watch) : nothing
+    old = cache_state(cache, block)
+    hit = old != "I"
+    add_count!(counters.simple, "accesses")
+    add_count!(counters.simple, operation == "R" ? "reads" : "writes")
+    add_count!(counters.simple, hit ? "hits" : "misses")
+    other_copy = any(k -> k != core && cache_state(state.l1[k + 1], block) != "I", 0:config.cores - 1)
+    kind, updated = requester_transition(state.scenario.protocol, old, operation, other_copy)
+    miss_kind = nothing
+    if hit
+        cache_touch!(cache, block)
+    if kind === nothing
+        completion = issue + config.t1
+        service = "l1"
+    else
+        completion, tx = run_bus_transaction!(state, core, kind, block, word, issue + config.t1)
+        service = kind == "BusUpgr" ? "upgrade" : kind == "BusWr" ? "through" : tx.supplier >= 0 ? "cache" : tx.l2 == "hit" ? "l2" : "memory"
+    end
+    if old != "I"
+        cache_change!(cache, block, updated)
+    latency = completion - issue
+    add_count!(counters.service, service)
+    add_count!(counters.simple, "latency", latency)
+    add_count!(counters.simple, operation == "R" ? "read_latency" : "write_latency", latency)
+    if operation == "R"
+        state.ready[core + 1] = completion
+    else
+    counters.finish = max(counters.finish, completion)
+    push!(
+        state.accesses,
+        (
+            number=event.number,
+            issue=issue,
+            core=core,
+            operation=operation,
+            address=event.address,
+            block=block,
+            word=word,
+            latency=latency,
+            service=service,
+            miss_kind=miss_kind,
+            hit=hit
+        )
+    )
+    primary && render_watch!(state, event, issue, before)
+end
+function cache_touch_way!(cache, row, way, filling=false)
+    if cache.replacement == "LRU" || (cache.replacement == "FIFO" && filling)
+        cache.clock += 1
+        cache.touched[row, way] = cache.clock
+    elseif cache.replacement == "PLRU"
+        low, high, node = 0, cache.ways, 1
+        while high - low > 1
+            middle = (low + high) ÷ 2
+            if way - 1 < middle
+                cache.bits[row, node] = 1
+                high = middle
+                node *= 2
+            else
+                cache.bits[row, node] = 0
+                low = middle
+                node = 2 * node + 1
+            end
+        end
+    end
+end
+function cache_touch!(cache, block)
+    place = cache_locate(cache, block)
+    place !== nothing && cache_touch_way!(cache, place...)
+end
+function requester_transition(protocol, old, operation, other_copy)
+    if protocol == "VI"
+        operation == "R" && return old == "I" ? ("BusRd", "V") : (nothing, "V")
+        return "BusWr", old == "I" ? "I" : "V"
+    end
+    if old == "I"
+        operation == "W" && return "BusRdX", "M"
+        return "BusRd", protocol == "MSI" || other_copy ? "S" : "E"
+    end
+    operation == "R" && return nothing, old
+    old in ("M", "E") && return nothing, "M"
+    return "BusUpgr", "M"
+end

@@ -1,0 +1,472 @@
+
+const KEYWORDS = new Set('BEGIN END function if else while for do break continue next exit return delete in getline print printf'.split(' '));
+const BUILTINS = new Set('length substr index split sprintf toupper tolower close int'.split(' '));
+const PAIRS = new Set('+= -= *= /= %= ^= == <= >= != ++ -- && || >>'.split(' '));
+const ESCAPES = { n: '\n', t: '\t', '\\': '\\', '"': '"', '/': '/' };
+const letter = character => character !== undefined && /[A-Za-z_]/.test(character);
+const digit = character => character !== undefined && character >= '0' && character <= '9';
+function tokenize(source) {
+  const tokens = [];
+  let index = 0, line = 1, column = 1;
+  const advance = () => { if (source[index++] === '\n') { line++; column = 1; } else column++; };
+  const append = (kind, text, position, value = text) => tokens.push({ kind, text, position, value });
+  while (index < source.length) {
+    const position = { line, column }, start = index, character = source[index], pair = source.slice(index, index + 2);
+    if (character === ' ') { advance(); continue; }
+    if (character === '\n') { append('newline', '\n', position); advance(); continue; }
+    if (digit(character)) {
+      while (digit(source[index])) advance();
+      const text = source.slice(start, index); append('number', text, position, Number(text)); continue;
+    }
+    if (letter(character)) {
+      while (letter(source[index]) || digit(source[index])) advance();
+      const text = source.slice(start, index);
+      const kind = KEYWORDS.has(text) ? 'keyword' : BUILTINS.has(text) ? 'builtin' : source[index] === '(' ? 'function' : 'name';
+      append(kind, text, position); continue;
+    }
+    if (character === '"') {
+      advance(); let value = '';
+      while (index < source.length && source[index] !== '"') {
+        if (source[index] === '\n') throw new SyntaxFault(position);
+        if (source[index] === '\\') {
+        } else { value += source[index]; advance(); }
+      }
+      if (index === source.length) throw new SyntaxFault(position);
+      advance(); append('string', source.slice(start, index), position, value); continue;
+    }
+    if (PAIRS.has(pair)) { append('symbol', pair, position); advance(); advance(); continue; }
+    if ('+-*/%^!><?:=()[]{} ,;$'.includes(character)) { append('symbol', character, position); advance(); continue; }
+  }
+  append('eof', '', { line, column: 1 }); return tokens;
+}
+const COMPARISONS = new Set(['<', '<=', '==', '!=', '>=', '>']);
+const lvalue = node => ['variable', 'array', 'field'].includes(node.kind);
+const concatenates = token => ['number', 'string', 'name', 'function', 'builtin'].includes(token.kind) || ['$', '(', '++', '--'].includes(token.text);
+
+class Parser {
+  declare context: any;
+  constructor(tokens) { this.tokens = tokens; this.index = 0; this.context = 'rule'; this.loops = 0; }
+  peek(offset = 0) { return this.tokens[Math.min(this.index + offset, this.tokens.length - 1)]; }
+  is(text) { return this.peek().text === text; }
+  take() { return this.tokens[this.index++]; }
+  fail(token = this.peek()) { throw new SyntaxFault(token.position); }
+  expect(text) { if (!this.is(text)) this.fail(); return this.take(); }
+  name() { if (this.peek().kind !== 'name') this.fail(); return this.take(); }
+  newlines() { while (this.peek().kind === 'newline') this.take(); }
+  node(kind, token, fields = {}) { return { kind, position: token.position, ...fields }; }
+  endSimple() { if (this.is(';') || this.peek().kind === 'newline') this.take(); else if (!this.is('}')) this.fail(); }
+  noValue() { return this.is(';') || this.is('}') || this.peek().kind === 'newline'; }
+  program() {
+    const items = [];
+    while (this.peek().kind !== 'eof') {
+      if (this.peek().kind === 'newline' || this.is(';')) { this.take(); continue; }
+      const token = this.peek(); this.loops = 0;
+      } else {
+        let kind, start = null, end = null, body = null;
+        if (this.is('BEGIN') || this.is('END')) {
+          kind = this.take().text; this.context = kind; body = this.block();
+        } else {
+          this.context = 'rule';
+          if (this.is('{')) { kind = 'all'; body = this.block(); }
+        }
+        items.push(this.node('rule', token, { ruleKind: kind, start, end, body, matches: 0, inside: false }));
+      }
+    }
+    return { items };
+  }
+  block() {
+    const token = this.expect('{'), statements = [];
+    while (!this.is('}')) {
+      if (this.peek().kind === 'newline' || this.is(';')) this.take();
+      else statements.push(this.statement());
+    }
+    this.take(); return this.node('block', token, { statements });
+  }
+  statement() {
+    const token = this.peek();
+    if (this.is('{')) return this.block();
+    if (this.is(';')) { this.take(); return this.node('empty', token); }
+    let result;
+        const update = this.is(')') ? null : this.expression(); this.expect(')');
+        result = this.node('for', token, { initial, condition, update, body: this.loopBody() });
+      }
+    } else { result = this.simple(); this.endSimple(); }
+    result.statement = true; return result;
+  }
+  simple() {
+    const token = this.peek();
+    if (this.is('print') || this.is('printf')) {
+      this.take(); const args = [];
+      if (this.noValue() || this.is('>') || this.is('>>')) { if (token.text === 'printf') this.fail(); }
+      else if (this.is('(') && this.parenthesizedOutput()) { this.take(); args.push(...this.expressionList()); this.expect(')'); }
+      else args.push(...this.expressionList(false));
+      let redirect = null;
+      if (this.is('>') || this.is('>>')) {
+        const operator = this.take(); redirect = { operator: operator.text, position: operator.position, target: this.concat(true) };
+      }
+      return this.node(token.text, token, { args, redirect });
+    }
+    return this.node('expression', token, { expression: this.expression() });
+  }
+  expressionList(greater = true) {
+    const values = [this.expression(greater)];
+    while (this.is(',')) { this.take(); this.newlines(); values.push(this.expression(greater)); }
+    return values;
+  }
+  expression(greater = true) {
+    const left = this.conditional(greater);
+    if (lvalue(left) && ASSIGNMENTS.has(this.peek().text)) {
+      const operator = this.take(); return this.node('assignment', operator, { operator: operator.text, left, right: this.expression(greater) });
+    }
+    return left;
+  }
+  conditional(greater) {
+    const condition = this.logical(greater, '||');
+    if (!this.is('?')) return condition;
+  }
+  logical(greater, operator) {
+    const next = () => operator === '||' ? this.logical(greater, '&&') : this.membership(greater);
+    let left = next();
+    return left;
+  }
+  membership(greater) {
+    let result = this.comparison(greater);
+    return result;
+  }
+  comparison(greater) {
+    let left = this.concat(greater);
+    return left;
+  }
+  concat(greater) {
+    let left = this.additive(greater);
+    return left;
+  }
+  additive(greater) {
+    let left = this.multiplicative(greater);
+    return left;
+  }
+  multiplicative(greater) {
+    let left = this.unary(greater);
+    return left;
+  }
+  unary(greater) {
+    if (['!', '-', '+'].includes(this.peek().text)) {
+    const left = this.postfix(greater);
+    if (!this.is('^')) return left;
+  }
+  postfix(greater) {
+    if (this.is('++') || this.is('--')) return this.increment(greater);
+    const target = this.atom(greater);
+    return target;
+  }
+  location(greater) {
+    const token = this.peek();
+    if (token.kind === 'name') {
+      this.take();
+      if (!this.is('[')) return this.node('variable', token, { nameToken: token });
+      this.take(); const subscripts = this.expressionList(); this.expect(']'); return this.node('array', token, { nameToken: token, subscripts });
+    }
+    this.expect('$');
+    const index = this.is('++') || this.is('--') ? this.increment(greater) : this.atom(greater);
+    return this.node('field', token, { index });
+  }
+  atom(greater) {
+    const token = this.peek();
+    if (token.kind === 'number' || token.kind === 'string') { this.take(); return this.node('literal', token, { valueKind: token.kind, value: token.value }); }
+    if (token.kind === 'name' || this.is('$')) return this.location(greater);
+function children(node) {
+  switch (node.kind) {
+    case 'function': return [node.body];
+    case 'rule': return [node.start, node.end, node.body].filter(Boolean);
+    case 'block': return node.statements;
+    case 'print': case 'printf': return [...node.args, ...(node.redirect === null ? [] : [node.redirect.target])];
+    case 'expression': case 'parenthesized': return [node.expression];
+    case 'binary': case 'assignment': return [node.left, node.right];
+    case 'field': return [node.index];
+    case 'getline': return [node.file, node.target].filter(Boolean);
+    default: return [];
+  }
+const uninitialized = { kind: 'uninitialized' };
+const number = value => ({ kind: 'number', number: value === 0 ? 0 : value });
+const string = value => ({ kind: 'string', string: value });
+const asciiCompare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+
+function toNumber(value) {
+  if (value.kind === 'number' || value.kind === 'strnum') return value.number;
+  if (value.kind === 'uninitialized') return 0;
+  const found = /^[ \t\n]*([+-]?\d+)/.exec(value.string);
+  return found === null ? 0 : Number(found[1]);
+}
+
+function toString(value) {
+  if (value.kind === 'uninitialized') return '';
+  return value.kind === 'number' ? String(value.number) : value.string;
+}
+
+function inputValue(value) {
+  return /^[ \t\n]*[+-]?\d+[ \t\n]*$/.test(value) ? { kind: 'strnum', string: value, number: toNumber(string(value)) } : string(value);
+}
+
+function splitString(value, separator) {
+  if (separator === ' ') return value.match(/[^ \t\n]+/g) || [];
+  if (separator === '') return Array.from(value);
+  return value === '' ? [] : value.split(separator);
+}
+
+class Fields {
+  declare count: any;
+  declare fail: any;
+  declare record: any;
+  declare setting: any;
+  declare values: any;
+  constructor(setting, fail) { this.setting = setting; this.fail = fail; this.record = string(''); this.values = new Map(); this.count = 0; }
+  setRecord(value) {
+    this.record = inputValue(value);
+    const pieces = splitString(value, toString(this.setting('FS')));
+    this.values = new Map(pieces.map((piece, i) => [i + 1, inputValue(piece)])); this.count = pieces.length;
+  }
+  read(index) {
+    if (index === 0) return this.record;
+    return index > this.count ? uninitialized : this.values.get(index) || string('');
+  }
+  rebuild() {
+    const separator = toString(this.setting('OFS')), parts = [];
+    let previous = 0;
+    for (const [index, value] of Array.from(this.values).sort((a, b) => a[0] - b[0])) {
+      if (separator !== '') parts.push(separator.repeat(index - previous - Number(previous === 0)));
+      parts.push(toString(value)); previous = index;
+    }
+    if (separator !== '' && this.count > 0) parts.push(separator.repeat(this.count - previous - Number(previous === 0)));
+    this.record = inputValue(parts.join(''));
+  }
+  write(index, value) {
+    if (index === 0) { this.setRecord(toString(value)); return; }
+    this.count = Math.max(this.count, index); this.values.set(index, value); this.rebuild();
+  }
+  resize(value, position) {
+    const count = toNumber(value);
+    if (count < 0) this.fail(position, 'negative NF');
+    if (count < this.count) for (const index of this.values.keys()) if (index > count) this.values.delete(index);
+    this.count = count;
+    this.rebuild();
+  }
+}
+function display(value) {
+  if (value.kind === 'uninitialized') return '(uninitialized)';
+  if (value.kind === 'number') return toString(value);
+  let result = '"';
+  for (const character of value.string) {
+    if (character === '"') result += '\\"';
+    else if (character === '\\') result += '\\\\';
+    else if (character === '\n') result += '\\n';
+    else if (character === '\t') result += '\\t';
+    else {
+      const code = character.charCodeAt(0);
+      result += code >= 32 && code <= 126 ? character : '\\' + code.toString(8).padStart(3, '0');
+    }
+  }
+  return result + '"' + (value.kind === 'strnum' ? ' (strnum)' : '');
+const validName = name => name !== '' && name[0] !== '.' && !/[^A-Za-z0-9._-]/.test(name);
+const readLines = name => {
+  const text = fs.readFileSync('input/' + name, 'ascii'); return text === '' ? [] : text.split('\n').slice(0, -1);
+};
+
+function argumentsList(lines) {
+  const options = [], operands = [];
+  const assignment = text => { const equal = text.indexOf('='); return { kind: 'assignment', name: text.slice(0, equal), value: text.slice(equal + 1) }; };
+  for (const line of lines) {
+    if (line.startsWith('-F ')) options.push({ name: 'FS', value: line.slice(3) });
+    else if (line.startsWith('-v ')) options.push(assignment(line.slice(3)));
+    else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(line)) operands.push(assignment(line));
+    else operands.push({ kind: 'file', name: line, records: 0 });
+  }
+  return { options, operands };
+}
+
+class Streams {
+  declare inputs: any;
+  declare outputs: any;
+  declare stdout: any;
+  constructor() { this.stdout = { content: '', writes: 0 }; this.outputs = new Map(); this.inputs = new Map(); }
+  write(content, name = null, operator = null, position = null) {
+    let output = this.stdout;
+    if (name !== null) {
+  save() {
+    fs.mkdirSync('output', { recursive: true }); fs.writeFileSync('output/stdout.txt', this.stdout.content, 'ascii');
+    for (const [name, output] of this.outputs) fs.writeFileSync('output/' + name, output.content, 'ascii');
+  }
+}
+const SPECIAL = ['FILENAME', 'FNR', 'FS', 'NF', 'NR', 'OFS', 'ORS', 'SUBSEP'];
+  const functions = program.items.filter(item => item.kind === 'function'), definitions = new Map(), errors = [], globals = new Map();
+  const rules = program.items.filter(item => item.kind === 'rule'), statementLines = new Set(), calls = [], splits = [];
+  const error = (position, priority, message) => errors.push({ position, priority, message });
+  const global = name => {
+    if (!globals.has(name)) globals.set(name, { name, global: true, array: false });
+    return globals.get(name);
+  };
+  for (const name of SPECIAL) global(name);
+  for (const definition of functions) {
+    if (definitions.has(token.text)) error(token.position, 2, `function ${token.text} used as variable`);
+    const symbol = definition?.scope.get(token.text) || global(token.text);
+    if (array) symbol.array = true;
+    return symbol;
+  };
+  for (const definition of functions) for (const parameter of definition.parameters) {
+    const definition = item.kind === 'function' ? item : null, work = [item];
+    while (work.length) {
+      const node = work.pop();
+      if (node.statement) statementLines.add(node.position.line);
+      if (['variable', 'array', 'in', 'delete'].includes(node.kind)) node.symbol = occurrence(node.nameToken, definition, node.kind !== 'variable');
+      if (node.kind === 'for-in') {
+      for (let i = nested.length - 1; i >= 0; i--) work.push(nested[i]);
+    }
+  }
+  if (errors.length) {
+    errors.sort((a, b) => positionCompare(a.position, b.position) || a.priority - b.priority);
+    throw new StaticFault(errors[0].position, errors[0].message);
+  }
+  for (const call of splits) call.args[1].symbol.array = true;
+}
+
+
+function resolve(iterator) {
+  const pending = [iterator];
+  let value, raised = false;
+  while (pending.length) {
+    let step;
+    try { step = raised ? pending[pending.length - 1].throw(value) : pending[pending.length - 1].next(value); }
+    catch (error) { pending.pop(); value = error; raised = true; continue; }
+    value = undefined; raised = false;
+    if (step.done) { pending.pop(); value = step.value; } else pending.push(step.value);
+  }
+  if (raised) throw value;
+  return value;
+  constructor(analysis, args) {
+    this.analysis = analysis; this.args = args; this.globals = new Map(); this.locals = [];
+    for (const symbol of analysis.globals.values()) this.globals.set(symbol.name, this.cell(symbol));
+    const initial = { FS: string(' '), OFS: string(' '), ORS: string('\n'), SUBSEP: string(String.fromCharCode(28)),
+      NR: number(0), FNR: number(0), FILENAME: string('') };
+    for (const [name, value] of Object.entries(initial)) this.globals.get(name).value = value;
+    this.fields = new Fields(name => this.globalValue(name), fail); this.streams = new Streams();
+    this.lines = new Map(Array.from(analysis.statementLines, line => [line, 0]));
+    this.operand = 0; this.current = null; this.phase = 'BEGIN'; this.status = 0; this.error = null;
+  }
+  cell(symbol, value = uninitialized, array = null) { return { symbol, value, array: symbol.array ? array || new Map() : null }; }
+  globalCell(name) {
+    if (!this.globals.has(name)) this.globals.set(name, this.cell({ name, global: true, array: false }));
+    return this.globals.get(name);
+  }
+  symbolCell(symbol) { return symbol.global ? this.globalCell(symbol.name) : this.locals[this.locals.length - 1].get(symbol.name); }
+  globalValue(name) { return this.read({ kind: 'variable', cell: this.globalCell(name) }); }
+  read(location) {
+    if (location.kind === 'field') return this.fields.read(location.index);
+    if (location.kind === 'array') {
+      if (!location.array.has(location.key)) location.array.set(location.key, uninitialized);
+      return location.array.get(location.key);
+    }
+    const { cell } = location;
+    return cell.symbol.global && cell.symbol.name === 'NF' ? number(this.fields.count) : cell.value;
+  }
+  store(location, value, position) {
+    if (location.kind === 'field') this.fields.write(location.index, value);
+    else if (location.kind === 'array') location.array.set(location.key, value);
+    else if (location.cell.symbol.global && location.cell.symbol.name === 'NF') this.fields.resize(value, position);
+    else location.cell.value = value;
+    return this.read(location);
+  *location(node) {
+    if (node.kind === 'variable') return { kind: 'variable', cell: this.symbolCell(node.symbol) };
+    if (node.kind === 'array') return { kind: 'array', array: this.array(node.symbol), key: yield this.key(node.subscripts) };
+    const index = toNumber(yield this.evaluate(node.index));
+    if (index < 0) fail(node.position, 'negative field index');
+    return { kind: 'field', index };
+  }
+    switch (node.kind) {
+      case 'literal': return node.valueKind === 'number' ? number(node.value) : string(node.value);
+      case 'parenthesized': return yield this.evaluate(node.expression);
+      case 'variable': case 'array': case 'field': return this.read(yield this.location(node));
+      case 'assignment': {
+        const location = yield this.location(node.left), right = yield this.evaluate(node.right);
+        const value = node.operator === '=' ? right : this.arithmetic(node.operator[0], this.read(location), right, node.position);
+        return this.store(location, value, node.position);
+      }
+  readMain() {
+    if (this.phase === 'END') return null;
+    while (true) {
+      if (this.current !== null && this.current.index < this.current.lines.length) {
+        this.current.operand.records++;
+        this.assignGlobal('NR', number(toNumber(this.globalValue('NR')) + 1));
+        this.assignGlobal('FNR', number(toNumber(this.globalValue('FNR')) + 1));
+        return this.current.lines[this.current.index++];
+      }
+      if (this.operand === this.args.operands.length) return null;
+      const operand = this.args.operands[this.operand++];
+      if (operand.kind === 'assignment') this.assignGlobal(operand.name, inputValue(operand.value));
+      else {
+        this.current = { operand, lines: readLines(operand.name), index: 0 };
+        this.assignGlobal('FILENAME', string(operand.name)); this.assignGlobal('FNR', number(0));
+      }
+    }
+  }
+  *output(node) {
+    const values = [];
+    for (const argument of node.args) values.push(yield this.evaluate(argument));
+    if (node.kind === 'print' && values.length === 0) values.push(this.fields.record);
+    const content = node.kind === 'print' ? values.map(toString).join(toString(this.globalValue('OFS'))) + toString(this.globalValue('ORS')) : format(values, node.position);
+    if (node.redirect === null) this.streams.write(content);
+  *statement(node) {
+    if (node.statement) this.lines.set(node.position.line, this.lines.get(node.position.line) + 1);
+    switch (node.kind) {
+      case 'empty': break;
+      case 'block': for (const statement of node.statements) yield this.statement(statement); break;
+      case 'expression': yield this.evaluate(node.expression); break;
+      case 'print': case 'printf': yield this.output(node); break;
+  *match(rule) {
+    if (rule.ruleKind === 'all') return true;
+  *initialAndRecords() {
+    for (const option of this.args.options) this.assignGlobal(option.name, inputValue(option.value));
+    for (const rule of this.analysis.rules) if (rule.ruleKind === 'BEGIN') { rule.matches++; yield this.statement(rule.body); }
+    if (!this.analysis.rules.some(rule => rule.ruleKind !== 'BEGIN')) return;
+    this.phase = 'records';
+    while (true) {
+      const record = this.readMain(); if (record === null) break;
+      this.fields.setRecord(record);
+      try {
+        for (const rule of this.analysis.rules) if (rule.ruleKind !== 'BEGIN' && rule.ruleKind !== 'END' && (yield this.match(rule))) {
+          rule.matches++;
+          if (rule.body !== null) yield this.statement(rule.body);
+          else this.streams.write(toString(this.fields.record) + toString(this.globalValue('ORS')));
+        }
+      } catch (transfer) { if (!(transfer instanceof Transfer) || transfer.kind !== 'next') throw transfer; }
+    }
+  }
+  *execute() {
+    try {
+      try { yield this.initialAndRecords(); }
+      catch (transfer) { if (!(transfer instanceof Transfer) || transfer.kind !== 'exit') throw transfer; }
+      this.phase = 'END';
+      try {
+        for (const rule of this.analysis.rules) if (rule.ruleKind === 'END') { rule.matches++; yield this.statement(rule.body); }
+      } catch (transfer) { if (!(transfer instanceof Transfer) || transfer.kind !== 'exit') throw transfer; }
+    } catch (error) { if (!(error instanceof RuntimeFault)) throw error; this.error = error; }
+  }
+  statistics() {
+    const lines = [this.error === null ? `status: exit ${this.status}` : `status: runtime error at ${positionText(this.error.position)}: ${this.error.message}`, '[inputs]'];
+    for (const operand of this.args.operands) if (operand.kind === 'file') lines.push(`${operand.name} records=${operand.records}`);
+    lines.push('[rules]');
+    for (const rule of this.analysis.rules) lines.push(`${positionText(rule.position)} ${rule.ruleKind} count=${rule.matches}`);
+    lines.push('[outputs]', `stdout.txt writes=${this.streams.stdout.writes} bytes=${this.streams.stdout.content.length}`);
+    lines.push('[lines]');
+    for (const line of Array.from(this.lines.keys()).sort((a, b) => a - b)) lines.push(`${line} count=${this.lines.get(line)}`);
+    lines.push('[globals]');
+    for (const name of Array.from(this.globals.keys()).sort(asciiCompare)) {
+      const cell = this.globals.get(name);
+      lines.push(name + ' = ' + (cell.array === null ? display(this.globalValue(name)) : `array (${cell.array.size})`));
+    }
+    return lines;
+function main() {
+  const args = argumentsList(readLines('args.txt')), source = fs.readFileSync('input/program.awk', 'ascii');
+  let analysis;
+  try { analysis = analyze(new Parser(tokenize(source)).program()); }
+  const interpreter = new Interpreter(analysis, args); resolve(interpreter.execute()); interpreter.streams.save();
+  fs.writeFileSync('output/stats.txt', interpreter.statistics().join('\n') + '\n', 'ascii');
+}

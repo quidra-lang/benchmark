@@ -1,0 +1,354 @@
+parse_register <- function(text) if (grepl(
+    "^r([0-9]|[12][0-9]|3[01])$",
+    text
+)) as.integer(substring(text,2L)) else -1L
+read_inputs <- function() {
+  config <- list(predictors=list(),variants=list())
+  for (line in readLines(file.path("input","config.txt"))) {
+    row <- strsplit(line," ",fixed=TRUE)[[1L]]
+    key <- row[1L]
+    values <- row[-1L]
+      ) else if (key == "VARIANT")
+      config$variants[[length(config$variants)+1L]] <- list(
+          name=values[1L],
+          forwarding=values[2L] == "ON",
+          stage=values[3L],
+          latency=as.integer(values[4L])
+      ) else if (key == "PRIMARY")
+      config$primary <- values else config$window <- as.integer(values)
+  }
+  list(trace=readLines(file.path("input","trace.txt")),config=config)
+dependencies <- function(instructions) {
+  last_writer <- integer(32L)
+  sources <- vector("list",length(instructions))
+  for (i in seq_along(instructions)) {
+    instruction <- instructions[[i]]
+    current <- list()
+    for (field in seq_len(2L)) {
+      register <- c(instruction$rs1,instruction$rs2)[field]
+      if (register > 0L) current[[length(current)+1L]] <- list(
+          field=field,
+          register=register,
+          producer=last_writer[register+1L]
+      )
+    }
+    sources[[i]] <- current
+    if (instruction$rd > 0L) last_writer[instruction$rd+1L] <- i
+  }
+  sources
+}
+id_resolved <- function(
+    instruction,
+    variant
+) (instruction$kind == "JUMP" && instruction$rs1 == -1L) || (instruction$kind %in% c(
+    "BRANCH",
+    "JUMP"
+) && variant$stage == "ID")
+ready_cycle <- function(instruction,producer,producer_time,variant) {
+  if (!variant$forwarding) return(producer_time[5L]+1L)
+  result <- if (producer$kind == "LOAD") producer_time[5L] else producer_time[4L]
+  result+as.integer(id_resolved(instruction,variant))
+}
+CAUSES <- c("control","structural","load_use","raw")
+STAGES <- c("IF","ID","EX","MEM","WB")
+simulate <- function(instructions,sources,variant,mispredicted) {
+  n <- length(instructions)
+  timings <- matrix(0L,n,5L)
+  records <- list()
+  delays <- integer()
+  for (i in seq_along(instructions)) {
+    instruction <- instructions[[i]]
+    execute <- if (instruction$kind == "MUL") variant$latency else 1L
+    if (i == 1L) {
+      fetch <- 1L
+      decode <- 2L
+      start <- 3L
+    } else {
+      previous <- timings[i-1L,]
+      fetch <- if (mispredicted[i-1L]) previous[3L]+as.integer(!id_resolved(
+          instructions[[i-1L]],
+          variant
+      )) else previous[2L]
+      decode <- max(fetch+1L,previous[3L])
+      ideal <- previous[3L]+1L
+      load_ready <- raw_ready <- ideal
+      load_producer <- raw_producer <- 0L
+      for (source in sources[[i]]) {
+        p <- source$producer
+        if (p == 0L) next
+        ready <- ready_cycle(instruction,instructions[[p]],timings[p,],variant)
+        if (instructions[[p]]$kind == "LOAD") {
+          if (ready > load_ready) {
+            load_ready <- ready
+            load_producer <- p
+          }
+        } else if (ready > raw_ready) {
+          raw_ready <- ready
+          raw_producer <- p
+        }
+      }
+      bounds <- c(decode+1L,previous[4L],load_ready,raw_ready)
+      producers <- c(0L,0L,load_producer,raw_producer)
+      start <- ideal
+      for (cause in seq_len(4L)) if (bounds[cause] > start) {
+        records[[length(records)+1L]] <- list(
+            cause=cause,
+            cycles=bounds[cause]-start,
+            responsible=if (cause <= 2L) i-1L else i,
+            waiting=i,
+            producer=producers[cause]
+        )
+        start <- bounds[cause]
+      }
+      delays <- c(delays,start-ideal)
+    }
+    timings[i,] <- c(fetch,decode,start,start+execute,start+execute+1L)
+  }
+  list(timings=timings,records=records,delays=delays,cycles=timings[n,5L])
+}
+check_record <- function(line,static) {
+  tokens <- strsplit(paste0(line,"@")," ",fixed=TRUE)[[1L]]
+  tokens[length(tokens)] <- substring(tokens[length(tokens)],1L,nchar(tokens[length(tokens)])-1L)
+  pc <- parse_hex(tokens[1L])
+  kind <- tokens[2L]
+  texts <- tokens[3:5]
+  registers <- vapply(texts,parse_register,integer(1))
+  instruction <- list(
+      pc=pc,
+      kind=kind,
+      rd=registers[1L],
+      rs1=registers[2L],
+      rs2=registers[3L],
+      outcome=outcome,
+      target=target,
+      address=address,
+      next_pc=if (outcome == "T") target else pc+4L
+  )
+  list(instruction=instruction,error=NULL)
+validate_trace <- function(lines) {
+  instructions <- rejected <- gaps <- static <- list()
+  for (line_number in seq_along(lines)) {
+    checked <- check_record(lines[line_number],static)
+    if (!is.null(checked$error)) {
+      rejected[[length(rejected)+1L]] <- list(line=line_number,error=checked$error)
+      next
+    }
+    instruction <- checked$instruction
+    instruction$line <- line_number
+    instruction$number <- length(instructions)+1L
+    instructions[[n+1L]] <- instruction
+    key <- as.character(instruction$pc)
+    if (is.null(static[[key]])) static[[key]] <- instruction
+  }
+  list(lines=length(lines),instructions=instructions,rejected=rejected,gaps=gaps,static=static)
+stall_totals <- function(records) {
+  cycles <- events <- integer(4L)
+  for (record in records) {
+    cycles[record$cause] <- cycles[record$cause]+record$cycles
+    events[record$cause] <- events[record$cause]+1L
+  }
+  list(cycles=cycles,events=events)
+}
+all_combinations <- function(instructions,sources,predictions,config) {
+  combinations <- list()
+  primary <- NULL
+  for (variant in config$variants) for (predictor in config$predictors) {
+    result <- simulate(instructions,sources,variant,predictions[[predictor$name]]$flags)
+    totals <- stall_totals(result$records)
+    combinations[[length(combinations)+1L]] <- list(
+        variant=variant$name,
+        predictor=predictor$name,
+        cycles=result$cycles,
+        stalls=totals$cycles
+    )
+    if (variant$name == config$primary[1L] && predictor$name == config$primary[2L]) primary <- c(
+        result,
+        list(variant=variant,predictor=predictor$name,stalls=totals$cycles,stall_events=totals$events)
+    )
+  }
+  list(combinations=combinations[ordered],primary=primary)
+build_rows <- function(instructions,primary,prediction) {
+  annotations <- rep("",length(instructions))
+  for (record in primary$records) if (record$waiting != 0L) annotations[record$waiting] <- paste0(
+      annotations[record$waiting],
+      " ",
+      CAUSES[record$cause],
+      " ",
+      record$cycles
+  )
+  rows <- list()
+  for (i in seq_along(instructions)) {
+    instruction <- instructions[[i]]
+    t <- primary$timings[i,]
+    f <- t[1L]
+    d <- t[2L]
+    x <- t[3L]
+    m <- t[4L]
+    w <- t[5L]
+    characters <- list(
+        list(f,f,"F"),
+        list(f+1L,d-1L,"*"),
+        list(d,d,"D"),
+        list(d+1L,x-1L,"*"),
+        list(x,m-1L,"X"),
+        list(m,m,"M"),
+        list(w,w,"W")
+    )
+    stages <- list(c(1L,f,d-1L),c(2L,d,x-1L),c(3L,x,m-1L),c(4L,m,m),c(5L,w,w))
+    rows[[length(rows)+1L]] <- list(
+        number=i,
+        pc=instruction$pc,
+        kind=instruction$kind,
+        annotation=annotation,
+        characters=characters,
+        stages=stages
+    )
+  if (a > b) integer() else seq.int(a,b)
+}
+pipeline_lines <- function(rows,primary,config) {
+  first <- config$window[1L]
+  last <- config$window[2L]
+  width <- last-first+1L
+  lines <- c(
+      paste0(
+          "pipeline variant=",
+          primary$variant$name,
+          " predictor=",
+          primary$predictor,
+          " cycles ",
+          first,
+          "-",
+          last
+      ),
+      cycle_heading(first,last)
+  )
+  for (row in rows) {
+    characters <- rep(".",width)
+    for (entry in row$characters) {
+      cycles <- clipped_cycles(first,last,entry[[1L]],entry[[2L]])
+      characters[cycles-first+1L] <- entry[[3L]]
+    }
+    if (any(characters != ".")) {
+      visible <- visible+1L
+      stalled <- stalled+sum(characters == "*")
+      flushed <- flushed+sum(characters == "x")
+      lines <- c(lines,diagram_row(row$number,row$pc,row$kind,paste(characters,collapse=""),row$annotation))
+    }
+    for (stage in row$stages) {
+      cycles <- clipped_cycles(first,last,stage[2L],stage[3L])
+      contents[cycles-first+1L,stage[1L]] <- if (row$number == 0L) "w" else as.character(row$number)
+    }
+  }
+  for (cycle in seq.int(first,last)) lines <- c(
+      lines,
+      paste(cycle,paste(contents[cycle-first+1L,],collapse=" "))
+  )
+  lines
+}
+stall_aggregates <- function(instructions,records) {
+  classes <- setNames(integer(length(CLASSES)),CLASSES)
+  by_pc <- pairs <- list()
+  for (record in records) {
+    instruction <- instructions[[record$responsible]]
+    classes[instruction$kind] <- classes[instruction$kind]+record$cycles
+    key <- as.character(instruction$pc)
+    if (is.null(by_pc[[key]])) by_pc[[key]] <- integer(4L)
+    by_pc[[key]][record$cause] <- by_pc[[key]][record$cause]+record$cycles
+  list(classes=classes,by_pc=by_pc,pairs=pairs)
+}
+cause_values <- function(values) paste(paste(CAUSES,values),collapse=" ")
+timing_part <- function(primary,n,height,refetch) {
+  variant <- primary$variant
+  cycles <- primary$cycles
+  stalls <- primary$stalls
+  total <- sum(stalls)
+  c(paste0("timing variant=",variant$name," predictor=",primary$predictor),paste("forwarding",if (variant$forwarding) "on" else "off","branch_stage",variant$stage,"mul_latency",variant$latency),
+    paste("cycles",cycles),paste(
+        "cpi",
+        reduced_fraction(cycles,n),
+        decimal(cycles,n)
+    ),paste("ipc",decimal(n,cycles)),paste("stall_cycles total",total,cause_values(stalls)),
+    paste(
+        "stall_events",
+        cause_values(primary$stall_events)
+    ),paste("flushed",refetch),paste("cycle_check",n,"+ 4 +",total,"=",n+4L+total),
+profile_lines <- function(instructions,groups,predictions,primary,config) {
+  branches <- "branches"
+  loops <- "loops"
+  indirect <- "indirect"
+  static_lines <- "instructions"
+  aggregates <- stall_aggregates(instructions,primary$records)
+  for (key in names(groups)) {
+    pc <- as.integer(key)
+    indices <- groups[[key]]
+    instruction <- instructions[[indices[1L]]]
+    operands <- paste(
+        vapply(c(instruction$rd,instruction$rs1,instruction$rs2),register_text,character(1)),
+        collapse=" "
+    )
+    stalls <- aggregates$by_pc[[key]]
+    static_lines <- c(
+        static_lines,
+        paste(
+            hexadecimal(pc),
+            instruction$kind,
+            operands,
+            "executions",
+            length(indices),
+            "stall_cycles",
+            sum(stalls)
+        )
+    )
+  }
+  segments <- list()
+  first <- 1L
+  for (last in seq_along(instructions)) {
+    instruction <- instructions[[last]]
+    if (instruction$kind %in% CONTROLS || last == length(instructions)) {
+      key <- as.character(instructions[[first]]$pc)
+      if (is.null(segments[[key]])) segments[[key]] <- c(0L,0L,0L)
+      group <- segments[[key]]
+      group[1L] <- group[1L]+1L
+      group[2L] <- group[2L]+last-first+1L
+      group[3L] <- group[3L]+primary$timings[last,5L]-(if (first == 1L) 0L else primary$timings[first-1L,5L])
+      segments[[key]] <- group
+      first <- last+1L
+    }
+  }
+  segment_lines <- paste("segments total",length(segments))
+  ordered <- order(-vapply(segments,`[`,integer(1),3L),as.integer(names(segments)))
+  for (rank in seq_along(head(ordered,config$top))) {
+    index <- ordered[rank]
+    pc <- as.integer(names(segments)[index])
+    group <- segments[[index]]
+    segment_lines <- c(
+        segment_lines,
+        paste(
+            rank,
+            hexadecimal(pc),
+            "instances",
+            group[1L],
+            "instructions",
+            group[2L],
+            "cycles",
+            group[3L],
+            "cpi",
+            decimal(group[3L],group[2L])
+        )
+    )
+  }
+  join_parts(list(branches,loops,segment_lines,indirect,static_lines))
+main <- function() {
+  inputs <- read_inputs()
+  config <- inputs$config
+  trace <- validate_trace(inputs$trace)
+  instructions <- trace$instructions
+  sources <- dependencies(instructions)
+  all <- all_combinations(instructions,sources,predictions,config)
+  combinations <- all$combinations
+  primary <- all$primary
+  rows <- build_rows(instructions,primary,predictions[[primary$predictor]])
+  groups <- group_executions(instructions)
+  write_lines("pipeline.txt",pipeline_lines(rows,primary,config))
+  write_lines("stats.txt",statistics_lines(trace,sources,predictions,combinations,primary,rows,config))
+  write_lines("profile.txt",profile_lines(instructions,groups,predictions,primary,config))

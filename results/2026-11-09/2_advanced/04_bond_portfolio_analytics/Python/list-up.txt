@@ -1,0 +1,677 @@
+EPOCH_YEAR = 2000
+EPOCH_WEEKDAY = 5
+FIRST_VALID_YEAR = 2001
+LAST_VALID_YEAR = 2099
+MONTH_LENGTHS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+BUSINESS_DAY_RULES = ("FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED")
+
+
+def is_leap(year):
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def year_length(year):
+    return 366 if is_leap(year) else 365
+
+
+def month_length(year, month):
+    if month == 2 and is_leap(year):
+        return 29
+    return MONTH_LENGTHS[month - 1]
+
+
+def split_date(text):
+    return int(text[0:4]), int(text[5:7]), int(text[8:10])
+
+
+def is_valid_date(text):
+    year, month, day = split_date(text)
+    if not FIRST_VALID_YEAR <= year <= LAST_VALID_YEAR or not 1 <= month <= 12:
+        return False
+    return 1 <= day <= month_length(year, month)
+
+
+def day_number(year, month, day):
+    number = day - 1
+    for earlier_year in range(EPOCH_YEAR, year):
+        number += year_length(earlier_year)
+    for earlier_month in range(1, month):
+        number += month_length(year, earlier_month)
+    return number
+
+
+def parse_date(text):
+    year, month, day = split_date(text)
+    return day_number(year, month, day)
+
+
+def civil_date(number):
+    year = EPOCH_YEAR
+    while number >= year_length(year):
+        number -= year_length(year)
+        year += 1
+    month = 1
+    while number >= month_length(year, month):
+        number -= month_length(year, month)
+        month += 1
+    return year, month, number + 1
+
+
+def format_date(number):
+    year, month, day = civil_date(number)
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def weekday(number):
+    return (number + EPOCH_WEEKDAY) % 7
+
+
+class Calendar:
+    def __init__(self, holidays):
+        self.holidays = set(holidays)
+
+    def is_business_day(self, number):
+        return weekday(number) < 5 and number not in self.holidays
+
+    def following(self, number):
+        while not self.is_business_day(number):
+            number += 1
+        return number
+
+    def preceding(self, number):
+        while not self.is_business_day(number):
+            number -= 1
+        return number
+
+    def adjust(self, number, rule):
+        if rule == "FOLLOWING":
+            return self.following(number)
+        if rule == "PRECEDING":
+            return self.preceding(number)
+        if rule == "MODIFIED_FOLLOWING":
+            following = self.following(number)
+            if civil_date(following)[1] != civil_date(number)[1]:
+                return self.preceding(number)
+            return following
+        return number
+
+    def business_days_after(self, number, count):
+        while count > 0:
+            number += 1
+            if self.is_business_day(number):
+                count -= 1
+        return number
+
+DAY_COUNTS = ("30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT")
+def is_end_of_february(year, month, day):
+    return month == 2 and day == month_length(year, month)
+
+
+def thirty_days(start_year, start_month, start_day, end_year, end_month, end_day):
+    return 360 * (end_year - start_year) + 30 * (end_month - start_month) + (end_day - start_day)
+
+
+def thirty_360(start, end):
+    start_year, start_month, start_day = civil_date(start)
+    end_year, end_month, end_day = civil_date(end)
+    start_february = is_end_of_february(start_year, start_month, start_day)
+    if start_february and is_end_of_february(end_year, end_month, end_day):
+        end_day = 30
+    if start_february:
+        start_day = 30
+    if end_day == 31 and start_day >= 30:
+        end_day = 30
+    if start_day == 31:
+        start_day = 30
+    return thirty_days(start_year, start_month, start_day, end_year, end_month, end_day)
+def year_fraction(convention, start, end):
+    if convention == "30/360":
+        return thirty_360(start, end), 360
+BISECTION_STEPS = 80
+BASIS_POINT = 0.0001
+LOWEST_YIELD = 0.0
+HIGHEST_YIELD = 1.0
+
+
+def bisection(function, low, high, target):
+    for _ in range(BISECTION_STEPS):
+        middle = (low + high) / 2
+        if function(middle) > target:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2
+
+
+class RiskMeasures:
+    def __init__(self, macaulay, modified, convexity, dv01):
+        self.macaulay = macaulay
+        self.modified = modified
+        self.convexity = convexity
+        self.dv01 = dv01
+
+
+class YieldPricer:
+    def __init__(self, flows, fraction, frequency, outstanding):
+        self.flows = flows
+        self.fraction = fraction
+        self.frequency = frequency
+        self.outstanding = outstanding
+
+    def present_values(self, rate):
+        first = 1 + self.fraction * rate / self.frequency
+        growth = 1 + rate / self.frequency
+        factor = 1.0
+        values = []
+        for cash_flow in self.flows:
+            values.append(cash_flow / (first * factor))
+            factor *= growth
+        return values
+
+    def dirty(self, rate):
+        total = 0.0
+        for value in self.present_values(rate):
+            total += value
+        return total * 100 / self.outstanding
+
+    def solve(self, target):
+        return bisection(self.dirty, LOWEST_YIELD, HIGHEST_YIELD, target)
+
+    def in_range(self, target):
+        return self.dirty(LOWEST_YIELD) > target > self.dirty(HIGHEST_YIELD)
+
+    def risk(self, rate):
+        growth = 1 + rate / self.frequency
+        total = 0.0
+        weighted = 0.0
+        curvature = 0.0
+        for index, value in enumerate(self.present_values(rate)):
+            years = (index + self.fraction) / self.frequency
+            total += value
+            weighted += years * value
+            curvature += years * (years + 1 / self.frequency) * value
+        macaulay = weighted / total
+        convexity = curvature / (total * growth * growth)
+        dv01 = (self.dirty(rate - BASIS_POINT) - self.dirty(rate + BASIS_POINT)) / 2
+        return RiskMeasures(macaulay, macaulay / growth, convexity, dv01)
+def months_before(year, month, day, months, end_of_month):
+    index = year * 12 + month - 1 - months
+    year = index // 12
+    month = index % 12 + 1
+    if end_of_month:
+        return day_number(year, month, month_length(year, month))
+    return day_number(year, month, min(day, month_length(year, month)))
+
+
+def coupon_schedule(issue, maturity, frequency, end_of_month, long_stub):
+    year, month, day = civil_date(maturity)
+    end_of_month_rule = end_of_month and day == month_length(year, month)
+    step = 12 // frequency
+    dates = []
+    boundary = maturity
+    while boundary > issue:
+        dates.append(boundary)
+        boundary = months_before(year, month, day, step * len(dates), end_of_month_rule)
+    if long_stub and boundary != issue and len(dates) >= 2:
+        dates.pop()
+    dates.append(issue)
+    dates.reverse()
+    return dates
+DAYS_PER_YEAR = 365
+PAR_DAY_COUNT = "30/360"
+LOWEST_RATE = 0.0
+HIGHEST_RATE = 1.0
+PAR_PRICE = 1.0
+LOWEST_SPREAD = -0.5
+HIGHEST_SPREAD = 0.5
+    def __init__(self, days, rates):
+        self.days = days
+        self.rates = rates
+    def zero_rate(self, day):
+        if day <= self.days[0]:
+            return self.rates[0]
+        if day >= self.days[-1]:
+            return self.rates[-1]
+        index = 1
+        while self.days[index] < day:
+            index += 1
+        if self.days[index] == day:
+            return self.rates[index]
+        low_day = self.days[index - 1]
+        low_rate = self.rates[index - 1]
+        weight = (day - low_day) / (self.days[index] - low_day)
+        return low_rate + (self.rates[index] - low_rate) * weight
+    def discount(self, day, spread):
+        rate = self.zero_rate(day) + spread
+        years, remainder = divmod(day, DAYS_PER_YEAR)
+        growth = 1.0
+        for _ in range(years):
+            growth *= 1 + rate
+        return 1 / (growth * (1 + rate * remainder / DAYS_PER_YEAR))
+    def present_value(self, flows, spread):
+        total = 0.0
+        for day, cash_flow in flows:
+            total += cash_flow * self.discount(day, spread)
+        return total
+def par_bond_flows(settlement, maturity, coupon, frequency):
+    dates = coupon_schedule(settlement, maturity, frequency, False, False)
+    flows = []
+    for index in range(1, len(dates)):
+        numerator, denominator = year_fraction(PAR_DAY_COUNT, dates[index - 1], dates[index])
+        cash_flow = coupon * numerator / (10000 * denominator)
+        if index == len(dates) - 1:
+            cash_flow += 1
+        flows.append((dates[index] - settlement, cash_flow))
+    return flows
+def bootstrap(settlement, pillars):
+    days = []
+    rates = []
+    for maturity, coupon, frequency in pillars:
+        flows = par_bond_flows(settlement, maturity, coupon, frequency)
+        days.append(maturity - settlement)
+        rate = bisection(
+            lambda trial: ZeroCurve(days, rates + [trial]).present_value(flows, 0.0),
+            LOWEST_RATE, HIGHEST_RATE, PAR_PRICE,
+        )
+        rates.append(rate)
+    return ZeroCurve(days, rates)
+def z_spread(curve, flows, target):
+    return bisection(
+        lambda spread: curve.present_value(flows, spread), LOWEST_SPREAD, HIGHEST_SPREAD, target
+    )
+INPUT_DIR = "input"
+OUTPUT_DIR = "output"
+BOND_TYPES = ("FIXED", "ZERO", "AMORT", "FRN")
+FREQUENCIES = (1, 2, 4, 12)
+OPTION_KEYS = {
+    "FIXED": ("EOM", "LONG", "CALL"),
+    "ZERO": ("EOM", "LONG"),
+    "AMORT": ("EOM", "LONG", "SINK"),
+    "FRN": ("EOM", "LONG", "LAG", "CAP", "FLOOR"),
+}
+REPEATABLE_KEYS = ("SINK", "CALL")
+MAX_RATE = 1200
+MIN_LAG = 1
+MAX_LAG = 5
+FACE_STEP = 100000
+MAX_FACE = 10000000
+MIN_CALL_PRICE = 100000
+MAX_CALL_PRICE = 110000
+BUCKET_NAMES = ("0-1Y", "1-3Y", "3-5Y", "5-10Y", "10Y+")
+BUCKET_LIMITS = (365, 1095, 1825, 3650)
+LOSER_COUNT = 3
+CASHFLOWS_HEADER = "bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"
+ANALYTICS_HEADER = (
+    "bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,"
+    "macaulay,modified,convexity,dv01,curve_clean,zspread"
+)
+SCENARIOS_HEADER = "portfolio,scenario,bond,value,pnl"
+def round_half_up(numerator, denominator):
+    return (2 * numerator + denominator) // (2 * denominator)
+def decimals(value, digits):
+    text = f"{value:.{digits}f}"
+    if float(text) == 0:
+        return text.lstrip("-")
+    return text
+def percent(value):
+    return decimals(value * 100, 4)
+def thousandths(price):
+    whole, fraction = price.split(".")
+    return int(whole) * 1000 + int(fraction)
+def read_lines(name):
+    with open(os.path.join(INPUT_DIR, name)) as handle:
+        return handle.read().splitlines()
+def read_rows(name):
+    lines = read_lines(name)
+    return [(number, line.split(",")) for number, line in enumerate(lines[1:], 2)]
+def write_lines(name, lines):
+    with open(os.path.join(OUTPUT_DIR, name), "w") as handle:
+        handle.write("".join(line + "\n" for line in lines))
+    def __init__(self, lines):
+        self.valuation_date = None
+        self.settlement_days = 0
+        self.scenario_lines = []
+        self.limits = []
+        for number, line in enumerate(lines, 1):
+            kind, *words = line.split(" ")
+            if kind == "valuation_date":
+                self.valuation_date = parse_date(words[0])
+            elif kind == "settlement_days":
+                self.settlement_days = int(words[0])
+            elif kind == "scenario":
+                shifts = [int(word) for word in words[1:]]
+                self.scenario_lines.append((number, words[0], shifts))
+            else:
+                self.limits.append(words)
+    def __init__(self):
+        self.end_of_month = False
+        self.long_stub = False
+        self.lag = None
+        self.cap = None
+        self.floor = None
+        self.sinks = []
+        self.calls = []
+    def __init__(self, number, start, end, payment, fraction, rate, opening, principal):
+        self.number = number
+        self.start = start
+        self.end = end
+        self.payment = payment
+        self.numerator, self.denominator = fraction
+        self.rate = rate
+        self.opening = opening
+        self.principal = principal
+        self.coupon = round_half_up(
+            opening * rate * self.numerator, 10000 * self.denominator
+        )
+        self.cash_flow = self.coupon + principal
+    def __init__(self, code, kind, issue, maturity, coupon, frequency, daycount, bdc, face):
+        self.code = code
+        self.kind = kind
+        self.issue = issue
+        self.maturity = maturity
+        self.coupon = coupon
+        self.frequency = frequency
+        self.daycount = daycount
+        self.bdc = bdc
+        self.face = face
+        self.options = Options()
+        self.schedule = []
+        self.sinks = {}
+        self.calls = []
+        self.periods = []
+def parse_pillar(fields, seen, settlement):
+    maturity_text = fields[0]
+    coupon = int(fields[1])
+    frequency = int(fields[2])
+    if maturity_text in seen:
+        raise InputError("duplicate pillar")
+    if not is_valid_date(maturity_text):
+        raise InputError("invalid date")
+    maturity = parse_date(maturity_text)
+    if maturity <= settlement:
+        raise InputError("pillar not after settlement")
+    if frequency not in FREQUENCIES:
+        raise InputError("invalid frequency")
+    return Pillar(maturity, coupon, frequency)
+def validate_pillars(rows, settlement, errors):
+    seen = set()
+    pillars = []
+    for number, fields in rows:
+        try:
+            pillars.append(parse_pillar(fields, seen, settlement))
+        except InputError as error:
+            errors.add("curve_quotes.csv", number, fields[0], error)
+        seen.add(fields[0])
+    pillars.sort(key=lambda pillar: pillar.maturity)
+    return pillars
+def option_items(text):
+    if text == "-":
+        return []
+    items = []
+    for item in text.split(";"):
+        key, _, value = item.partition("=")
+        items.append((key, value))
+    return items
+def parse_options(kind, text):
+    options = Options()
+    seen = set()
+    for key, value in option_items(text):
+        if key not in OPTION_KEYS[kind] or (key in seen and key not in REPEATABLE_KEYS):
+            raise InputError("invalid option")
+        seen.add(key)
+        if key == "EOM":
+            options.end_of_month = True
+        elif key == "LONG":
+            options.long_stub = True
+        elif key == "LAG":
+            options.lag = int(value)
+        elif key == "CAP":
+            options.cap = int(value)
+        elif key == "FLOOR":
+            options.floor = int(value)
+        elif key == "SINK":
+            date, cents = value.split(":")
+            options.sinks.append((date, int(cents)))
+        else:
+            date, price = value.split(":")
+            options.calls.append((date, thousandths(price)))
+    if kind == "FRN" and not valid_rate_options(options):
+        raise InputError("invalid option")
+    return options
+def schedule_days(items, schedule):
+    inner_dates = set(schedule[1:-1])
+    days = []
+    for text, _ in items:
+        if not is_valid_date(text):
+            return None
+        day = parse_date(text)
+        if day not in inner_dates or (days and day <= days[-1]):
+            return None
+        days.append(day)
+    return days
+def sinking_fund(bond):
+    items = bond.options.sinks
+    days = schedule_days(items, bond.schedule)
+    amounts = [cents for _, cents in items]
+    if days is None or 0 in amounts:
+        raise InputError("invalid sinking fund")
+    total = sum(amounts)
+    if bond.kind == "AMORT" and (total == 0 or total >= bond.face):
+        raise InputError("invalid sinking fund")
+    return dict(zip(days, amounts))
+def call_schedule(bond):
+    items = bond.options.calls
+    days = schedule_days(items, bond.schedule)
+    prices = [price for _, price in items]
+    if days is None or any(not MIN_CALL_PRICE <= price <= MAX_CALL_PRICE for price in prices):
+        raise InputError("invalid call schedule")
+    return list(zip(days, prices))
+def period_rate(bond, start, calendar, fixings):
+    if bond.kind == "ZERO":
+        return 0
+    if bond.kind != "FRN":
+        return bond.coupon
+    options = bond.options
+    reset = calendar.adjust(start, bond.bdc)
+    index_rate = fixings.latest(calendar.business_days_before(reset, options.lag))
+    if index_rate is None:
+        raise InputError("missing fixing")
+    rate = index_rate + bond.coupon
+    if options.floor is not None:
+        rate = max(rate, options.floor)
+    if options.cap is not None:
+        rate = min(rate, options.cap)
+    return rate
+def build_periods(bond, calendar, fixings):
+    periods = []
+    opening = bond.face
+    last = len(bond.schedule) - 1
+    for number in range(1, last + 1):
+        start = bond.schedule[number - 1]
+        end = bond.schedule[number]
+        principal = opening if number == last else bond.sinks.get(end, 0)
+        periods.append(Period(
+            number, start, end, calendar.adjust(end, bond.bdc),
+            year_fraction(bond.daycount, start, end),
+            period_rate(bond, start, calendar, fixings), opening, principal,
+        ))
+        opening -= principal
+    return periods
+def parse_bond(fields, seen, calendar, fixings):
+    code, kind, issue_text, maturity_text = fields[0:4]
+    coupon = int(fields[4])
+    frequency = int(fields[5])
+    daycount = fields[6]
+    bdc = fields[7]
+    face = int(fields[8])
+    if code in seen:
+        raise InputError("duplicate id")
+    if kind not in BOND_TYPES:
+        raise InputError("unknown type")
+    if not is_valid_date(issue_text) or not is_valid_date(maturity_text):
+        raise InputError("invalid date")
+    issue = parse_date(issue_text)
+    maturity = parse_date(maturity_text)
+    if maturity <= issue:
+        raise InputError("maturity not after issue")
+    if frequency not in FREQUENCIES:
+        raise InputError("invalid frequency")
+    if daycount not in DAY_COUNTS:
+        raise InputError("unknown day count")
+    if bdc not in BUSINESS_DAY_RULES:
+        raise InputError("unknown business day rule")
+    if face % FACE_STEP != 0 or face > MAX_FACE:
+        raise InputError("invalid face")
+    if coupon > MAX_RATE or (kind == "ZERO" and coupon != 0):
+        raise InputError("invalid coupon")
+    bond = Bond(code, kind, issue, maturity, coupon, frequency, daycount, bdc, face)
+    bond.options = parse_options(kind, fields[9])
+    bond.schedule = coupon_schedule(
+        issue, maturity, frequency, bond.options.end_of_month, bond.options.long_stub
+    )
+    bond.sinks = sinking_fund(bond)
+    bond.calls = call_schedule(bond)
+    bond.periods = build_periods(bond, calendar, fixings)
+    return bond
+def validate_bonds(rows, calendar, fixings, errors):
+    seen = set()
+    bonds = {}
+    for number, fields in rows:
+        try:
+            bond = parse_bond(fields, seen, calendar, fixings)
+            bonds[bond.code] = bond
+        except InputError as error:
+            errors.add("bonds.csv", number, fields[0], error)
+        seen.add(fields[0])
+    return bonds
+    def __init__(self, bond, clean, settlement):
+        self.bond = bond
+        self.clean = clean
+        index = 0
+        while bond.periods[index].end <= settlement:
+            index += 1
+        current = bond.periods[index]
+        self.remaining = bond.periods[index:]
+        self.outstanding = current.opening
+        numerator, denominator = year_fraction(bond.daycount, current.start, settlement)
+        self.accrued = current.rate * numerator / (100 * denominator)
+        self.accrued_amount = round_half_up(
+            self.outstanding * current.rate * numerator, 10000 * denominator
+        )
+        self.clean_amount = round_half_up(self.outstanding * clean, 100000)
+        self.unit_value = self.clean_amount + self.accrued_amount
+        self.target = clean / 1000 + self.accrued
+        numerator, denominator = year_fraction(bond.daycount, settlement, current.end)
+        self.fraction = bond.frequency * numerator / denominator
+        self.cash_flows = [period for period in self.remaining if period.cash_flow >= 1]
+        self.flows = [
+            (period.payment - settlement, period.cash_flow) for period in self.cash_flows
+        ]
+        self.pricer = YieldPricer(
+            [period.cash_flow for period in self.remaining],
+            self.fraction, bond.frequency, self.outstanding,
+        )
+        self.ytm = 0.0
+        self.risk = None
+        self.ytw = 0.0
+        self.workout = bond.maturity
+        self.wal = 0.0
+        self.next_payment = self.cash_flows[0].payment
+        self.curve_clean = 0.0
+        self.zspread = 0.0
+    def analyze(self, curve, settlement):
+        self.ytm = self.pricer.solve(self.target)
+        self.risk = self.pricer.risk(self.ytm)
+        self.ytw = self.ytm
+        for day, price in self.bond.calls:
+            if day > settlement:
+                call_yield = self.yield_to_call(day, price)
+                if call_yield < self.ytw:
+                    self.ytw = call_yield
+                    self.workout = day
+        principal_days = 0
+        for period, (days, _) in zip(self.cash_flows, self.flows):
+            principal_days += period.principal * days
+        self.wal = principal_days / (DAYS_PER_YEAR * self.outstanding)
+        self.curve_clean = (
+            curve.present_value(self.flows, 0.0) * 100 / self.outstanding - self.accrued
+        )
+        self.zspread = z_spread(curve, self.flows, self.unit_value)
+def parse_price(fields, bonds, seen, settlement):
+    code, price = fields
+    if code not in bonds:
+        raise InputError("unknown bond")
+    if code in seen:
+        raise InputError("duplicate price")
+    bond = bonds[code]
+    if not bond.issue <= settlement < bond.maturity:
+        raise InputError("not outstanding")
+    valuation = Valuation(bond, thousandths(price), settlement)
+    if not valuation.pricer.in_range(valuation.target):
+        raise InputError("yield out of range")
+    return valuation
+def validate_prices(rows, bonds, settlement, errors):
+    seen = set()
+    valuations = {}
+    for number, fields in rows:
+        try:
+            valuation = parse_price(fields, bonds, seen, settlement)
+            valuations[valuation.bond.code] = valuation
+        except InputError as error:
+            errors.add("prices.csv", number, fields[0], error)
+        seen.add(fields[0])
+    return valuations
+def cashflow_lines(bonds):
+    lines = [CASHFLOWS_HEADER]
+    for code in sorted(bonds):
+        for period in bonds[code].periods:
+            if period.cash_flow >= 1:
+                lines.append(",".join((
+                    code, str(period.number), format_date(period.start),
+                    format_date(period.end), format_date(period.payment),
+                    decimals(period.numerator / period.denominator, 6), str(period.rate),
+                    str(period.opening), str(period.coupon), str(period.principal),
+                )))
+    return lines
+def analytics_lines(valuations):
+    lines = [ANALYTICS_HEADER]
+    for code in sorted(valuations):
+        valuation = valuations[code]
+        risk = valuation.risk
+        lines.append(",".join((
+            code,
+            decimals(valuation.clean / 1000, 6),
+            decimals(valuation.accrued, 6),
+            decimals(valuation.target, 6),
+            percent(valuation.ytm),
+            percent(valuation.ytw),
+            format_date(valuation.workout),
+            format_date(valuation.next_payment),
+            decimals(valuation.wal, 4),
+            decimals(risk.macaulay, 4),
+            decimals(risk.modified, 4),
+            decimals(risk.convexity, 4),
+            decimals(risk.dv01, 6),
+            decimals(valuation.curve_clean, 6),
+            percent(valuation.zspread),
+        )))
+    return lines
+def main():
+    params = Params(read_lines("params.txt"))
+    calendar = Calendar([parse_date(line) for line in read_lines("calendar.txt")])
+    fixings = Fixings(read_rows("fixings.csv"))
+    settlement = calendar.business_days_after(params.valuation_date, params.settlement_days)
+    errors = ErrorLog()
+    pillars = validate_pillars(read_rows("curve_quotes.csv"), settlement, errors)
+    bonds = validate_bonds(read_rows("bonds.csv"), calendar, fixings, errors)
+    valuations = validate_prices(read_rows("prices.csv"), bonds, settlement, errors)
+    curve = bootstrap(
+        settlement, [(pillar.maturity, pillar.coupon, pillar.frequency) for pillar in pillars]
+    )
+    for valuation in valuations.values():
+        valuation.analyze(curve, settlement)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    write_lines("errors.txt", errors.lines)
+    write_lines("cashflows.csv", cashflow_lines(bonds))
+    write_lines("analytics.csv", analytics_lines(valuations))
+    write_lines("compliance.txt", compliance)

@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+For the supplied ShoppingCartItem, splitting at separators or uppercase boundaries gives Shopping,Cart,Item and empty parts are discarded; normalization yields shopping,cart,item. Fresh per-iteration words/capitals/result values prevent preceding identifiers from leaking. Capitalized words are Shopping,Cart,Item; camel keeps only the first word lowercase. Results are shopping_cart_item, shoppingCartItem, ShoppingCartItem and shopping-cart-item. PHP first inserts spaces before uppercase letters, lowercases, splits with PREG_SPLIT_NO_EMPTY, then performs equivalent joins. Binding, splitting/filtering and all four constructions suffice; source input lists and final JS output are unnecessary because this example is supplied by the question.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

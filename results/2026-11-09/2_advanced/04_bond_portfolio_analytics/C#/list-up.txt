@@ -1,0 +1,331 @@
+static class Dates
+{
+    static readonly int Epoch = new DateOnly(2000, 1, 1).DayNumber;
+    public static bool Leap(int year) => DateTime.IsLeapYear(year);
+    public static int MonthLength(int year, int month) => DateTime.DaysInMonth(year, month);
+    public static int DayNumber(int year, int month, int day) => new DateOnly(year, month, day).DayNumber - Epoch;
+    public static DateOnly Civil(int day) => DateOnly.FromDayNumber(day + Epoch);
+    public static bool Valid(string text) => DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date) && date.Year is >= 2001 and <= 2099;
+    public static int Parse(string text) => DateOnly.ParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture).DayNumber - Epoch;
+    public static string Format(int day) => Civil(day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+}
+sealed class Calendar
+{
+    public HashSet<int> Holidays = [];
+    public bool Business(int day) => (day + 5) % 7 < 5 && !Holidays.Contains(day);
+    public int Move(int day, int count)
+    {
+        int step = count < 0 ? -1 : 1; if (count < 0) count = -count;
+        while (count > 0) { day += step; if (Business(day)) count--; }
+        return day;
+    }
+    public int Adjust(int day, string rule)
+    {
+        if (rule == "UNADJUSTED") return day;
+        int following = day; while (!Business(following)) following++;
+        if (rule == "FOLLOWING" || rule == "MODIFIED_FOLLOWING" && Dates.Civil(following).Month == Dates.Civil(day).Month) return following;
+        while (!Business(day)) day--; return day;
+    }
+}
+readonly record struct Fraction(long Numerator, long Denominator)
+{
+    public double Value => (double)Numerator / Denominator;
+}
+static class Daycount
+{
+    public static Fraction Between(string convention, int start, int end)
+    {
+        DateOnly first = Dates.Civil(start), last = Dates.Civil(end); int d1 = first.Day, d2 = last.Day;
+        if (convention == "30E/360") { d1 = Math.Min(d1, 30); d2 = Math.Min(d2, 30); }
+        else
+        {
+            bool february = first.Month == 2 && d1 == Dates.MonthLength(first.Year, first.Month);
+            if (february && last.Month == 2 && d2 == Dates.MonthLength(last.Year, last.Month)) d2 = 30;
+            if (february) d1 = 30;
+            if (d2 == 31 && d1 >= 30) d2 = 30;
+            if (d1 == 31) d1 = 30;
+        }
+        return new(360 * (last.Year - first.Year) + 30 * (last.Month - first.Month) + d2 - d1, 360);
+    }
+}
+static class Bisection
+{
+    public static double Solve(Func<double, double> function, double low, double high, double target)
+    {
+        for (int i = 0; i < 80; i++) { double middle = (low + high) / 2; if (function(middle) > target) low = middle; else high = middle; }
+        return (low + high) / 2;
+    }
+}
+readonly record struct Risk(double Macaulay, double Modified, double Convexity, double Dv01);
+sealed class YieldPricer(List<double> flows, double fraction, int frequency, long outstanding)
+{
+    List<double> Values(double rate)
+    {
+        double first = 1 + fraction * rate / frequency, growth = 1 + rate / frequency, factor = 1;
+        List<double> values = []; foreach (double cash in flows) { values.Add(cash / (first * factor)); factor *= growth; } return values;
+    }
+    public double Dirty(double rate) { double total = 0; foreach (double value in Values(rate)) total += value; return total * 100 / outstanding; }
+    public double Solve(double target) => Bisection.Solve(Dirty, 0, 1, target);
+    public Risk Measure(double rate)
+    {
+        List<double> present = Values(rate); double growth = 1 + rate / frequency, total = 0, weighted = 0, curvature = 0;
+        for (int i = 0; i < present.Count; i++) { double years = (i + fraction) / frequency; total += present[i]; weighted += years * present[i]; curvature += years * (years + 1.0 / frequency) * present[i]; }
+        double macaulay = weighted / total;
+        return new(macaulay, macaulay / growth, curvature / (total * growth * growth), (Dirty(rate - 0.0001) - Dirty(rate + 0.0001)) / 2);
+    }
+}
+static class Schedule
+{
+    public static List<int> Build(int issue, int maturity, int frequency, bool eom, bool longStub)
+    {
+        DateOnly anchor = Dates.Civil(maturity); bool endMonth = eom && anchor.Day == Dates.MonthLength(anchor.Year, anchor.Month);
+        List<int> dates = []; int boundary = maturity;
+        while (boundary > issue)
+        {
+            dates.Add(boundary); int index = anchor.Year * 12 + anchor.Month - 1 - 12 / frequency * dates.Count;
+            int year = index / 12, month = index % 12 + 1, length = Dates.MonthLength(year, month);
+            boundary = Dates.DayNumber(year, month, endMonth ? length : Math.Min(anchor.Day, length));
+        }
+        if (longStub && boundary != issue && dates.Count >= 2) dates.RemoveAt(dates.Count - 1);
+        dates.Add(issue); dates.Reverse(); return dates;
+    }
+}
+readonly record struct Flow(int Days, double Amount);
+readonly record struct Pillar(int Maturity, int Coupon, int Frequency);
+sealed class ZeroCurve(int[] days, double[] rates)
+{
+    public int[] Days { get; } = days;
+    public double[] Rates { get; } = rates;
+    public double Zero(int day)
+    {
+        if (day <= Days[0]) return Rates[0]; if (day >= Days[^1]) return Rates[^1];
+        int index = 1; while (Days[index] < day) index++; if (Days[index] == day) return Rates[index];
+        return Rates[index - 1] + (Rates[index] - Rates[index - 1]) * ((double)(day - Days[index - 1]) / (Days[index] - Days[index - 1]));
+    }
+    public double Discount(int day, double spread = 0)
+    {
+        double rate = Zero(day) + spread, growth = 1; for (int i = 0; i < day / 365; i++) growth *= 1 + rate;
+        return 1 / (growth * (1 + rate * (day % 365) / 365));
+    }
+    public double PresentValue(List<Flow> flows, double spread = 0) { double total = 0; foreach (Flow flow in flows) total += flow.Amount * Discount(flow.Days, spread); return total; }
+    public double Spread(List<Flow> flows, double target) => Bisection.Solve(spread => PresentValue(flows, spread), -0.5, 0.5, target);
+    public static ZeroCurve Bootstrap(int settlement, List<Pillar> pillars)
+    {
+        List<int> days = []; List<double> rates = [];
+        foreach (Pillar pillar in pillars)
+        {
+            List<int> dates = Schedule.Build(settlement, pillar.Maturity, pillar.Frequency, false, false); List<Flow> flows = [];
+            for (int i = 1; i < dates.Count; i++) { Fraction fraction = Daycount.Between("30/360", dates[i - 1], dates[i]); double cash = pillar.Coupon * (double)fraction.Numerator / (10000 * fraction.Denominator); if (i + 1 == dates.Count) cash += 1; flows.Add(new(dates[i] - settlement, cash)); }
+            days.Add(pillar.Maturity - settlement);
+            double rate = Bisection.Solve(trial => new ZeroCurve(days.ToArray(), rates.Append(trial).ToArray()).PresentValue(flows), 0, 1, 1); rates.Add(rate);
+        }
+        return new(days.ToArray(), rates.ToArray());
+    }
+    public static readonly string[] Types = ["FIXED", "ZERO", "AMORT", "FRN"];
+    public static readonly string[] Buckets = ["0-1Y", "1-3Y", "3-5Y", "5-10Y", "10Y+"];
+    public static readonly HashSet<int> Frequencies = [1, 2, 4, 12];
+    public static readonly HashSet<string> DayCounts = ["30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT"];
+    public static readonly HashSet<string> BusinessRules = ["FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED"];
+static class Utils
+{
+    public static string[] Read(string name) => File.ReadAllLines(Path.Combine("input", name), Encoding.ASCII);
+    public static IEnumerable<Row> Rows(string name) => Read(name).Skip(1).Select((line, index) => new Row(index + 2, line.Split(',')));
+    public static long Round(long numerator, long denominator) => (2 * numerator + denominator) / (2 * denominator);
+    public static long Thousandths(string text) { string[] parts = text.Split('.'); return long.Parse(parts[0]) * 1000 + long.Parse(parts[1]); }
+    public static string Decimal(double value, int places)
+    {
+        long scale = 1; for (int i = 0; i < places; i++) scale *= 10;
+        long n = (long)((value < 0 ? -value : value) * scale + 0.5);
+sealed class Parameters
+{
+    public int Valuation, SettlementDays;
+    public List<RawScenario> Scenarios = [];
+    public List<string[]> Limits = [];
+    public Parameters(string[] lines)
+    {
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string[] fields = lines[i].Split(' ');
+            switch (fields[0])
+            {
+                case "valuation_date": Valuation = Dates.Parse(fields[1]); break;
+                case "settlement_days": SettlementDays = int.Parse(fields[1]); break;
+                case "scenario": Scenarios.Add(new(i + 1, fields[1], fields.Skip(2).Select(int.Parse).ToList())); break;
+                case "limit": Limits.Add(fields.Skip(1).ToArray()); break;
+            }
+        }
+    }
+}
+sealed class Options
+{
+    public bool Eom, LongStub;
+    public int Lag = -1, Cap = -1, Floor = -1;
+    public List<(string Date, long Value)> Sinks = [], Calls = [];
+}
+readonly record struct Period(int Number, int Start, int End, int Payment, Fraction Fraction, int Rate, long Opening, long Coupon, long Principal)
+{
+    public long Cash => Coupon + Principal;
+}
+sealed class Bond(string code, string type, int issue, int maturity, int coupon, int frequency, string daycount, string bdc, long face)
+{
+    public readonly string Code = code, Type = type, Daycount = daycount, Bdc = bdc;
+    public readonly int Issue = issue, Maturity = maturity, Coupon = coupon, Frequency = frequency;
+    public readonly long Face = face;
+    public Options Options = new();
+    public List<int> Schedule = [];
+    public Dictionary<int, long> Sinks = new();
+    public List<(int Day, long Value)> Calls = [];
+    public List<Period> Periods = [];
+}
+    public static List<Pillar> Pillars(int settlement, ErrorLog errors)
+    {
+        HashSet<string> seen = new(StringComparer.Ordinal); List<Pillar> pillars = [];
+        foreach (Row row in Rows("curve_quotes.csv"))
+        {
+            string[] f = row.Fields; string error = "";
+            if (!seen.Add(f[0])) error = "duplicate pillar";
+            else if (!Dates.Valid(f[0])) error = "invalid date";
+            else if (Dates.Parse(f[0]) <= settlement) error = "pillar not after settlement";
+            else if (!Frequencies.Contains(int.Parse(f[2]))) error = "invalid frequency";
+            if (error.Length > 0) errors.Add("curve_quotes.csv", row.Line, f[0], error);
+            else pillars.Add(new(Dates.Parse(f[0]), int.Parse(f[1]), int.Parse(f[2])));
+        }
+        return pillars.OrderBy(p => p.Maturity).ToList();
+    }
+    static Options ParseOptions(string type, string text)
+    {
+        Options options = new(); HashSet<string> seen = new(StringComparer.Ordinal);
+        if (text != "-") foreach (string item in text.Split(';'))
+        {
+            int equal = item.IndexOf('='); string key = equal < 0 ? item : item[..equal], value = equal < 0 ? "" : item[(equal + 1)..];
+            bool allowed = key is "EOM" or "LONG" || type == "FIXED" && key == "CALL" || type == "AMORT" && key == "SINK" || type == "FRN" && key is "LAG" or "CAP" or "FLOOR";
+            if (!allowed || !seen.Add(key) && key is not "SINK" and not "CALL") throw new InputError("invalid option");
+            switch (key)
+            {
+                case "EOM": options.Eom = true; break;
+                case "LONG": options.LongStub = true; break;
+                case "LAG": options.Lag = int.Parse(value); break;
+                case "CAP": options.Cap = int.Parse(value); break;
+                case "FLOOR": options.Floor = int.Parse(value); break;
+                default:
+                    string[] fields = value.Split(':'); (key == "SINK" ? options.Sinks : options.Calls).Add((fields[0], key == "SINK" ? long.Parse(fields[1]) : Thousandths(fields[1]))); break;
+            }
+        }
+        if (type == "FRN" && (options.Lag < 1 || options.Lag > 5 || options.Cap > 1200 || options.Floor > (options.Cap < 0 ? 1200 : options.Cap))) throw new InputError("invalid option");
+        return options;
+    }
+    static Bond ParseBond(string[] f, Calendar calendar, Fixings fixings)
+    {
+        if (!Types.Contains(f[1])) throw new InputError("unknown type");
+        if (!Dates.Valid(f[2]) || !Dates.Valid(f[3])) throw new InputError("invalid date");
+        int issue = Dates.Parse(f[2]), maturity = Dates.Parse(f[3]), coupon = int.Parse(f[4]), frequency = int.Parse(f[5]); long face = long.Parse(f[8]);
+        if (maturity <= issue) throw new InputError("maturity not after issue");
+        if (!Frequencies.Contains(frequency)) throw new InputError("invalid frequency");
+        if (!DayCounts.Contains(f[6])) throw new InputError("unknown day count");
+        if (!BusinessRules.Contains(f[7])) throw new InputError("unknown business day rule");
+        if (face % 100000 != 0 || face > 10000000) throw new InputError("invalid face");
+        if (coupon > 1200 || f[1] == "ZERO" && coupon != 0) throw new InputError("invalid coupon");
+        Bond bond = new(f[0], f[1], issue, maturity, coupon, frequency, f[6], f[7], face) { Options = ParseOptions(f[1], f[9]) };
+        bond.Schedule = Schedule.Build(issue, maturity, frequency, bond.Options.Eom, bond.Options.LongStub);
+        var sinks = ScheduleItems(bond.Options.Sinks, bond.Schedule, "invalid sinking fund"); long total = 0;
+        foreach (var sink in sinks) { if (sink.Value == 0) throw new InputError("invalid sinking fund"); bond.Sinks[sink.Day] = sink.Value; total += sink.Value; }
+        if (bond.Type == "AMORT" && (total == 0 || total >= face)) throw new InputError("invalid sinking fund");
+        bond.Calls = ScheduleItems(bond.Options.Calls, bond.Schedule, "invalid call schedule");
+        if (bond.Calls.Any(c => c.Value < 100000 || c.Value > 110000)) throw new InputError("invalid call schedule");
+        long opening = face;
+        for (int i = 1; i < bond.Schedule.Count; i++)
+        {
+            int start = bond.Schedule[i - 1], end = bond.Schedule[i], rate = bond.Type == "ZERO" ? 0 : coupon;
+            if (bond.Type == "FRN")
+            {
+                int fixing = calendar.Move(calendar.Adjust(start, bond.Bdc), -bond.Options.Lag);
+                rate += fixings.Latest(fixing) ?? throw new InputError("missing fixing");
+                if (bond.Options.Floor >= 0) rate = Math.Max(rate, bond.Options.Floor); if (bond.Options.Cap >= 0) rate = Math.Min(rate, bond.Options.Cap);
+            }
+            Fraction fraction = Daycount.Between(bond.Daycount, start, end); long principal = i + 1 == bond.Schedule.Count ? opening : bond.Sinks.GetValueOrDefault(end);
+            long interest = Round(opening * rate * fraction.Numerator, 10000 * fraction.Denominator);
+            bond.Periods.Add(new(i, start, end, calendar.Adjust(end, bond.Bdc), fraction, rate, opening, interest, principal)); opening -= principal;
+        }
+        return bond;
+    }
+    public static SortedDictionary<string, Bond> Bonds(Calendar calendar, Fixings fixings, ErrorLog errors)
+    {
+        SortedDictionary<string, Bond> bonds = new(StringComparer.Ordinal); HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (Row row in Rows("bonds.csv")) try { if (!seen.Add(row.Fields[0])) throw new InputError("duplicate id"); Bond bond = ParseBond(row.Fields, calendar, fixings); bonds[bond.Code] = bond; }
+        catch (InputError e) { errors.Add("bonds.csv", row.Line, row.Fields[0], e.Message); }
+        return bonds;
+    }
+    public static SortedDictionary<string, Valuation> Prices(SortedDictionary<string, Bond> bonds, int settlement, ErrorLog errors)
+    {
+        SortedDictionary<string, Valuation> prices = new(StringComparer.Ordinal); HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (Row row in Rows("prices.csv"))
+        {
+            string code = row.Fields[0]; bool duplicate = !seen.Add(code);
+            try
+            {
+                if (!bonds.TryGetValue(code, out Bond? bond)) throw new InputError("unknown bond"); if (duplicate) throw new InputError("duplicate price");
+                if (bond.Issue > settlement || settlement >= bond.Maturity) throw new InputError("not outstanding");
+                Valuation valuation = new(bond, Thousandths(row.Fields[1]), settlement);
+                if (!(valuation.Pricer.Dirty(0) > valuation.Target && valuation.Target > valuation.Pricer.Dirty(1))) throw new InputError("yield out of range"); prices[code] = valuation;
+            }
+            catch (InputError e) { errors.Add("prices.csv", row.Line, code, e.Message); }
+        }
+        return prices;
+    }
+sealed class Valuation
+{
+    public readonly Bond Bond;
+    public readonly long Clean, Outstanding, AccruedAmount, CleanAmount, UnitValue;
+    public readonly List<Period> Remaining, Cashflows = [];
+    public readonly List<Flow> Flows = [];
+    public readonly YieldPricer Pricer;
+    public readonly double Accrued, Target, FractionWeight;
+    public double Ytm, Ytw, Wal, CurveClean, Spread;
+    public Risk Risk;
+    public int Workout, NextPayment;
+    public Valuation(Bond bond, long clean, int settlement)
+    {
+        Bond = bond; Clean = clean; Workout = bond.Maturity; int index = 0; while (bond.Periods[index].End <= settlement) index++;
+        Remaining = bond.Periods.Skip(index).ToList(); Period current = Remaining[0]; Outstanding = current.Opening;
+        Fraction elapsed = Daycount.Between(bond.Daycount, current.Start, settlement); Accrued = current.Rate * (double)elapsed.Numerator / (100 * elapsed.Denominator);
+        AccruedAmount = Round(Outstanding * current.Rate * elapsed.Numerator, 10000 * elapsed.Denominator); CleanAmount = Round(Outstanding * clean, 100000); UnitValue = CleanAmount + AccruedAmount;
+        Target = clean / 1000.0 + Accrued; Fraction rest = Daycount.Between(bond.Daycount, settlement, current.End); FractionWeight = bond.Frequency * rest.Value;
+        foreach (Period period in Remaining) if (period.Cash >= 1) { Cashflows.Add(period); Flows.Add(new(period.Payment - settlement, period.Cash)); }
+        Pricer = new(Remaining.Select(p => (double)p.Cash).ToList(), FractionWeight, bond.Frequency, Outstanding); NextPayment = Cashflows[0].Payment;
+    }
+    public void Analyze(ZeroCurve curve, int settlement)
+    {
+        Ytm = Pricer.Solve(Target); Ytw = Ytm; Risk = Pricer.Measure(Ytm);
+        foreach (var call in Bond.Calls) if (call.Day > settlement)
+        {
+            List<double> flows = [];
+            foreach (Period period in Remaining) { flows.Add(period.Coupon); if (period.End == call.Day) { flows[^1] += Round(period.Opening * call.Value, 100000); break; } }
+            double callYield = new YieldPricer(flows, FractionWeight, Bond.Frequency, Outstanding).Solve(Target); if (callYield < Ytw) { Ytw = callYield; Workout = call.Day; }
+        }
+        long principalDays = 0; foreach (Period period in Cashflows) principalDays += period.Principal * (period.Payment - settlement);
+        Wal = (double)principalDays / (365 * Outstanding); CurveClean = curve.PresentValue(Flows) * 100 / Outstanding - Accrued; Spread = curve.Spread(Flows, UnitValue);
+    }
+}
+    static List<string> CashflowLines(SortedDictionary<string, Bond> bonds)
+    {
+        List<string> lines = ["bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"];
+        foreach (Bond bond in bonds.Values) foreach (Period p in bond.Periods) if (p.Cash >= 1) lines.Add($"{bond.Code},{p.Number},{Dates.Format(p.Start)},{Dates.Format(p.End)},{Dates.Format(p.Payment)},{Decimal(p.Fraction.Value, 6)},{p.Rate},{p.Opening},{p.Coupon},{p.Principal}");
+        return lines;
+    }
+    static List<string> AnalyticsLines(SortedDictionary<string, Valuation> prices)
+    {
+        List<string> lines = ["bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"];
+        foreach (Valuation v in prices.Values) lines.Add(string.Join(",", v.Bond.Code, Decimal(v.Clean / 1000.0, 6), Decimal(v.Accrued, 6), Decimal(v.Target, 6), Percent(v.Ytm), Percent(v.Ytw), Dates.Format(v.Workout), Dates.Format(v.NextPayment), Decimal(v.Wal, 4), Decimal(v.Risk.Macaulay, 4), Decimal(v.Risk.Modified, 4), Decimal(v.Risk.Convexity, 4), Decimal(v.Risk.Dv01, 6), Decimal(v.CurveClean, 6), Percent(v.Spread)));
+        return lines;
+    }
+    static void Main()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        Parameters parameters = new(Read("params.txt")); Calendar calendar = new() { Holidays = Read("calendar.txt").Select(Dates.Parse).ToHashSet() }; Fixings fixings = new(Rows("fixings.csv"));
+        int settlement = calendar.Move(parameters.Valuation, parameters.SettlementDays); ErrorLog errors = new();
+        List<Pillar> pillars = Input.Pillars(settlement, errors); List<Scenario> scenarios = Input.Scenarios(parameters.Scenarios, pillars.Count, errors);
+        var bonds = Input.Bonds(calendar, fixings, errors); var prices = Input.Prices(bonds, settlement, errors); var groups = Input.Holdings(bonds, prices, errors);
+        ZeroCurve curve = ZeroCurve.Bootstrap(settlement, pillars); foreach (Valuation valuation in prices.Values) valuation.Analyze(curve, settlement);
+        Directory.CreateDirectory("output"); Save("errors.txt", errors.Lines); Save("cashflows.csv", CashflowLines(bonds)); Save("analytics.csv", AnalyticsLines(prices)); Save("curve.txt", CurveLines(parameters.Valuation, settlement, pillars, curve)); Save("portfolio.txt", report); Save("scenarios.csv", scenarioLines); Save("compliance.txt", compliance);
+    }
+}

@@ -1,0 +1,205 @@
+var adjacentKeys = [26]string{
+	"qswz", "ghnv", "dfvx", "cefrsx", "drsw", "cdgrtv", "bfhtvy", "bgjnuy",
+	"jkou", "hikmnu", "ijlmo", "kop", "jkn", "bhjm", "iklp", "lo", "aw",
+	"deft", "adewxz", "fgry", "hijy", "bcfg", "aeqs", "cdsz", "ghtu", "asx",
+}
+var wordPattern = regexp.MustCompile(`^[A-Za-z]{1,30}$`)
+var numberPattern = regexp.MustCompile(`^[0-9]{1,7}$`)
+var commands = map[string]int{
+	"PREFIX": 2, "COMPLETE": 2, "LIST": 2, "WORD": 1, "ADD": 2,
+	"RULES": 0, "KEYBOARD": 1, "SET": 2, "UNDO": 0, "REPORT": 0,
+func wordArgument(text string) (string, error) {
+	if !wordPattern.MatchString(text) {
+		return "", commandError("BAD WORD " + text)
+	}
+	return strings.ToLower(text), nil
+}
+
+func numberArgument(text string, minimum, maximum int) (int, error) {
+	if !numberPattern.MatchString(text) {
+		return 0, commandError("BAD NUMBER " + text)
+	}
+	value, _ := strconv.Atoi(text)
+	if value < minimum || value > maximum {
+		return 0, commandError("BAD NUMBER " + text)
+	}
+	return value, nil
+func substitutionCost(first, second byte, keyboard bool) int {
+	if first == second {
+		return 0
+	}
+	if !keyboard {
+		return 1
+	}
+	if strings.IndexByte(adjacentKeys[first-'a'], second) >= 0 {
+		return 1
+	}
+	return 2
+func swapAt(first, second string, i, j int) bool {
+	return i >= 2 && j >= 2 && first[i-1] == second[j-2] && first[i-2] == second[j-1]
+}
+
+func minimum(values ...int) int {
+	smallest := values[0]
+	for _, value := range values[1:] {
+		if value < smallest {
+			smallest = value
+		}
+	}
+	return smallest
+}
+
+func distanceTable(first, second string, keyboard bool) [][]int {
+	rows, columns := len(first), len(second)
+	gap := 1
+	if keyboard {
+		gap = 2
+	}
+	table := make([][]int, rows+1)
+	for i := range table {
+		table[i] = make([]int, columns+1)
+		table[i][0] = i * gap
+	}
+	for j := 0; j <= columns; j++ {
+		table[0][j] = j * gap
+	}
+	for i := 1; i <= rows; i++ {
+		for j := 1; j <= columns; j++ {
+			best := minimum(table[i-1][j]+gap, table[i][j-1]+gap,
+				table[i-1][j-1]+substitutionCost(first[i-1], second[j-1], keyboard))
+			if swapAt(first, second, i, j) {
+				best = minimum(best, table[i-2][j-2]+1)
+			}
+			table[i][j] = best
+		}
+	}
+	return table
+func prefixDistance(first, second string, keyboard bool) int {
+	return minimum(distanceTable(first, second, keyboard)[len(first)]...)
+type candidate struct {
+	word                string
+	distance, frequency int
+type spellChecker struct {
+	dictionary                          map[string]int
+	keyboard                            bool
+	baseLimit, suggestionCount          int
+	output                              []string
+func newSpellChecker(dictionary map[string]int) *spellChecker {
+	checker := &spellChecker{dictionary: dictionary, ignored: map[string]bool{}, rules: map[string]string{},
+		baseLimit: 2, suggestionCount: 5, unknownLog: map[string]int{},
+		correctionLog: map[string]int{}, counters: map[string]int{}}
+	return checker
+func (s *spellChecker) emit(parts ...string) { s.output = append(s.output, strings.Join(parts, " ")) }
+func (s *spellChecker) limit() int {
+	if s.keyboard {
+		return 2 * s.baseLimit
+	}
+	return s.baseLimit
+func (s *spellChecker) complete(args []string) error {
+	word, err := wordArgument(args[0])
+	if err != nil {
+		return err
+	}
+	count, err := numberArgument(args[1], 1, 20)
+	if err != nil {
+		return err
+	}
+	threshold := s.limit() / 2
+	found := []candidate{}
+	for other, freq := range s.dictionary {
+		distance := prefixDistance(word, other, s.keyboard)
+		if distance <= threshold {
+			found = append(found, candidate{other, distance, freq})
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].distance != found[j].distance {
+			return found[i].distance < found[j].distance
+		}
+		if found[i].frequency != found[j].frequency {
+			return found[i].frequency > found[j].frequency
+		}
+		return found[i].word < found[j].word
+	})
+	parts := []string{"COMPLETE", word, fmt.Sprintf("count=%d", len(found))}
+	for i := 0; i < len(found) && i < count; i++ {
+		parts = append(parts, fmt.Sprintf("%s:%d", found[i].word, found[i].distance))
+	}
+	s.emit(parts...)
+	return nil
+func (s *spellChecker) keyboardMode(args []string) error {
+	if args[0] != "ON" && args[0] != "OFF" {
+		return commandError("BAD MODE " + args[0])
+	}
+	s.keyboard = args[0] == "ON"
+	s.emit("KEYBOARD", args[0])
+	return nil
+}
+func (s *spellChecker) setOption(args []string) error {
+	option := args[0]
+	maximum := 0
+	switch option {
+	case "LIMIT":
+		maximum = 3
+	case "SUGGESTIONS":
+		maximum = 10
+	default:
+		return commandError("BAD OPTION " + option)
+	}
+	value, err := numberArgument(args[1], 1, maximum)
+	if err != nil {
+		return err
+	}
+	if option == "LIMIT" {
+		s.baseLimit = value
+	} else {
+		s.suggestionCount = value
+	}
+	s.emit("SET", option, strconv.Itoa(value))
+	return nil
+func (s *spellChecker) execute(line string) {
+	name, rest, hasSpace := strings.Cut(line, " ")
+	arity, ok := commands[name]
+	if !ok {
+		s.emit("ERROR", "UNKNOWN COMMAND", name)
+		return
+	}
+	if arity == -1 {
+	args := []string{}
+	if hasSpace {
+		args = strings.Split(rest, " ")
+	}
+	if len(args) != arity {
+		s.emit("ERROR", "BAD ARGUMENTS", name)
+		return
+	}
+	var err error
+	switch name {
+	case "COMPLETE":
+		err = s.complete(args)
+	case "KEYBOARD":
+		err = s.keyboardMode(args)
+	case "SET":
+		err = s.setOption(args)
+func main() {
+	in := bufio.NewScanner(os.Stdin)
+	in.Buffer(make([]byte, 4096), 1<<20)
+	in.Scan()
+	number, _ := strconv.Atoi(in.Text())
+	dictionary := make(map[string]int, number)
+	for i := 0; i < number; i++ {
+		in.Scan()
+		fields := strings.Fields(in.Text())
+		frequency, _ := strconv.Atoi(fields[1])
+		dictionary[fields[0]] = frequency
+	}
+	checker := newSpellChecker(dictionary)
+	in.Scan()
+	count, _ := strconv.Atoi(in.Text())
+	for i := 0; i < count; i++ {
+		in.Scan()
+		checker.execute(in.Text())
+	}
+	for _, line := range checker.output {
+		fmt.Println(line)
+	}

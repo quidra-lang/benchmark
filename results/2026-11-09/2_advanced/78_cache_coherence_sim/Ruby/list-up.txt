@@ -1,0 +1,61 @@
+  def access(event, issue)
+    core, block, word, op = event.values_at(:core, :block, :word, :op)
+    counters, cache = @cores[core], @l1[core]
+    before = @config[:watch].to_h { |line| [line, tuple(line)] } if @primary
+    old = cache.state(block)
+    hit = old != 'I'
+    counters[:simple]['accesses'] += 1
+    counters[:simple][op == 'R' ? 'reads' : 'writes'] += 1
+    counters[:simple][hit ? 'hits' : 'misses'] += 1
+    other = @l1.each_with_index.any? { |other_cache, k| k != core && other_cache.state(block) != 'I' }
+    kind, updated = Protocol.requester(@scenario[:protocol], old, op, other)
+    miss = nil
+    if hit
+      cache.touch(block)
+    completion, service = kind ? bus_access(core, kind, block, word, issue + @config[:t1]) : [issue + @config[:t1], 'l1']
+    if old != 'I'
+      cache.change(block, updated)
+    latency = completion - issue
+    counters[:service][service] += 1
+    counters[:simple]['latency'] += latency
+    counters[:simple][op == 'R' ? 'read_latency' : 'write_latency'] += latency
+    @ready[core] = op == 'R' ? completion : issue + @config[:t1]
+    @writes[core] = [@writes[core], completion].max if op == 'W'
+    counters[:finish] = [counters[:finish], completion].max
+    @accesses << event.merge(issue: issue, latency: latency, service: service, miss: miss, hit: hit)
+    return unless @primary
+  end
+  def touch_way(row, way, fill = false)
+    if @replacement == 'LRU' || (@replacement == 'FIFO' && fill)
+      @clock += 1
+      @times[row][way] = @clock
+    elsif @replacement == 'PLRU'
+      low, high, node = 0, @ways, 1
+      while high - low > 1
+        middle = (low + high) / 2
+        if way < middle
+          @bits[row][node] = 1
+          high, node = middle, node * 2
+        else
+          @bits[row][node] = 0
+          low, node = middle, node * 2 + 1
+        end
+      end
+    end
+  end
+  def touch(block)
+    position = locate(block)
+    touch_way(*position) if position
+  end
+  def requester(protocol, old, operation, other_copy)
+    if protocol == 'VI'
+      return old == 'I' ? ['BusRd', 'V'] : [nil, 'V'] if operation == 'R'
+      return ['BusWr', old == 'I' ? 'I' : 'V']
+    end
+    if old == 'I'
+      return ['BusRdX', 'M'] if operation == 'W'
+      return ['BusRd', protocol == 'MSI' || other_copy ? 'S' : 'E']
+    end
+    return [nil, old] if operation == 'R'
+    %w[M E].include?(old) ? [nil, 'M'] : ['BusUpgr', 'M']
+  end

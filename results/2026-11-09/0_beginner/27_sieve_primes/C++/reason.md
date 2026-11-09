@@ -1,0 +1,5 @@
+Allocate limit+2 flags and preserve logical labels 0..200. Translate k to k+1: 0,1,7,49,200 map to 1,2,8,50,201. Initialize translated 0/1 false and translated 2..200 true, leaving unused slot 0 false or excluding it from count. Shift p/j marking and n retrieval accesses; keep arithmetic divisors and printed n unchanged. 7 remains prime, 49 is marked by 7, and 200 remains composite. The standard count can span initialized translated flags without counting the unused slot. Unaffected formatting is omitted.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,302 @@
+local M={}
+local lengths={31,28,31,30,31,30,31,31,30,31,30,31}
+function M.leap(year) return year%4 == 0 and (year%100 ~= 0 or year%400 == 0) end
+function M.year_length(year) return M.leap(year) and 366 or 365 end
+function M.month_length(year,month) return month == 2 and M.leap(year) and 29 or lengths[month] end
+function M.split(text) return tonumber(text:sub(1,4)),tonumber(text:sub(6,7)),tonumber(text:sub(9,10)) end
+function M.valid(text)
+    local year,month,day=M.split(text)
+    return year>=2001 and year<=2099 and month>=1 and month<=12 and day>=1 and day<=M.month_length(year,month)
+end
+function M.day(year,month,day)
+    local number=day-1
+    for y=2000,year-1 do number=number+M.year_length(y) end
+    for m=1,month-1 do number=number+M.month_length(year,m) end
+    return number
+end
+function M.parse(text) return M.day(M.split(text)) end
+function M.civil(number)
+    local year,month=2000,1
+    while number>=M.year_length(year) do number=number-M.year_length(year); year=year+1 end
+    while number>=M.month_length(year,month) do number=number-M.month_length(year,month); month=month+1 end
+    return year,month,number+1
+end
+function M.format(number) return string.format("%04d-%02d-%02d",M.civil(number)) end
+function M.business(number,holidays) return (number+5)%7<5 and not holidays[number] end
+function M.move(number,count,direction,holidays)
+    while count>0 do number=number+direction; if M.business(number,holidays) then count=count-1 end end
+    return number
+end
+function M.adjust(number,rule,holidays)
+    if rule == "UNADJUSTED" then return number end
+    local direction=rule == "PRECEDING" and -1 or 1
+    local adjusted=number
+    while not M.business(adjusted,holidays) do adjusted=adjusted+direction end
+    if rule == "MODIFIED_FOLLOWING" then
+        local _,original_month=M.civil(number); local _,adjusted_month=M.civil(adjusted)
+        if original_month ~= adjusted_month then return M.adjust(number,"PRECEDING",holidays) end
+    end
+    return adjusted
+end
+return M
+local M={}
+function M.fraction(kind,start,finish)
+    local y1,m1,d1=dates.civil(start); local y2,m2,d2=dates.civil(finish)
+    if kind == "30/360" then
+        local feb1=m1 == 2 and d1 == dates.month_length(y1,m1)
+        if feb1 and m2 == 2 and d2 == dates.month_length(y2,m2) then d2=30 end
+        if feb1 then d1=30 end
+        if d2 == 31 and d1>=30 then d2=30 end
+        if d1 == 31 then d1=30 end
+    else d1=math.min(d1,30); d2=math.min(d2,30) end
+    return 360*(y2-y1)+30*(m2-m1)+d2-d1,360
+end
+return M
+local M={}
+function M.bisect(fn,low,high,target)
+    for _=1,80 do local middle=(low+high)/2; if fn(middle)>target then low=middle else high=middle end end
+    return (low+high)/2
+end
+function M.values(flows,w,frequency,rate)
+    local first=1+w*rate/frequency; local growth=1+rate/frequency
+    local factor,result=1.0,{}
+    for i,flow in ipairs(flows) do result[i]=flow/(first*factor); factor=factor*growth end
+    return result
+end
+function M.dirty(flows,w,frequency,outstanding,rate)
+    local total=0.0; for _,value in ipairs(M.values(flows,w,frequency,rate)) do total=total+value end
+    return total*100/outstanding
+end
+function M.solve(flows,w,frequency,outstanding,target)
+    return M.bisect(function(rate) return M.dirty(flows,w,frequency,outstanding,rate) end,0.0,1.0,target)
+end
+function M.risk(flows,w,frequency,outstanding,rate)
+    local total,weighted,curvature=0.0,0.0,0.0
+    for i,value in ipairs(M.values(flows,w,frequency,rate)) do
+        local years=(i-1+w)/frequency
+        total=total+value; weighted=weighted+years*value; curvature=curvature+years*(years+1/frequency)*value
+    end
+    local growth=1+rate/frequency; local macaulay=weighted/total
+    return {macaulay=macaulay,modified=macaulay/growth,convexity=curvature/(total*growth*growth),dv01=(M.dirty(flows,w,frequency,outstanding,rate-0.0001)-M.dirty(flows,w,frequency,outstanding,rate+0.0001))/2}
+end
+return M
+local dates=require("dates_calendar")
+local M={}
+function M.build(issue,maturity,frequency,eom,long)
+    local year,month,day=dates.civil(maturity)
+    local end_rule=eom and day == dates.month_length(year,month)
+    local descending,boundary={},maturity
+    while boundary>issue do
+        descending[#descending+1]=boundary
+        local index=year*12+month-1-(12//frequency)*#descending
+        local y,m=index//12,index%12+1
+        local d=end_rule and dates.month_length(y,m) or math.min(day,dates.month_length(y,m))
+        boundary=dates.day(y,m,d)
+    end
+    if long and boundary ~= issue and #descending>=2 then table.remove(descending) end
+    local result={issue}; for i=#descending,1,-1 do result[#result+1]=descending[i] end
+    return result
+end
+return M
+local M={}
+function M.zero(curve,day)
+    if day<=curve.days[1] then return curve.rates[1] end
+    if day>=curve.days[#curve.days] then return curve.rates[#curve.rates] end
+    local i=2; while curve.days[i]<day do i=i+1 end
+    if curve.days[i] == day then return curve.rates[i] end
+    return curve.rates[i-1]+(curve.rates[i]-curve.rates[i-1])*((day-curve.days[i-1])/(curve.days[i]-curve.days[i-1]))
+end
+function M.discount(curve,day,spread)
+    local rate=M.zero(curve,day)+spread; local growth=1.0
+    for _=1,day//365 do growth=growth*(1+rate) end
+    return 1/(growth*(1+rate*(day%365)/365))
+end
+function M.pv(curve,flows,spread)
+    local total=0.0; for _,flow in ipairs(flows) do total=total+flow[2]*M.discount(curve,flow[1],spread) end
+    return total
+end
+function M.bootstrap(settlement,pillars)
+    local curve={days={},rates={}}
+    for _,pillar in ipairs(pillars) do
+        local boundaries=schedule.build(settlement,pillar.maturity,pillar.frequency,false,false); local flows={}
+        for i=2,#boundaries do
+            local n,m=daycount.fraction("30/360",boundaries[i-1],boundaries[i])
+            local flow=pillar.coupon*n/(10000*m); if i == #boundaries then flow=flow+1 end
+            flows[#flows+1]={boundaries[i]-settlement,flow}
+        end
+        curve.days[#curve.days+1]=pillar.maturity-settlement; curve.rates[#curve.rates+1]=0.0
+        local index=#curve.rates
+        curve.rates[index]=pricing.bisect(function(rate) curve.rates[index]=rate; return M.pv(curve,flows,0.0) end,0.0,1.0,1.0)
+    end
+    return curve
+end
+function M.spread(curve,flows,target) return pricing.bisect(function(spread) return M.pv(curve,flows,spread) end,-0.5,0.5,target) end
+local types={"FIXED","ZERO","AMORT","FRN"}
+local buckets={"0-1Y","1-3Y","3-5Y","5-10Y","10Y+"}
+local valid_frequency={[1]=true,[2]=true,[4]=true,[12]=true}
+local valid_type={FIXED=true,ZERO=true,AMORT=true,FRN=true}
+local valid_daycount={["30/360"]=true,["30E/360"]=true,["ACT/360"]=true,["ACT/365F"]=true,["ACT/ACT"]=true}
+local valid_bdc={FOLLOWING=true,MODIFIED_FOLLOWING=true,PRECEDING=true,UNADJUSTED=true}
+local option_keys={FIXED={EOM=true,LONG=true,CALL=true},ZERO={EOM=true,LONG=true},AMORT={EOM=true,LONG=true,SINK=true},FRN={EOM=true,LONG=true,LAG=true,CAP=true,FLOOR=true}}
+local function split(text,separator)
+    local result={}; for value in (text..separator):gmatch("(.-)"..separator) do result[#result+1]=value end; return result
+end
+local function words(text) local result={}; for word in text:gmatch("[^ ]+") do result[#result+1]=word end; return result end
+local function lines(name) local result={}; for line in io.lines("input/"..name) do result[#result+1]=line end; return result end
+local function rows(name) local result={}; for n,line in ipairs(lines(name)) do if n>1 then result[#result+1]={line=n,fields=split(line,",")} end end; return result end
+local function write(name,output) local file=assert(io.open("output/"..name,"w")); for _,line in ipairs(output) do file:write(line,"\n") end; file:close() end
+local function sorted_keys(map) local keys={}; for key in pairs(map) do keys[#keys+1]=key end; table.sort(keys); return keys end
+local function half_up(a,b) return (2*a+b)//(2*b) end
+local function decimals(value,digits)
+    local scale=1; for _=1,digits do scale=scale*10 end
+    local negative=value<0; if negative then value=-value end
+    local rounded=math.floor(value*scale+0.5)
+    return (negative and rounded>0 and "-" or "")..string.format("%d.%0"..digits.."d",rounded//scale,rounded%scale)
+end
+local function percent(value) return decimals(value*100,4) end
+local function thousandths(value) local whole,fraction=value:match("^(%d+)%.(%d+)$"); return tonumber(whole)*1000+tonumber(fraction) end
+local errors={}
+local function add_error(file,line,key,message) errors[#errors+1]=file..":"..line..": "..key..": "..message end
+local function reject(message) error(message,0) end
+local params={scenarios={},limits={}}
+for n,line in ipairs(lines("params.txt")) do
+    local args=words(line)
+    if args[1] == "valuation_date" then params.valuation=dates.parse(args[2])
+    elseif args[1] == "settlement_days" then params.settlement_days=tonumber(args[2])
+    elseif args[1] == "scenario" then local shifts={}; for i=3,#args do shifts[#shifts+1]=tonumber(args[i]) end; params.scenarios[#params.scenarios+1]={line=n,name=args[2],shifts=shifts}
+    else local limit={}; for i=2,#args do limit[#limit+1]=args[i] end; params.limits[#params.limits+1]=limit end
+end
+local holidays={}; for _,line in ipairs(lines("calendar.txt")) do holidays[dates.parse(line)]=true end
+local fixings={}; for _,row in ipairs(rows("fixings.csv")) do fixings[#fixings+1]={dates.parse(row.fields[1]),tonumber(row.fields[2])} end
+local settlement=dates.move(params.valuation,params.settlement_days,1,holidays)
+local pillars,seen={},{}
+for _,row in ipairs(rows("curve_quotes.csv")) do
+    local f=row.fields; local reason
+    if seen[f[1]] then reason="duplicate pillar"
+    elseif not dates.valid(f[1]) then reason="invalid date"
+    elseif dates.parse(f[1])<=settlement then reason="pillar not after settlement"
+    elseif not valid_frequency[tonumber(f[3])] then reason="invalid frequency" end
+    if reason then add_error("curve_quotes.csv",row.line,f[1],reason)
+    else pillars[#pillars+1]={maturity=dates.parse(f[1]),coupon=tonumber(f[2]),frequency=tonumber(f[3])} end
+    seen[f[1]]=true
+end
+table.sort(pillars,function(a,b) return a.maturity<b.maturity end)
+local scenarios={}; seen={}
+for _,scenario in ipairs(params.scenarios) do
+    if seen[scenario.name] then add_error("params.txt",scenario.line,scenario.name,"duplicate scenario")
+    elseif #scenario.shifts ~= #pillars then add_error("params.txt",scenario.line,scenario.name,"wrong number of shifts")
+    else local deltas={}; for i,shift in ipairs(scenario.shifts) do deltas[i]=shift*0.0001 end; scenarios[#scenarios+1]={name=scenario.name,deltas=deltas} end
+    seen[scenario.name]=true
+end
+local function parse_options(kind,text)
+    local options={sinks={},calls={}}; local used={}
+    if text ~= "-" then for _,item in ipairs(split(text,";")) do
+        local key,value=item:match("^([^=]+)=(.*)$"); if not key then key,value=item,"" end
+        if not option_keys[kind][key] or (used[key] and key ~= "SINK" and key ~= "CALL") then reject("invalid option") end
+        used[key]=true
+        if key == "EOM" or key == "LONG" then options[key]=true
+        elseif key == "SINK" or key == "CALL" then
+            local date,number=value:match("^([^:]+):(.*)$")
+            table.insert(options[key == "SINK" and "sinks" or "calls"],{date,key == "SINK" and tonumber(number) or thousandths(number)})
+        else options[key]=tonumber(value) end
+    end end
+    if kind == "FRN" and (not options.LAG or options.LAG<1 or options.LAG>5 or (options.CAP or 1200)>1200 or (options.FLOOR and options.FLOOR>(options.CAP or 1200))) then reject("invalid option") end
+    return options
+end
+local function schedule_items(items,boundaries,message)
+    local inner={}; for i=2,#boundaries-1 do inner[boundaries[i]]=true end
+    local result,last={},nil
+    for _,item in ipairs(items) do
+        if not dates.valid(item[1]) then reject(message) end
+        local day=dates.parse(item[1])
+        if not inner[day] or (last and day<=last) then reject(message) end
+        result[#result+1]={day,item[2]}; last=day
+    end
+    return result
+end
+local function period_rate(bond,start)
+    if bond.kind == "ZERO" then return 0 end
+    if bond.kind ~= "FRN" then return bond.coupon end
+    local reset=dates.move(dates.adjust(start,bond.bdc,holidays),bond.options.LAG,-1,holidays)
+    local rate
+    for _,fixing in ipairs(fixings) do if fixing[1]>reset then break end; rate=fixing[2] end
+    if rate == nil then reject("missing fixing") end
+    rate=rate+bond.coupon
+    if bond.options.FLOOR then rate=math.max(rate,bond.options.FLOOR) end
+    if bond.options.CAP then rate=math.min(rate,bond.options.CAP) end
+    return rate
+end
+local function parse_bond(f)
+    if seen[f[1]] then reject("duplicate id") end
+    if not valid_type[f[2]] then reject("unknown type") end
+    if not dates.valid(f[3]) or not dates.valid(f[4]) then reject("invalid date") end
+    local issue,maturity=dates.parse(f[3]),dates.parse(f[4])
+    if maturity<=issue then reject("maturity not after issue") end
+    local coupon,frequency,face=tonumber(f[5]),tonumber(f[6]),tonumber(f[9])
+    if not valid_frequency[frequency] then reject("invalid frequency") end
+    if not valid_daycount[f[7]] then reject("unknown day count") end
+    if not valid_bdc[f[8]] then reject("unknown business day rule") end
+    if face%100000 ~= 0 or face>10000000 then reject("invalid face") end
+    if coupon>1200 or (f[2] == "ZERO" and coupon ~= 0) then reject("invalid coupon") end
+    local bond={code=f[1],kind=f[2],issue=issue,maturity=maturity,coupon=coupon,frequency=frequency,daycount=f[7],bdc=f[8],face=face}
+    bond.options=parse_options(bond.kind,f[10]); bond.boundaries=schedule.build(issue,maturity,frequency,bond.options.EOM,bond.options.LONG)
+    local sinks=schedule_items(bond.options.sinks,bond.boundaries,"invalid sinking fund"); bond.sinks={}; local total=0
+    for _,sink in ipairs(sinks) do if sink[2] == 0 then reject("invalid sinking fund") end; total=total+sink[2]; bond.sinks[sink[1]]=sink[2] end
+    if bond.kind == "AMORT" and (total == 0 or total>=face) then reject("invalid sinking fund") end
+    bond.calls=schedule_items(bond.options.calls,bond.boundaries,"invalid call schedule")
+    for _,call in ipairs(bond.calls) do if call[2]<100000 or call[2]>110000 then reject("invalid call schedule") end end
+    bond.periods={}; local opening=face
+    for i=2,#bond.boundaries do
+        local start,finish=bond.boundaries[i-1],bond.boundaries[i]
+        local n,m=daycount.fraction(bond.daycount,start,finish); local rate=period_rate(bond,start)
+        local principal=i == #bond.boundaries and opening or (bond.sinks[finish] or 0)
+        local coupon_amount=half_up(opening*rate*n,10000*m)
+        bond.periods[#bond.periods+1]={number=i-1,start=start,finish=finish,payment=dates.adjust(finish,bond.bdc,holidays),n=n,m=m,rate=rate,opening=opening,coupon=coupon_amount,principal=principal,cash=coupon_amount+principal}
+        opening=opening-principal
+    end
+    return bond
+end
+local function valuation(bond,clean)
+    local index=1; while bond.periods[index].finish<=settlement do index=index+1 end
+    local current=bond.periods[index]; local n,m=daycount.fraction(bond.daycount,current.start,settlement)
+    local v={bond=bond,clean=clean,remaining={},cash_flows={},flows={},yield_flows={},outstanding=current.opening,accrued=current.rate*n/(100*m)}
+    v.accrued_amount=half_up(v.outstanding*current.rate*n,10000*m); v.clean_amount=half_up(v.outstanding*clean,100000); v.unit_value=v.clean_amount+v.accrued_amount; v.target=clean/1000+v.accrued
+    n,m=daycount.fraction(bond.daycount,settlement,current.finish); v.w=bond.frequency*n/m
+    for i=index,#bond.periods do
+        local period=bond.periods[i]; v.remaining[#v.remaining+1]=period; v.yield_flows[#v.yield_flows+1]=period.cash
+        if period.cash>=1 then v.cash_flows[#v.cash_flows+1]=period; v.flows[#v.flows+1]={period.payment-settlement,period.cash} end
+    end
+    v.next_payment=v.cash_flows[1].payment; return v
+end
+local valuations={}; seen={}
+for _,row in ipairs(rows("prices.csv")) do
+    local code=row.fields[1]; local bond=bonds[code]; local reason,v
+    if not bond then reason="unknown bond"
+    elseif seen[code] then reason="duplicate price"
+    elseif not (bond.issue<=settlement and settlement<bond.maturity) then reason="not outstanding"
+    else
+        v=valuation(bond,thousandths(row.fields[2]))
+        if not (pricing.dirty(v.yield_flows,v.w,bond.frequency,v.outstanding,0.0)>v.target and v.target>pricing.dirty(v.yield_flows,v.w,bond.frequency,v.outstanding,1.0)) then reason="yield out of range" end
+    end
+    if reason then add_error("prices.csv",row.line,code,reason) else valuations[code]=v end
+    seen[code]=true
+end
+local curve=curve_math.bootstrap(settlement,pillars)
+for _,code in ipairs(sorted_keys(valuations)) do
+    local v=valuations[code]; local bond=v.bond
+    v.ytm=pricing.solve(v.yield_flows,v.w,bond.frequency,v.outstanding,v.target); v.risk=pricing.risk(v.yield_flows,v.w,bond.frequency,v.outstanding,v.ytm)
+    v.ytw,v.workout=v.ytm,bond.maturity
+    for _,call in ipairs(bond.calls) do if call[1]>settlement then
+        local flows={}; for _,period in ipairs(v.remaining) do flows[#flows+1]=period.coupon; if period.finish == call[1] then flows[#flows]=flows[#flows]+half_up(period.opening*call[2],100000); break end end
+        local rate=pricing.solve(flows,v.w,bond.frequency,v.outstanding,v.target); if rate<v.ytw then v.ytw,v.workout=rate,call[1] end
+    end end
+    local principal_days=0; for i,period in ipairs(v.cash_flows) do principal_days=principal_days+period.principal*v.flows[i][1] end
+    v.wal=principal_days/(365*v.outstanding); v.curve_clean=curve_math.pv(curve,v.flows,0.0)*100/v.outstanding-v.accrued; v.zspread=curve_math.spread(curve,v.flows,v.unit_value)
+end
+local cashflows={"bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"}
+for _,code in ipairs(sorted_keys(bonds)) do for _,period in ipairs(bonds[code].periods) do if period.cash>=1 then
+    cashflows[#cashflows+1]=table.concat({code,period.number,dates.format(period.start),dates.format(period.finish),dates.format(period.payment),decimals(period.n/period.m,6),period.rate,period.opening,period.coupon,period.principal},",")
+end end end
+local analytics={"bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"}
+for _,code in ipairs(sorted_keys(valuations)) do local v=valuations[code]; analytics[#analytics+1]=table.concat({code,decimals(v.clean/1000,6),decimals(v.accrued,6),decimals(v.target,6),percent(v.ytm),percent(v.ytw),dates.format(v.workout),dates.format(v.next_payment),decimals(v.wal,4),decimals(v.risk.macaulay,4),decimals(v.risk.modified,4),decimals(v.risk.convexity,4),decimals(v.risk.dv01,6),decimals(v.curve_clean,6),percent(v.zspread)},",") end
+write("errors.txt",errors); write("cashflows.csv",cashflows); write("analytics.csv",analytics); write("curve.txt",curve_lines); write("portfolio.txt",report); write("scenarios.csv",scenario_lines); write("compliance.txt",compliance)

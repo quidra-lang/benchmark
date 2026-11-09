@@ -1,0 +1,860 @@
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+using namespace std;
+using Mark = vector<long long>;
+using Matrix = vector<Mark>;
+using Edge = pair<int,int>;
+string yes(bool b) {
+    return b ? "yes" : "no";
+}
+string join(const vector<string>& a, const string& separator = " ") {
+    string s;
+    for (const string& x:a) {
+        if (!s.empty()) s+=separator;
+        s+=x;
+    }
+    return s;
+}
+string listed(const vector<string>& a) {
+    return a.empty()?"none":join(a);
+}
+string marking(const Mark& a) {
+    vector<string> s;
+    for(long long x:a)s.push_back(x<0?"w":to_string(x));
+    return "("+join(s,",")+")";
+}
+long long number(const string& s,long long lo,long long hi) {
+    if(s.empty()||s.size()>10||(s.size()>1&&s[0]=='0')||!all_of(s.begin(),s.end(),[](char c){
+        return c>='0'&&c<='9';
+    }))return -1;
+    long long n=stoll(s);
+    return n>=lo&&n<=hi?n:-1;
+}
+void bad(const string& s) {
+    throw runtime_error(s);
+}
+vector<string> words(const string& line) {
+    istringstream in(line);
+    vector<string> r;
+    string s;
+    while(in>>s)r.push_back(s);
+    return r;
+}
+vector<bool> visit(const vector<vector<int>>& adj,int start) {
+    vector<bool> seen(adj.size());
+    vector<int> q{
+        start
+    };
+    seen[start]=true;
+    for(size_t i=0;i<q.size();++i)for(int v:adj[q[i]])if(!seen[v]){
+        seen[v]=true;
+        q.push_back(v);
+    }
+    return seen;
+}
+Matrix flows(const Matrix& a) {
+    int n=a.size(),m=a[0].size();
+    Matrix rows=a;
+    for(int i=0;i<n;++i)for(int j=0;j<n;++j)rows[i].push_back(i==j);
+    for(int j=0;j<m;++j){
+        set<Mark> unique;
+        for(const Mark& r:rows)if(r[j]==0)unique.insert(r);
+        for(const Mark& r:rows)if(r[j]>0)for(const Mark& s:rows)if(s[j]<0){
+            Mark v(m+n);
+            long long d=0;
+            for(int k=0;k<m+n;++k){
+                v[k]=-s[j]*r[k]+r[j]*s[k];
+                d=gcd(d,v[k]);
+            }
+            for(long long& x:v)x/=d;
+            unique.insert(v);
+        }
+        Matrix all(unique.begin(),unique.end());
+        vector<int> support;
+        for(const Mark& r:all){
+            int mask=0;
+            for(int i=0;i<n;++i)if(r[m+i]>0)mask|=1<<i;
+            support.push_back(mask);
+        }
+        rows.clear();
+        for(size_t i=0;i<all.size();++i){
+            bool minimal=true;
+            for(int s:support)if(s!=support[i]&&(s&support[i])==s){
+                minimal=false;
+                break;
+            }
+            if(minimal)rows.push_back(all[i]);
+        }
+    }
+    Matrix result;
+    for(const Mark& r:rows)result.emplace_back(r.begin()+m,r.end());
+    sort(result.rbegin(),result.rend());
+    return result;
+}
+struct Graph {
+    Matrix states;
+    vector<int> parent,via;
+    vector<vector<Edge>> edges;
+    int found=-1;
+    bool aborted=false;
+};
+struct Net {
+    string name;
+    vector<string> p,t;
+    Mark initial,capacity,priority,current;
+    Matrix history;
+    Matrix pre=Matrix(16,Mark(16)),post=pre,inhibit=pre;
+    int arcs=0,inhibitors=0;
+    explicit Net(string n):name(move(n)){
+    }
+    int place(const string& s) const {
+        auto i=find(p.begin(),p.end(),s);
+        return i==p.end()?-1:i-p.begin();
+    }
+    int transition(const string& s) const {
+        auto i=find(t.begin(),t.end(),s);
+        return i==t.end()?-1:i-t.begin();
+    }
+    void define(const vector<string>& w){
+        string cmd=w[0];
+        int n=w.size()-1;
+        if(cmd!="place"&&cmd!="transition"&&cmd!="arc"&&cmd!="inhibit")bad("unknown definition "+cmd);
+        if(!(cmd=="place"?(n==2||n==3):cmd=="transition"?(n==1||n==2):n==3))bad("wrong number of arguments");
+        string a=w[1];
+        if(cmd=="place"||cmd=="transition"){
+            if(place(a)>=0||transition(a)>=0)bad("duplicate name "+a);
+            if(cmd=="place"){
+                if(n==3&&stoll(w[2])>stoll(w[3]))bad("tokens exceed capacity of "+a);
+                p.push_back(a);
+                initial.push_back(stoll(w[2]));
+                capacity.push_back(n==3?stoll(w[3]):0);
+            }else{
+                t.push_back(a);
+                priority.push_back(n==2?stoll(w[2]):0);
+            }
+        }
+        else if(cmd=="arc"){
+            string b=w[2];
+            for(const string& x:{
+                a,b
+            })if(place(x)<0&&transition(x)<0)bad("unknown node "+x);
+            int pa=place(a),pb=place(b);
+            if((pa>=0)==(pb>=0))bad("arc must connect a place and a transition");
+            int pi=pa>=0?pa:pb,ti=transition(pa>=0?b:a);
+            Matrix& m=pa>=0?pre:post;
+            if(m[pi][ti])bad("duplicate arc "+a+" "+b);
+            m[pi][ti]=stoll(w[3]);
+            ++arcs;
+        }
+        else{
+            int pi=place(a),ti=transition(w[2]);
+            if(pi<0)bad("unknown place "+a);
+            if(ti<0)bad("unknown transition "+w[2]);
+            if(inhibit[pi][ti])bad("duplicate inhibitor "+a+" "+w[2]);
+            inhibit[pi][ti]=stoll(w[3]);
+            ++inhibitors;
+        }
+    }
+    string reason(const Mark& m,int ti) const {
+        for(size_t i=0;i<p.size();++i)if(m[i]>=0&&m[i]<pre[i][ti])return "insufficient tokens in "+p[i];
+        for(size_t i=0;i<p.size();++i)if(inhibit[i][ti]&&(m[i]<0||m[i]>=inhibit[i][ti]))return "inhibited by "+p[i];
+        for(size_t i=0;i<p.size();++i)if(capacity[i]&&(m[i]<0||m[i]-pre[i][ti]+post[i][ti]>capacity[i]))return "capacity of "+p[i]+" exceeded";
+        return "";
+    }
+    vector<int> enabled(const Mark& m) const {
+        vector<int> r;
+        for(size_t i=0;i<t.size();++i)if(reason(m,i).empty())r.push_back(i);
+        return r;
+    }
+    Mark fire(const Mark& m,int ti) const {
+        Mark r=m;
+        for(size_t i=0;i<p.size();++i)if(r[i]>=0)r[i]+=post[i][ti]-pre[i][ti];
+        return r;
+    }
+    void commit(int ti){
+        history.push_back(current);
+        current=fire(current,ti);
+    }
+    vector<string> names(const vector<int>& indices) const {
+        vector<string> r;
+        for(int i:indices)r.push_back(t[i]);
+        return r;
+    }
+    Graph graph(const Mark& start,int limit,const vector<pair<long long,long long>>& target={
+    }) const {
+        Graph g;
+        g.states.push_back(start);
+        g.parent.push_back(-1);
+        g.via.push_back(-1);
+        g.edges.emplace_back();
+        map<Mark,int> index{
+            {
+                start,0
+            }
+        };
+        auto matches=[&](const Mark& m){
+            if(target.empty())return false;
+            for(size_t i=0;i<p.size();++i)if(m[i]<target[i].first||(target[i].second>=0&&m[i]!=target[i].second))return false;
+            return true;
+        };
+        if(matches(start)){
+            g.found=0;
+            return g;
+        }
+        for(size_t q=0;q<g.states.size();++q)for(int ti:enabled(g.states[q])){
+            Mark m=fire(g.states[q],ti);
+            auto found=index.find(m);
+            int k;
+            if(found==index.end()){
+                if(int(g.states.size())==limit){
+                    g.aborted=true;
+                    return g;
+                }
+                k=g.states.size();
+                index.emplace(m,k);
+                g.states.push_back(m);
+                g.parent.push_back(q);
+                g.via.push_back(ti);
+                g.edges.emplace_back();
+                if(matches(m)){
+                    g.found=k;
+                    return g;
+                }
+            }else k=found->second;
+            g.edges[q].emplace_back(ti,k);
+        }
+        return g;
+    }
+    vector<int> path(const Graph& g,int k) const {
+        vector<int> r;
+        while(g.parent[k]>=0){
+            r.push_back(g.via[k]);
+            k=g.parent[k];
+        }
+        reverse(r.begin(),r.end());
+        return r;
+    }
+    void reach(int limit,bool display) const {
+        Graph g=graph(current,limit);
+        if(g.aborted){
+            cout<<"reachability graph limit "<<limit<<" exceeded\n";
+            return;
+        }
+        int n=g.states.size();
+        if(display){
+            for(int i=0;i<n;++i){
+                vector<string> a;
+                for(auto [u,v]:g.edges[i])a.push_back(t[u]+"->M"+to_string(v));
+                cout<<"M"<<i<<" "<<marking(g.states[i])<<": "<<(a.empty()?"dead":join(a))<<'\n';
+            }
+            return;
+        }
+        vector<vector<int>> adj(n);
+        for(int i=0;i<n;++i)for(auto [u,v]:g.edges[i])adj[i].push_back(v);
+        vector<vector<bool>> closure;
+        for(int i=0;i<n;++i)closure.push_back(visit(adj,i));
+        vector<int> comp(n,-1);
+        int count=0;
+        for(int i=0;i<n;++i)if(comp[i]<0){
+            for(int j=i;j<n;++j)if(closure[i][j]&&closure[j][i])comp[j]=count;
+            ++count;
+        }
+        vector<bool> terminal(count,true),home(n,true);
+        int edgeCount=0;
+        vector<int> dead;
+        Mark maximum(p.size());
+        bool persistent=true;
+        for(int i=0;i<n;++i){
+            edgeCount+=g.edges[i].size();
+            if(g.edges[i].empty())dead.push_back(i);
+            for(size_t pi=0;pi<p.size();++pi)maximum[pi]=max(maximum[pi],g.states[i][pi]);
+            for(int j=0;j<n;++j)home[j]=home[j]&&closure[i][j];
+            for(auto [u,v]:g.edges[i]){
+                if(comp[i]!=comp[v])terminal[comp[i]]=false;
+                for(auto [ti,k]:g.edges[i])if(ti!=u&&!reason(g.states[v],ti).empty())persistent=false;
+            }
+        }
+        cout<<"reachable markings: "<<n<<"\nedges: "<<edgeCount<<"\ncomponents: "<<count<<" (terminal "<<std::count(terminal.begin(),terminal.end(),true)<<")\ndead markings: "<<dead.size()<<'\n';
+        for(int i:dead){
+            vector<string> a=names(path(g,i));
+            cout<<"  M"<<i<<" "<<marking(g.states[i])<<" path "<<(a.empty()?"empty":join(a))<<'\n';
+        }
+        long long bound=*max_element(maximum.begin(),maximum.end());
+        cout<<"max tokens: "<<marking(maximum)<<"\nbound: "<<bound<<"\nsafe: "<<yes(bound<=1)<<"\nhome markings: "<<std::count(home.begin(),home.end(),true)<<"\nreversible: "<<yes(home[0])<<"\npersistent: "<<yes(persistent)<<'\n';
+        vector<string> levels;
+        for(size_t ti=0;ti<t.size();++ti){
+            vector<bool> present(count);
+            bool used=false,cycle=false;
+            for(int i=0;i<n;++i)for(auto [u,v]:g.edges[i])if(u==int(ti)){
+                used=true;
+                present[comp[i]]=true;
+                if(comp[i]==comp[v])cycle=true;
+            }
+            bool live=true;
+            for(int c=0;c<count;++c)if(terminal[c]&&!present[c])live=false;
+            levels.push_back(t[ti]+"="+(live?"L4":cycle?"L3":used?"L1":"L0"));
+        }
+        cout<<"liveness: "<<join(levels)<<'\n';
+    }
+    void cover(int limit) const {
+        Matrix states{
+            current
+        };
+        vector<int> parent{
+            -1
+        },via{
+            -1
+        };
+        vector<bool> old{
+            false
+        },dead{
+            false
+        };
+        auto rank=[](long long x){
+            return x<0?numeric_limits<long long>::max():x;
+        };
+        for(size_t q=0;q<states.size();++q){
+            if(old[q])continue;
+            vector<int> es=enabled(states[q]);
+            dead[q]=es.empty();
+            vector<int> ancestors;
+            for(int a=q;a>=0;a=parent[a])ancestors.push_back(a);
+            reverse(ancestors.begin(),ancestors.end());
+            for(int ti:es){
+                Mark m=fire(states[q],ti);
+                for(int a:ancestors){
+                    bool ge=true,gt=false;
+                    for(size_t i=0;i<p.size();++i){
+                        ge=ge&&rank(m[i])>=rank(states[a][i]);
+                        gt=gt||rank(m[i])>rank(states[a][i]);
+                    }
+                    if(ge&&gt)for(size_t i=0;i<p.size();++i)if(!capacity[i]&&rank(m[i])>rank(states[a][i]))m[i]=-1;
+                }
+                if(int(states.size())==limit){
+                    cout<<"coverability tree limit "<<limit<<" exceeded\n";
+                    return;
+                }
+                old.push_back(find(states.begin(),states.end(),m)!=states.end());
+                states.push_back(m);
+                parent.push_back(q);
+                via.push_back(ti);
+                dead.push_back(false);
+            }
+        }
+        cout<<"coverability tree nodes: "<<states.size()<<'\n';
+        Mark maximum(p.size());
+        for(size_t i=0;i<states.size();++i){
+            cout<<"  "<<i<<" "<<marking(states[i])<<" "<<(i?"<- "+to_string(parent[i])+" "+t[via[i]]:"root")<<(old[i]?" old":"")<<(dead[i]?" dead":"")<<'\n';
+            for(size_t pi=0;pi<p.size();++pi)if(rank(states[i][pi])>rank(maximum[pi]))maximum[pi]=states[i][pi];
+        }
+        vector<string> unbounded;
+        for(size_t pi=0;pi<p.size();++pi)if(maximum[pi]<0)unbounded.push_back(p[pi]);
+        cout<<"bounds: "<<marking(maximum)<<"\nunbounded: "<<listed(unbounded)<<'\n';
+    }
+    vector<int> sets(bool trap) const {
+        vector<int> all;
+        for(int mask=1;mask<(1<<p.size());++mask){
+            bool valid=true;
+            for(size_t ti=0;ti<t.size();++ti){
+                bool in=false,out=false;
+                for(size_t pi=0;pi<p.size();++pi)if(mask&(1<<pi)){
+                    in=in||post[pi][ti]>0;
+                    out=out||pre[pi][ti]>0;
+                }
+                if(trap?out&&!in:in&&!out){
+                    valid=false;
+                    break;
+                }
+            }
+            if(valid)all.push_back(mask);
+        }
+        vector<int> r;
+        for(int m:all)if(none_of(all.begin(),all.end(),[&](int s){
+            return s!=m&&(s&m)==s;
+        }))r.push_back(m);
+        auto bits=[&](int m){
+            vector<int> a;
+            for(size_t i=0;i<p.size();++i)if(m&(1<<i))a.push_back(i);
+            return a;
+        };
+        sort(r.begin(),r.end(),[&](int a,int b){
+            vector<int>x=bits(a),y=bits(b);return x.size()!=y.size()?x.size()<y.size():x<y;
+        });
+        return r;
+    }
+    string setText(int mask) const {
+        vector<string> a;
+        for(size_t i=0;i<p.size();++i)if(mask&(1<<i))a.push_back(p[i]);
+        return "{"+join(a,",")+"}";
+    }
+    vector<int> realize(const Mark& counts) const {
+        Mark used(t.size());
+        Matrix stack{
+            current
+        };
+        vector<int> choices{
+            0
+        },path;
+        set<Mark> seen;
+        long long total=accumulate(counts.begin(),counts.end(),0LL);
+        while(!stack.empty()){
+            size_t d=path.size();
+            if(d==size_t(total))return path;
+            int chosen=-1;
+            for(size_t ti=choices[d];ti<t.size();++ti){
+                choices[d]=ti+1;
+                if(used[ti]>=counts[ti]||!reason(stack[d],ti).empty())continue;
+                ++used[ti];
+                bool fresh=seen.insert(used).second;
+                --used[ti];
+                if(fresh){
+                    chosen=ti;
+                    break;
+                }
+            }
+            if(chosen>=0){
+                ++used[chosen];
+                path.push_back(chosen);
+                stack.push_back(fire(stack[d],chosen));
+                choices.push_back(0);
+            }else{
+                stack.pop_back();
+                choices.pop_back();
+                if(!path.empty()){
+                    --used[path.back()];
+                    path.pop_back();
+                }
+            }
+        }
+        return {
+            -1
+        };
+    }
+    void invariants(bool transpose) const {
+        Matrix a;
+        if(transpose){
+            for(size_t ti=0;ti<t.size();++ti){
+                Mark r;
+                for(size_t pi=0;pi<p.size();++pi)r.push_back(post[pi][ti]-pre[pi][ti]);
+                a.push_back(r);
+            }
+        }else for(size_t pi=0;pi<p.size();++pi){
+            Mark r;
+            for(size_t ti=0;ti<t.size();++ti)r.push_back(post[pi][ti]-pre[pi][ti]);
+            a.push_back(r);
+        }
+        Matrix f=flows(a);
+        const vector<string>& ns=transpose?t:p;
+        Mark bounds(ns.size(),-1);
+        vector<bool> covered(ns.size());
+        cout<<(transpose?"T":"P")<<"-semiflows: "<<f.size()<<'\n';
+        for(const Mark& c:f){
+            vector<string> terms;
+            long long value=0;
+            for(size_t i=0;i<c.size();++i)if(c[i]){
+                covered[i]=true;
+                terms.push_back((c[i]==1?"":to_string(c[i])+"*")+ns[i]);
+                if(!transpose)value+=c[i]*current[i];
+            }
+            cout<<"  "<<join(terms," + ");
+            if(transpose){
+                vector<int> path=realize(c);
+                cout<<": "<<(path==vector<int>{
+                    -1
+                }?"not realizable":"realizable "+join(names(path)))<<'\n';
+            }else{
+                cout<<" = "<<value<<'\n';
+                for(size_t i=0;i<c.size();++i)if(c[i])bounds[i]=bounds[i]<0?value/c[i]:min(bounds[i],value/c[i]);
+            }
+        }
+        if(!transpose){
+            vector<string> a;
+            for(long long b:bounds)a.push_back(b<0?"-":to_string(b));
+            cout<<"bounds: ("<<join(a,",")<<")\n";
+        }
+        cout<<(transpose?"consistent: ":"conservative: ")<<yes(all_of(covered.begin(),covered.end(),[](bool b){
+            return b;
+        }))<<'\n';
+    }
+    void classify() const {
+        bool ordinary=true,pure=true,sm=true,mg=true,fc=true,efc=true;
+        vector<vector<int>> inputs(t.size()),outputs(p.size());
+        for(size_t pi=0;pi<p.size();++pi)for(size_t ti=0;ti<t.size();++ti){
+            ordinary=ordinary&&pre[pi][ti]<=1&&post[pi][ti]<=1;
+            pure=pure&&!(pre[pi][ti]&&post[pi][ti]);
+            if(pre[pi][ti]){
+                inputs[ti].push_back(pi);
+                outputs[pi].push_back(ti);
+            }
+        }
+        for(size_t ti=0;ti<t.size();++ti){
+            int n=0;
+            for(size_t pi=0;pi<p.size();++pi)n+=post[pi][ti]>0;
+            sm=sm&&inputs[ti].size()==1&&n==1;
+        }
+        for(size_t pi=0;pi<p.size();++pi){
+            int n=0;
+            for(size_t ti=0;ti<t.size();++ti)n+=post[pi][ti]>0;
+            mg=mg&&outputs[pi].size()==1&&n==1;
+            for(int ti:outputs[pi])if(outputs[pi].size()!=1&&inputs[ti].size()!=1)fc=false;
+            for(size_t q=0;q<p.size();++q)for(int ti:outputs[pi])if(pre[q][ti]&&outputs[pi]!=outputs[q])efc=false;
+        }
+        sm=sm&&ordinary;
+        mg=mg&&ordinary;
+        fc=fc&&ordinary;
+        efc=efc&&ordinary;
+        for(auto [label,value]:vector<pair<string,bool>>{
+            {
+                "ordinary",ordinary
+            },{
+                "pure",pure
+            },{
+                "state machine",sm
+            },{
+                "marked graph",mg
+            },{
+                "free choice",fc
+            },{
+                "extended free choice",efc
+            }
+        })cout<<label<<": "<<yes(value)<<'\n';
+        string verdict=!fc?"not applicable":p.size()>12?"too many places":"holds";
+        if(fc&&p.size()<=12){
+            vector<int> traps=sets(true);
+            for(int s:sets(false)){
+                bool holds=false;
+                for(int q:traps)if((s&q)==q)for(size_t pi=0;pi<p.size();++pi)if((q&(1<<pi))&&current[pi]>0)holds=true;
+                if(!holds){
+                    verdict="fails at "+setText(s);
+                    break;
+                }
+            }
+        }
+        cout<<"commoner: "<<verdict<<'\n';
+    }
+    void workflow(int limit) const {
+        vector<int> sources,sinks;
+        int P=p.size(),T=t.size();
+        for(int pi=0;pi<P;++pi){
+            bool in=false,out=false;
+            for(int ti=0;ti<T;++ti){
+                in=in||post[pi][ti]>0;
+                out=out||pre[pi][ti]>0;
+            }
+            if(!in)sources.push_back(pi);
+            if(!out)sinks.push_back(pi);
+        }
+        if(sources.size()!=1){
+            cout<<"workflow: no ("<<sources.size()<<" source places)\n";
+            return;
+        }
+        if(sinks.size()!=1){
+            cout<<"workflow: no ("<<sinks.size()<<" sink places)\n";
+            return;
+        }
+        int i=sources[0],o=sinks[0];
+        vector<vector<int>> adj(P+T),rev(P+T);
+        for(int pi=0;pi<P;++pi)for(int ti=0;ti<T;++ti){
+            if(pre[pi][ti]){
+                adj[pi].push_back(P+ti);
+                rev[P+ti].push_back(pi);
+            }
+            if(post[pi][ti]){
+                adj[P+ti].push_back(pi);
+                rev[pi].push_back(P+ti);
+            }
+        }
+        vector<bool> f=visit(adj,i),b=visit(rev,o);
+        vector<string> ns=p;
+        ns.insert(ns.end(),t.begin(),t.end());
+        for(int v=0;v<P+T;++v)if(!f[v]||!b[v]){
+            cout<<"workflow: no ("<<ns[v]<<" is not on a path from "<<p[i]<<" to "<<p[o]<<")\n";
+            return;
+        }
+        cout<<"workflow: source "<<p[i]<<" sink "<<p[o]<<'\n';
+        Mark start(P),goal(P);
+        start[i]=1;
+        goal[o]=1;
+        Graph g=graph(start,limit);
+        if(g.aborted){
+            cout<<"reachability graph limit "<<limit<<" exceeded\n";
+            return;
+        }
+        int end=-1;
+        vector<vector<int>> reverse(g.states.size());
+        vector<bool> used(T);
+        bool proper=true;
+        for(size_t u=0;u<g.states.size();++u){
+            if(g.states[u]==goal)end=u;
+            if(g.states[u][o]>=1&&g.states[u]!=goal)proper=false;
+            for(auto [ti,v]:g.edges[u]){
+                reverse[v].push_back(u);
+                used[ti]=true;
+            }
+        }
+        bool option=false;
+        if(end>=0){
+            vector<bool> r=visit(reverse,end);
+            option=all_of(r.begin(),r.end(),[](bool x){
+                return x;
+            });
+        }
+        bool live=all_of(used.begin(),used.end(),[](bool x){
+            return x;
+        });
+        cout<<"option to complete: "<<yes(option)<<"\nproper completion: "<<yes(proper)<<"\nno dead transitions: "<<yes(live)<<"\nsound: "<<yes(option&&proper&&live)<<'\n';
+    }
+    void execute(const vector<string>& w){
+        static const map<string,int> arity{
+            {
+                "MARKING",0
+            },{
+                "RESET",0
+            },{
+                "SET",2
+            },{
+                "ENABLED",0
+            },{
+                "FIRE",-1
+            },{
+                "UNDO",1
+            },{
+                "SIMULATE",3
+            },{
+                "CONFLICTS",0
+            },{
+                "REACH",1
+            },{
+                "GRAPH",1
+            },{
+                "COVER",1
+            },{
+                "PATH",2
+            },{
+                "INCIDENCE",0
+            },{
+                "PINV",0
+            },{
+                "TINV",0
+            },{
+                "SIPHONS",0
+            },{
+                "TRAPS",0
+            },{
+                "CLASSIFY",0
+            },{
+                "WORKFLOW",1
+            },{
+                "SHOW",0
+            }
+        };
+        string cmd=w[0];
+        auto a=arity.find(cmd);
+        if(a==arity.end())bad("unknown command "+cmd);
+        if(a->second<0?w.size()<2:int(w.size())!=a->second+1)bad("wrong number of arguments");
+        int limit=0;
+        if(cmd=="REACH"||cmd=="GRAPH"||cmd=="COVER"||cmd=="PATH"||cmd=="WORKFLOW"){
+            limit=number(w[1],1,2000);
+            if(limit<0)bad("invalid limit "+w[1]);
+        }
+        if(cmd=="MARKING"||cmd=="RESET"){
+            if(cmd=="RESET"){
+                current=initial;
+                history.clear();
+            }
+            cout<<"marking "<<marking(current)<<'\n';
+        }
+        else if(cmd=="SET"){
+            int pi=place(w[1]);
+            if(pi<0)bad("unknown place "+w[1]);
+            long long v=number(w[2],0,999);
+            if(v<0)bad("invalid tokens "+w[2]);
+            if(capacity[pi]&&v>capacity[pi])bad("tokens exceed capacity of "+w[1]);
+            current[pi]=v;
+            history.clear();
+            cout<<"marking "<<marking(current)<<'\n';
+        }
+        else if(cmd=="ENABLED")cout<<"enabled: "<<listed(names(enabled(current)))<<'\n';
+        else if(cmd=="FIRE"){
+            vector<int> ts;
+            for(size_t i=1;i<w.size();++i){
+                int ti=transition(w[i]);
+                if(ti<0)bad("unknown transition "+w[i]);
+                ts.push_back(ti);
+            }
+            for(size_t i=0;i<ts.size();++i){
+                string r=reason(current,ts[i]);
+                if(!r.empty()){
+                    cout<<"step "<<i+1<<": "<<t[ts[i]]<<" not enabled ("<<r<<") at "<<marking(current)<<'\n';
+                    return;
+                }
+                commit(ts[i]);
+            }
+            cout<<"fired "<<ts.size()<<" -> "<<marking(current)<<'\n';
+        }
+        else if(cmd=="UNDO"){
+            int k=number(w[1],1,1000);
+            if(k<0)bad("invalid count "+w[1]);
+            if(k>int(history.size()))bad("cannot undo "+to_string(k)+": history size "+to_string(history.size()));
+            current=history[history.size()-k];
+            history.resize(history.size()-k);
+            cout<<"marking "<<marking(current)<<'\n';
+        }
+        else if(cmd=="SIMULATE"){
+            int steps=number(w[1],1,1000);
+            long long x=number(w[2],1,2147483646);
+            if(steps<0)bad("invalid steps "+w[1]);
+            if(x<0)bad("invalid seed "+w[2]);
+            if(w[3]!="PRIORITY"&&w[3]!="RANDOM")bad("invalid mode "+w[3]);
+            vector<int> counts(t.size());
+            int done=0;
+            for(;done<steps;++done){
+                vector<int> es=enabled(current);
+                if(es.empty()){
+                    cout<<"dead (steps="<<done<<")\n";
+                    break;
+                }
+                int ti=es[0];
+                if(w[3]=="RANDOM"){
+                    x=x*48271%2147483647;
+                    ti=es[x%es.size()];
+                }else for(int u:es)if(priority[u]>priority[ti])ti=u;
+                commit(ti);
+                ++counts[ti];
+                cout<<"step "<<done+1<<": "<<t[ti]<<" -> "<<marking(current)<<'\n';
+            }
+            if(done==steps)cout<<"completed (steps="<<steps<<")\n";
+            vector<string> s;
+            for(size_t ti=0;ti<t.size();++ti)s.push_back(t[ti]+"="+to_string(counts[ti]));
+            cout<<"counts: "<<join(s)<<'\n';
+        }
+        else if(cmd=="CONFLICTS"){
+            vector<string>s,e;
+            for(size_t u=0;u<t.size();++u)for(size_t v=u+1;v<t.size();++v){
+                string pair=t[u]+"/"+t[v];
+                bool conflict=false;
+                for(size_t pi=0;pi<p.size();++pi)if(pre[pi][u]&&pre[pi][v])conflict=true;
+                if(conflict)s.push_back(pair);
+                if(reason(current,u).empty()&&reason(current,v).empty()&&(!reason(fire(current,u),v).empty()||!reason(fire(current,v),u).empty()))e.push_back(pair);
+            }
+            cout<<"structural: "<<listed(s)<<"\neffective: "<<listed(e)<<'\n';
+        }
+        else if(cmd=="REACH"||cmd=="GRAPH")reach(limit,cmd=="GRAPH");
+        else if(cmd=="COVER")cover(limit);
+        else if(cmd=="PATH"){
+            vector<string> entries;
+            size_t begin=0;
+            for(;;){
+                size_t end=w[2].find(',',begin);
+                entries.push_back(w[2].substr(begin,end-begin));
+                if(end==string::npos)break;
+                begin=end+1;
+            }
+            if(entries.size()!=p.size())bad("target needs "+to_string(p.size())+" entries");
+            vector<pair<long long,long long>> target;
+            for(const string& s:entries){
+                if(s=="*"){
+                    target.emplace_back(0,-1);
+                    continue;
+                }
+                bool plus=s.back()=='+';
+                long long v=number(plus?s.substr(0,s.size()-1):s,0,9999999999LL);
+                if(v<0)bad("invalid target entry "+s);
+                target.emplace_back(v,plus?-1:v);
+            }
+            Graph g=graph(current,limit,target);
+            if(g.found>=0){
+                vector<int> a=path(g,g.found);
+                cout<<"reached "<<marking(g.states[g.found])<<" length="<<a.size()<<(a.empty()?"":": "+join(names(a)))<<'\n';
+            }else if(g.aborted)cout<<"search limit "<<limit<<" exceeded\n";
+            else cout<<"unreachable (markings explored: "<<g.states.size()<<")\n";
+        }
+        else if(cmd=="INCIDENCE"){
+            vector<vector<string>> rows(1,vector<string>{
+                ""
+            });
+            rows[0].insert(rows[0].end(),t.begin(),t.end());
+            for(size_t pi=0;pi<p.size();++pi){
+                vector<string> r{
+                    p[pi]
+                };
+                for(size_t ti=0;ti<t.size();++ti)r.push_back(to_string(post[pi][ti]-pre[pi][ti]));
+                rows.push_back(r);
+            }
+            vector<size_t> width(t.size()+1);
+            for(const auto&r:rows)for(size_t i=0;i<r.size();++i)width[i]=max(width[i],r[i].size());
+            for(const auto&r:rows){
+                string line;
+                for(size_t i=0;i<r.size();++i){
+                    if(i)line+="  ";
+                    line+=i?string(width[i]-r[i].size(),' ')+r[i]:r[i]+string(width[i]-r[i].size(),' ');
+                }while(!line.empty()&&line.back()==' ')line.pop_back();
+                cout<<line<<'\n';
+            }
+        }
+        else if(cmd=="PINV"||cmd=="TINV")invariants(cmd=="TINV");
+        else if(cmd=="SIPHONS"||cmd=="TRAPS"){
+            if(p.size()>12)bad("more than 12 places");
+            vector<int> ss=sets(cmd=="TRAPS");
+            cout<<"minimal "<<(cmd=="TRAPS"?"traps":"siphons")<<": "<<ss.size()<<'\n';
+            for(int s:ss){
+                long long tokens=0;
+                for(size_t pi=0;pi<p.size();++pi)if(s&(1<<pi))tokens+=current[pi];
+                cout<<"  "<<setText(s)<<" tokens="<<tokens<<'\n';
+            }
+        }
+        else if(cmd=="CLASSIFY")classify();
+        else if(cmd=="WORKFLOW")workflow(limit);
+        else if(cmd=="SHOW"){
+            for(size_t pi=0;pi<p.size();++pi)cout<<"place "<<p[pi]<<" tokens="<<initial[pi]<<" capacity="<<(capacity[pi]?to_string(capacity[pi]):"none")<<'\n';
+            for(size_t ti=0;ti<t.size();++ti){
+                auto list=[&](const Matrix&m){
+                    vector<string>a;
+                    for(size_t pi=0;pi<p.size();++pi)if(m[pi][ti])a.push_back(p[pi]+":"+to_string(m[pi][ti]));
+                    return a.empty()?"-":join(a,",");
+                };
+                cout<<"transition "<<t[ti]<<" priority="<<priority[ti]<<" pre="<<list(pre)<<" post="<<list(post)<<" inhibit="<<list(inhibit)<<'\n';
+            }
+        }
+    }
+};
+int main(){
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    string line;
+    getline(cin,line);
+    int blocks=stoi(line);
+    while(blocks--){
+        getline(cin,line);
+        Net net(words(line)[1]);
+        while(getline(cin,line)&&line!="END NET"){
+            try{
+                net.define(words(line));
+            }catch(const runtime_error&e){
+                cout<<"error: "<<e.what()<<'\n';
+            }
+        }
+        net.current=net.initial;
+        cout<<"net "<<net.name<<": places="<<net.p.size()<<" transitions="<<net.t.size()<<" arcs="<<net.arcs<<" inhibitors="<<net.inhibitors<<'\n';
+        getline(cin,line);
+        int n=stoi(line);
+        while(n--){
+            getline(cin,line);
+            try{
+                net.execute(words(line));
+            }catch(const runtime_error&e){
+                cout<<"error: "<<e.what()<<'\n';
+            }
+        }
+    }
+}

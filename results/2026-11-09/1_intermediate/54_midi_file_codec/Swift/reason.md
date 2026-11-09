@@ -1,0 +1,22 @@
+# Task B selection — Swift
+
+## Answer requirements shared across languages
+
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
+
+## Selected source locations
+
+- `main.swift`: 3, 4, 5, 7, 8, 10, 22, 25, 26, 37, 38, 39, 40, 41, 42, 43, 45, 46, 48, 49, 63, 64, 65, 78, 82, 83, 84, 85, 86, 94, 122, 123, 136, 137, 138, 139, 547, 548, 549, 550, 551, 552, 554, 556, 557, 558, 559, 560, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 573, 574, 584, 586, 587, 588, 589, 590, 592, 640, 641, 642, 643, 644, 645, 646, 647, 652, 664, 665, 691, 692, 694, 695, 696, 697, 698, 699, 714, 715, 720, 721, 722, 723, 724, 725, 728, 729, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 754, 755, 757, 759, 761, 762, 763, 908, 928, 930
+
+## Evidence and language semantics
+
+The requested change belongs in the event transformation, after target selection and signed pitch addition and before the payload assignment. Replace the range-failure removal path with a lower/upper bound clamp. Every selected event must reach the retained-event path exactly once; leave tick, status/channel, second data byte and track order untouched. Equal resulting pitches are separate sequence entries, including entries at the same tick; no set, grouping or note-pair operation is required. The transposed count includes those now clamped, including a zero shift; dropped becomes zero and its detail loop receives no events. DECODE already formats the stored payload in track order. ENCODE already uses each retained absolute tick minus the previous retained tick, so preserving events preserves the original delta sequence, including zero deltas; the shortest base-128 encoding and channel payload emission remain applicable. Existing running-status compression only suppresses status bytes, while NOTE_OFF ZERO changes status/velocity at encoding time and keeps the pitch. Neither operation coalesces events. Swift Event/Song structs and arrays use value semantics: the fresh track array retains event order and duplicates, songs[a[1]]=song commits the changed value. The signed Int sum must be saturated before assigning data[0]; untouched tick/status/meta and sequence position remain those of the copied event. Channel status <240, status>>4 and channelTypes map codes8..10 to the three affected kinds; type, fields and pitch make DECODE representation explicit. Unknown-command validation precedes lookup and argument-range failure. Integer range helper and MidiError catch preserve error ordering and prefix. The encoder emits variable delta times from unchanged ticks, rewrites only NOTE_OFF status/velocity when zeroOff, and passes the first data item through.
+
+## Minimization and alternatives
+
+A transformation-only excerpt cannot establish downstream display, delta-time encoding or required error precedence. HEX/TEXT construction, pairing, timing, quantization and other edits are omitted because the input song is already valid. The relevant event/list types, selected formatting branches, VLQ code, encoder traversal, command guards and persistent-state write are retained. Custom helper bodies appear only where they determine a required behavior; ordinary collection/ownership rules are stated in the evidence. Source declarations and branch guards needed to identify selected definitions are retained even when a smaller candidate omitted them. This final excerpt was independently read and checked against the same four requirements used for all languages; no implementation changes or program execution were performed.
+
+The excerpt contains 2119 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

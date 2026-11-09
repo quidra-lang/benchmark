@@ -1,0 +1,5 @@
+Change the current unreached default 1000000 to 1000 in the array fill/initialization, retaining the later source assignment distance[0]=0. All given edge weights are positive and at most 9, and there are seven vertices: a finite shortest path can be chosen simple with at most six edges, so its distance is at most 54<1000. The sentinel therefore remains distinct from every finite shortest distance here. Edge weights, vertex count from distance storage and the two initialization sites suffice; relaxation and path output are unchanged.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

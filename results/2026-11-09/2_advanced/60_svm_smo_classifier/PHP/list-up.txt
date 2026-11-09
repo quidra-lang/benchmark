@@ -1,0 +1,225 @@
+function read_lines($path)
+{
+    return file($path, FILE_IGNORE_NEW_LINES);
+}
+
+function read_examples($path, $multiclass = false)
+{
+    $rows = [];
+    foreach (array_slice(read_lines($path), 1) as $line) {
+        $fields = explode(',', $line);
+        $row = ['id' => $fields[0], 'point' => [(float) $fields[1], (float) $fields[2]]];
+        if ($multiclass) { $row['class'] = (int) $fields[3]; $row['role'] = $fields[4]; }
+        else $row['label'] = (int) $fields[3];
+        $rows[] = $row;
+    }
+    return $rows;
+}
+function read_dataset()
+{
+    $params = ['kernels' => []];
+    foreach (read_lines('input/params.txt') as $line) {
+        $values = explode(' ', $line);
+        $key = array_shift($values);
+        switch ($key) {
+            case 'C_GRID': $params['cs'] = array_map('floatval', $values); break;
+            case 'KERNEL':
+                $kernel = ['name' => $values[0], 'kind' => $values[1], 'index' => count($params['kernels'])];
+                if ($kernel['kind'] === 'poly') { $kernel['degree'] = (int) $values[2]; $kernel['gamma'] = (float) $values[3]; $kernel['coef0'] = (float) $values[4]; }
+                elseif ($kernel['kind'] === 'rbf') $kernel['gamma'] = (float) $values[2];
+                $params['kernels'][] = $kernel;
+                break;
+            case 'TOLERANCE': $params['tau'] = (float) $values[0]; break;
+            case 'EPS': $params['eps'] = (float) $values[0]; break;
+            case 'MAX_PASSES': $params['maxPasses'] = (int) $values[0]; break;
+            case 'FOLDS': $params['folds'] = (int) $values[0]; break;
+        }
+    }
+    return ['train' => read_examples('input/train.csv'), 'test' => read_examples('input/test.csv'),
+        'multiTrain' => $multiTrain, 'multiTest' => $multiTest, 'params' => $params];
+}
+function kernel_value($kernel, $a, $b)
+{
+    if ($kernel['kind'] === 'linear') return $a[0] * $b[0] + $a[1] * $b[1];
+    if ($kernel['kind'] === 'poly') {
+        $s = $kernel['gamma'] * ($a[0] * $b[0] + $a[1] * $b[1]) + $kernel['coef0'];
+        $result = 1.0;
+        for ($i = 0; $i < $kernel['degree']; $i++) $result *= $s;
+        return $result;
+    }
+    $e1 = $a[0] - $b[0];
+    $e2 = $a[1] - $b[1];
+    return exp(-$kernel['gamma'] * ($e1 * $e1 + $e2 * $e2));
+}
+
+function kernel_matrix($kernel, $points)
+{
+    $matrix = [];
+    foreach ($points as $a) {
+        $row = [];
+        foreach ($points as $b) $row[] = kernel_value($kernel, $a, $b);
+        $matrix[] = $row;
+    }
+    return $matrix;
+}
+
+function matrix_subset($matrix, $indices)
+{
+    $result = [];
+    foreach ($indices as $i) {
+        $row = [];
+        foreach ($indices as $j) $row[] = $matrix[$i][$j];
+        $result[] = $row;
+    }
+    return $result;
+}
+function sign_value($value) { return $value > 0 ? 1 : -1; }
+function folds($count, $k)
+{
+    $result = [];
+    for ($fold = 0; $fold < $k; $fold++) {
+        $train = [];
+        $test = [];
+        for ($i = 0; $i < $count; $i++) {
+            if ($i % $k === $fold) $test[] = $i;
+            else $train[] = $i;
+        }
+        $result[] = compact('train', 'test');
+    }
+    return $result;
+}
+
+function smo_train($points, $labels, $Q, $C, $kernel, $params)
+{
+    return (new Trainer($points, $labels, $Q, $C, $kernel, $params))->run();
+}
+
+function decision($model, $point)
+{
+    $sum = 0.0;
+    foreach ($model->alpha as $j => $alpha) if ($alpha > 0) $sum += $alpha * $model->labels[$j] * kernel_value($model->kernel, $model->points[$j], $point);
+    return $sum - $model->b;
+}
+function support($model)
+{
+    $total = 0; $bound = 0; $free = 0;
+    foreach ($model->alpha as $a) if ($a > 0) {
+        $total++;
+        if ($a == $model->C) $bound++; else $free++;
+    }
+    return compact('total', 'bound', 'free');
+}
+function measure($model, $test)
+{
+    $result = objective($model);
+    $values = [];
+    foreach ($result['sums'] as $sum) $values[] = $sum - $model->b;
+    $testValues = [];
+    foreach ($test as $row) $testValues[] = decision($model, $row['point']);
+    return ['model' => $model, 'q' => $result['q'], 'dual' => $result['dual'], 'values' => $values, 'testValues' => $testValues,
+        'sv' => support($model), 'trainCorrect' => binary($model->labels, $values)['correct'], 'testStats' => binary(array_column($test, 'label'), $testValues)];
+}
+
+function cross_validate($train, $params, $matrices)
+{
+    $partition = folds(count($train), $params['folds']);
+    $combinations = []; $best = [];
+    foreach ($params['kernels'] as $kernel) {
+        $winner = null;
+        foreach ($params['cs'] as $C) {
+            $result = ['kernel' => $kernel, 'C' => $C, 'correct' => 0, 'support' => 0, 'passes' => 0, 'steps' => 0,
+                'values' => array_fill(0, count($train), 0.0), 'folds' => []];
+            foreach ($partition as $fold) {
+                $points = []; $labels = [];
+                foreach ($fold['train'] as $i) { $points[] = $train[$i]['point']; $labels[] = $train[$i]['label']; }
+                $model = smo_train($points, $labels, matrix_subset($matrices[$kernel['index']], $fold['train']), $C, $kernel, $params);
+                $correct = 0;
+                foreach ($fold['test'] as $i) {
+                    $result['values'][$i] = decision($model, $train[$i]['point']);
+                    if (sign_value($result['values'][$i]) === $train[$i]['label']) $correct++;
+                }
+                $sv = support($model); $passes = $model->full + $model->nonbound;
+                $result['folds'][] = ['train' => count($fold['train']), 'test' => count($fold['test']), 'correct' => $correct,
+                    'support' => $sv['total'], 'passes' => $passes, 'steps' => $model->steps, 'converged' => $model->converged];
+                $result['correct'] += $correct; $result['support'] += $sv['total'];
+                $result['passes'] += $passes; $result['steps'] += $model->steps;
+            }
+            $combinations[] = $result;
+            if ($winner === null || $result['correct'] > $winner['correct']) $winner = $result;
+        }
+        $best[] = $winner;
+    }
+    $ranking = $combinations;
+    usort($ranking, fn($a, $b) => ($b['correct'] <=> $a['correct']) ?: (($a['C'] <=> $b['C']) ?: ($a['kernel']['index'] <=> $b['kernel']['index'])));
+    return ['combinations' => $combinations, 'best' => $best, 'ranking' => $ranking, 'selected' => $ranking[0]];
+}
+
+function cross_validation_lines($cv, $n, $params)
+{
+    $lines = [fields('cross_validation folds', $params['folds'], 'examples', $n)];
+    foreach ($cv['best'] as $best) $lines[] = fields('best', $best['kernel']['name'], 'C', fixed($best['C'], 4), 'correct', $best['correct'] . '/' . $n, 'accuracy', ratio($best['correct'], $n));
+    $lines[] = fields('selected', $cv['selected']['kernel']['name'], 'C', fixed($cv['selected']['C'], 4));
+    $lines[] = 'ranking';
+    foreach ($cv['ranking'] as $i => $entry) $lines[] = fields($i + 1, $entry['kernel']['name'], 'C', fixed($entry['C'], 4), 'correct', $entry['correct'] . '/' . $n);
+    $lines[] = fields('cv_detail', $cv['selected']['kernel']['name'], 'C', fixed($cv['selected']['C'], 4));
+    foreach ($cv['selected']['folds'] as $i => $fold) $lines[] = fields('fold', $i + 1, 'train', $fold['train'], 'test', $fold['test'],
+        'correct', $fold['correct'], 'support_vectors', $fold['support'], run_info($fold));
+    return $lines;
+}
+function final_model_lines(&$result, $train, $test, $params)
+{
+    $model = $result['model']; $q = $result['q']; $dual = $result['dual']; $values = $result['values'];
+    $testValues = $result['testValues']; $sv = $result['sv']; $testStats = $result['testStats'];
+    $n = count($train); $m = count($test);
+    $lines = [fields('model', $model->kernel['name']), 'kernel ' . kernel_description($model->kernel), 'C ' . fixed($model->C, 4),
+function calibrate($selectedCV, $selected, $train, $test, $params)
+{
+    $values = $selectedCV['values']; $n = count($train); $m = count($test);
+    $probabilities = [];
+    foreach ($selected['testValues'] as $value) $probabilities[] = probability($value, $A, $B);
+    $data = read_dataset();
+    $train = $data['train']; $test = $data['test']; $multiTrain = $data['multiTrain']; $multiTest = $data['multiTest']; $params = $data['params'];
+    $points = array_column($train, 'point'); $labels = array_column($train, 'label');
+    $matrices = [];
+    foreach ($params['kernels'] as $kernel) $matrices[] = kernel_matrix($kernel, $points);
+    $cv = cross_validate($train, $params, $matrices);
+    $finals = [];
+    foreach ($params['kernels'] as $kernel) {
+        $model = smo_train($points, $labels, $matrices[$kernel['index']], $cv['best'][$kernel['index']]['C'], $kernel, $params);
+        $finals[] = measure($model, $test);
+    }
+    $blocks = [cross_validation_lines($cv, count($train), $params)];
+    foreach ($finals as &$result) $blocks[] = final_model_lines($result, $train, $test, $params);
+    unset($result);
+    $selected = $finals[$cv['selected']['kernel']['index']];
+    foreach (selected_analyses($selected, $train, $test, $params) as $block) $blocks[] = $block;
+    $calibration = calibrate($cv['selected'], $selected, $train, $test, $params);
+    $blocks[] = $calibration['lines'];
+    $modelLines = [];
+    foreach ($blocks as $block) {
+        if (count($modelLines) > 0) $modelLines[] = '';
+        foreach ($block as $line) $modelLines[] = $line;
+    }
+    write_output('model.txt', $modelLines);
+    $header = ['kernel', 'C'];
+    for ($i = 1; $i <= $params['folds']; $i++) $header[] = 'fold' . $i;
+    $grid = [implode(',', array_merge($header, ['correct', 'accuracy', 'support_vectors', 'passes', 'steps']))];
+    foreach ($cv['combinations'] as $entry) {
+        $line = [$entry['kernel']['name'], fixed($entry['C'], 4)];
+        foreach ($entry['folds'] as $fold) $line[] = $fold['correct'];
+        $line = array_merge($line, [$entry['correct'], ratio($entry['correct'], count($train)), $entry['support'], $entry['passes'], $entry['steps']]);
+        $grid[] = implode(',', $line);
+    }
+    write_output('cv_grid.csv', $grid);
+    $header = ['id', 'label'];
+    foreach ($params['kernels'] as $kernel) $header[] = $kernel['name'];
+    $predictions = [implode(',', array_merge($header, ['pegasos', 'predicted', 'probability']))];
+    foreach ($test as $i => $row) {
+        $line = [$row['id'], $row['label']];
+        foreach ($finals as $result) $line[] = fixed($result['testValues'][$i], 4);
+        $line[] = fixed($peg['values'][$i], 4);
+        $line[] = sign_value($selected['testValues'][$i]);
+        $line[] = fixed($calibration['probabilities'][$i], 4);
+        $predictions[] = implode(',', $line);
+    }
+    write_output('predictions.csv', $predictions);

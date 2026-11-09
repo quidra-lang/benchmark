@@ -1,0 +1,228 @@
+UNKNOWN <- 0L
+FILLED <- 1L
+EMPTY <- 2L
+is_clue_line <- function(text) nzchar(text) && grepl("^[0-9 ]+$", text)
+parse_clue <- function(text) {
+  if (text == "0") return(integer())
+  if (!grepl("^[1-9][0-9]?( [1-9][0-9]?)*$", text)) return(NULL)
+  as.integer(strsplit(text, " ", fixed = TRUE)[[1L]])
+}
+clue_span <- function(clue) sum(clue) + length(clue) - 1L
+clue_fits <- function(clue, length) clue_span(clue) <= length
+char_state <- function(character) match(character, c("?", "#", ".")) - 1L
+valid_name <- function(name) grepl("^[a-z0-9_]{1,20}$", name)
+read_blocks <- function(name) {
+  blocks <- list()
+  block <- NULL
+  for (line in readLines(file.path("input", name), warn = FALSE)) {
+    if (is.null(block)) {
+      if (nzchar(line) && !startsWith(line, "#")) block <- line
+    } else if (line == "END") {
+      blocks[[length(blocks) + 1L]] <- block
+      block <- NULL
+    } else block <- c(block, line)
+  }
+  blocks
+}
+parse_puzzle <- function(lines) {
+  size <- as.integer(strsplit(lines[2L], " ", fixed = TRUE)[[1L]][-1L])
+  at <- match("COLUMNS", lines)
+  rows <- if (at > 4L) lines[seq.int(4L, at - 1L)] else character()
+  columns <- character()
+  givens <- list()
+  position <- at + 1L
+  while (position <= length(lines) && is_clue_line(lines[position])) {
+    columns <- c(columns, lines[position])
+    position <- position + 1L
+  }
+  while (position <= length(lines) && startsWith(lines[position], "GIVEN ")) {
+    fields <- strsplit(lines[position], " ", fixed = TRUE)[[1L]]
+    givens[[length(givens) + 1L]] <- list(row = as.integer(fields[2L]), column = as.integer(fields[3L]), value = fields[4L])
+    position <- position + 1L
+  }
+  answer <- if (position <= length(lines)) if (position < length(lines)) lines[seq.int(position + 1L, length(lines))] else character() else NULL
+  list(name = substring(lines[1L], 8L), width = size[1L], height = size[2L], row_lines = rows, column_lines = columns, given_lines = givens, answer_lines = answer)
+}
+validate_puzzle <- function(block, names) {
+  error <- NULL
+  if (!valid_name(block$name)) error <- "bad name"
+  else if (block$name %in% names) error <- "duplicate name"
+  else if (block$width < 1L || block$width > 30L || block$height < 1L || block$height > 30L) error <- "bad size"
+  else if (length(block$row_lines) != block$height) error <- paste("row count", length(block$row_lines), "expected", block$height)
+  else if (length(block$column_lines) != block$width) error <- paste("column count", length(block$column_lines), "expected", block$width)
+  block$row_clues <- block$column_clues <- list()
+  if (is.null(error)) for (row in c(TRUE, FALSE)) {
+    texts <- if (row) block$row_lines else block$column_lines
+    kind <- if (row) "row" else "column"
+    clues <- list()
+    for (index in seq_along(texts)) {
+      clue <- parse_clue(texts[index])
+      if (is.null(clue)) error <- paste("bad clue", kind, index)
+      else if (!clue_fits(clue, if (row) block$width else block$height)) error <- paste(kind, index, "too long")
+      if (!is.null(error)) break
+      clues[[length(clues) + 1L]] <- clue
+    }
+    if (!is.null(error)) break
+    if (row) block$row_clues <- clues else block$column_clues <- clues
+  }
+  if (is.null(error)) {
+    a <- sum(unlist(block$row_clues))
+    b <- sum(unlist(block$column_clues))
+    if (a != b) error <- paste0("total mismatch rows=", a, " columns=", b)
+  }
+  block$givens <- list()
+  if (is.null(error)) for (index in seq_along(block$given_lines)) {
+    given <- block$given_lines[[index]]
+    if (given$row < 1L || given$row > block$height || given$column < 1L || given$column > block$width || !given$value %in% c("#", ".")) error <- paste("bad given", index)
+    else if (any(vapply(block$givens, function(other) other[1L] == given$row && other[2L] == given$column, logical(1L)))) error <- paste("duplicate given", index)
+    if (!is.null(error)) break
+    block$givens[[length(block$givens) + 1L]] <- c(given$row, given$column, char_state(given$value))
+  }
+  block$error <- error
+  block
+}
+logical_solve <- function(rows, columns, givens, precise) {
+  grid <- matrix(UNKNOWN, length(rows), length(columns))
+  for (given in givens) grid[given[1L], given[2L]] <- given[3L]
+  propagate(grid, rows, columns, precise)
+}
+solving_result <- function(propagation) {
+  if (!is.null(propagation$conflict)) return(paste0("contradiction at=", line_label(propagation$conflict$row, propagation$conflict$index)))
+  if (determined_count(propagation$grid) == length(propagation$grid)) "solved" else "stuck"
+}
+analyze <- function(rows, columns, givens = list()) {
+  simple <- logical_solve(rows, columns, givens, FALSE)
+  logic <- logical_solve(rows, columns, givens, TRUE)
+  simple_result <- solving_result(simple)
+  logic_result <- solving_result(logic)
+  search <- NULL
+  solutions <- list()
+  difficulty <- "-"
+  if (!is.null(logic$conflict)) status <- "contradiction"
+  else if (logic_result == "solved") {
+    status <- "unique"
+    solutions <- list(logic$grid)
+    difficulty <- if (simple_result == "solved") "easy" else "medium"
+  } else {
+    search <- search_grid(logic$grid, rows, columns)
+    solutions <- search$solutions
+    status <- c("none", "unique", "multiple")[length(solutions) + 1L]
+    if (status == "unique") difficulty <- "hard"
+  }
+  list(simple = simple, logic = logic, simple_result = simple_result, logic_result = logic_result, search = search, solutions = solutions, status = status, difficulty = difficulty,
+       line_solves = length(logic$steps) + if (is.null(search)) 0L else search$line_solves, guesses = if (is.null(search)) 0L else length(search$guesses), max_depth = if (is.null(search)) 0L else search$max_depth)
+}
+  a <- analyze(block$row_clues, block$column_clues, block$givens)
+  grading <- if (!is.null(block$answer)) grade_answer(block, a) else NULL
+  lines <- c(paste("PUZZLE", block$name), paste0("size=", block$width, "x", block$height, " givens=", length(block$givens), " status=", a$status, " difficulty=", a$difficulty),
+    paste("clues", clue_statistics(block$row_clues, block$column_clues)),
+    paste0("simple known=", determined_count(a$simple$grid), " line_solves=", length(a$simple$steps), " result=", a$simple_result),
+    paste0("logic known=", determined_count(a$logic$grid), " line_solves=", length(a$logic$steps), " result=", a$logic_result), paste("steps", step_statistics(a$logic)))
+  if (!is.null(a$search)) {
+    search <- a$search
+    lines <- c(lines, paste0("search guesses=", length(search$guesses), " max_depth=", search$max_depth, " backtracks=", search$backtracks, " solutions=", length(search$solutions), " line_solves=", search$line_solves))
+    for (guess in search$guesses) lines <- c(lines, paste0("guess ", guess$number, " depth=", guess$depth, " cell=", cell_text(c(guess$row, guess$column)), " value=", state_char(guess$value), " solves=", guess$solves, " known=", guess$known, " result=", guess$result))
+  }
+  if (a$status == "multiple") {
+    cells <- differing_cells(a$solutions[[1L]], a$solutions[[2L]])
+    lines <- c(lines, paste0("differ count=", nrow(cells), " cells=", paste(apply(cells, 1L, cell_text), collapse = " ")))
+  }
+  names <- character()
+  grids <- list()
+  if (a$status == "contradiction") {
+    names <- "partial"
+    grids <- list(a$logic$grid)
+  } else {
+    if (a$simple_result == "stuck") {
+      names <- c(names, "simple")
+      grids[[length(grids) + 1L]] <- a$simple$grid
+    }
+    if (a$logic_result == "stuck") {
+      names <- c(names, "logic")
+      grids[[length(grids) + 1L]] <- a$logic$grid
+    }
+    if (a$status == "multiple") {
+      names <- c(names, "first", "second")
+      grids <- c(grids, a$solutions)
+    }
+  }
+  if (length(names)) lines <- c(lines, grid_display(names, grids))
+  fields <- c(block$name, a$status, a$difficulty, block$width, block$height, length(block$givens), determined_count(a$simple$grid), determined_count(a$logic$grid), a$line_solves, a$guesses, a$max_depth, length(a$solutions), if (is.null(grading)) "-" else grading$result)
+  list(block = block, analysis = a, lines = lines, stats = paste(fields, collapse = ","), score = a$line_solves + 25L * a$guesses)
+  stats <- "puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer"
+  for (lines in blocks) {
+    block <- validate_puzzle(parse_puzzle(lines), names)
+    names <- c(names, block$name)
+    if (!is.null(block$error)) {
+      paragraphs[[length(paragraphs) + 1L]] <- c(paste("PUZZLE", block$name), paste("error", block$error))
+      stats <- c(stats, paste0(block$name, ",invalid", strrep(",-", 11L)))
+      next
+    }
+    report <- puzzle_report(block)
+    reports[[length(reports) + 1L]] <- report
+    paragraphs[[length(paragraphs) + 1L]] <- report$lines
+    stats <- c(stats, report$stats)
+  }
+  writeLines(join_paragraphs(paragraphs), "output/solutions.txt", useBytes = TRUE)
+  writeLines(stats, "output/stats.csv", useBytes = TRUE)
+reports <- process_puzzles(read_blocks("puzzles.txt"))
+line_cells <- function(grid, row, index) if (row) grid[index, ] else grid[, index]
+determined_count <- function(grid) sum(grid != UNKNOWN)
+propagate <- function(grid, row_clues, column_clues, precise, row_marks = rep(TRUE, nrow(grid)), column_marks = rep(TRUE, ncol(grid))) {
+  steps <- list()
+  conflict <- NULL
+  while (any(row_marks) || any(column_marks)) {
+    row <- any(row_marks)
+    index <- which(if (row) row_marks else column_marks)[1L]
+    if (row) row_marks[index] <- FALSE else column_marks[index] <- FALSE
+    cells <- line_cells(grid, row, index)
+    solved <- solve_line(cells, if (row) row_clues[[index]] else column_clues[[index]], precise)
+    if (is.null(solved)) {
+      conflict <- list(row = row, index = index, gain = 0L, contradiction = TRUE)
+      steps[[length(steps) + 1L]] <- conflict
+      break
+    }
+    changed <- which(cells == UNKNOWN & solved != UNKNOWN)
+    if (row) {
+      grid[index, ] <- solved
+      column_marks[changed] <- TRUE
+    } else {
+      grid[, index] <- solved
+      row_marks[changed] <- TRUE
+    }
+    steps[[length(steps) + 1L]] <- list(row = row, index = index, gain = length(changed), contradiction = FALSE)
+  }
+  list(grid = grid, steps = steps, conflict = conflict)
+}
+search_grid <- function(grid, row_clues, column_clues) {
+  guesses <- solutions <- list()
+  backtracks <- 0L
+  visit <- function(grid, depth) {
+    cell <- guess_cell(grid)
+    for (value in c(FILLED, EMPTY)) {
+      child <- grid
+      child[cell[1L], cell[2L]] <- value
+      rows <- rep(FALSE, nrow(grid))
+      columns <- rep(FALSE, ncol(grid))
+      rows[cell[1L]] <- columns[cell[2L]] <- TRUE
+      propagation <- propagate(child, row_clues, column_clues, TRUE, rows, columns)
+      child <- propagation$grid
+      known <- determined_count(child)
+      if (!is.null(propagation$conflict)) {
+        result <- paste0("contradiction at=", line_label(propagation$conflict$row, propagation$conflict$index))
+        backtracks <<- backtracks + 1L
+      } else if (known == length(child)) {
+        solutions[[length(solutions) + 1L]] <<- child
+        result <- paste0("solution", length(solutions))
+      } else result <- "open"
+      guesses[[length(guesses) + 1L]] <<- list(number = length(guesses) + 1L, depth = depth, row = cell[1L], column = cell[2L], value = value, solves = length(propagation$steps), known = known, result = result)
+      if (result == "open") {
+        if (visit(child, depth + 1L)) return(TRUE)
+      } else if (length(solutions) == 2L) return(TRUE)
+    }
+    FALSE
+  }
+  visit(grid, 1L)
+  list(guesses = guesses, solutions = solutions, backtracks = backtracks,
+       max_depth = max(vapply(guesses, function(guess) guess$depth, integer(1L))), line_solves = sum(vapply(guesses, function(guess) guess$solves, integer(1L))))
+}

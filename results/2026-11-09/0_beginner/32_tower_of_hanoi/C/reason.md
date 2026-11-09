@@ -1,0 +1,5 @@
+The four-disk call binds source A, target C, auxiliary B. Its first subproblem is 3 disks A->B with C auxiliary; then it emits disk 4 A->C; the second is 3 disks B->C with A auxiliary. n=0 emits no move. Each call returns first-count + 1 + second-count, so four disks give 15. The char peg arguments are passed by value, so swapping their argument positions changes local roles without rebinding caller variables or mutating shared peg storage. The complete recursive decisions and top call are needed; no unrelated main output setup is needed.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

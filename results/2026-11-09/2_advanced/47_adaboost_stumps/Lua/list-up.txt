@@ -1,0 +1,187 @@
+local function normalize(weights)
+    local sum = 0.0
+    for _, value in ipairs(weights) do
+        sum = sum + value
+    end
+    for i, value in ipairs(weights) do
+        weights[i] = value / sum
+    end
+    return sum
+end
+function M.discrete(rows, maximum, shrinkage, initial_weights)
+    local weights = initial_weights and {table.unpack(initial_weights)} or {}
+    if not initial_weights then
+        for i = 1, #rows do
+            weights[i] = 1.0 / #rows
+        end
+    end
+    local prepared, rounds, bound = stumps.prepare(rows), {}, 1.0
+    for _ = 1, maximum do
+        local candidate = stumps.discrete(rows, weights, prepared)
+        local error = candidate.error
+        if error >= 0.5 then
+            return {rounds = rounds, stop = "weak"}
+        end
+        local alpha = error <= 0.0000000001 and 1.0 or shrinkage * (0.5 * math.log((1.0 - error) / error))
+        local polarity = candidate.polarity
+        local stump = {feature = candidate.feature, thresholds = {candidate.threshold}, values = {-polarity * alpha, polarity * alpha}}
+        for i, row in ipairs(rows) do
+            local decision = row.values[candidate.feature] > candidate.threshold and polarity or -polarity
+            weights[i] = weights[i] * math.exp(decision == row.label and -alpha or alpha)
+        end
+        local z = normalize(weights)
+        rounds[#rounds + 1] = {stump = stump, polarity = polarity, error = error, alpha = alpha,
+            z = z, bound = bound, weights = previous}
+        if error <= 0.0000000001 then
+            return {rounds = rounds, stop = "perfect"}
+        end
+    end
+    return {rounds = rounds, stop = "completed"}
+end
+function M.prepare(rows)
+    local result = {}
+    for j = 1, #rows[1].values do
+        local order = {}
+        for i = 1, #rows do
+            order[i] = i
+        end
+        table.sort(order, function(a, b)
+            if rows[a].values[j] ~= rows[b].values[j] then
+                return rows[a].values[j] < rows[b].values[j]
+            end
+            return a < b
+        end)
+        local distinct, batches = {}, {}
+        for _, i in ipairs(order) do
+            local value = rows[i].values[j]
+            if #distinct == 0 or value ~= distinct[#distinct] then
+                distinct[#distinct + 1] = value
+                batches[#batches + 1] = {}
+            end
+            local batch = batches[#batches]
+            batch[#batch + 1] = i
+        end
+        local thresholds = {distinct[1] - 1.0}
+        for i = 1, #distinct - 1 do
+            thresholds[#thresholds + 1] = (distinct[i] + distinct[i + 1]) / 2.0
+        end
+        result[j] = {order = order, distinct = distinct, batches = batches, thresholds = thresholds}
+    end
+    return result
+end
+function M.discrete(rows, weights, prepared)
+    local positive, negative = 0.0, 0.0
+    for i, row in ipairs(rows) do
+        if row.label == 1 then
+            positive = positive + weights[i]
+        else
+            negative = negative + weights[i]
+        end
+    end
+    local candidates = {}
+    for j, feature in ipairs(prepared) do
+        local left_positive, left_negative = 0.0, 0.0
+        for k, threshold in ipairs(feature.thresholds) do
+            if k > 1 then
+                for _, i in ipairs(feature.batches[k - 1]) do
+                    if rows[i].label == 1 then
+                        left_positive = left_positive + weights[i]
+                    else
+                        left_negative = left_negative + weights[i]
+                    end
+                end
+            end
+            candidates[#candidates + 1] = {feature = j, threshold = threshold, polarity = 1,
+                error = left_positive + (negative - left_negative)}
+            candidates[#candidates + 1] = {feature = j, threshold = threshold, polarity = -1,
+                error = left_negative + (positive - left_positive)}
+        end
+    end
+    return M.choose(candidates)
+end
+local function score_values(model, values, limit)
+    local result = 0.0
+    for t = 1, math.min(limit or #model.rounds, #model.rounds) do
+        result = result + stumps.output(model.rounds[t].stump, values)
+    end
+    return result
+end
+local function first_rounds(model, count)
+    local result = {}
+    for t = 1, math.min(count, #model.rounds) do
+        result[t] = model.rounds[t]
+    end
+    return {rounds = result, stop = model.stop, cuts = model.cuts}
+end
+local function cross_validation(rows, params)
+    local folds, errors = {}, {}
+    for t = 1, params.rounds do
+        errors[t] = 0
+    end
+    for fold = 1, params.folds do
+        local validation = {}
+        for i = 1, #rows do
+            if (i - 1) % params.folds == fold - 1 then
+                validation[#validation + 1] = i
+            end
+        end
+        local training_count, weights = #rows - #validation, {}
+        for i = 1, #rows do
+            weights[i] = (i - 1) % params.folds == fold - 1 and 0.0 or 1.0 / training_count
+        end
+        local model = adaboost.discrete(rows, params.rounds, 1.0, weights)
+        local fold_errors = {}
+        for t = 1, params.rounds do
+            local count = 0
+            for _, i in ipairs(validation) do
+                count = count + (evaluation.sign(score_values(model, rows[i].values, t)) ~= rows[i].label and 1 or 0)
+            end
+            fold_errors[t], errors[t] = count, errors[t] + count
+        end
+        folds[fold] = {model = model, training_count = training_count, validation = validation, errors = fold_errors}
+    end
+    local selected = 1
+    for t = 2, params.rounds do
+        if errors[t] < errors[selected] then
+            selected = t
+        end
+    end
+    local out_of_fold = {}
+    for i, row in ipairs(rows) do
+        out_of_fold[i] = score_values(folds[(i - 1) % params.folds + 1].model, row.values, selected)
+    end
+    return {folds = folds, errors = errors, selected = selected, scores = out_of_fold}
+end
+local function curve(model, training, testing, logit)
+    local result, training_scores, testing_scores, scale = {}, {}, {}, 0.0
+    for i = 1, #training do
+        training_scores[i] = 0.0
+    end
+    for i = 1, #testing do
+        testing_scores[i] = 0.0
+    end
+    for _, round in ipairs(model.rounds) do
+        for i, row in ipairs(training) do
+            training_scores[i] = training_scores[i] + stumps.output(round.stump, row.values)
+        for i, row in ipairs(testing) do
+            testing_scores[i] = testing_scores[i] + stumps.output(round.stump, row.values)
+        end
+        result[#result + 1] = {training_errors = error_count(training, training_scores), testing_errors = error_count(testing, testing_scores),
+            training_loss = loss(training, training_scores, logit), testing_loss = loss(testing, testing_scores, logit), minimum = minimum / scale}
+    end
+    return result
+end
+end
+local function profile(variant, full, final, data, random)
+    local training_scores, testing_scores = scores(final, data.training), scores(final, data.testing)
+    local scale = 0.0
+    local item = {variant = variant, full = full, final = final, scale = scale, training_scores = training_scores,
+        testing_scores = testing_scores, training_margins = training_margins, testing_margins = testing_margins,
+        curve = curve(full, data.training, data.testing, variant == "logit"), importance = importance(final, #data.features, false)}
+    local full = train(variant, data.training, data.params)
+    local final = variant == "discrete" and first_rounds(full, cv.selected) or full
+    profiles[#profiles + 1] = profile(variant, full, final, data, random)
+end
+function M.sign(value)
+    return value > 0.0 and 1 or -1
+end

@@ -1,0 +1,165 @@
+expand_commands <- function(rows) {
+  commands <- list()
+  for (tokens in rows) {
+    name <- tokens[1L]
+    argument <- ""
+    count <- 1L
+    if (name == "wait") {
+      if (length(tokens) == 2L) count <- as.integer(tokens[2L])
+    } else {
+      if (length(tokens) > 1L) argument <- tokens[2L]
+      if (length(tokens) == 3L) count <- as.integer(tokens[3L])
+    }
+    for (i in seq_len(count)) commands[[length(commands) + 1L]] <- list(name = name, argument = argument)
+  player <- new.env(parent = emptyenv())
+  game <- new.env(parent = emptyenv())
+  game$turn <- 1L
+finish <- function(game, result, cause) {
+  game$result <- result
+  game$cause <- cause
+}
+die <- function(game, cause) {
+  say(game, "You die.")
+  finish(game, "died", cause)
+}
+run_game <- function(game) {
+  update_view(game)
+  for (command in game$commands) {
+    if (nzchar(game$result)) {
+      game$unused <- game$unused + 1L
+    } else if (!execute_command(game, command)) {
+      game$failed <- game$failed + 1L
+    } else {
+      game$succeeded <- game$succeeded + 1L
+      if (!nzchar(game$result)) advance_turn(game)
+    }
+  }
+  if (!nzchar(game$result)) finish(game, "alive", "commands_exhausted")
+}
+advance_turn <- function(game) {
+  update_view(game)
+  monsters_act(game)
+  if (nzchar(game$result)) return(invisible(NULL))
+  end_turn(game)
+  if (nzchar(game$result)) return(invisible(NULL))
+  if (game$turn %in% game$config$checkpoints) write_checkpoint(game)
+  game$turn <- game$turn + 1L
+}
+execute_command <- function(game, command) {
+  if (command$name == "wait") return(TRUE)
+  if (command$name == "pickup") return(pickup(game))
+pickup <- function(game) {
+  player <- game$player
+  level <- current_level(game)
+  item <- item_at(level, player$x, player$y)
+  if (is.null(item)) {
+    say(game, "There is nothing here.")
+    return(FALSE)
+  }
+  category <- item$kind$category
+  if (category == "gold") {
+    player$gold <- player$gold + item$amount
+    say(game, paste0("You pick up ", display_name(item), "."))
+  } else if (category == "amulet") {
+    say(game, "You pick up the amulet.")
+    say(game, "You win!")
+    finish(game, "won", "amulet")
+  } else if (length(player$pack) >= game$config$pack_limit) {
+    say(game, "Your pack is full.")
+    return(FALSE)
+  } else {
+    player$pack[[length(player$pack) + 1L]] <- item
+    say(game, sprintf("You pick up the %s (%d).", display_name(item), length(player$pack)))
+  }
+  level$items <- remove_identity(level$items, item)
+  level$picked <- level$picked + 1L
+  game$usage["picked"] <- game$usage["picked"] + 1L
+  TRUE
+quaff <- function(game, item) {
+  player <- game$player
+  player$pack <- remove_identity(player$pack, item)
+  game$usage["quaffed"] <- game$usage["quaffed"] + 1L
+  say(game, paste0("You quaff the ", display_name(item), "."))
+  effect <- item$kind$effect
+  if (effect == "heal") {
+    player$hp <- player$hp + roll_dice(item$kind$dice, game$rng)
+    if (player$hp > player$max_hp) {
+      player$max_hp <- player$max_hp + 1L
+      player$hp <- player$max_hp
+    }
+    player$poison <- 0L
+    say(game, "You feel better.")
+  } else if (effect == "poison") {
+    player$poison <- player$poison + item$kind$poison_turns
+eat <- function(game, item) {
+  game$player$pack <- remove_identity(game$player$pack, item)
+  game$usage["eaten"] <- game$usage["eaten"] + 1L
+  game$player$satiation <- min(game$player$satiation + item$kind$nutrition, game$config$food_max)
+  say(game, paste0("You eat the ", display_name(item), "."))
+  TRUE
+monster_attack <- function(game, monster) {
+    say(game, paste0("The ", kind$name, " misses you."))
+    return(invisible(NULL))
+  }
+  say(game, paste0("The ", kind$name, " hits you", if (attack$outcome == "critical") " hard" else "", " for ", attack$damage, "."))
+  game$player$hp <- game$player$hp - attack$damage
+  if (game$player$hp <= 0L) {
+    die(game, paste("killed_by", kind$name))
+  } else if (kind$poisonous) {
+    game$player$poison <- game$player$poison + 5L
+    say(game, "You are poisoned.")
+  }
+}
+monsters_act <- function(game) {
+  level <- current_level(game)
+  game$distance <- distances(level, game$player$x, game$player$y)
+  for (monster in level$monsters) {
+    monster$energy <- monster$energy + monster$kind$speed
+    while (monster$energy >= 2L) {
+      monster$energy <- monster$energy - 2L
+      monster_action(game, level, monster)
+      if (nzchar(game$result)) return(invisible(NULL))
+    }
+  }
+}
+end_turn <- function(game) {
+  player <- game$player
+  for (monster in current_level(game)$monsters) {
+    if (monster$kind$regenerates && monster$hp < monster$max_hp) monster$hp <- monster$hp + 1L
+  }
+  if (player$poison > 0L) {
+    player$hp <- player$hp - 1L
+    game$poison_damage <- game$poison_damage + 1L
+    if (player$hp <= 0L) {
+      die(game, "poison")
+      return(invisible(NULL))
+    }
+    player$poison <- player$poison - 1L
+    if (player$poison == 0L) say(game, "You feel less sick.")
+  }
+  if (player$satiation == 0L) {
+    player$hp <- player$hp - 1L
+    game$starvation_damage <- game$starvation_damage + 1L
+    if (player$hp <= 0L) {
+      die(game, "starvation")
+      return(invisible(NULL))
+    }
+  } else {
+    before <- hunger_state(game)
+    player$satiation <- player$satiation - 1L
+    after <- hunger_state(game)
+    if (after != before) {
+      text <- switch(after, hungry = "You are getting hungry.", weak = "You feel weak from hunger.", starving = "You are starving.")
+      say(game, text)
+    }
+  }
+  if (game$turn %% game$config$regen_interval == 0L && player$poison == 0L && player$satiation > 0L && player$hp < player$max_hp) player$hp <- player$hp + 1L
+}
+write_checkpoint <- function(game) {
+  game$map_lines <- c(game$map_lines, sprintf("CHECKPOINT turn %d depth %d", game$turn, game$player$depth), map_rows(game, current_level(game), TRUE), status_line(game))
+}
+final_block <- function(game) {
+  depth <- game$player$depth
+  lines <- sprintf("FINAL turn %d depth %d", game$succeeded, depth)
+  for (level in game$levels[seq_len(depth)]) {
+  monster <- new.env(parent = emptyenv())

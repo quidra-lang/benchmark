@@ -1,0 +1,259 @@
+parse_register(text) = occursin(r"^r(?:[0-9]|[12][0-9]|3[01])$",text) ? parse(Int,text[2:end]) : -1
+function read_inputs()
+    config = Dict{String,Any}("predictors"=>NamedTuple[],"variants"=>NamedTuple[])
+    for line in readlines(joinpath("input","config.txt"))
+        row = String.(split(line,' '))
+        key,values = row[1],row[2:end]
+        elseif key=="VARIANT"
+            push!(
+                config["variants"],
+                (name=values[1],forwarding=values[2]=="ON",stage=values[3],latency=parse(Int,values[4]))
+            )
+        elseif key=="PRIMARY"
+            config["primary"] = Tuple(values)
+        else
+            config["window"] = parse.(Int,values)
+    readlines(joinpath("input","trace.txt")),config
+function dependencies(instructions)
+    last_writer = zeros(Int,32)
+    sources = Vector{NamedTuple}[]
+    for (i,instruction) in enumerate(instructions)
+        current = NamedTuple[]
+        for (field,register) in ((1,instruction.rs1),(2,instruction.rs2))
+            register>0 && push!(current,(field=field,register=register,producer=last_writer[register+1]))
+        end
+        push!(sources,current)
+        instruction.rd>0 && (last_writer[instruction.rd+1]=i)
+    end
+    sources
+end
+id_resolved(
+    instruction,
+    variant
+) = (instruction.kind=="JUMP" && instruction.rs1==-1) || (instruction.kind in (
+    "BRANCH",
+    "JUMP"
+) && variant.stage=="ID")
+function ready_cycle(instruction,producer,producer_time,variant)
+    variant.forwarding || return producer_time[5]+1
+    result = producer.kind=="LOAD" ? producer_time[5] : producer_time[4]
+    result+id_resolved(instruction,variant)
+end
+const CAUSES = ("control","structural","load_use","raw")
+const STAGES = ("IF","ID","EX","MEM","WB")
+function simulate(instructions,sources,variant,mispredicted)
+    n = length(instructions)
+    timings = zeros(Int,n,5)
+    records,delays = NamedTuple[],Int[]
+    for (i,instruction) in enumerate(instructions)
+        execute = instruction.kind=="MUL" ? variant.latency : 1
+        if i==1
+            fetch,decode,start = 1,2,3
+        else
+            previous = timings[i-1,:]
+            fetch = mispredicted[i-1] ? previous[3]+!id_resolved(instructions[i-1],variant) : previous[2]
+            decode = max(fetch+1,previous[3])
+            ideal = previous[3]+1
+            load_ready,raw_ready = ideal,ideal
+            load_producer,raw_producer = 0,0
+            for source in sources[i]
+                p = source.producer
+                p==0 && continue
+                ready = ready_cycle(instruction,instructions[p],timings[p,:],variant)
+                if instructions[p].kind=="LOAD"
+                    if ready>load_ready
+                        load_ready,load_producer = ready,p
+                    end
+                elseif ready>raw_ready
+                    raw_ready,raw_producer = ready,p
+                end
+            end
+            bounds = (decode+1,previous[4],load_ready,raw_ready)
+            producers = (0,0,load_producer,raw_producer)
+            start = ideal
+            for cause in 1:4
+                if bounds[cause]>start
+                    push!(
+                        records,
+                        (
+                            cause=cause,
+                            cycles=bounds[cause]-start,
+                            responsible=cause<=2 ? i-1 : i,
+                            waiting=i,
+                            producer=producers[cause]
+                        )
+                    )
+                    start = bounds[cause]
+                end
+            end
+            push!(delays,start-ideal)
+        end
+        timings[i,:] = [fetch,decode,start,start+execute,start+execute+1]
+    end
+    (timings=timings,records=records,delays=delays,cycles=timings[end,5])
+end
+function check_record(line,static)
+    tokens = String.(split(line,' ';keepempty=true))
+    pc_text,kind,rd_text,rs1_text,rs2_text,outcome,target_text,address_text = tokens
+    pc = parse_hex(pc_text)
+    texts = (rd_text,rs1_text,rs2_text)
+    registers = parse_register.(texts)
+    rd,rs1,rs2 = registers
+    instruction = (
+        pc=pc,
+        kind=kind,
+        rd=rd,
+        rs1=rs1,
+        rs2=rs2,
+        outcome=outcome,
+        target=target,
+        address=address,
+        next_pc=outcome=="T" ? target : pc+4
+    )
+    instruction,nothing
+function validate_trace(lines)
+    instructions,rejected,gaps = NamedTuple[],Tuple{Int,String}[],NTuple{3,Int}[]
+    static = Dict{Int,NamedTuple}()
+    for (line_number,line) in enumerate(lines)
+        instruction,error = check_record(line,static)
+        if !isnothing(error)
+            push!(rejected,(line_number,error))
+            continue
+        end
+        instruction = (;instruction...,line=line_number,number=length(instructions)+1)
+        push!(instructions,instruction)
+        get!(static,instruction.pc,instruction)
+    end
+    (lines=length(lines),instructions=instructions,rejected=rejected,gaps=gaps,static=static)
+function stall_totals(records)
+    cycles,events = zeros(Int,4),zeros(Int,4)
+    for record in records
+        cycles[record.cause] += record.cycles
+        events[record.cause] += 1
+    end
+    cycles,events
+end
+function all_combinations(instructions,sources,predictions,config)
+    combinations,primary = NamedTuple[],nothing
+    for variant in config["variants"],predictor in config["predictors"]
+        result = simulate(instructions,sources,variant,predictions[predictor.name].flags)
+        cycles,events = stall_totals(result.records)
+        push!(combinations,(variant=variant.name,predictor=predictor.name,cycles=result.cycles,stalls=cycles))
+        if (variant.name,predictor.name)==config["primary"]
+            primary = (;result...,variant=variant,predictor=predictor.name,stalls=cycles,stall_events=events)
+        end
+    end
+    combinations,primary
+end
+function build_rows(instructions,primary,prediction)
+    annotations = fill("",length(instructions))
+    for record in primary.records
+        record.waiting!=0 && (annotations[record.waiting]*=" $(CAUSES[record.cause]) $(record.cycles)")
+    end
+    rows = NamedTuple[]
+    for (i,instruction) in enumerate(instructions)
+        f,d,x,m,w = primary.timings[i,:]
+        annotation = annotations[i]
+        characters = [(f,f,'F'),(f+1,d-1,'*'),(d,d,'D'),(d+1,x-1,'*'),(x,m-1,'X'),(m,m,'M'),(w,w,'W')]
+        stages = [(1,f,d-1),(2,d,x-1),(3,x,m-1),(4,m,m),(5,w,w)]
+        push!(
+            rows,
+            (
+                number=i,
+                pc=instruction.pc,
+                kind=instruction.kind,
+                annotation=annotation,
+                characters=characters,
+                stages=stages
+            )
+        )
+function pipeline_lines(rows,primary,config)
+    first,last = config["window"]
+    width = last-first+1
+    lines = [
+        "pipeline variant=$(primary.variant.name) predictor=$(primary.predictor) cycles $first-$last",
+        cycle_heading(first,last)
+    ]
+    contents = fill(".",width,5)
+    visible,stalled,flushed = 0,0,0
+    for row in rows
+        characters = fill('.',width)
+        for (beginning,ending,symbol) in row.characters,cycle in max(first,beginning):min(last,ending)
+            characters[cycle-first+1] = symbol
+        end
+        if any(!=('.'),characters)
+            visible += 1
+            stalled += count(==('*'),characters)
+            flushed += count(==('x'),characters)
+            push!(lines,diagram_row(row.number,row.pc,row.kind,join(characters),row.annotation))
+        end
+        for (stage,beginning,ending) in row.stages,cycle in max(first,beginning):min(last,ending)
+            contents[cycle-first+1,stage] = row.number==0 ? "w" : string(row.number)
+        end
+    end
+    append!(lines,["$cycle "*join(contents[cycle-first+1,:]," ") for cycle in first:last])
+    lines
+end
+function stall_aggregates(instructions,records)
+    classes = Dict(kind=>0 for kind in CLASSES)
+    by_pc = Dict{Int,Vector{Int}}()
+    pairs = Dict{NTuple{3,Int},Vector{Int}}()
+    for record in records
+        instruction = instructions[record.responsible]
+        classes[instruction.kind] += record.cycles
+        get!(by_pc,instruction.pc,zeros(Int,4))[record.cause] += record.cycles
+    classes,by_pc,pairs
+end
+function timing_part(primary,n,height,refetch)
+    variant,c,stalls = primary.variant,primary.cycles,primary.stalls
+    total = sum(stalls)
+    ["timing variant=$(variant.name) predictor=$(primary.predictor)","forwarding $(variant.forwarding ? "on" : "off") branch_stage $(variant.stage) mul_latency $(variant.latency)",
+        "cycles $c","cpi $(reduced_fraction(c,n)) $(decimal(c,n))","ipc $(decimal(n,c))","stall_cycles total $total $(cause_values(stalls))",
+        "stall_events $(cause_values(primary.stall_events))","flushed $refetch","cycle_check $n + 4 + $total = $(n+4+total)",
+function profile_lines(instructions,groups,predictions,primary,config)
+    branches,loops,indirect,static_lines = ["branches"],["loops"],["indirect"],["instructions"]
+    _,by_pc,_ = stall_aggregates(instructions,primary.records)
+    for pc in sort(collect(keys(groups)))
+        indices = groups[pc]
+        instruction = instructions[indices[1]]
+        operands = join(register_text.((instruction.rd,instruction.rs1,instruction.rs2))," ")
+        total = sum(get(by_pc,pc,zeros(Int,4)))
+        push!(
+            static_lines,
+            "$(hexadecimal(pc)) $(instruction.kind) $operands executions $(length(indices)) stall_cycles $total"
+        )
+    end
+    segments = Dict{Int,Vector{Int}}()
+    first = 1
+    for (last,instruction) in enumerate(instructions)
+        if instruction.kind in CONTROLS || last==length(instructions)
+            pc = instructions[first].pc
+            group = get!(segments,pc,zeros(Int,3))
+            group[1] += 1
+            group[2] += last-first+1
+            group[3] += primary.timings[last,5]-(first==1 ? 0 : primary.timings[first-1,5])
+            first = last+1
+        end
+    end
+    segment_lines = ["segments total $(length(segments))"]
+    ordered = sort(collect(keys(segments));by=pc->(-segments[pc][3],pc))
+    for (rank,pc) in enumerate(ordered[1:min(config["top"],length(ordered))])
+        instances,total,cycles = segments[pc]
+        push!(
+            segment_lines,
+            "$rank $(hexadecimal(pc)) instances $instances instructions $total cycles $cycles cpi $(decimal(cycles,total))"
+        )
+    end
+    join_parts([branches,loops,segment_lines,indirect,static_lines])
+function main()
+    lines,config = read_inputs()
+    trace = validate_trace(lines)
+    instructions = trace.instructions
+    sources = dependencies(instructions)
+    combinations,primary = all_combinations(instructions,sources,predictions,config)
+    rows = build_rows(instructions,primary,predictions[primary.predictor])
+    groups = group_executions(instructions)
+    write_lines("pipeline.txt",pipeline_lines(rows,primary,config))
+    write_lines("stats.txt",statistics_lines(trace,sources,predictions,combinations,primary,rows,config))
+    write_lines("profile.txt",profile_lines(instructions,groups,predictions,primary,config))
+end

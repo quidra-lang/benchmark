@@ -1,0 +1,476 @@
+type Attribute struct {
+	index   int
+	name    string
+	integer bool
+	values  []string
+}
+type Row struct {
+	id     string
+	values []int
+	label  int
+}
+type Settings struct {
+	maxDepth, minSplit, minLeaf, maxSurrogates, folds int
+	curve                                             []int
+	bagTrees                                          int
+	bagSeed                                           int64
+	repeats                                           int
+	permutationSeed                                   int64
+}
+type Dataset struct {
+	attributes              []*Attribute
+	target                  string
+	classes                 []string
+	train, validation, test []Row
+	settings                Settings
+}
+func position(values []string, value string) int {
+	for i, item := range values {
+		if item == value {
+			return i
+		}
+	}
+	return -1
+}
+func readRows(path string, attributes []*Attribute, classes []string) []Row {
+	rows := []Row{}
+	for _, line := range readLines(path)[1:] {
+		fields := strings.Split(line, ",")
+		values := make([]int, len(attributes))
+		for i, attribute := range attributes {
+			text := fields[i+1]
+			if text == "?" {
+				values[i] = -1
+			} else if attribute.integer {
+				values[i] = parseInt(text)
+			} else {
+				values[i] = position(attribute.values, text)
+			}
+		}
+		rows = append(rows, Row{fields[0], values, position(classes, fields[len(fields)-1])})
+	}
+	return rows
+}
+func loadDataset() *Dataset {
+	data := &Dataset{}
+	for _, line := range readLines("input/schema.txt") {
+		fields := strings.Split(line, " ")
+		if fields[0] == "ATTRIBUTE" {
+			data.attributes = append(data.attributes, &Attribute{len(data.attributes), fields[1], fields[2] == "INT", fields[3:]})
+		} else {
+			data.target = fields[1]
+			data.classes = fields[2:]
+		}
+	}
+	entries := map[string][]int{}
+	for _, line := range readLines("input/params.txt") {
+		fields := strings.Split(line, " ")
+		for _, value := range fields[1:] {
+			entries[fields[0]] = append(entries[fields[0]], parseInt(value))
+		}
+	}
+	data.settings = Settings{entries["MAX_DEPTH"][0], entries["MIN_SAMPLES_SPLIT"][0], entries["MIN_SAMPLES_LEAF"][0], entries["MAX_SURROGATES"][0], entries["FOLDS"][0], entries["CURVE"], entries["BAG_TREES"][0], int64(entries["BAG_SEED"][0]), entries["PERMUTATION_REPEATS"][0], int64(entries["PERMUTATION_SEED"][0])}
+	data.train = readRows("input/train.csv", data.attributes, data.classes)
+	data.validation = readRows("input/validation.csv", data.attributes, data.classes)
+	data.test = readRows("input/test.csv", data.attributes, data.classes)
+	return data
+}
+func (r Row) missing() int {
+	count := 0
+	for _, value := range r.values {
+		if value < 0 {
+			count++
+		}
+	}
+	return count
+}
+type Fraction struct{ numerator, denominator int64 }
+type Statistics struct {
+	size     int64
+	counts   []int64
+	squares  int64
+	majority int
+	errors   int64
+}
+func sum(values []int64) int64 {
+	total := int64(0)
+	for _, value := range values {
+		total += value
+	}
+	return total
+}
+func majority(counts []int64) int {
+	selected := 0
+	for i := 1; i < len(counts); i++ {
+		if counts[i] > counts[selected] {
+			selected = i
+		}
+	}
+	return selected
+}
+func squareSum(counts []int64) int64 {
+	total := int64(0)
+	for _, count := range counts {
+		total += count * count
+	}
+	return total
+}
+func statistics(rows []Row, classes int) Statistics {
+	counts := make([]int64, classes)
+	for _, row := range rows {
+		counts[row.label]++
+	}
+	selected := majority(counts)
+	return Statistics{int64(len(rows)), counts, squareSum(counts), selected, int64(len(rows)) - counts[selected]}
+}
+func compareFractions(a, b Fraction) int {
+	first, second := a.numerator*b.denominator, b.numerator*a.denominator
+	if first < second {
+		return -1
+	}
+	if first > second {
+		return 1
+	}
+	return 0
+}
+func quality(left, right Statistics) Fraction {
+	return Fraction{left.squares*right.size + right.squares*left.size, left.size * right.size}
+}
+func improves(value Fraction, parent Statistics) bool {
+	return value.numerator*parent.size > parent.squares*value.denominator
+}
+type Split struct {
+	attribute *Attribute
+	point     int
+}
+func (s Split) goesLeft(value int) bool {
+	if s.attribute.integer {
+		return 2*value <= s.point
+	}
+	return value == s.point
+}
+type Surrogate struct {
+	split Split
+	left  bool
+	score int
+}
+type Candidate struct {
+	split       Split
+	left, right []Row
+	value       Fraction
+}
+type Node struct {
+	number, depth int
+	stats         Statistics
+	split         *Split
+	surrogates    []Surrogate
+	defaultLeft   bool
+	left, right   *Node
+}
+type TreeBuilder struct {
+	attributes []*Attribute
+	classes    int
+	settings   Settings
+}
+func splitCandidates(rows []Row, attribute *Attribute) []Split {
+	seen := map[int]bool{}
+	for _, row := range rows {
+		seen[row.values[attribute.index]] = true
+	}
+	if len(seen) < 2 {
+		return nil
+	}
+	values := make([]int, 0, len(seen))
+	for value := range seen {
+		values = append(values, value)
+	}
+	sort.Ints(values)
+	found := []Split{}
+	if attribute.integer {
+		for i := 1; i < len(values); i++ {
+			found = append(found, Split{attribute, values[i-1] + values[i]})
+		}
+	} else {
+		for _, value := range values {
+			found = append(found, Split{attribute, value})
+		}
+	}
+	return found
+}
+func partition(rows []Row, split Split) ([]Row, []Row) {
+	left, right := []Row{}, []Row{}
+	for _, row := range rows {
+		if split.goesLeft(row.values[split.attribute.index]) {
+			left = append(left, row)
+		} else {
+			right = append(right, row)
+		}
+	}
+	return left, right
+}
+func (b *TreeBuilder) bestForAttribute(rows []Row, attribute *Attribute) *Candidate {
+	var best *Candidate
+	for _, split := range splitCandidates(rows, attribute) {
+		left, right := partition(rows, split)
+		if len(left) < b.settings.minLeaf || len(right) < b.settings.minLeaf {
+			continue
+		}
+		value := quality(statistics(left, b.classes), statistics(right, b.classes))
+		if best == nil || compareFractions(value, best.value) > 0 {
+			best = &Candidate{split, left, right, value}
+		}
+	}
+	return best
+}
+func (b *TreeBuilder) bestSplit(rows []Row) *Candidate {
+	var best *Candidate
+	for _, attribute := range b.attributes {
+		candidate := b.bestForAttribute(rows, attribute)
+		if candidate != nil && (best == nil || compareFractions(candidate.value, best.value) > 0) {
+			best = candidate
+		}
+	}
+	return best
+}
+func (b *TreeBuilder) findSurrogates(rows []Row, primary Split, leftCount, rightCount int) []Surrogate {
+	retained := []Surrogate{}
+	for _, attribute := range b.attributes {
+		if attribute.index == primary.attribute.index {
+			continue
+		}
+		var best *Surrogate
+		for _, split := range splitCandidates(rows, attribute) {
+			agreement := 0
+			for _, row := range rows {
+				if split.goesLeft(row.values[attribute.index]) == primary.goesLeft(row.values[primary.attribute.index]) {
+					agreement++
+				}
+			}
+			left := agreement >= len(rows)-agreement
+			score := max(agreement, len(rows)-agreement)
+			if best == nil || score > best.score {
+				best = &Surrogate{split, left, score}
+			}
+		}
+		if best != nil && best.score > max(leftCount, rightCount) {
+			retained = append(retained, *best)
+		}
+	}
+	sort.SliceStable(retained, func(i, j int) bool { return retained[i].score > retained[j].score })
+	return retained[:min(b.settings.maxSurrogates, len(retained))]
+}
+func (b *TreeBuilder) grow(rows []Row) *Node { return b.growNode(rows, 1, 0) }
+func (b *TreeBuilder) growNode(rows []Row, number, depth int) *Node {
+	node := &Node{number: number, depth: depth, stats: statistics(rows, b.classes)}
+	if node.stats.errors == 0 || depth == b.settings.maxDepth || len(rows) < b.settings.minSplit {
+		return node
+	}
+	best := b.bestSplit(rows)
+	if best == nil || !improves(best.value, node.stats) {
+		return node
+	}
+	node.split = &best.split
+	node.defaultLeft = len(best.left) >= len(best.right)
+	node.surrogates = b.findSurrogates(rows, best.split, len(best.left), len(best.right))
+	node.left = b.growNode(best.left, number*2, depth+1)
+	node.right = b.growNode(best.right, number*2+1, depth+1)
+	return node
+}
+type Tree struct {
+	root *Node
+	cuts map[int]bool
+}
+type RouteStep struct {
+	node   *Node
+	left   bool
+	method string
+}
+type Route struct {
+	leaf  *Node
+	path  []*Node
+	steps []RouteStep
+}
+func (t Tree) isLeaf(node *Node) bool { return node.split == nil || t.cuts[node.number] }
+func (t Tree) route(row Row) Route {
+	result := Route{}
+	node := t.root
+	for {
+		result.path = append(result.path, node)
+		if t.isLeaf(node) {
+			result.leaf = node
+			return result
+		}
+		left, method := node.defaultLeft, "default"
+		value := row.values[node.split.attribute.index]
+		if value >= 0 {
+			left = node.split.goesLeft(value)
+			method = "primary"
+		} else {
+			for _, surrogate := range node.surrogates {
+				value = row.values[surrogate.split.attribute.index]
+				if value >= 0 {
+					left = surrogate.split.goesLeft(value) == surrogate.left
+					method = "surrogate"
+					break
+				}
+			}
+		}
+		result.steps = append(result.steps, RouteStep{node, left, method})
+		if left {
+			node = node.left
+		} else {
+			node = node.right
+		}
+	}
+}
+func (t Tree) predict(row Row) int { return t.route(row).leaf.stats.majority }
+func (t Tree) correct(rows []Row) int64 {
+	correct := int64(0)
+	for _, row := range rows {
+		if t.predict(row) == row.label {
+			correct++
+		}
+	}
+	return correct
+}
+func classificationLines(title string, classes []string, rows []Row, predicted []int) []string {
+	matrix := make([][]int64, len(classes))
+	for i := range matrix {
+		matrix[i] = make([]int64, len(classes))
+	}
+	correct := int64(0)
+	for i, row := range rows {
+		matrix[row.label][predicted[i]]++
+		if row.label == predicted[i] {
+			correct++
+		}
+	}
+	lines := []string{fmt.Sprintf("confusion %s correct %d/%d accuracy %s", title, correct, len(rows), fractionText(correct, int64(len(rows)), 4)), "actual\\predicted " + strings.Join(classes, " ")}
+	for i, name := range classes {
+		lines = append(lines, name+" "+countsText(matrix[i]))
+	}
+	macro := 0.0
+	defined := 0
+	for i, name := range classes {
+		hits := matrix[i][i]
+		predictedTotal := int64(0)
+		for _, counts := range matrix {
+			predictedTotal += counts[i]
+		}
+		support := sum(matrix[i])
+		denominator := predictedTotal + support
+		if denominator > 0 {
+			macro += float64(2*hits) / float64(denominator)
+			defined++
+		}
+		lines = append(lines, fmt.Sprintf("class %s precision %s recall %s f1 %s support %d", name, fractionText(hits, predictedTotal, 4), fractionText(hits, support, 4), fractionText(2*hits, denominator, 4), support))
+	}
+	average := "-"
+	if defined > 0 {
+		average = realText(macro/float64(defined), 4)
+	}
+	return append(lines, "macro_f1 "+average)
+}
+func reducedErrorPruning(root *Node, rows []Row) (Tree, []Decision) {
+	reached := map[int][]Row{}
+	original := Tree{root, nil}
+	for _, row := range rows {
+		for _, node := range original.route(row).path {
+			reached[node.number] = append(reached[node.number], row)
+		}
+	}
+	cuts := map[int]bool{}
+	decisions := []Decision{}
+	var decide func(*Node) int64
+	decide = func(node *Node) int64 {
+		leafError := int64(0)
+		for _, row := range reached[node.number] {
+			if row.label != node.stats.majority {
+				leafError++
+			}
+		}
+		if node.split == nil {
+			return leafError
+		}
+		subtreeError := decide(node.left) + decide(node.right)
+		pruned := leafError <= subtreeError
+		decisions = append(decisions, Decision{node, len(reached[node.number]), leafError, subtreeError, pruned})
+		if pruned {
+			cuts[node.number] = true
+			return leafError
+		}
+		return subtreeError
+	}
+	decide(root)
+	return Tree{root, cuts}, decisions
+}
+func newAnalysis(data *Dataset) *Analysis {
+	a := &Analysis{data: data, builder: &TreeBuilder{data.attributes, len(data.classes), data.settings}, predictions: map[string][]int{}}
+	a.grown = Tree{a.builder.grow(data.train), nil}
+	a.pruned, a.decisions = reducedErrorPruning(a.grown.root, data.validation)
+	models := []struct {
+		name string
+		tree Tree
+	}{{"grown", a.grown}, {"pruned", a.pruned}, {"depth", a.depths[a.selectedDepth].tree}, {"cost_complexity", a.sequence[a.selectedIndex].tree}}
+	for _, model := range models {
+		for _, row := range data.test {
+			a.predictions[model.name] = append(a.predictions[model.name], model.tree.predict(row))
+		}
+	}
+func (a *Analysis) accuracy(tree Tree, rows []Row) string {
+	return ratioText(tree.correct(rows), int64(len(rows)))
+}
+func (a *Analysis) predictionLines() []string {
+	lines := []string{"id,predicted,actual,grown,leaf,path,missing"}
+	for _, row := range a.data.test {
+		route := a.pruned.route(row)
+		path := []string{}
+		missing := 0
+		for _, node := range route.path {
+			path = append(path, strconv.Itoa(node.number))
+		}
+		for _, step := range route.steps {
+			if step.method != "primary" {
+				missing++
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s,%s,%s,%s,%d,%s,%d", row.id, a.data.classes[route.leaf.stats.majority], a.data.classes[row.label], a.data.classes[a.grown.predict(row)], route.leaf.number, strings.Join(path, "-"), missing))
+	}
+	return lines
+}
+func (a *Analysis) modelEvaluation(model string) []string {
+	return classificationLines(model+" test", a.data.classes, a.data.test, a.predictions[model])
+}
+func (a *Analysis) routingLines() []string {
+	tally := map[int]map[string]int{}
+	for _, node := range a.pruned.internal() {
+		tally[node.number] = map[string]int{}
+	}
+	complete, incomplete := []Row{}, []Row{}
+	for _, row := range a.data.test {
+		for _, step := range a.pruned.route(row).steps {
+			tally[step.node.number][step.method]++
+		}
+		if row.missing() == 0 {
+			complete = append(complete, row)
+		} else {
+			incomplete = append(incomplete, row)
+		}
+	}
+	lines := []string{"routing pruned test"}
+	for _, node := range a.pruned.internal() {
+		counts := tally[node.number]
+		rows := counts["primary"] + counts["surrogate"] + counts["default"]
+		lines = append(lines, fmt.Sprintf("node %d rows %d primary %d surrogate %d default %d", node.number, rows, counts["primary"], counts["surrogate"], counts["default"]))
+	}
+	return append(lines, fmt.Sprintf("complete rows %d correct %s", len(complete), a.accuracy(a.pruned, complete)), fmt.Sprintf("incomplete rows %d correct %s", len(incomplete), a.accuracy(a.pruned, incomplete)))
+}
+func writeLines(name string, lines []string) {
+	if err := os.WriteFile("output/"+name, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		panic(err)
+	}
+}
+func main() {
+	analysis := newAnalysis(loadDataset())
+	writeLines("predictions.csv", analysis.predictionLines())
+	writeLines("evaluation.txt", joinSections(analysis.dataLines(), []string{analysis.summaryLine("grown", analysis.grown), analysis.summaryLine("pruned", analysis.pruned)}, analysis.modelEvaluation("grown"), analysis.modelEvaluation("pruned"), analysis.routingLines(), analysis.crossValidationLines(), analysis.depthLines(), analysis.complexityLines(), analysis.baggingLines(), analysis.mcnemarLines(), analysis.aucLines(), analysis.learningLines()))

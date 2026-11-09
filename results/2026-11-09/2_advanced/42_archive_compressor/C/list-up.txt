@@ -1,0 +1,387 @@
+typedef uint8_t Byte;
+typedef int64_t Integer;
+typedef struct {
+    Byte *data;
+    size_t count, capacity;
+} Bytes;
+static Lines text_lines(const Bytes *bytes) {
+    Lines out = {0};
+    size_t first = 0;
+    for (size_t i = 0; i < bytes->count; ++i)
+        if (bytes->data[i] == 10) {
+            size_t length = i - first;
+            char *line = resize(NULL, length + 1);
+            memcpy(line, bytes->data + first, length);
+            line[length] = 0;
+            line_push(&out, line);
+            first = i + 1;
+        }
+    return out;
+}
+static Lines hex_lines(const Bytes *bytes) {
+    Lines out = {0};
+    const char *digits = "0123456789abcdef";
+    for (size_t first = 0; first < bytes->count; first += 32) {
+        size_t count = bytes->count - first;
+        if (count > 32)
+            count = 32;
+        char *line = resize(NULL, 2 * count + 1);
+        for (size_t i = 0; i < count; ++i) {
+            line[2 * i] = digits[bytes->data[first + i] >> 4];
+            line[2 * i + 1] = digits[bytes->data[first + i] & 15];
+        }
+        line[2 * count] = 0;
+        line_push(&out, line);
+    }
+    return out;
+}
+static uint32_t adler(const Bytes *bytes) {
+    uint32_t s1 = 1, s2 = 0;
+    for (size_t i = 0; i < bytes->count; ++i) {
+        s1 = (s1 + bytes->data[i]) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    return s2 * 65536 + s1;
+}
+static Bytes lzh_encode(const Tokens *tokens, int b, int k, int maximum, LzhStats *stats) {
+    Huffman literal = huffman_lengths(frequency, count, maximum),
+            distance = huffman_lengths(offset_frequency, b + 1, maximum);
+static const char *decode(int method, const Bytes *payload, uint32_t original, int b, int k, Bytes *output) {
+    if (method == 0) {
+        for (size_t i = 0; i < payload->count; ++i) {
+            if (output->count == original)
+                return NULL;
+            byte_push(output, payload->data[i]);
+        }
+        return output->count < original ? "end_of_data" : NULL;
+    }
+    if (method == 1)
+        return lzw_decode(payload, original, output);
+    if (method == 4)
+        return arith_decode(payload, original, output);
+static Encoded encode(const Bytes *data, int b, int k, int maximum) {
+    Encoded out = {0};
+    out.tokens = tokenize(data, b, k);
+    out.payloads[0] = bytes_copy(data);
+    out.payloads[1] = lzw_encode(data, &out.lzw);
+    out.payloads[2] = lz77_encode(&out.tokens, b, k);
+    out.payloads[3] = lzh_encode(&out.tokens, b, k, maximum, &out.lzh);
+    out.payloads[4] = arith_encode(data, &out.arith);
+    for (int method = 1; method < 5; ++method)
+        if (out.payloads[method].count < out.payloads[out.best].count)
+            out.best = method;
+    return out;
+}
+typedef struct {
+    char *name;
+    Bytes data, payload;
+    int method;
+} File;
+typedef struct {
+    File *data;
+    size_t count, capacity;
+} Files;
+static void big_endian(Bytes *bytes, uint32_t value, int count) {
+    for (int shift = 8 * (count - 1); shift >= 0; shift -= 8)
+        byte_push(bytes, (Byte)((value >> shift) & 255));
+}
+static uint32_t read_integer(const Bytes *bytes, size_t first, int count) {
+    uint32_t value = 0;
+    for (int i = 0; i < count; ++i)
+        value = (value << 8) | bytes->data[first + (size_t)i];
+    return value;
+}
+static Bytes build_archive(const Files *files, int b, int k) {
+    Bytes archive = {0};
+    bytes_append(&archive, (const Byte *)"TXAR", 4);
+    byte_push(&archive, (Byte)b);
+    byte_push(&archive, (Byte)k);
+    big_endian(&archive, (uint32_t)files->count, 2);
+    for (size_t f = 0; f < files->count; ++f) {
+        const File *file = &files->data[f];
+        size_t first = archive.count;
+        byte_push(&archive, (Byte)strlen(file->name));
+        bytes_append(&archive, (const Byte *)file->name, strlen(file->name));
+        byte_push(&archive, (Byte)file->method);
+        big_endian(&archive, (uint32_t)file->data.count, 4);
+        big_endian(&archive, (uint32_t)file->payload.count, 4);
+        big_endian(&archive, adler(&file->data), 4);
+        int sum = 0;
+        for (size_t i = first; i < archive.count; ++i)
+            sum += archive.data[i];
+        byte_push(&archive, (Byte)(sum % 256));
+        bytes_append(&archive, file->payload.data, file->payload.count);
+    }
+    return archive;
+}
+typedef struct {
+    int number, method;
+    size_t position, start;
+    uint32_t original, compressed, stored, computed;
+    char *name;
+    const char *status, *error;
+    bool valid, header_cut;
+    Bytes output;
+    size_t error_position, repair_position;
+    int repair_from, repair_to;
+} Entry;
+typedef struct {
+    const char *error;
+    int b, k, declared;
+    size_t size, trailing;
+    bool stopped;
+    Entry *entries;
+    size_t count, capacity;
+} Parsed;
+static Integer modulo(Integer value, Integer modulus) {
+    Integer remainder = value % modulus;
+    return remainder < 0 ? remainder + modulus : remainder;
+}
+static Integer power_mod(Integer value, Integer exponent) {
+    Integer result = 1;
+    while (exponent) {
+        if (exponent % 2)
+            result = result * value % 65521;
+        value = value * value % 65521;
+        exponent /= 2;
+    }
+    return result;
+}
+static bool repair(Entry *entry) {
+    Integer delta_a = modulo((Integer)(entry->stored % 65536) - (Integer)(entry->computed % 65536), 65521),
+            delta_b = modulo((Integer)(entry->stored / 65536) - (Integer)(entry->computed / 65536), 65521),
+            delta;
+    if (delta_a >= 1 && delta_a <= 255)
+        delta = delta_a;
+    else if (delta_a >= 65266 && delta_a <= 65520)
+        delta = delta_a - 65521;
+    else
+        return false;
+    Integer inverse = power_mod(modulo(delta, 65521), 65519), t = delta_b * inverse % 65521;
+    if (t < 1 || t > (Integer)entry->output.count)
+        return false;
+    size_t position = entry->output.count - (size_t)t;
+    int old = entry->output.data[position], value = old + (int)delta;
+    if (value < 0 || value > 255)
+        return false;
+    entry->output.data[position] = (Byte)value;
+    if (adler(&entry->output) != entry->stored) {
+        entry->output.data[position] = (Byte)old;
+        return false;
+    }
+    entry->repair_position = position;
+    entry->repair_from = old;
+    entry->repair_to = value;
+    return true;
+}
+static bool valid_name(const char *name, int length) {
+    if (length == 0 || length > 32)
+        return false;
+    for (int i = 0; i < length; ++i) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+static Parsed parse(const Bytes *bytes) {
+    Parsed out = {.size = bytes->count};
+    if (bytes->count < 8 || memcmp(bytes->data, "TXAR", 4)) {
+        out.error = "bad_magic";
+        return out;
+    }
+    out.b = bytes->data[4];
+    out.k = bytes->data[5];
+    if (out.b < 6 || out.b > 12 || out.k < 2 || out.k > 5) {
+        out.error = "bad_params";
+        return out;
+    }
+    out.declared = (int)read_integer(bytes, 6, 2);
+    size_t position = 8;
+    for (int number = 1; number <= out.declared; ++number) {
+        Entry entry = {.number = number, .position = position};
+        if (position >= bytes->count || position + 15 + bytes->data[position] > bytes->count) {
+            entry.status = "truncated";
+            entry.header_cut = true;
+            entry_push(&out, entry);
+            out.stopped = true;
+            break;
+        }
+        int length = bytes->data[position];
+        entry.name = resize(NULL, (size_t)length + 1);
+        memcpy(entry.name, bytes->data + position + 1, (size_t)length);
+        entry.name[length] = 0;
+        entry.method = bytes->data[position + 1 + (size_t)length];
+        entry.original = read_integer(bytes, position + 2 + (size_t)length, 4);
+        entry.compressed = read_integer(bytes, position + 6 + (size_t)length, 4);
+        entry.stored = read_integer(bytes, position + 10 + (size_t)length, 4);
+        entry.start = position + 15 + (size_t)length;
+        size_t next = entry.start + entry.compressed;
+        int sum = 0;
+        for (size_t i = position; i < entry.start - 1; ++i)
+            sum += bytes->data[i];
+        if (sum % 256 != bytes->data[entry.start - 1] || !valid_name(entry.name, length)) {
+            entry.status = "bad_header";
+            position = next;
+            entry_push(&out, entry);
+            if (position > bytes->count) {
+                out.stopped = true;
+                break;
+            }
+            continue;
+        }
+        entry.valid = true;
+        if (next > bytes->count) {
+            entry.status = "truncated";
+            entry_push(&out, entry);
+            out.stopped = true;
+            break;
+        }
+        if (entry.method >= 5)
+            entry.status = "unsupported";
+        else {
+            Bytes payload = {.data = bytes->data + entry.start, .count = entry.compressed};
+            entry.error = decode(entry.method, &payload, entry.original, out.b, out.k, &entry.output);
+            if (entry.error) {
+                entry.status = "error";
+                entry.error_position = entry.output.count;
+            } else {
+                entry.computed = adler(&entry.output);
+                entry.status = entry.computed == entry.stored ? "ok"
+                               : repair(&entry)               ? "repaired"
+                                                              : "checksum";
+            }
+        }
+        entry_push(&out, entry);
+        position = next;
+    }
+    if (!out.stopped)
+        out.trailing = bytes->count - position;
+    return out;
+}
+static int verified(const Parsed *parsed, const Files *files) {
+    int count = 0;
+    for (size_t i = 0; i < parsed->count && i < files->count; ++i) {
+        const Entry *entry = &parsed->entries[i];
+        const Bytes *data = &files->data[i].data;
+        count += !strcmp(entry->status, "ok") && entry->output.count == data->count &&
+                 (!data->count || !memcmp(entry->output.data, data->data, data->count));
+    }
+    return count;
+}
+static bool intact(const Entry *entry) {
+    return !strcmp(entry->status, "ok") || !strcmp(entry->status, "repaired");
+}
+int main(void) {
+    mkdir("output", 0777);
+    Bytes manifest_bytes = read_bytes("input/manifest.txt");
+    Lines manifest = text_lines(&manifest_bytes);
+    int b = atoi(strchr(manifest.data[0], ' ') + 1), k = atoi(strchr(manifest.data[1], ' ') + 1),
+        maximum = atoi(strchr(manifest.data[2], ' ') + 1);
+    Bytes hex = read_bytes("input/archive.hex"), given = {0};
+    Lines hex_input = text_lines(&hex);
+    for (size_t l = 0; l < hex_input.count; ++l) {
+        const char *line = hex_input.data[l];
+        for (size_t i = 0; line[i]; i += 2) {
+            char pair[3] = {line[i], line[i + 1], 0};
+            byte_push(&given, (Byte)strtoul(pair, NULL, 16));
+        }
+    }
+    lines_free(&hex_input);
+    bytes_free(&hex);
+    Parsed parsed = parse(&given);
+    Lines tested = {0}, extracted = {0}, comparison = {0};
+    Files salvage = {0};
+    if (parsed.error)
+        line_push(&tested, format("archive error %s", parsed.error));
+    else {
+        const char *statuses[] = {"ok",          "repaired",  "checksum",  "error",
+                                  "unsupported", "truncated", "bad_header"};
+        int counts[7] = {0};
+        for (size_t i = 0; i < parsed.count; ++i) {
+            const Entry *entry = &parsed.entries[i];
+            for (int s = 0; s < 7; ++s)
+                if (!strcmp(statuses[s], entry->status))
+                    ++counts[s];
+            if (entry->header_cut)
+                line_push(&tested, format("entry %d offset %zu status truncated header", entry->number,
+                                          entry->position));
+            else if (!entry->valid)
+                line_push(&tested,
+                          format("entry %d offset %zu status bad_header", entry->number, entry->position));
+            else {
+                char *line = format("entry %d offset %zu name %s method %s status %s", entry->number,
+                                    entry->position, entry->name, method_name(entry->method), entry->status),
+                     *details = NULL;
+                if (!strcmp(entry->status, "repaired"))
+                    details = format(" byte %zu from %d to %d", entry->repair_position, entry->repair_from,
+                                     entry->repair_to);
+                else if (!strcmp(entry->status, "checksum"))
+                    details = format(" stored %s computed %s", hex8(entry->stored), hex8(entry->computed));
+                else if (!strcmp(entry->status, "error"))
+                    details = format(" %s at %zu", entry->error, entry->error_position);
+                else if (!strcmp(entry->status, "truncated"))
+                    details =
+                        format(" payload have %zu need %u", parsed.size - entry->start, entry->compressed);
+                if (details) {
+                    line_push(&tested, format("%s%s", line, details));
+                    free(line);
+                    free(details);
+                } else
+                    line_push(&tested, line);
+            }
+        }
+        char *summary = format("summary entries %d checked %zu", parsed.declared, parsed.count);
+        for (int s = 0; s < 7; ++s) {
+            char *next = format("%s %s %d", summary, statuses[s], counts[s]);
+            free(summary);
+            summary = next;
+        }
+        line_push(&tested, format("%s missing %zu trailing %zu", summary,
+                                  (size_t)parsed.declared - parsed.count, parsed.trailing));
+        free(summary);
+    }
+    int salvage_b = parsed.error ? b : parsed.b, salvage_k = parsed.error ? k : parsed.k;
+    Integer salvage_original = 0;
+    for (size_t i = 0; i < parsed.count; ++i) {
+        const Entry *entry = &parsed.entries[i];
+        if (!intact(entry))
+            continue;
+        Lines lines = text_lines(&entry->output);
+        int word_count = 0;
+        size_t longest = 0;
+        for (size_t j = 0; j < lines.count; ++j) {
+            size_t length = strlen(lines.data[j]);
+            if (length > longest)
+                longest = length;
+            bool in_word = false;
+            for (size_t t = 0; t < length; ++t) {
+                if (lines.data[j][t] == ' ')
+                    in_word = false;
+                else if (!in_word) {
+                    ++word_count;
+                    in_word = true;
+                }
+            }
+        }
+        line_push(&extracted, format("file %s bytes %zu lines %zu words %d longest %zu", entry->name,
+                                     entry->output.count, lines.count, word_count, longest));
+        lines_extend(&extracted, &lines);
+        Encoded encoded = encode(&entry->output, salvage_b, salvage_k, maximum);
+        File file = {text(entry->name), bytes_copy(&entry->output),
+                     bytes_copy(&encoded.payloads[encoded.best]), encoded.best};
+        line_push(&tested,
+                  format("salvage %s method %s compressed %zu was %s %u", entry->name, methods[file.method],
+                         file.payload.count, method_name(entry->method), entry->compressed));
+        salvage_original += (Integer)file.data.count;
+        file_push(&salvage, file);
+        encoded_free(&encoded);
+    }
+    Bytes salvaged = build_archive(&salvage, salvage_b, salvage_k);
+    verification = parse(&salvaged);
+    line_push(&tested,
+              format("salvaged entries %zu bytes %zu original %lld verified %d", salvage.count,
+                     salvaged.count, (long long)salvage_original, verified(&verification, &salvage)));
+    write_owned("test_report.txt", tested);
+    write_owned("extracted.txt", extracted);
+    write_owned("salvaged.hex", hex_lines(&salvaged));

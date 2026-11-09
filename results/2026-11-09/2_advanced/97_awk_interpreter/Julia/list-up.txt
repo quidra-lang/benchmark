@@ -1,0 +1,694 @@
+struct SyntaxIssue <: Exception
+    position::Tuple{Int,Int}
+end
+
+struct AwkToken
+    kind::String
+    spelling::String
+    value::Union{Nothing,Int,String}
+    position::Tuple{Int,Int}
+end
+const KEYWORDS = Set(split("BEGIN END function if else while for do break continue next exit return delete in getline print printf"))
+const BUILTINS = Set(split("length substr index split sprintf toupper tolower close int"))
+const PAIRS = Set(split("+= -= *= /= %= ^= == <= >= != ++ -- && || >>"))
+const SYMBOLS = Set("+-*/%^!><?:=()[]{},;\$")
+const ESCAPES = Dict('n'=>'\n','t'=>'\t','\\'=>'\\','"'=>'"','/'=>'/')
+letter(character) = 'a' <= character <= 'z' || 'A' <= character <= 'Z'
+digit(character) = '0' <= character <= '9'
+function tokenize(source)
+    tokens = AwkToken[]
+    index,line,column = 1,1,1
+    while index <= length(source)
+        character = source[index]
+        position = (line,column)
+        if character == ' '
+            index += 1
+            column += 1
+            continue
+        elseif character == '\\' && index < length(source) && source[index+1] == '\n'
+            index += 2
+            line += 1
+            column = 1
+            continue
+        elseif character == '#'
+            while index <= length(source) && source[index] != '\n'
+                index += 1
+                column += 1
+            end
+            continue
+        elseif character == '\n'
+            push!(tokens,AwkToken("newline","\n",nothing,position))
+            index += 1
+            line += 1
+            column = 1
+            continue
+        end
+        finish,value = index+1,nothing
+        if digit(character)
+            while finish <= length(source) && digit(source[finish])
+                finish += 1
+            end
+            kind,value = "number",parse(Int,source[index:finish-1])
+        elseif letter(character) || character == '_'
+            while finish <= length(source) && name_character(source[finish])
+                finish += 1
+            end
+            word = source[index:finish-1]
+            kind = word in KEYWORDS ? "keyword" : word in BUILTINS ? "builtin" : finish <= length(source) && source[finish] == '(' ? "function_name" : "name"
+        elseif character == '"'
+            pieces = Char[]
+            while finish <= length(source) && source[finish] != '"'
+                source[finish] == '\n' && throw(SyntaxIssue(position))
+                if source[finish] == '\\'
+                    (finish == length(source) || !haskey(ESCAPES,source[finish+1])) && throw(SyntaxIssue((line,column+finish-index)))
+                    push!(pieces,ESCAPES[source[finish+1]])
+                    finish += 2
+                else
+                    push!(pieces,source[finish])
+                    finish += 1
+                end
+            end
+            finish <= length(source) || throw(SyntaxIssue(position))
+            finish += 1
+            kind,value = "string",join(pieces)
+        elseif finish <= length(source) && source[index:finish] in PAIRS
+            finish += 1
+            kind = "symbol"
+        elseif character in SYMBOLS
+            kind = "symbol"
+        else
+            throw(SyntaxIssue(position))
+        end
+        push!(tokens,AwkToken(kind,source[index:finish-1],value,position))
+        column += finish-index
+        index = finish
+    end
+    push!(tokens,AwkToken("end","",nothing,(count(==('\n'),source)+1,1)))
+    tokens
+end
+const ASSIGNMENTS = Set(["=","+=","-=","*=","/=","%=","^="])
+const COMPARISONS = Set(["<","<=","==","!=",">=",">"])
+const LVALUE_KINDS = Set(["name","array","field"])
+const STATEMENTS = Set(["if","while","do","for","for_in","print","printf","delete","next","break","continue","exit","return","expression_statement"])
+
+mutable struct AwkNode
+    kind::String
+    position::Tuple{Int,Int}
+    children::Vector{AwkNode}
+    attributes::Dict{Symbol,Any}
+end
+function awk_node(kind,position,children=AwkNode[];kwargs...)
+    AwkNode(kind,position,AwkNode[child for child in children if child !== nothing],Dict{Symbol,Any}(kwargs))
+end
+function Base.getproperty(node::AwkNode,name::Symbol)
+    name in (:kind,:position,:children,:attributes) && return getfield(node,name)
+    get(getfield(node,:attributes),name,nothing)
+end
+function Base.setproperty!(node::AwkNode,name::Symbol,value)
+    if name in (:kind,:position,:children,:attributes)
+        setfield!(node,name,value)
+    else
+        getfield(node,:attributes)[name] = value
+    end
+end
+mutable struct AwkParser
+    tokens::Vector{AwkToken}
+    index::Int
+    in_function::Bool
+    phase::Union{Nothing,String}
+    loop_depth::Int
+end
+AwkParser(tokens) = AwkParser(tokens,1,false,nothing,0)
+current_token(parser) = parser.tokens[parser.index]
+function take_token!(parser)
+    token = current_token(parser)
+    parser.index += 1
+    token
+end
+syntax_error(parser,position=current_token(parser).position) = throw(SyntaxIssue(position))
+accept_token!(parser,spelling) = current_token(parser).spelling == spelling ? take_token!(parser) : nothing
+function expect_token!(parser,spelling)
+    current_token(parser).spelling == spelling || syntax_error(parser)
+    take_token!(parser)
+end
+function parse_name!(parser)
+    current_token(parser).kind == "name" || syntax_error(parser)
+    token = take_token!(parser)
+    awk_node("name",token.position;name=token.spelling)
+end
+function skip_newlines!(parser)
+    while accept_token!(parser,"\n") !== nothing
+    end
+end
+function parse_program!(parser)
+    items = AwkNode[]
+    while current_token(parser).kind != "end"
+        if current_token(parser).spelling in ("\n",";")
+            take_token!(parser)
+            continue
+        end
+        opening = current_token(parser)
+        if accept_token!(parser,"function") !== nothing
+        end
+        patterns = AwkNode[]
+        if opening.spelling in ("BEGIN","END")
+            flavor = take_token!(parser).spelling
+        elseif opening.spelling == "{"
+            flavor = "all"
+        end
+        parser.phase = flavor
+        if flavor in ("BEGIN","END","all") || current_token(parser).spelling == "{"
+            action = parse_block!(parser)
+        parser.phase = nothing
+        push!(items,awk_node("rule",opening.position,[patterns;[action]];flavor=flavor,patterns=patterns,action=action))
+    end
+    items
+end
+function parse_block!(parser)
+    opening = expect_token!(parser,"{")
+    statements = AwkNode[]
+    while current_token(parser).spelling != "}"
+        if current_token(parser).spelling in ("\n",";")
+            take_token!(parser)
+        else
+            push!(statements,parse_statement!(parser))
+        end
+    end
+    expect_token!(parser,"}")
+    awk_node("block",opening.position,statements;statements=statements)
+end
+function parse_terminator!(parser)
+    if current_token(parser).spelling in (";","\n")
+        take_token!(parser)
+    elseif current_token(parser).spelling != "}"
+        syntax_error(parser)
+    end
+end
+function parse_statement!(parser)
+    token = current_token(parser)
+    spelling = token.spelling
+    spelling == "{" && return parse_block!(parser)
+    accept_token!(parser,";") !== nothing && return awk_node("empty",token.position)
+    if spelling in ("print","printf")
+        take_token!(parser)
+        result = parse_output!(parser,token)
+    else
+        expression = parse_expression!(parser)
+        result = awk_node("expression_statement",token.position,[expression];expression=expression)
+    end
+    parse_terminator!(parser)
+    result
+end
+function parenthesized_output(parser)
+    current_token(parser).spelling == "(" || return false
+    depth = 0
+function parse_output!(parser,token)
+    arguments = AwkNode[]
+    if parenthesized_output(parser)
+        expect_token!(parser,"(")
+        arguments = parse_expression_list!(parser)
+        expect_token!(parser,")")
+    elseif !(current_token(parser).spelling in (";","\n","}",">",">>"))
+        arguments = parse_expression_list!(parser,false)
+    end
+    token.spelling == "printf" && isempty(arguments) && syntax_error(parser)
+    redirect = current_token(parser).spelling in (">",">>") ? take_token!(parser) : nothing
+    filename = redirect === nothing ? nothing : parse_concatenation!(parser)
+    awk_node(token.spelling,token.position,[arguments;[filename]];
+        arguments=arguments,redirect=redirect === nothing ? nothing : redirect.spelling,
+        redirect_position=redirect === nothing ? nothing : redirect.position,filename=filename)
+end
+function parse_expression_list!(parser,greater=true)
+    result = AwkNode[parse_expression!(parser,greater)]
+    while accept_token!(parser,",") !== nothing
+        skip_newlines!(parser)
+        push!(result,parse_expression!(parser,greater))
+    end
+    result
+end
+function parse_expression!(parser,greater=true)
+    left = parse_conditional!(parser,greater)
+    if left.kind in LVALUE_KINDS && current_token(parser).spelling in ASSIGNMENTS
+        operator = take_token!(parser)
+        right = parse_expression!(parser,greater)
+        return awk_node("assignment",operator.position,[left,right];operator=operator.spelling,location=left,value=right)
+    end
+    left
+end
+function parse_conditional!(parser,greater)
+    condition = parse_logical!(parser,0,greater)
+    operator = accept_token!(parser,"?")
+    operator === nothing && return condition
+end
+function parse_logical!(parser,level,greater)
+    level == 2 && return parse_membership!(parser,greater)
+    spelling = level == 0 ? "||" : "&&"
+    left = parse_logical!(parser,level+1,greater)
+    while current_token(parser).spelling == spelling
+    end
+    left
+end
+function parse_membership!(parser,greater)
+    left = parse_comparison!(parser,greater)
+    while current_token(parser).spelling == "in"
+    end
+    left
+end
+function parse_comparison!(parser,greater)
+    left = parse_concatenation!(parser)
+    while current_token(parser).spelling in COMPARISONS && (greater || current_token(parser).spelling != ">")
+    end
+    left
+end
+function parse_concatenation!(parser)
+    left = parse_additive!(parser)
+    while current_token(parser).kind in ("number","string","name","function_name","builtin") || current_token(parser).spelling in ("\$","(","++","--")
+    end
+    left
+end
+function parse_additive!(parser)
+    left = parse_multiplicative!(parser)
+    while current_token(parser).spelling in ("+","-")
+    end
+    left
+end
+function parse_multiplicative!(parser)
+    left = parse_unary!(parser)
+    while current_token(parser).spelling in ("*","/","%")
+    end
+    left
+end
+function parse_unary!(parser)
+    if current_token(parser).spelling in ("!","-","+")
+    end
+    left = parse_postfix!(parser)
+    if current_token(parser).spelling == "^"
+    end
+    left
+end
+function parse_postfix!(parser)
+    current_token(parser).spelling in ("++","--") && return parse_prefix!(parser)
+    left = parse_atom!(parser)
+    if left.kind in LVALUE_KINDS && current_token(parser).spelling in ("++","--")
+    end
+    left
+end
+function parse_lvalue!(parser)
+    if current_token(parser).kind == "name"
+        node = parse_name!(parser)
+        if accept_token!(parser,"[") !== nothing
+        end
+        return node
+    end
+    dollar = accept_token!(parser,"\$")
+    if dollar !== nothing
+        index = current_token(parser).spelling in ("++","--") ? parse_prefix!(parser) : parse_atom!(parser)
+        return awk_node("field",dollar.position,[index];index=index)
+    end
+    syntax_error(parser)
+end
+function parse_atom!(parser)
+    token = current_token(parser)
+    if token.kind in ("number","string")
+        take_token!(parser)
+        return awk_node(token.kind,token.position;value=token.value)
+    elseif token.kind == "name" || token.spelling == "\$"
+        return parse_lvalue!(parser)
+struct AwkValue
+    kind::Symbol
+    text::String
+    numeric::Int
+end
+const UNINITIALIZED = AwkValue(:uninitialized,"",0)
+const WHITESPACE = Set([' ','\t','\n'])
+const AwkArray = Dict{String,AwkValue}
+const AwkVariable = Union{AwkValue,AwkArray}
+number(value) = AwkValue(:number,"",Int(value))
+string_value(value) = AwkValue(:string,value,0)
+function input_value(text)
+    trimmed = strip(text,collect(WHITESPACE))
+    beginning = !isempty(trimmed) && trimmed[1] in ('+','-') ? 2 : 1
+    numeric = beginning <= length(trimmed) && all(digit,trimmed[beginning:end])
+    numeric ? AwkValue(:strnum,text,numeric_prefix(trimmed)) : string_value(text)
+end
+to_number(value) = value.kind == :string ? numeric_prefix(value.text) : value.numeric
+to_string(value) = value.kind == :number ? string(value.numeric) : value.kind == :uninitialized ? "" : value.text
+function split_pieces(text,separator)
+    isempty(text) && return String[]
+    isempty(separator) && return string.(collect(text))
+    separator != " " && return String.(split(text,separator;keepempty=true))
+mutable struct AwkRecord
+    special::Function
+    zero::AwkValue
+    fields::Vector{AwkValue}
+end
+AwkRecord(special) = AwkRecord(special,string_value(""),AwkValue[])
+function set_record!(record,text)
+    record.zero = input_value(text)
+    record.fields = input_value.(split_pieces(text,to_string(record.special("FS"))))
+end
+function read_field(record,index)
+    index == 0 ? record.zero : index <= length(record.fields) ? record.fields[index] : UNINITIALIZED
+end
+function rebuild_record!(record)
+    record.zero = input_value(join(to_string.(record.fields),to_string(record.special("OFS"))))
+end
+function write_field!(record,index,value)
+    if index == 0
+        set_record!(record,to_string(value))
+        return
+    end
+    while length(record.fields) < index
+        push!(record.fields,string_value(""))
+    end
+    record.fields[index] = value
+    rebuild_record!(record)
+end
+function resize_fields!(record,size)
+    size < length(record.fields) && resize!(record.fields,size)
+    while length(record.fields) < size
+        push!(record.fields,string_value(""))
+    end
+    rebuild_record!(record)
+end
+function quoted_value(text)
+    pieces = ["\""]
+    escapes = Dict('"'=>"\\\"",'\\'=>"\\\\",'\n'=>"\\n",'\t'=>"\\t")
+    for character in text
+        push!(pieces,haskey(escapes,character) ? escapes[character] : 32 <= Int(character) <= 126 ? string(character) : "\\" * string(Int(character);base=8,pad=3))
+    end
+    push!(pieces,"\"")
+    join(pieces)
+end
+function describe_value(value)
+    value.kind == :number && return string(value.numeric)
+    value.kind == :uninitialized && return "(uninitialized)"
+    quoted_value(value.text) * (value.kind == :strnum ? " (strnum)" : "")
+end
+valid_name(name) = !isempty(name) && (letter(name[1]) || name[1] == '_') && all(name_character,name)
+valid_filename(name) = !isempty(name) && !startswith(name,".") && all(character->letter(character) || digit(character) || character in ('.','_','-'),name)
+mutable struct AwkOperand
+    kind::String
+    name::String
+    value::String
+    records::Int
+end
+function parse_arguments(lines)
+    options = Tuple{String,String}[]
+    operands = AwkOperand[]
+    for line in lines
+        if startswith(line,"-F ")
+            push!(options,("FS",line[4:end]))
+        elseif startswith(line,"-v ")
+            name,value = split(line[4:end],'=';limit=2)
+            push!(options,(name,value))
+        else
+            parts = split(line,'=';limit=2)
+            if length(parts) == 2 && valid_name(parts[1])
+                push!(operands,AwkOperand("assignment",parts[1],parts[2],0))
+            else
+                push!(operands,AwkOperand("file",line,"",0))
+            end
+        end
+    end
+    options,operands
+end
+read_records(name) = readlines(joinpath("input",name))
+mutable struct OutputStream
+    parts::Vector{String}
+    opened::Bool
+    writes::Int
+end
+OutputStream() = OutputStream(String[],false,0)
+content(output) = join(output.parts)
+function append_output!(output,text)
+    push!(output.parts,text)
+    output.writes += 1
+end
+mutable struct GetlineInput
+    opened::Bool
+AwkStreams() = AwkStreams(OutputStream(),Dict{String,OutputStream}(),String[],Dict{String,GetlineInput}(),String[])
+function write_output!(streams,text,name=nothing,mode=nothing,position=nothing)
+    if name === nothing
+        append_output!(streams.stdout,text)
+        return
+    end
+function save_streams(streams)
+    write("output/stdout.txt",content(streams.stdout))
+    for name in streams.output_order
+        write(joinpath("output",name),content(streams.outputs[name]))
+    end
+end
+struct Transfer <: Exception
+    kind::String
+    value::AwkValue
+end
+Transfer(kind) = Transfer(kind,UNINITIALIZED)
+
+mutable struct AwkAnalysis
+    items::Vector{AwkNode}
+    functions::Vector{AwkNode}
+    rules::Vector{AwkNode}
+    function_table::Dict{String,AwkNode}
+    global_names::Set{String}
+    bindings::Set{AwkBinding}
+    array_names::Set{AwkBinding}
+    statement_lines::Set{Int}
+    nodes::Vector{AwkNode}
+    errors::Vector{Tuple{Int,Int,Int,String}}
+end
+function AwkAnalysis(items)
+    AwkAnalysis(items,filter(item->item.kind == "function",items),filter(item->item.kind == "rule",items),
+        Dict{String,AwkNode}(),copy(SPECIAL_NAMES),Set{AwkBinding}((0,name) for name in SPECIAL_NAMES),
+        Set{AwkBinding}(),Set{Int}(),AwkNode[],Tuple{Int,Int,Int,String}[])
+function resolve_name!(analysis,node,function_node)
+    local_name = function_node !== nothing && node.name in function_node.parameter_names
+    node.binding = (local_name ? function_node.function_id : 0,node.name)
+    push!(analysis.bindings,node.binding)
+    !local_name && push!(analysis.global_names,node.name)
+    haskey(analysis.function_table,node.name) && static_error!(analysis,node.position,3,"function $(node.name) used as variable")
+end
+function prepare!(analysis)
+    for (identifier,function_node) in enumerate(analysis.functions)
+    for item in analysis.items
+        function_node = item.kind == "function" ? item : nothing
+        pending = [item]
+        while !isempty(pending)
+            node = pop!(pending)
+            push!(analysis.nodes,node)
+            node.kind in STATEMENTS && push!(analysis.statement_lines,node.position[1])
+            if node.kind in ("name","array","parameter")
+                resolve_name!(analysis,node,function_node)
+            elseif node.kind == "call"
+        end
+    end
+    if !isempty(analysis.errors)
+        line,column,_,message = minimum(analysis.errors)
+        throw(StaticIssue((line,column),message))
+    end
+    links = Tuple{AwkBinding,AwkBinding}[]
+    index::Int = 0
+end
+Base.@kwdef mutable struct AwkEngine
+    analysis::AwkAnalysis
+    options::Vector{Tuple{String,String}}
+    operands::Vector{AwkOperand}
+    globals::Dict{String,AwkVariable}
+function AwkEngine(analysis,options,operands)
+    globals = Dict{String,AwkVariable}(name=>((0,name) in analysis.array_names ? AwkArray() : UNINITIALIZED) for name in analysis.global_names)
+    merge!(globals,Dict("FILENAME"=>string_value(""),"FNR"=>number(0),"FS"=>string_value(" "),"NF"=>number(0),
+        "NR"=>number(0),"OFS"=>string_value(" "),"ORS"=>string_value("\n"),"SUBSEP"=>string_value(string(Char(28)))))
+    for rule in analysis.rules
+        rule.count,rule.inside = 0,false
+    end
+    for function_node in analysis.functions
+        function_node.call_count,function_node.active_calls,function_node.max_depth = 0,0,0
+    end
+    AwkEngine(analysis=analysis,options=options,operands=operands,globals=globals,
+        global_names=copy(analysis.global_names),record=AwkRecord(name->globals[name]),
+        lines=Dict{Int,Int}(line=>0 for line in analysis.statement_lines))
+end
+function variable(engine,binding)
+    scope,name = binding
+    scope != 0 && return engine.local_frames[end][name]
+    name == "NF" ? number(length(engine.record.fields)) : engine.globals[name]
+end
+global_value(engine,name) = variable(engine,(0,name))
+function assign_global_input!(engine,name,text)
+    push!(engine.global_names,name)
+    engine.globals[name] = input_value(text)
+end
+function location(engine,node)
+    node.kind == "name" && return AwkLocation(kind=:variable,binding=node.binding)
+    if node.kind == "array"
+    index = to_number(evaluate(engine,node.index))
+    index < 0 && throw(RuntimeIssue(node.position,"negative field index"))
+    AwkLocation(kind=:field,index=index)
+end
+function read_location(engine,place)
+    place.kind == :variable && return variable(engine,place.binding)
+    place.kind == :field && return read_field(engine.record,place.index)
+function store!(engine,place,value,position)
+    if place.kind == :field
+        write_field!(engine.record,place.index,value)
+    else
+        scope,name = place.binding
+        if scope != 0
+            engine.local_frames[end][name] = value
+        elseif name == "NF"
+            size = to_number(value)
+            size < 0 && throw(RuntimeIssue(position,"negative NF"))
+            resize_fields!(engine.record,size)
+        else
+            engine.globals[name] = value
+        end
+    end
+end
+function evaluate(engine,node)
+    kind = node.kind
+    kind == "number" && return number(node.value)
+    kind == "string" && return string_value(node.value)
+    kind in LVALUE_KINDS && return read_location(engine,location(engine,node))
+    kind == "paren" && return evaluate(engine,node.expression)
+    if kind == "assignment"
+        place = location(engine,node.location)
+        value = evaluate(engine,node.value)
+        node.operator != "=" && (value = arithmetic(node.operator[1:end-1],read_location(engine,place),value,node.position))
+        store!(engine,place,value,node.position)
+        return read_location(engine,place)
+function execute_output!(engine,node)
+    arguments = AwkValue[evaluate(engine,argument) for argument in node.arguments]
+    if node.kind == "print"
+        isempty(arguments) && push!(arguments,engine.record.zero)
+        text = join(to_string.(arguments),to_string(global_value(engine,"OFS"))) * to_string(global_value(engine,"ORS"))
+    end
+    filename = node.filename === nothing ? nothing : to_string(evaluate(engine,node.filename))
+    write_output!(engine.streams,text,filename,node.redirect,node.redirect_position)
+end
+function execute_statement!(engine,node)
+    kind = node.kind
+    if kind == "block"
+        for child in node.statements
+            execute_statement!(engine,child)
+        end
+        return
+    end
+    kind == "empty" && return
+    engine.lines[node.position[1]] += 1
+    if kind == "expression_statement"
+        evaluate(engine,node.expression)
+    elseif kind in ("print","printf")
+        execute_output!(engine,node)
+function next_record!(engine)
+    while true
+        if engine.input_position <= length(engine.input_lines)
+            line = engine.input_lines[engine.input_position]
+            engine.input_position += 1
+            engine.current_operand.records += 1
+            engine.globals["NR"] = number(to_number(global_value(engine,"NR"))+1)
+            engine.globals["FNR"] = number(to_number(global_value(engine,"FNR"))+1)
+            return line
+        end
+        engine.operand_position > length(engine.operands) && return nothing
+        operand = engine.operands[engine.operand_position]
+        engine.operand_position += 1
+        if operand.kind == "assignment"
+            assign_global_input!(engine,operand.name,operand.value)
+        else
+            engine.current_operand = operand
+            engine.input_lines = read_records(operand.name)
+            engine.input_position = 1
+            engine.globals["FILENAME"] = string_value(operand.name)
+            engine.globals["FNR"] = number(0)
+        end
+    end
+end
+function run_actions!(engine,phase)
+    engine.phase = phase
+    for rule in engine.analysis.rules
+        if rule.flavor == phase
+            rule.count += 1
+            execute_statement!(engine,rule.action)
+        end
+    end
+end
+function rule_matches(engine,rule)
+    rule.flavor == "all" && return true
+function run_records!(engine)
+    any(rule->rule.flavor != "BEGIN",engine.analysis.rules) || return
+    engine.phase = "records"
+    rules = filter(rule->!(rule.flavor in ("BEGIN","END")),engine.analysis.rules)
+    while true
+        line = next_record!(engine)
+        line === nothing && return
+        set_record!(engine.record,line)
+        try
+            for rule in rules
+                if rule_matches(engine,rule)
+                    rule.count += 1
+                    if rule.action === nothing
+                        write_output!(engine.streams,to_string(engine.record.zero) * to_string(global_value(engine,"ORS")))
+                    else
+                        execute_statement!(engine,rule.action)
+                    end
+                end
+            end
+        catch transfer
+            transfer isa Transfer && transfer.kind == "next" || rethrow()
+        end
+    end
+end
+function execute!(engine)
+    try
+        for (name,text) in engine.options
+            assign_global_input!(engine,name,text)
+        end
+        try
+            run_actions!(engine,"BEGIN")
+            run_records!(engine)
+        catch transfer
+function statistics(engine)
+    if engine.error === nothing
+        status = "status: exit $(engine.exit_status)"
+    else
+        line,column = engine.error.position
+        status = "status: runtime error at $line:$column: $(engine.error.message)"
+    end
+    lines = [status,"[inputs]"]
+    for operand in engine.operands
+        operand.kind == "file" && push!(lines,"$(operand.name) records=$(operand.records)")
+    end
+    push!(lines,"[rules]")
+    for rule in engine.analysis.rules
+        line,column = rule.position
+        push!(lines,"$line:$column $(rule.flavor) count=$(rule.count)")
+    end
+    push!(lines,"[outputs]")
+    stdout = engine.streams.stdout
+    push!(lines,"stdout.txt writes=$(stdout.writes) bytes=$(length(content(stdout)))")
+    push!(lines,"[lines]")
+    for line in sort(collect(keys(engine.lines)))
+        push!(lines,"$line count=$(engine.lines[line])")
+    end
+    push!(lines,"[globals]")
+    for name in sort(collect(engine.global_names))
+        value = global_value(engine,name)
+        text = (0,name) in engine.analysis.array_names ? "array ($(length(value)))" : describe_value(value)
+        push!(lines,"$name = $text")
+    end
+    lines
+end
+function main()
+    options,operands = parse_arguments(readlines("input/args.txt"))
+    source = read("input/program.awk",String)
+    try
+        items = parse_program!(AwkParser(tokenize(source)))
+        analysis = prepare!(AwkAnalysis(items))
+        engine = AwkEngine(analysis,options,operands)
+        execute!(engine)
+        lines,streams = statistics(engine),engine.streams
+    catch error
+    save_streams(streams)
+    write("output/stats.txt",join(lines,"\n") * "\n")
+end
+main()

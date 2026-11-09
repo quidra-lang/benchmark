@@ -1,0 +1,117 @@
+    fn startThrow(self: *Simulation, index: usize, target: u8) void {
+        const point = &self.layout.points[index];
+        point.moving = true;
+        point.target = target;
+        point.completion = self.time + self.throw_time;
+        self.log("MOVE {s} {c} until {d}", .{ point.name, target, point.completion.? });
+    }
+    fn addRequest(self: *Simulation, index: usize, requester: []const u8) void {
+        self.request_count += 1;
+        self.interlocking.routes[index].requests += 1;
+        self.log("REQUEST q{d} {s} {s}", .{ self.request_count, self.interlocking.routes[index].name, requester });
+        l.append(Request, &self.queue, .{ .number = self.request_count, .route = index, .time = self.time });
+    }
+    fn cancel(self: *Simulation, index: usize) void {
+        const route = &self.interlocking.routes[index];
+        var removed = false;
+        var position: usize = 0;
+        while (position < self.queue.items.len) {
+            const request = self.queue.items[position];
+            if (request.route != index) {
+                position += 1;
+                continue;
+            }
+            removed = true;
+            self.dropped += 1;
+            self.log("DROP q{d} {s}", .{ request.number, route.name });
+            _ = self.queue.orderedRemove(position);
+        }
+        if (removed) return;
+        if (route.state == .locked) {
+            route.cancels += 1;
+            const signal = self.layout.signals[route.start];
+            if (signal.aspect != .red and self.layout.occupied(signal.section)) {
+                route.state = .approach;
+                route.release_time = self.time + route.approach_time;
+                self.log("CANCEL {s} approach until {d}", .{ route.name, route.release_time.? });
+            } else {
+                self.interlocking.release(&self.layout, index);
+                self.log("CANCEL {s} released", .{route.name});
+            }
+        } else self.log("CANCEL {s} {s}", .{ route.name, if (route.state == .none) "none" else "refused" });
+    }
+    fn requestReason(self: *const Simulation, index: usize) ?Reason {
+        const route = self.interlocking.routes[index];
+        if (route.state != .none) return .{ .kind = .busy };
+        for (route.conflicts) |other| if (inter.protected(self.interlocking.routes[other].state)) return .{ .kind = .conflict,
+             .index = other };
+        for (route.sections) |name| {
+            const section = self.layout.sections[name];
+            if (self.layout.occupied(name)) return .{ .kind = .occupied, .index = name };
+            if (section.route_lock != null or self.oppositeLock(section.overlap_locks, route.direction)) return .{ .kind = .locked,
+                 .index = name };
+        }
+        for (route.overlap) |name| {
+            const section = self.layout.sections[name];
+            if (self.layout.occupied(name)) return .{ .kind = .occupied, .index = name };
+            const locks = section.overlap_locks | (if (section.route_lock) |r| l.bit(r) else @as(u64, 0));
+            if (self.oppositeLock(locks, route.direction)) return .{ .kind = .locked, .index = name };
+        }
+        for (route.requirements) |req| {
+            const point = self.layout.points[req.point];
+            if ((if (req.position == 'N') point.reverse_locks else point.normal_locks) != 0) return .{ .kind = .point_locked,
+                 .index = req.point };
+            if ((!point.moving and point.position == req.position) or (point.moving and point.target == req.position)) continue;
+            if (point.failed) return .{ .kind = .point_failed, .index = req.point };
+            if (point.moving) return .{ .kind = .point_moving, .index = req.point };
+            if (self.layout.occupied(point.common)) return .{ .kind = .point_occupied, .index = req.point };
+        }
+        return null;
+    }
+    fn judgeRequests(self: *Simulation) void {
+        var position: usize = 0;
+        while (position < self.queue.items.len) {
+            const request = &self.queue.items[position];
+            const route = &self.interlocking.routes[request.route];
+            if (self.requestReason(request.route)) |reason| {
+                if (request.reason == null or !request.reason.?.same(reason)) {
+                    self.log("WAIT q{d} {s} {s}", .{ request.number, route.name, reason.text(&self.layout,
+                         &self.interlocking) });
+                    request.reason = reason;
+                }
+                position += 1;
+                continue;
+            }
+            const route_index = request.route;
+            const number = request.number;
+            const wait = self.time - request.time;
+            self.interlocking.lock(&self.layout, route_index);
+            self.log("GRANT q{d} {s} wait {d}", .{ number, route.name, wait });
+            route.grants += 1;
+            route.wait += wait;
+            route.maxwait = @max(route.maxwait, wait);
+            for (route.requirements) |req| {
+                const point = self.layout.points[req.point];
+                if (!point.moving and point.position != req.position) self.startThrow(req.point, req.position);
+            }
+            _ = self.queue.orderedRemove(position);
+        }
+    }
+            for (self.planned) |request| if (request.time == self.time) self.addRequest(request.route,
+                 self.trains[request.train].name);
+            self.executeEvents();
+            self.judgeRequests();
+    pub fn lock(self: *Interlocking, layout: *l.Layout, index: usize) void {
+        const route = &self.routes[index];
+        route.state = .locked;
+        route.release_time = null;
+        route.passed = 0;
+        route.overlap_locked = true;
+        route.overlap_counter = 0;
+        for (route.sections) |section| layout.sections[section].route_lock = index;
+        for (route.overlap) |section| layout.sections[section].overlap_locks |= l.bit(index);
+        for (route.requirements) |req| {
+            const point = &layout.points[req.point];
+            if (req.position == 'N') point.normal_locks |= l.bit(index) else point.reverse_locks |= l.bit(index);
+        }
+    }

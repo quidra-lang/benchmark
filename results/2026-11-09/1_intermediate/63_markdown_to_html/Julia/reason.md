@@ -1,0 +1,21 @@
+# Task B selection — Julia
+
+## Answer requirements shared across languages
+
+1. Trace one valid document whose TOC precedes headings, whose explicit heading ID occupies an automatic candidate, and which contains a nested heading, from block and inline parsing to HTML output.
+2. Show when IDs are reserved, how automatic suffixes avoid used IDs, and how recorded heading IDs determine TOC links and nesting.
+3. Explain the deferred TOC replacement that resolves forward references and distinguish raw heading text, explicit-ID-stripped text, rendered inline HTML, and tag-stripped TOC labels.
+
+## Selected source locations
+
+- `main.jl`: 3, 4, 5, 6, 7, 9, 10, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 133, 134, 135, 136, 137, 138, 139, 140, 155, 156, 171, 172, 173, 174, 175, 176, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 249, 250, 251, 252, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 288, 289, 296, 297, 298, 299, 300, 301, 302, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 388, 389, 390, 391, 392, 507, 508, 509, 510, 511, 513, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 553, 554, 555, 560, 561, 565, 566, 577, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645
+
+## Evidence and language semantics
+
+Use [TOC], a blank line, # Parent {#foo}, a blank line, > ## Foo, then @@END@@. The TOC is recognized before either heading; the quoted line is stripped of > and recursively parsed as a level-2 heading. The explicit heading reserves foo and removes {#foo} from the display source. The nested automatic heading uses raw Foo to form foo, finds it occupied, then chooses and reserves foo-1. Ordinary inline characters are escaped and assembled into the heading HTML; tag stripping that rendered HTML supplies the TOC labels Parent and Foo. Automatic slugging receives raw heading source, before inline rendering. The same final IDs are recorded for both heading attributes and TOC links. The heading-level tree makes the level-2 Foo a child of level-1 Parent. The earlier TOC placeholder is replaced only after the heading traversal, so the leading nav links #foo and #foo-1 agree with h1 id=foo and the quoted h2 id=foo-1. Julia passes one mutable Renderer through recursive rendering; its Set and Vector are mutable collections, and push! stores final (level, id, label) tuples in traversal order. TOC construction records integer parent indices, then recursively finds children using those indices. This does not depend on mutating tuple copies. Ordinary Piece constructors have count zero and opens false, so their escaped HTML takes the literal output path. The empty notes vector makes the separately appended footnotes output empty for this witness.
+
+## Minimization and alternatives
+
+Selected the ordinary-character inline path for this valid minimal witness. More elaborate emphasis, links, footnotes, tables, lists, code fences, other heading syntaxes, and error handling do not establish an additional answer requirement. Kept quote recursion, shared heading/ID state, suffix selection, label derivation, TOC tree construction, and deferred insertion: dropping any of these loses one part of the requested trace. A witness with only top-level headings would shorten the excerpt but would not demonstrate nested-block collection. An allocation-only excerpt loses forward references and raw-versus-rendered provenance. Every selected source line was considered individually; the assembled excerpt was separately reviewed against the witness. Imports and structural delimiters are retained only when needed to identify the selected state or path. No program was executed.
+
+The excerpt contains 2449 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

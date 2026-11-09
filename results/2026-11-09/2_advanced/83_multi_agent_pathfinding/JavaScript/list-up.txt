@@ -1,0 +1,334 @@
+  constructor(size, entries = []) {
+    this.size = size;
+    this.entries = entries;
+    this.states = new Set();
+    this.moves = new Set();
+    this.permanent = new Map();
+    this.latest = new Map();
+    for (const entry of entries) {
+      if (entry.kind === 'vertex') this.addState(entry.v, entry.time);
+      else this.addMove(entry.u, entry.v, entry.time);
+    }
+  }
+  addMove(from, to, time) {
+    this.moves.add((time * this.size + from) * this.size + to);
+  }
+
+  permits(from, to, time) {
+    return !this.states.has(time * this.size + to) &&
+      (!this.permanent.has(to) || this.permanent.get(to) > time) &&
+      (from === to || !this.moves.has((time * this.size + from) * this.size + to));
+  }
+
+  arrival(goal) {
+    return this.latest.has(goal) ? this.latest.get(goal) + 1 : 0;
+  }
+  reserve(path, startTime = 0, permanent = false) {
+    for (let index = 0; index < path.length; index++) {
+      this.addState(path[index], startTime + index);
+      if (index > 0 && path[index] !== path[index - 1]) {
+        this.addMove(path[index], path[index - 1], startTime + index);
+      }
+    }
+    if (permanent) {
+      const goal = path.at(-1);
+      const time = startTime + path.length - 1;
+      if (!this.permanent.has(goal) || time < this.permanent.get(goal)) this.permanent.set(goal, time);
+    }
+  }
+function search(grid, agent, prohibitions, budget, start, startTime, maximum, window = false) {
+  budget.searches++;
+  const before = budget.expansions;
+  const arrival = prohibitions.arrival(agent.goal);
+  const open = new Heap((a, b) => a.f - b.f || b.g - a.g || a.number - b.number);
+  const generated = new Set([startTime * grid.size + start]);
+  let number = 0;
+  open.push({cell: start, time: startTime, g: 0, f: agent.distance[start], number: number++, parent: null});
+  while (open.size > 0) {
+    const state = open.pop();
+    budget.expansions++;
+    if (budget.limit !== null && budget.expansions > budget.limit) throw new BudgetExceeded();
+    if ((state.cell === agent.goal && state.time >= arrival) || (window && state.time === maximum)) {
+      const path = [];
+      for (let current = state; current !== null; current = current.parent) path.push(current.cell);
+      path.reverse();
+      return {path, expansions: budget.expansions - before};
+    }
+    if (state.time === maximum) continue;
+    const time = state.time + 1;
+    const g = time - startTime;
+    for (const cell of grid.neighbors[state.cell]) {
+      const key = time * grid.size + cell;
+      if (agent.distance[cell] < 0 || !prohibitions.permits(state.cell, cell, time) || generated.has(key)) continue;
+      generated.add(key);
+      open.push({cell, time, g, f: g + agent.distance[cell], number: number++, parent: state});
+    }
+  }
+  return {path: null, expansions: budget.expansions - before};
+}
+function plan(grid, agent, prohibitions, budget, horizon) {
+  return search(grid, agent, prohibitions, budget, agent.start, 0, horizon);
+}
+function readInstance() {
+  const map = lines('map.txt');
+  const [width, height] = map[0].split(' ').map(Number);
+  const grid = new Grid(width, height, map.slice(1));
+  const agents = lines('agents.csv').slice(1).map(line => {
+    const [number, sx, sy, gx, gy] = line.split(',').map(Number);
+    const start = sy * width + sx;
+    const goal = gy * width + gx;
+    const distance = grid.distances(goal);
+    return {number, name: String.fromCharCode(65 + number), start, goal, distance, shortest: distance[start]};
+  });
+  return {grid, agents};
+}
+function readParameters(count) {
+  const parameters = {orders: [Array.from({length: count}, (_, index) => index)], runs: [], delays: []};
+  for (const line of gridMap.lines('params.txt')) {
+    const [kind, ...values] = line.split(' ');
+    switch (kind) {
+      case 'HORIZON': parameters.horizon = Number(values[0]); break;
+      case 'HL_BUDGET': parameters.highBudget = Number(values[0]); break;
+      case 'LL_BUDGET': parameters.lowBudget = Number(values[0]); break;
+      case 'WINDOW': [parameters.window, parameters.step] = values.map(Number); break;
+      case 'ORDER': parameters.orders.push(values.map(Number)); break;
+      case 'RUN':
+        parameters.runs.push({solver: values[0], costFunction: values[1], name: values.join('-'), order: parameters.runs.length});
+        break;
+      case 'ANIMATE': parameters.animation = {name: values[0], frames: Number(values[1])}; break;
+      case 'DELAY':
+        parameters.delays.push({agent: Number(values[0]), start: Number(values[1]), length: Number(values[2])});
+        break;
+    }
+  }
+  return parameters;
+}
+function runPP(instance, run) {
+  const {grid, agents, parameters} = instance;
+  try {
+    for (let index = 0; index < parameters.orders.length; index++) {
+      const order = parameters.orders[index];
+      const number = index + 1;
+      run.highLevel++;
+      const result = prioritized.planOrder(grid, agents, order, run.budget, parameters.horizon, (agent, search) => {
+        const outcome = search.path === null ? 'failed' : `cost ${search.path.length - 1}`;
+        run.trace.push(`order ${number} agent ${report.name(agent)} ${outcome} expansions ${search.expansions}`);
+      });
+      const prefix = `order ${number} ${order.map(report.name).join('')} planned ${result.planned} expansions ${result.expansions}`;
+      if (result.paths !== null) {
+        run.specific.push(`${prefix} ok`);
+        run.paths = result.paths;
+        run.trace.push(`end OK order ${number}`);
+        return;
+      }
+      run.specific.push(`${prefix} failed ${report.name(result.failed)}`);
+    }
+    run.reason = 'orders';
+  } catch (error) {
+    if (!(error instanceof low.BudgetExceeded)) throw error;
+    run.reason = 'll_budget';
+  }
+  run.trace.push(`end FAIL ${run.reason}`);
+}
+function planStatistics(instance, paths, costFunction) {
+  const {grid, agents} = instance;
+  const totals = cbs.costs(paths);
+  const traffic = Array(grid.size).fill(0);
+  const cellWaits = Array(grid.size).fill(0);
+  const details = [];
+  let sumExtra = 0;
+  let maxExtra = 0;
+  let waits = 0;
+  let turns = 0;
+  for (const agent of agents) {
+    const path = paths[agent.number];
+    const cost = path.length - 1;
+    const actions = report.actions(grid, path);
+    const detail = {cost, extra: cost - agent.shortest, waits: 0, turns: 0,
+      arrival: path.indexOf(agent.goal), leave: 0, actions};
+    let previous = null;
+    for (let time = 1; time <= cost; time++) {
+      const action = actions[time - 1];
+      if (action === '.') {
+        detail.waits++;
+        cellWaits[path[time]]++;
+      } else {
+        if (previous !== null && previous !== action) detail.turns++;
+        previous = action;
+      }
+      if (path[time - 1] === agent.goal && path[time] !== agent.goal) detail.leave++;
+    }
+    for (const cell of new Set(path)) traffic[cell]++;
+    sumExtra += detail.extra;
+    maxExtra = Math.max(maxExtra, detail.extra);
+    waits += detail.waits;
+    turns += detail.turns;
+    details.push(detail);
+  }
+  const arrivals = Array.from({length: totals.makespan + 1}, (_, time) => paths.filter(path => path.length - 1 <= time).length);
+  const hotspots = [];
+  for (let cell = 0; cell < grid.size; cell++) if (traffic[cell] > 0) hotspots.push(cell);
+  hotspots.sort((a, b) => traffic[b] - traffic[a] || a - b);
+  const cost = costFunction === 'SOC' ? totals.soc : totals.makespan;
+  return {...totals, cost, details, sumExtra, maxExtra, waits, turns, arrivals,
+    traffic, cellWaits, hotspots: hotspots.slice(0, 5)};
+}
+function validate(instance, name, paths, knownConflicts = null) {
+  const {grid, agents} = instance;
+  let start = 0;
+  let goal = 0;
+  let moves = 0;
+  for (const agent of agents) {
+    const path = paths[agent.number];
+    if (path[0] !== agent.start) start++;
+    if (path.at(-1) !== agent.goal) goal++;
+    for (let time = 1; time < path.length; time++) if (!grid.neighbors[path[time - 1]].includes(path[time])) moves++;
+  }
+  const conflicts = knownConflicts === null ? cbs.conflicts(paths) : knownConflicts;
+  const vertex = conflicts.filter(conflict => conflict.kind === 'vertex').length;
+  const edge = conflicts.length - vertex;
+  let follows = 0;
+  const maximum = cbs.costs(paths).makespan;
+  for (let time = 1; time <= maximum; time++) {
+    for (let a = 0; a < agents.length; a++) {
+      const before = cbs.position(paths[a], time - 1);
+      const after = cbs.position(paths[a], time);
+      if (before === after) continue;
+      for (let b = 0; b < agents.length; b++) {
+        if (a !== b && after === cbs.position(paths[b], time - 1) && cbs.position(paths[b], time) !== before) follows++;
+      }
+    }
+  }
+  const verdict = start + goal + moves + vertex + edge === 0 ? 'VALID' : 'INVALID';
+  const lines = [`plan ${name} verdict ${verdict} start ${start} goal ${goal} moves ${moves} vertex ${vertex} edge ${edge} follows ${follows}`];
+  for (const conflict of conflicts) lines.push(`  ${report.conflict(grid, conflict)}${conflict.class ? ` ${conflict.class}` : ''}`);
+  return lines;
+}
+function solutionLines(instance, run, bounds) {
+  const prefix = `run ${run.name} solver ${run.solver} cost_function ${run.costFunction}`;
+  if (run.paths === null) return [`${prefix} result FAIL reason ${run.reason}`, ...run.specific];
+  const {grid, agents} = instance;
+  const stats = run.statistics;
+  const bound = run.costFunction === 'SOC' ? bounds.soc : bounds.makespan;
+  const lines = [`${prefix} result OK cost ${stats.cost} soc ${stats.soc} makespan ${stats.makespan} ratio ${report.fraction(stats.cost, bound)}`,
+    ...run.specific];
+  for (const agent of agents) {
+    const detail = stats.details[agent.number];
+    lines.push(`agent ${agent.name} cost ${detail.cost} extra ${detail.extra} waits ${detail.waits} turns ${detail.turns} ` +
+      `arrive ${detail.arrival} leave ${detail.leave} moves ${detail.actions}`);
+  }
+  lines.push(`arrivals ${stats.arrivals.join(' ')}`);
+  lines.push(`hotspots ${stats.hotspots.map(cell => `${report.cell(grid, cell)}:${stats.traffic[cell]}`).join(' ')}`);
+  const execution = run.execution;
+  lines.push(execution.deadlock ? `execution deadlock time ${execution.time}` :
+    `execution soc ${execution.soc} makespan ${execution.makespan} blocked ${execution.held} finish ${execution.finish.join(' ')}`);
+  return lines;
+}
+function animation(instance, run) {
+  const {grid, agents, parameters} = instance;
+  if (run.paths === null) return [`run ${run.name} FAIL`];
+  const count = parameters.animation.frames;
+  const lines = [`run ${run.name} frames ${count}`];
+  for (let time = 0; time < count; time++) {
+    const cells = Array.from({length: grid.size}, (_, cell) => grid.free[cell] ? '.' : '@');
+    for (const agent of agents) cells[agent.goal] = agent.name.toLowerCase();
+    let done = 0;
+    let moving = 0;
+    let waiting = 0;
+    for (const agent of agents) {
+      const path = run.paths[agent.number];
+      cells[cbs.position(path, time)] = agent.name;
+      if (time >= path.length - 1) done++;
+      else if (time >= 1 && cbs.position(path, time) !== cbs.position(path, time - 1)) moving++;
+      else waiting++;
+    }
+    lines.push('', `frame ${time} done ${done} moving ${moving} waiting ${waiting}`);
+    for (const row of pictureLines(grid, cells)) lines.push(row);
+  }
+  for (const [title, counts] of [['traffic', run.statistics.traffic], ['waits', run.statistics.cellWaits]]) {
+    const cells = counts.map((value, cell) => !grid.free[cell] ? '@' : value === 0 ? '.' : value < 10 ? String(value) : '+');
+    lines.push('', title);
+    for (const row of pictureLines(grid, cells)) lines.push(row);
+  }
+  return lines;
+}
+function main() {
+  const instance = gridMap.readInstance();
+  instance.parameters = readParameters(instance.agents.length);
+  instance.mddCache = instance.agents.map(() => new WeakMap());
+  const information = overview(instance);
+  const runs = [];
+  for (const configuration of instance.parameters.runs) {
+    const run = {...configuration, budget: low.counter(instance.parameters.lowBudget), highLevel: 0, generated: null,
+      paths: null, reason: null, trace: [`run ${configuration.name}`], specific: []};
+    if (run.solver === 'PP') runPP(instance, run);
+    else if (run.solver === 'WHCA') runWHCA(instance, run);
+    else runCBS(instance, run);
+    if (run.paths !== null) {
+      run.statistics = planStatistics(instance, run.paths, run.costFunction);
+      run.execution = delayedExecution(run.paths, instance.parameters.delays);
+    }
+    runs.push(run);
+  }
+  const solutions = overviewLines(instance, information);
+  const stats = ['run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions'];
+  const validation = validate(instance, 'INDEPENDENT', information.paths, information.conflicts);
+  const trace = [];
+  for (const run of runs) {
+    solutions.push('');
+    for (const line of solutionLines(instance, run, information.bounds)) solutions.push(line);
+    stats.push(csvLine(run));
+    if (run.paths === null) validation.push(`plan ${run.name} verdict NONE`);
+    else for (const line of validate(instance, run.name, run.paths)) validation.push(line);
+    if (trace.length > 0) trace.push('');
+    for (const line of run.trace) trace.push(line);
+  }
+  solutions.push('');
+  for (const line of summaryLines(runs)) solutions.push(line);
+  const frames = animation(instance, runs.find(run => run.name === instance.parameters.animation.name));
+  report.writeFiles({'solutions.txt': solutions, 'stats.csv': stats, 'validation.txt': validation, 'trace.txt': trace, 'frames.txt': frames});
+}
+function position(path, time) {
+  return path[Math.min(time, path.length - 1)];
+}
+function costs(paths) {
+  let soc = 0;
+  let makespan = 0;
+  for (const path of paths) {
+    soc += path.length - 1;
+    makespan = Math.max(makespan, path.length - 1);
+  }
+  return {soc, makespan};
+}
+function conflicts(paths) {
+  const result = [];
+  const maximum = costs(paths).makespan;
+  for (let time = 1; time <= maximum; time++) {
+    for (let a = 0; a < paths.length; a++) {
+      const from = position(paths[a], time - 1);
+      const to = position(paths[a], time);
+      for (let b = a + 1; b < paths.length; b++) {
+        if (to === position(paths[b], time)) result.push({kind: 'vertex', time, a, b, u: to, v: to});
+        else if (to === position(paths[b], time - 1) && from === position(paths[b], time)) {
+          result.push({kind: 'edge', time, a, b, u: from, v: to});
+        }
+      }
+    }
+  }
+  return result;
+}
+function planOrder(grid, agents, order, budget, horizon, record) {
+  const prohibitions = new low.Prohibitions(grid.size);
+  const paths = Array(agents.length);
+  const before = budget.expansions;
+  let planned = 0;
+  for (const number of order) {
+    const result = low.plan(grid, agents[number], prohibitions, budget, horizon);
+    record(number, result);
+    if (result.path === null) return {paths: null, planned, failed: number, expansions: budget.expansions - before};
+    paths[number] = result.path;
+    planned++;
+    prohibitions.reserve(result.path, 0, true);
+  }
+  return {paths, planned, failed: null, expansions: budget.expansions - before};
+}

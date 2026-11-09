@@ -1,0 +1,7 @@
+The source keeps corrected and interpolated logically distinct. The selected outlier/event correction writes or constructs x as trend plus seasonal only in the corrected representation. The selected holdout-actual expression reads the original interpolated y representation, so that local correction does not change the later actual. This is stored corrected data, not recomputing y from corrected values.
+
+The custom io.dupe delegates to allocator.dupe(f64,values), which allocates independent element storage and copies scalar f64 values. A plain slice assignment would alias, but this explicit duplication isolates the corrected writes.
+
+Evidence: series_io.zig: 6–8; main.zig: 478, 501, 518. The selected complete lines contain the decision and its necessary data dependencies. The correction expression alone cannot prove storage isolation; the excerpt therefore also includes the copy/new-array construction (and a custom helper/type declaration when required) and the later actual read. Full interpolation, outlier detection and forecast fitting are unnecessary for this aliasing question.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 142 tokenizer tokens. The full selected source file(s) would be 17467 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

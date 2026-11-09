@@ -1,0 +1,426 @@
+pub const Rule = enum { LFL, FOQ, POQ, MIN };
+pub const Item = struct {
+    id: []const u8,
+    lead: i64,
+    rule: Rule,
+    first: i64,
+    second: i64,
+    safety: i64,
+    on_hand: i64,
+    material: i64,
+    labor: i64,
+    description: []const u8,
+    pub fn label(item: Item) []const u8 { return switch (item.rule) { .LFL => "LFL", .MIN => r.fmt("MIN {d}/{d}", .{ item.first, item.second }), else => r.fmt("{s} {d}", .{ @tagName(item.rule), item.first }) }; }
+};
+pub fn find(items: []const Item, id: []const u8) ?usize { for (items, 0..) |item, i| { if (r.eq(item.id, id)) return i; } return null; }
+fn lotValues(rule: Rule, text: []const u8) ?[2]i64 {
+    const parts = r.split(text, '/');
+    const first = r.integer(parts[0]);
+    if (rule == .MIN) { if (parts.len != 2 or first < 1 or r.integer(parts[1]) < 1) return null; return .{ first, r.integer(parts[1]) }; }
+    if (parts.len != 1 or (rule == .LFL and first != 0) or (rule != .LFL and first < 1)) return null;
+    return .{ first, 0 };
+}
+fn itemLess(_: void, a: Item, b: Item) bool { return r.less(a.id, b.id); }
+pub fn load(text: []const u8, errors: *std.ArrayList([]const u8)) []const Item {
+    var result: std.ArrayList(Item) = .empty;
+    for (r.rows(text)) |row| {
+        const f = row.fields;
+        if (find(result.items, f[0]) != null) { r.problem(errors, "items.csv", row.number, r.fmt("duplicate item {s}", .{f[0]})); continue; }
+        var rule: ?Rule = null;
+        inline for (@typeInfo(Rule).@"enum".field_names) |name| { if (r.eq(name, f[2])) rule = @field(Rule, name); }
+        if (rule == null) { r.problem(errors, "items.csv", row.number, r.fmt("unknown lot rule {s}", .{f[2]})); continue; }
+        const lot = lotValues(rule.?, f[3]) orelse { r.problem(errors, "items.csv", row.number, r.fmt("bad lot parameter {s} for {s}", .{ f[3], f[2] })); continue; };
+        r.append(Item, &result, .{ .id = f[0], .lead = r.integer(f[1]), .rule = rule.?, .first = lot[0], .second = lot[1], .safety = r.integer(f[4]), .on_hand = r.integer(f[5]), .material = r.integer(f[6]), .labor = r.integer(f[7]), .description = f[8] });
+    }
+    std.mem.sort(Item, result.items, {}, itemLess);
+    return result.items;
+}
+pub const Edge = struct { parent: usize, child: usize, quantity: i64, scrap: i64 };
+pub fn need(edge: Edge, quantity: i64) i64 { return @divFloor(quantity * edge.quantity * (100 + edge.scrap) + 99, 100); }
+pub const Graph = struct {
+    children: []std.ArrayList(Edge),
+    parents: []std.ArrayList(Edge),
+    pub fn manufactured(graph: Graph, item: usize) bool { return graph.children[item].items.len > 0; }
+    fn code(graph: Graph, item: usize, values: []i64) i64 {
+        if (values[item] >= 0) return values[item];
+        var largest: i64 = 0;
+        for (graph.parents[item].items) |edge| largest = @max(largest, graph.code(edge.parent, values) + 1);
+        values[item] = largest;
+        return largest;
+    }
+    pub fn codes(graph: Graph) []const i64 { const values = r.alloc(i64, graph.children.len); @memset(values, -1); for (0..values.len) |item| _ = graph.code(item, values); return values; }
+fn childLess(_: void, a: Edge, b: Edge) bool { return a.child < b.child; }
+fn parentLess(_: void, a: Edge, b: Edge) bool { return a.parent < b.parent; }
+pub fn load(text: []const u8, items: []const master.Item, errors: *std.ArrayList([]const u8)) Graph {
+    const children = r.alloc(std.ArrayList(Edge), items.len);
+    const parents = r.alloc(std.ArrayList(Edge), items.len);
+    @memset(children, .empty);
+    @memset(parents, .empty);
+    const graph: Graph = .{ .children = children, .parents = parents };
+    for (r.rows(text)) |row| {
+        const f = row.fields;
+        const parent = master.find(items, f[0]) orelse { r.problem(errors, "bom.csv", row.number, r.fmt("unknown item {s}", .{f[0]})); continue; };
+        const child = master.find(items, f[1]) orelse { r.problem(errors, "bom.csv", row.number, r.fmt("unknown item {s}", .{f[1]})); continue; };
+        const quantity = r.integer(f[2]);
+        const scrap = r.integer(f[3]);
+        if (quantity < 1) { r.problem(errors, "bom.csv", row.number, r.fmt("bad quantity {d}", .{quantity})); continue; }
+        if (scrap > 50) { r.problem(errors, "bom.csv", row.number, r.fmt("bad scrap {d}", .{scrap})); continue; }
+        if (parent == child) { r.problem(errors, "bom.csv", row.number, r.fmt("cycle {s} -> {s}", .{ f[0], f[0] })); continue; }
+        var duplicate = false;
+        for (children[parent].items) |edge| { if (edge.child == child) duplicate = true; }
+        if (duplicate) { r.problem(errors, "bom.csv", row.number, r.fmt("duplicate {s} -> {s}", .{ f[0], f[1] })); continue; }
+        const edge: Edge = .{ .parent = parent, .child = child, .quantity = quantity, .scrap = scrap };
+        r.append(Edge, &children[parent], edge);
+        r.append(Edge, &parents[child], edge);
+        std.mem.sort(Edge, children[parent].items, {}, childLess);
+        std.mem.sort(Edge, parents[child].items, {}, parentLess);
+    }
+    return graph;
+}
+pub const Center = struct { id: []const u8, minutes: i64, efficiency: i64, available: i64, description: []const u8 };
+pub const Operation = struct { number: i64, center: usize, setup: i64, run: i64, pub fn minutes(operation: Operation, quantity: i64) i64 { return operation.setup + quantity * operation.run; } };
+pub fn find(centers: []const Center, id: []const u8) ?usize { for (centers, 0..) |center, i| { if (r.eq(center.id, id)) return i; } return null; }
+fn centerLess(_: void, a: Center, b: Center) bool { return r.less(a.id, b.id); }
+fn operationLess(_: void, a: Operation, b: Operation) bool { return a.number < b.number; }
+pub fn loadCenters(text: []const u8, errors: *std.ArrayList([]const u8)) []const Center {
+    var result: std.ArrayList(Center) = .empty;
+    for (r.rows(text)) |row| {
+        const f = row.fields;
+        if (find(result.items, f[0]) != null) { r.problem(errors, "workcenters.csv", row.number, r.fmt("duplicate center {s}", .{f[0]})); continue; }
+        const efficiency = r.integer(f[2]);
+        if (efficiency < 50 or efficiency > 150) { r.problem(errors, "workcenters.csv", row.number, r.fmt("bad efficiency {d}", .{efficiency})); continue; }
+        const minutes = r.integer(f[1]);
+        r.append(Center, &result, .{ .id = f[0], .minutes = minutes, .efficiency = efficiency, .available = @divFloor(minutes * efficiency, 100), .description = f[3] });
+    }
+    std.mem.sort(Center, result.items, {}, centerLess);
+    return result.items;
+}
+pub fn loadRoutings(text: []const u8, items: []const master.Item, centers: []const Center, graph: bom.Graph, errors: *std.ArrayList([]const u8)) []std.ArrayList(Operation) {
+    const result = r.alloc(std.ArrayList(Operation), items.len);
+    @memset(result, .empty);
+    for (r.rows(text)) |row| {
+        const f = row.fields;
+        const item = master.find(items, f[0]) orelse { r.problem(errors, "routings.csv", row.number, r.fmt("unknown item {s}", .{f[0]})); continue; };
+        const center = find(centers, f[2]) orelse { r.problem(errors, "routings.csv", row.number, r.fmt("unknown center {s}", .{f[2]})); continue; };
+        if (!graph.manufactured(item)) { r.problem(errors, "routings.csv", row.number, r.fmt("purchased item {s}", .{f[0]})); continue; }
+        const run = r.integer(f[4]);
+        if (run < 1) { r.problem(errors, "routings.csv", row.number, r.fmt("bad run time {d}", .{run})); continue; }
+        const number = r.integer(f[1]);
+        var duplicate = false;
+        for (result[item].items) |operation| { if (operation.number == number) duplicate = true; }
+        if (duplicate) { r.problem(errors, "routings.csv", row.number, r.fmt("duplicate {s} operation {d}", .{ f[0], number })); continue; }
+        r.append(Operation, &result[item], .{ .number = number, .center = center, .setup = r.integer(f[3]), .run = run });
+    }
+    for (result) |operations| std.mem.sort(Operation, operations.items, {}, operationLess);
+    return result;
+}
+pub fn operationWeek(receipt: usize, lead: i64, index: usize, count: usize) usize { return @intCast(@max(1, @as(i64, @intCast(receipt)) - lead + @divFloor(@as(i64, @intCast(index)) * lead, @as(i64, @intCast(count))))); }
+pub fn quantity(item: master.Item, week: usize, projected: i64, receipts: []const i64, gross: []const i64, horizon: usize) i64 {
+    const net = item.safety - projected;
+    switch (item.rule) {
+        .LFL => return net,
+const Strings = r.Strings;
+const fmt = r.fmt;
+const add = r.append;
+const money = r.money;
+const Weeks = [27]i64;
+const DemandKind = enum { MPS, ORDER, DEPENDENT, SAFETY };
+const SupplyKind = enum { STOCK, RECEIPT, ORDER };
+const ScheduleRow = struct { item: usize, week: usize, quantity: i64, line: usize };
+const Inquiry = struct { id: []const u8, item: usize, quantity: i64, week: usize, line: usize };
+const Demand = struct { item: usize, kind: DemandKind, week: usize, quantity: i64, order_id: []const u8 = "", line: usize = 0, parent: usize = 0, parent_number: usize = 0 };
+const PlannedOrder = struct { item: usize, number: usize, receipt: usize, quantity: i64, original: i64, release: usize };
+const ItemPlan = struct {
+    receipts: Weeks = @splat(0),
+    gross: Weeks = @splat(0),
+    on_hand: Weeks = @splat(0),
+    net: Weeks = @splat(0),
+    planned_receipts: Weeks = @splat(0),
+    planned_releases: Weeks = @splat(0),
+    past_due: i64 = 0,
+    demands: std.ArrayList(Demand) = .empty,
+    orders: std.ArrayList(PlannedOrder) = .empty,
+    supplies: std.ArrayList(Supply) = .empty,
+    order_supplies: []*Supply = &.{},
+};
+const Plan = struct { owner: *std.heap.ArenaAllocator, items: []ItemPlan, loads: []Weeks, overloads: []Weeks };
+const Promise = struct { inquiry: Inquiry, week: usize = 0, material_week: usize = 0, reason: []const u8 = "" };
+fn push(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: T) void { list.append(allocator, value) catch @panic("allocation failed"); }
+fn allocAt(comptime T: type, allocator: std.mem.Allocator, count: usize) []T { return allocator.alloc(T, count) catch @panic("allocation failed"); }
+fn sum(values: []const i64) i64 { var total: i64 = 0; for (values) |value| total += value; return total; }
+fn weekValues(horizon: usize) []const i64 { const values = r.alloc(i64, horizon); for (values, 1..) |*value, week| value.* = @intCast(week); return values; }
+fn depthLabel(depth: usize) []const u8 { return fmt("{s}{d}", .{ r.repeat('.', depth), depth }); }
+fn planningLess(codes: []const i64, a: usize, b: usize) bool { return codes[a] < codes[b] or (codes[a] == codes[b] and a < b); }
+fn receiptLess(_: void, a: ScheduleRow, b: ScheduleRow) bool { return a.week < b.week or (a.week == b.week and a.line < b.line); }
+const Data = struct {
+    horizon: usize,
+    peg: []const usize,
+    tree_quantity: i64,
+    items: []const master.Item,
+    graph: bom.Graph,
+    centers: []const capacity.Center,
+    routings: []std.ArrayList(capacity.Operation),
+    mps: []const Demand,
+    receipts: []std.ArrayList(ScheduleRow),
+    scheduled: []Weeks,
+    inquiries: []const Inquiry,
+    codes: []const i64,
+    cumulative: []const i64,
+    order: []const usize,
+    errors: Strings,
+    fn scheduleRows(name: []const u8, text: []const u8, items: []const master.Item, horizon: usize, unique: bool, errors: *std.ArrayList([]const u8)) []const ScheduleRow {
+        var result: std.ArrayList(ScheduleRow) = .empty;
+        for (r.rows(text)) |row| {
+            const f = row.fields;
+            const item = master.find(items, f[0]) orelse { r.problem(errors, name, row.number, fmt("unknown item {s}", .{f[0]})); continue; };
+            const week = r.integer(f[1]);
+            if (week < 1 or week > @as(i64, @intCast(horizon))) { r.problem(errors, name, row.number, fmt("week {d} outside horizon", .{week})); continue; }
+            const quantity = r.integer(f[2]);
+            if (quantity < 1) { r.problem(errors, name, row.number, fmt("bad quantity {d}", .{quantity})); continue; }
+            var duplicate = false;
+            if (unique) { for (result.items) |existing| { if (existing.item == item and existing.week == @as(usize, @intCast(week))) duplicate = true; } }
+            if (duplicate) { r.problem(errors, name, row.number, fmt("duplicate {s} week {d}", .{ f[0], week })); continue; }
+            add(ScheduleRow, &result, .{ .item = item, .week = @intCast(week), .quantity = quantity, .line = row.number });
+        }
+        return result.items;
+    }
+    fn load(inputs: [8][]const u8) Data {
+        const params = r.lines(inputs[7]);
+        const horizon: usize = @intCast(r.integer(r.split(params[0], ' ')[1]));
+        var errors: std.ArrayList([]const u8) = .empty;
+        const items = master.load(inputs[0], &errors);
+        const graph = bom.load(inputs[1], items, &errors);
+        const centers = capacity.loadCenters(inputs[2], &errors);
+        const routings = capacity.loadRoutings(inputs[3], items, centers, graph, &errors);
+        const mps_rows = scheduleRows("mps.csv", inputs[4], items, horizon, true, &errors);
+        const receipt_rows = scheduleRows("receipts.csv", inputs[5], items, horizon, false, &errors);
+        var inquiries: std.ArrayList(Inquiry) = .empty;
+        for (r.rows(inputs[6])) |row| {
+            const f = row.fields;
+            var duplicate = false;
+            for (inquiries.items) |inquiry| { if (r.eq(inquiry.id, f[0])) duplicate = true; }
+            if (duplicate) { r.problem(&errors, "orders.csv", row.number, fmt("duplicate order {s}", .{f[0]})); continue; }
+            const item = master.find(items, f[1]) orelse { r.problem(&errors, "orders.csv", row.number, fmt("unknown item {s}", .{f[1]})); continue; };
+            const week = r.integer(f[3]);
+            if (week < 1 or week > @as(i64, @intCast(horizon))) { r.problem(&errors, "orders.csv", row.number, fmt("week {d} outside horizon", .{week})); continue; }
+            const quantity = r.integer(f[2]);
+            if (quantity < 1) { r.problem(&errors, "orders.csv", row.number, fmt("bad quantity {d}", .{quantity})); continue; }
+            add(Inquiry, &inquiries, .{ .id = f[0], .item = item, .quantity = quantity, .week = @intCast(week), .line = row.number });
+        }
+        const receipts = r.alloc(std.ArrayList(ScheduleRow), items.len);
+        const scheduled = r.alloc(Weeks, items.len);
+        @memset(receipts, .empty);
+        @memset(scheduled, @splat(0));
+        for (receipt_rows) |row| { add(ScheduleRow, &receipts[row.item], row); scheduled[row.item][row.week] += row.quantity; }
+        for (receipts) |entries| std.mem.sort(ScheduleRow, entries.items, {}, receiptLess);
+        var mps: std.ArrayList(Demand) = .empty;
+        for (mps_rows) |row| add(Demand, &mps, .{ .item = row.item, .kind = .MPS, .week = row.week, .quantity = row.quantity });
+        const codes = graph.codes();
+        const cumulative = graph.cumulative(items);
+        const order = r.alloc(usize, items.len);
+        for (order, 0..) |*item, index| item.* = index;
+        std.mem.sort(usize, order, codes, planningLess);
+        return .{ .horizon = horizon, .peg = peg, .tree_quantity = tree_quantity, .items = items, .graph = graph, .centers = centers, .routings = routings, .mps = mps.items, .receipts = receipts, .scheduled = scheduled, .inquiries = inquiries.items, .codes = codes, .cumulative = cumulative, .order = order, .errors = errors.items };
+    }
+};
+fn runMrp(data: *const Data, inquiries: []const Demand) *Plan {
+    const owner = r.allocator.create(std.heap.ArenaAllocator) catch @panic("allocation failed");
+    owner.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const allocator = owner.allocator();
+    const result = allocator.create(Plan) catch @panic("allocation failed");
+    const plans = allocAt(ItemPlan, allocator, data.items.len);
+    const loads = allocAt(Weeks, allocator, data.centers.len);
+    const overloads = allocAt(Weeks, allocator, data.centers.len);
+    @memset(plans, .{});
+    @memset(loads, @splat(0));
+    @memset(overloads, @splat(0));
+    result.* = .{ .owner = owner, .items = plans, .loads = loads, .overloads = overloads };
+    for (data.scheduled, plans) |scheduled, *plan| plan.receipts = scheduled;
+    for (data.mps) |demand| push(Demand, allocator, &plans[demand.item].demands, demand);
+    for (inquiries) |demand| push(Demand, allocator, &plans[demand.item].demands, demand);
+    for (data.order) |id| {
+        const plan = &plans[id];
+        const item = data.items[id];
+        for (plan.demands.items) |demand| plan.gross[demand.week] += demand.quantity;
+        plan.on_hand[0] = item.on_hand;
+        for (1..data.horizon + 1) |week| {
+            const available = plan.on_hand[week - 1] + plan.receipts[week] - plan.gross[week];
+            var projected = available;
+            if (available < item.safety) {
+                const quantity = lot.quantity(item, week, available, &plan.receipts, &plan.gross, data.horizon);
+                const original = @as(i64, @intCast(week)) - item.lead;
+                const release: usize = @intCast(@max(1, original));
+                const order: PlannedOrder = .{ .item = id, .number = plan.orders.items.len + 1, .receipt = week, .quantity = quantity, .original = original, .release = release };
+                push(PlannedOrder, allocator, &plan.orders, order);
+                plan.net[week] = item.safety - available;
+                plan.planned_receipts[week] = quantity;
+                plan.planned_releases[release] += quantity;
+                if (original < 1) plan.past_due += quantity;
+                projected += quantity;
+            }
+            plan.on_hand[week] = projected;
+        }
+        for (plan.orders.items) |order| { for (data.graph.children[id].items) |edge| push(Demand, allocator, &plans[edge.child].demands, .{ .item = edge.child, .kind = .DEPENDENT, .week = order.release, .quantity = bom.need(edge, order.quantity), .parent = id, .parent_number = order.number }); }
+    }
+    for (data.routings, 0..) |operations, id| {
+        for (plans[id].orders.items) |order| { for (operations.items, 0..) |operation, index| {
+            const week = capacity.operationWeek(order.receipt, data.items[id].lead, index, operations.items.len);
+            loads[operation.center][week] += operation.minutes(order.quantity);
+        } }
+    }
+    for (data.centers, 0..) |center, id| { for (1..data.horizon + 1) |week| overloads[id][week] = @max(0, loads[id][week] - center.available); }
+    return result;
+}
+fn materialReason(data: *const Data, current: *const Plan, trial: *const Plan) ?[]const u8 { for (data.order) |id| { if (trial.items[id].past_due > current.items[id].past_due) return data.items[id].id; } return null; }
+fn capacityReason(data: *const Data, current: *const Plan, trial: *const Plan) ?[]const u8 { for (data.centers, 0..) |center, id| { for (1..data.horizon + 1) |week| { if (trial.overloads[id][week] > current.overloads[id][week]) return fmt("{s} week {d}", .{ center.id, week }); } } return null; }
+fn promiseInquiries(data: *const Data, base: *Plan) struct { promises: []const Promise, final: *Plan } {
+    var current = base;
+    var promised: std.ArrayList(Demand) = .empty;
+    var promises: std.ArrayList(Promise) = .empty;
+    for (data.inquiries) |inquiry| {
+        var promise: Promise = .{ .inquiry = inquiry };
+        for (inquiry.week..data.horizon + 1) |week| {
+            const demand: Demand = .{ .item = inquiry.item, .kind = .ORDER, .week = week, .quantity = inquiry.quantity, .order_id = inquiry.id, .line = inquiry.line };
+            var trial_demands: [51]Demand = undefined;
+            @memcpy(trial_demands[0..promised.items.len], promised.items);
+            trial_demands[promised.items.len] = demand;
+            const trial = runMrp(data, trial_demands[0..promised.items.len + 1]);
+            var reason = materialReason(data, current, trial);
+            if (reason == null) { if (promise.material_week == 0) promise.material_week = week; reason = capacityReason(data, current, trial); }
+            if (reason == null) {
+                promise.week = week;
+                add(Demand, &promised, demand);
+                if (current != base) current.owner.deinit();
+                current = trial;
+                break;
+            }
+            if (week == inquiry.week) promise.reason = reason.?;
+            trial.owner.deinit();
+        }
+        add(Promise, &promises, promise);
+    }
+    return .{ .promises = promises.items, .final = current };
+}
+fn gridLines(data: *const Data, plan: *const Plan) Strings {
+    var output: std.ArrayList([]const u8) = .empty;
+    const weeks = weekValues(data.horizon);
+    for (data.order) |id| {
+        const item = data.items[id];
+        const item_plan = &plan.items[id];
+        add([]const u8, &output, fmt("ITEM {s} LLC {d} LT {d} LOT {s} SS {d} OH {d} {s}", .{ item.id, data.codes[id], item.lead, item.label(), item.safety, item.on_hand, item.description }));
+        const labels = [_][]const u8{ "WEEK", "GROSS", "RECEIPTS", "ON_HAND", "NET", "PLAN_RCPT", "PLAN_REL" };
+        const values = [_][]const i64{ weeks, item_plan.gross[1..data.horizon + 1], item_plan.receipts[1..data.horizon + 1], item_plan.on_hand[1..data.horizon + 1], item_plan.net[1..data.horizon + 1], item_plan.planned_receipts[1..data.horizon + 1], item_plan.planned_releases[1..data.horizon + 1] };
+        for (labels, values) |label, numbers| add([]const u8, &output, r.table(label, numbers, 6));
+        add([]const u8, &output, fmt("TOTAL gross {d} receipts {d} planned {d} orders {d} ending {d}", .{ sum(&item_plan.gross), sum(&item_plan.receipts), sum(&item_plan.planned_receipts), item_plan.orders.items.len, item_plan.on_hand[data.horizon] }));
+    }
+    return output.items;
+}
+fn capacityLines(data: *const Data, plan: *const Plan) Strings {
+    var output: std.ArrayList([]const u8) = .empty;
+    for (data.centers, 0..) |center, id| {
+        const loads = plan.loads[id][0..data.horizon + 1];
+        const overloads = plan.overloads[id][0..data.horizon + 1];
+        const leveled = capacity.level(loads, center.available);
+        const total = sum(loads);
+        const available = center.available * @as(i64, @intCast(data.horizon));
+        var peak: usize = 0;
+        var overloaded: usize = 0;
+        const utilization = r.alloc(i64, data.horizon);
+        for (1..data.horizon + 1) |week| {
+            if (loads[week] > 0 and (peak == 0 or loads[week] > loads[peak])) peak = week;
+            if (overloads[week] > 0) overloaded += 1;
+            utilization[week - 1] = r.percent(loads[week], center.available);
+        }
+        add([]const u8, &output, fmt("CENTER {s} minutes {d} efficiency {d} available {d} {s}", .{ center.id, center.minutes, center.efficiency, center.available, center.description }));
+        const labels = [_][]const u8{ "WEEK", "LOAD", "UTIL", "OVER", "LEVELED" };
+        const values = [_][]const i64{ weekValues(data.horizon), loads[1..], utilization, overloads[1..], leveled[1..] };
+        for (labels, values) |label, numbers| add([]const u8, &output, r.table(label, numbers, 7));
+        add([]const u8, &output, fmt("TOTAL load {d} available {d} utilization {d} overloaded {d} peak {d} backlog {d}", .{ total, available, r.percent(total, available), overloaded, peak, @max(0, leveled[1] - center.available) }));
+    }
+    return output.items;
+}
+fn promiseLines(data: *const Data, promises: []const Promise, base: *const Plan, final: *const Plan) Strings {
+    var output: std.ArrayList([]const u8) = .empty;
+    var counts: [3]usize = @splat(0);
+    for (promises) |promise| {
+        const inquiry = promise.inquiry;
+        const head = fmt("ORDER {s} {s} quantity {d} requested {d}", .{ inquiry.id, data.items[inquiry.item].id, inquiry.quantity, inquiry.week });
+        const material = if (promise.material_week == 0) "none" else fmt("{d}", .{promise.material_week});
+        if (promise.week == 0) {
+            counts[2] += 1;
+            add([]const u8, &output, fmt("{s} rejected material {s} reason {s}", .{ head, material, promise.reason }));
+            continue;
+        } else if (promise.week == inquiry.week) {
+            counts[0] += 1;
+            add([]const u8, &output, fmt("{s} promised {d}", .{ head, promise.week }));
+        } else {
+            counts[1] += 1;
+            add([]const u8, &output, fmt("{s} promised {d} late {d} material {s} reason {s}", .{ head, promise.week, promise.week - inquiry.week, material, promise.reason }));
+        }
+        for (data.order) |id| {
+            for (final.items[id].order_supplies) |supply| {
+                var serves = false;
+                for (supply.roots.items) |root| { if (root.kind == .ORDER and r.eq(root.order_id, inquiry.id)) serves = true; }
+                if (!serves) continue;
+                const order = final.items[id].orders.items[supply.order_index];
+                add([]const u8, &output, fmt("  SUPPLY {s} order {d} receipt {d} release {d} quantity {d}", .{ data.items[id].id, order.number, order.receipt, order.release, order.quantity }));
+            }
+        }
+    }
+    for (data.order) |id| {
+        const before = &base.items[id];
+        const after = &final.items[id];
+        var changed: usize = 0;
+        for (1..data.horizon + 1) |week| { if (before.planned_receipts[week] != after.planned_receipts[week]) { changed = week; break; } }
+        if (changed > 0) add([]const u8, &output, fmt("CHANGE {s} from {d} planned {d} -> {d} orders {d} -> {d}", .{ data.items[id].id, changed, sum(&before.planned_receipts), sum(&after.planned_receipts), before.orders.items.len, after.orders.items.len }));
+    }
+    add([]const u8, &output, fmt("SUMMARY orders {d} on_time {d} late {d} rejected {d}", .{ promises.len, counts[0], counts[1], counts[2] }));
+    return output.items;
+}
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    r.allocator = arena.allocator();
+    const cwd = std.Io.Dir.cwd();
+    const names = [_][]const u8{ "items.csv", "bom.csv", "workcenters.csv", "routings.csv", "mps.csv", "receipts.csv", "orders.csv", "params.txt" };
+    var inputs: [8][]const u8 = undefined;
+    for (names, 0..) |name, i| inputs[i] = try cwd.readFileAlloc(init.io, fmt("input/{s}", .{name}), r.allocator, .unlimited);
+    const data = Data.load(inputs);
+    const base = runMrp(&data, &.{});
+    defer base.owner.deinit();
+    const promised = promiseInquiries(&data, base);
+    const final = promised.final;
+    defer if (final != base) final.owner.deinit();
+    pegPlan(&data, final);
+    try r.write(init.io, "mrp_grid.txt", gridLines(&data, final));
+    try r.write(init.io, "capacity.txt", capacityLines(&data, final));
+    try r.write(init.io, "promises.txt", promiseLines(&data, promised.promises, base, final));
+}
+pub const Strings = []const []const u8;
+pub fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+pub fn less(a: []const u8, b: []const u8) bool { return std.mem.order(u8, a, b) == .lt; }
+pub fn fmt(comptime pattern: []const u8, args: anytype) []const u8 { return std.fmt.allocPrint(allocator, pattern, args) catch @panic("allocation failed"); }
+pub fn append(comptime T: type, list: *std.ArrayList(T), value: T) void { list.append(allocator, value) catch @panic("allocation failed"); }
+pub fn alloc(comptime T: type, count: usize) []T { return allocator.alloc(T, count) catch @panic("allocation failed"); }
+pub fn join(parts: Strings, delimiter: []const u8) []const u8 { return std.mem.join(allocator, delimiter, parts) catch @panic("allocation failed"); }
+pub fn split(text: []const u8, delimiter: u8) Strings { var result: std.ArrayList([]const u8) = .empty; var it = std.mem.splitScalar(u8, text, delimiter); while (it.next()) |part| append([]const u8, &result, part); return result.items; }
+pub fn lines(text: []const u8) Strings { const all = split(text, '\n'); return all[0..all.len - 1]; }
+pub fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
+pub const Row = struct { number: usize, fields: Strings };
+pub fn rows(text: []const u8) []const Row { var result: std.ArrayList(Row) = .empty; for (lines(text)[1..], 2..) |line, number| append(Row, &result, .{ .number = number, .fields = split(line, ',') }); return result.items; }
+pub fn problem(errors: *std.ArrayList([]const u8), file: []const u8, number: usize, message: []const u8) void { append([]const u8, errors, fmt("{s} line {d}: {s}", .{ file, number, message })); }
+pub fn percent(part: i64, whole: i64) i64 { return @divFloor(200 * part + whole, 2 * whole); }
+pub fn repeat(byte: u8, count: usize) []const u8 { const text = alloc(u8, count); @memset(text, byte); return text; }
+pub fn table(label: []const u8, values: []const i64, width: usize) []const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    append([]const u8, &parts, label);
+    append([]const u8, &parts, repeat(' ', 10 - label.len));
+    for (values) |value| { const text = fmt("{d}", .{value}); append([]const u8, &parts, repeat(' ', width - text.len)); append([]const u8, &parts, text); }
+    return join(parts.items, "");
+}
+pub fn write(io: std.Io, name: []const u8, output: Strings) !void {
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, "output");
+    const text = if (output.len == 0) "" else fmt("{s}\n", .{join(output, "\n")});
+    try cwd.writeFile(io, .{ .sub_path = fmt("output/{s}", .{name}), .data = text });
+}

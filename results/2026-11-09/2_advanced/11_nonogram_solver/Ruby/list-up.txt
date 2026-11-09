@@ -1,0 +1,260 @@
+  UNKNOWN = 0
+  FILLED = 1
+  EMPTY = 2
+  def self.parse(text)
+    return [] if text == '0'
+    return nil unless /\A[1-9][0-9]?(?: [1-9][0-9]?)*\z/.match?(text)
+    text.split(' ').map(&:to_i)
+  end
+  def self.fits?(clue, length)
+    clue.empty? || clue.sum + clue.length - 1 <= length
+  end
+  SYMBOLS = ['?', '#', '.'].freeze
+  STATES = SYMBOLS.each_with_index.to_h.freeze
+  STATS_HEADER = 'puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer'
+  def read_blocks(path, marker)
+    lines = File.readlines(path, chomp: true)
+    blocks = []
+    index = 0
+    while index < lines.length
+      if lines[index].empty? || lines[index].start_with?('#')
+        index += 1
+        next
+      end
+      name = lines[index].delete_prefix(marker + ' ')
+      index += 1
+      body = []
+      until lines[index] == 'END'
+        body << lines[index]
+        index += 1
+      end
+      blocks << { name: name, body: body }
+      index += 1
+    end
+    blocks
+  end
+  def parse_puzzle(block)
+    body = block[:body]
+    _, width, height = body.first.split(' ')
+    columns_start = body.index('COLUMNS')
+    answer_start = body.index('ANSWER')
+    givens_start = body.index { |line| line.start_with?('GIVEN ') }
+    columns_end = givens_start || answer_start || body.length
+    given_lines = body[columns_end...(answer_start || body.length)]
+    givens = given_lines.map do |line|
+      _, row, column, value = line.split(' ')
+      [row.to_i, column.to_i, value]
+    end
+    { name: block[:name], width: width.to_i, height: height.to_i,
+      raw_rows: body[2...columns_start], raw_columns: body[(columns_start + 1)...columns_end],
+      raw_givens: givens,
+      raw_answer: answer_start ? body.drop(answer_start + 1) : nil }
+  end
+  def valid_name?(name)
+    /\A[a-z0-9_]{1,20}\z/.match?(name)
+  end
+  def validate_puzzle(puzzle, duplicate)
+    return 'bad name' unless valid_name?(puzzle[:name])
+    return 'duplicate name' if duplicate
+    width = puzzle[:width]
+    height = puzzle[:height]
+    return 'bad size' unless width.between?(1, 30) && height.between?(1, 30)
+    return "row count #{puzzle[:raw_rows].length} expected #{height}" unless puzzle[:raw_rows].length == height
+    return "column count #{puzzle[:raw_columns].length} expected #{width}" unless puzzle[:raw_columns].length == width
+    [['row', :raw_rows, :rows, width], ['column', :raw_columns, :columns, height]].each do |name, raw, parsed, length|
+      puzzle[parsed] = []
+      puzzle[raw].each_with_index do |text, index|
+        clue = Clues.parse(text)
+        return "bad clue #{name} #{index + 1}" if clue.nil?
+        return "#{name} #{index + 1} too long" unless Clues.fits?(clue, length)
+        puzzle[parsed] << clue
+      end
+    end
+    row_total = puzzle[:rows].sum(&:sum)
+    column_total = puzzle[:columns].sum(&:sum)
+    return "total mismatch rows=#{row_total} columns=#{column_total}" unless row_total == column_total
+    used = Set.new
+    puzzle[:givens] = []
+    puzzle[:raw_givens].each_with_index do |(row, column, value), index|
+      return "bad given #{index + 1}" unless row.between?(1, height) && column.between?(1, width) && %w[# .].include?(value)
+      return "duplicate given #{index + 1}" if used.include?([row, column])
+      used.add([row, column])
+      puzzle[:givens] << [row - 1, column - 1, Render::STATES.fetch(value)]
+    end
+    answer = puzzle[:raw_answer]
+    if answer && (answer.length != height || answer.any? { |row| row.length != width || !/\A[#.?]+\z/.match?(row) })
+      return 'bad answer'
+    end
+    puzzle[:answer] = answer&.map { |row| Render.parse(row) }
+    nil
+  end
+  def logical(puzzle, givens, kind)
+    grid = Array.new(puzzle[:height]) { Array.new(puzzle[:width], LineSolver::UNKNOWN) }
+    givens.each { |row, column, value| grid[row][column] = value }
+    Propagation.run(grid, puzzle[:rows], puzzle[:columns], kind)
+  end
+  def analyze(puzzle, givens)
+    simple = logical(puzzle, givens, :simple)
+    logic = logical(puzzle, givens, :precise)
+    search = nil
+    if logic[:status] == 'contradiction'
+      status = 'contradiction'
+      difficulty = '-'
+      solutions = []
+    elsif logic[:status] == 'solved'
+      status = 'unique'
+      difficulty = simple[:status] == 'solved' ? 'easy' : 'medium'
+      solutions = [logic[:grid]]
+    else
+      search = Search.run(logic[:grid], puzzle[:rows], puzzle[:columns])
+      solutions = search[:solutions]
+      status = %w[none unique multiple][solutions.length]
+      difficulty = status == 'unique' ? 'hard' : '-'
+    end
+    { simple: simple, logic: logic, search: search, status: status, difficulty: difficulty, solutions: solutions,
+      line_solves: logic[:record].length + (search ? search[:line_solves] : 0),
+      guesses: search ? search[:guesses] : 0, max_depth: search ? search[:max_depth] : 0 }
+  end
+  def puzzle_lines(puzzle)
+    analysis = puzzle[:analysis]
+    height = puzzle[:height]
+    width = puzzle[:width]
+    simple = analysis[:simple]
+    logic = analysis[:logic]
+    lines << "size=#{width}x#{height} givens=#{puzzle[:givens].length} status=#{analysis[:status]} difficulty=#{analysis[:difficulty]}"
+    lines << "clues #{clue_text(puzzle)}"
+    lines << "simple known=#{simple[:known]} line_solves=#{simple[:record].length} result=#{logical_result(simple, height)}"
+    lines << "logic known=#{logic[:known]} line_solves=#{logic[:record].length} result=#{logical_result(logic, height)}"
+    lines << line_statistics(logic[:record], height)
+    if analysis[:search]
+      search = analysis[:search]
+      lines << "search guesses=#{search[:guesses]} max_depth=#{search[:max_depth]} backtracks=#{search[:backtracks]} solutions=#{search[:solutions].length} line_solves=#{search[:line_solves]}"
+      search[:records].each do |guess|
+        lines << "guess #{guess[:number]} depth=#{guess[:depth]} cell=#{cell_text([guess[:row], guess[:column]])} value=#{Render.symbol(guess[:value])} solves=#{guess[:solves]} known=#{guess[:known]} result=#{guess[:result]}"
+      end
+    end
+    if analysis[:status] == 'multiple'
+      differences = different_cells(*analysis[:solutions])
+      lines << "differ count=#{differences.length} cells=#{differences.map { |cell| cell_text(cell) }.join(' ')}"
+    end
+    grids = []
+    if analysis[:status] == 'contradiction'
+      grids << ['partial', logic[:grid]]
+    else
+      grids << ['simple', simple[:grid]] if simple[:status] == 'stuck'
+      grids << ['logic', logic[:grid]] if logic[:status] == 'stuck'
+      if analysis[:status] == 'multiple'
+        grids << ['first', analysis[:solutions][0]]
+        grids << ['second', analysis[:solutions][1]]
+      end
+    end
+    lines.concat(Render.side_by_side(grids, height)) unless grids.empty?
+    if analysis[:status] == 'unique'
+      lines << 'sheet'
+      lines.concat(Render.sheet(puzzle[:rows], puzzle[:columns], analysis[:solutions].first))
+      lines << "picture #{features(analysis[:solutions].first)}"
+    end
+  def statistics_line(puzzle)
+    return ([puzzle[:name], 'invalid'] + Array.new(11, '-')).join(',') if puzzle[:error]
+    analysis = puzzle[:analysis]
+    [puzzle[:name], analysis[:status], analysis[:difficulty], puzzle[:width], puzzle[:height], puzzle[:givens].length,
+     analysis[:simple][:known], analysis[:logic][:known], analysis[:line_solves], analysis[:guesses], analysis[:max_depth],
+     analysis[:solutions].length, puzzle[:grading] ? puzzle[:grading][:result] : '-'].join(',')
+  end
+  def puzzle_reports
+    seen = Set.new
+    @puzzles = read_blocks('input/puzzles.txt', 'PUZZLE').map do |block|
+      puzzle = parse_puzzle(block)
+      duplicate = seen.include?(puzzle[:name])
+      seen.add(puzzle[:name])
+      puzzle[:error] = validate_puzzle(puzzle, duplicate)
+      unless puzzle[:error]
+        puzzle[:analysis] = analyze(puzzle, puzzle[:givens])
+        puzzle[:given_evaluation] = evaluate_givens(puzzle, puzzle[:analysis])
+        puzzle[:grading] = grade_answer(puzzle, puzzle[:analysis])
+      end
+      puzzle
+    end
+    @valid_puzzles = @puzzles.reject { |puzzle| puzzle[:error] }
+    paragraphs = @puzzles.map { |puzzle| puzzle_lines(puzzle) }
+    [paragraphs, [STATS_HEADER] + @puzzles.map { |puzzle| statistics_line(puzzle) }]
+    solutions, statistics = puzzle_reports
+    File.binwrite('output/solutions.txt', paragraph_text(solutions))
+    File.binwrite('output/stats.csv', statistics.join("\n") + "\n")
+  def self.known(grid)
+    grid.sum { |row| row.count { |state| state != LineSolver::UNKNOWN } }
+  end
+  def self.line(grid, index)
+    index < grid.length ? grid[index].dup : grid.map { |row| row[index - grid.length] }
+  end
+  def self.run(grid, rows, columns, kind, marks = nil)
+    height = rows.length
+    width = columns.length
+    pending = marks ? marks.dup : Array.new(height + width, true)
+    record = []
+    while (index = pending.index(true))
+      pending[index] = false
+      current = line(grid, index)
+      clue = index < height ? rows[index] : columns[index - height]
+      solved = LineSolver.solve(current, clue, kind)
+      if solved.nil?
+        record << { line: index, gain: nil }
+        return { grid: grid, status: 'contradiction', conflict: index, record: record, known: known(grid) }
+      end
+      gain = 0
+      current.each_index do |position|
+        next unless current[position] == LineSolver::UNKNOWN && solved[position] != LineSolver::UNKNOWN
+        row, column = index < height ? [index, position] : [position, index - height]
+        grid[row][column] = solved[position]
+        pending[index < height ? height + column : row] = true
+        gain += 1
+      end
+      record << { line: index, gain: gain }
+    end
+    determined = known(grid)
+    { grid: grid, status: determined == height * width ? 'solved' : 'stuck', record: record, known: determined }
+  end
+    def initialize(rows, columns)
+      @rows = rows
+      @columns = columns
+      @records = []
+      @solutions = []
+      @maximum_depth = 0
+      @backtracks = 0
+      @line_solves = 0
+    end
+    def visit(grid, depth)
+      row, column = Search.choose(grid)
+      [LineSolver::FILLED, LineSolver::EMPTY].each do |value|
+        number = @records.length + 1
+        @maximum_depth = [@maximum_depth, depth].max
+        child = grid.map(&:dup)
+        child[row][column] = value
+        marks = Array.new(@rows.length + @columns.length, false)
+        marks[row] = marks[@rows.length + column] = true
+        outcome = Propagation.run(child, @rows, @columns, :precise, marks)
+        @line_solves += outcome[:record].length
+        result = if outcome[:status] == 'contradiction'
+                   @backtracks += 1
+                   "contradiction at=#{Propagation.label(outcome[:conflict], @rows.length)}"
+                 elsif outcome[:status] == 'solved'
+                   @solutions << child
+                   "solution#{@solutions.length}"
+                 else
+                   'open'
+                 end
+        @records << { number: number, depth: depth, row: row, column: column, value: value,
+                      solves: outcome[:record].length, known: outcome[:known], result: result }
+        return if @solutions.length == 2
+        visit(child, depth + 1) if result == 'open'
+        return if @solutions.length == 2
+      end
+    end
+    def run(grid)
+      visit(grid, 1)
+      { guesses: @records.length, max_depth: @maximum_depth, backtracks: @backtracks,
+        solutions: @solutions, line_solves: @line_solves, records: @records }
+    end
+  def self.run(grid, rows, columns)
+    Explorer.new(rows, columns).run(grid)
+  end

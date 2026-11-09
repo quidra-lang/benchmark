@@ -1,0 +1,219 @@
+    class Annotation(val sample: Int,val label: String) {
+        var beat: Beat?=null
+    }
+    fun ecg()=File("input/ecg.csv").readLines(Charsets.US_ASCII).drop(1).map {
+        it.substringAfter(',').toLong()
+    }.toLongArray()
+    fun annotations()=File("input/annotations.csv").readLines(Charsets.US_ASCII).drop(1).map {
+        val w=it.split(',');
+        Annotation(w[0].toInt(),w[1])
+    }
+    fun parameters()=File("input/params.txt").readLines(Charsets.US_ASCII).associate {
+        val w=it.split(' ');
+        w[0] to w[1].toInt()
+    }
+class Beat(val number: Int,val sample: Int,val width: Int,val rr: Long,val method: String) {
+    var label="N";
+    var offset=0L;
+    var annotation: SignalIo.Annotation?=null
+}
+private fun beats(d: Detection,f: Filters.Signals,p: Map<String,Int>): List<Beat> {
+    val result=mutableListOf<Beat>();
+    for(peak in d.registered) {
+        val number=result.size+1;
+        val sample=maxOf(0,peak.r-21);
+        val rr=if(result.isEmpty())0L else 5L*(sample-result.last().sample);
+        val b=Beat(number,sample,Detector.width(f.band,peak.r),rr,if(peak.kind=="qrs")"threshold" else "searchback");
+        if(number>=10) {
+            var previous=0L;
+            for(j in number-9 until number-1)previous+=result[j].rr;
+            if(800*rr<p.getValue("premature_percent").toLong()*previous)b.label=if(b.width>p.getValue("qrs_width_ms"))"V" else "A"
+        };
+        result+=b
+    };
+    return result
+}
+private fun match(beats: List<Beat>,refs: List<SignalIo.Annotation>,tolerance: Int) {
+    for(b in beats) {
+        var chosen: SignalIo.Annotation?=null;
+        var distance=Int.MAX_VALUE;
+        for(r in refs)if(r.beat==null) {
+            val d=abs(r.sample-b.sample);
+            if(d<=tolerance&&d<distance) {
+                distance=d;
+                chosen=r
+            }
+        };
+        val selected=chosen;
+        if(selected!=null) {
+            selected.beat=b;
+            b.annotation=selected;
+            b.offset=5L*(b.sample-selected.sample)
+        }
+    }
+}
+private data class Row(val sample: Int,val order: Int,val text: String)
+private fun ordered(rows: List<Row>)=rows.sortedWith(compareBy<Row> {
+    it.sample
+}.thenBy {
+    it.order
+}).map {
+    it.text
+}
+private fun ref(b: Beat)=b.annotation?.label?:"-"
+private fun lists(beats: List<Beat>,refs: List<SignalIo.Annotation>,peaks: List<Detector.Peak>,x: LongArray,f: Filters.Signals,p: Map<String,Int>) {
+    var output=mutableListOf("beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label");
+    for(b in beats)output+="${b.number},${b.sample},${5*b.sample},${if(b.number==1)"-" else b.rr.toString()},${if(b.number==1)"-" else Report.two(Report.rdiv(6000000,b.rr))},${b.width},${b.label},${b.method},${b.annotation?.sample?.toString()?:"-"},${ref(b)}";
+    SignalIo.write("beats.csv",output);
+    output=mutableListOf("peak,sample,r_sample,peak_i,peak_f,slope,thr_i,thr_f,class");
+    for((i,peak) in peaks.withIndex())output+="${i+1},${peak.time},${peak.r},${peak.peakI},${peak.peakF},${peak.slope},${peak.thrI},${peak.thrF},${peak.kind}";
+    SignalIo.write("peaks.csv",output);
+    val rows=mutableListOf<Row>();
+    for(r in refs) {
+        val b=r.beat;
+        val text=if(b==null)"${r.sample},${r.label},-,-,-,-,FN,-" else "${r.sample},${r.label},${b.number},${b.sample},${b.label},${b.offset},TP,${if(b.label==r.label)"yes" else "no"}";
+        rows+=Row(r.sample,0,text)
+    };
+    for(b in beats)if(b.annotation==null)rows+=Row(b.sample,1,"-,-,${b.number},${b.sample},${b.label},-,FP,-");
+    output=mutableListOf("ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree");
+    output+=ordered(rows);
+    SignalIo.write("matching.csv",output);
+private class Segment(val start: Int,val end: Int) {
+    var refs=0;
+    var tp=0;
+    var fp=0;
+    var fn=0;
+    var noise=0;
+    var beats=0;
+    val rr=mutableListOf<Long>()
+}
+private fun segments(beats: List<Beat>,refs: List<SignalIo.Annotation>,peaks: List<Detector.Peak>,n: Int,size: Int): List<Segment> {
+    val result=mutableListOf<Segment>();
+    for(start in 0 until n step size) {
+        val end=minOf(n,start+size);
+        val s=Segment(5*start,5*end);
+        for(r in refs)if(r.sample in start until end) {
+            s.refs++;
+            if(r.beat!=null)s.tp++
+        };
+        s.fn=s.refs-s.tp;
+        for(b in beats)if(b.sample in start until end) {
+            s.beats++;
+            if(b.annotation==null)s.fp++;
+            if(b.number>1)s.rr+=b.rr
+        };
+        s.noise=peaks.count {
+            it.kind=="noise"&&it.time in start until end
+        };
+        result+=s
+    };
+    return result
+}
+private fun segmentRange(s: Segment)=Report.pad(s.start.toString(),6)+"-"+Report.pad(s.end.toString(),6)
+private fun performance(d: Detection,beats: List<Beat>,refs: List<SignalIo.Annotation>,segments: List<Segment>,n: Int,p: Map<String,Int>) {
+    val rc=IntArray(3);
+    val bc=IntArray(3);
+    val miss=IntArray(3);
+    val extra=IntArray(3);
+    val confusion=Array(3) {
+        IntArray(3)
+    };
+    var tp=0;
+    var offset=0L;
+    var absolute=0L;
+    var maxAbs=0L;
+    val method=IntArray(2);
+    val methodTp=IntArray(2);
+    for(r in refs) {
+        val i=LABELS.indexOf(r.label);
+        rc[i]++;
+        val b=r.beat;
+        if(b==null)miss[i]++ else confusion[i][LABELS.indexOf(b.label)]++
+    };
+    for(b in beats) {
+        val i=LABELS.indexOf(b.label);
+        val m=if(b.method=="threshold")0 else 1;
+        bc[i]++;
+        method[m]++;
+        if(b.annotation==null)extra[i]++ else {
+            tp++;
+            methodTp[m]++;
+            offset+=b.offset;
+            absolute+=abs(b.offset);
+            maxAbs=maxOf(maxAbs,abs(b.offset))
+        }
+    };
+    val fp=beats.size-tp;
+    val fn=refs.size-tp;
+        "final_rr_averages rravg1_ms=${5*d.ra1} rravg2_ms=${5*d.ra2}","MATCHING","tolerance_ms ${p.getValue("match_ms")}",
+        "references ${refs.size} N=${rc[0]} V=${rc[1]} A=${rc[2]}","detections ${beats.size} N=${bc[0]} V=${bc[1]} A=${bc[2]}",
+        "true_positives $tp","false_positives $fp","false_negatives $fn","sensitivity ${Report.ratio(tp.toLong(),(tp+fn).toLong())}",
+        "positive_predictivity ${Report.ratio(tp.toLong(),(tp+fp).toLong())}","detection_error_rate ${Report.ratio((fp+fn).toLong(),refs.size.toLong())}",
+        "by_method threshold=${methodTp[0]}/${method[0]} searchback=${methodTp[1]}/${method[1]}",
+        if(tp==0)"offset_ms none" else "offset_ms mean=${Report.two(Report.rdiv(100*offset,tp.toLong()))} mean_abs=${Report.two(Report.rdiv(100*absolute,tp.toLong()))} max_abs=$maxAbs",
+        "CONFUSION","ref  "+Report.pad("N",6)+Report.pad("V",6)+Report.pad("A",6)+"  miss");
+    for(i in 0..2) {
+        var line=LABELS[i]+"    ";
+        for(j in 0..2)line+=Report.pad(confusion[i][j].toString(),6);
+        output+=line+Report.pad(miss[i].toString(),6)
+    };
+    output+="extra"+extra.joinToString("") {
+        Report.pad(it.toString(),6)
+    };
+    output+=listOf("veb_sensitivity ${Report.ratio(confusion[1][1].toLong(),rc[1].toLong())}",
+        "veb_positive_predictivity ${Report.ratio(confusion[1][1].toLong(),bc[1].toLong())}",
+        "sveb_sensitivity ${Report.ratio(confusion[2][2].toLong(),rc[2].toLong())}","sveb_positive_predictivity ${Report.ratio(confusion[2][2].toLong(),bc[2].toLong())}",
+        "SEGMENTS segment_ms=${p.getValue("segment_ms")} segments=${segments.size}");
+    for(s in segments)output+="${segmentRange(s)} refs=${s.refs} tp=${s.tp} fp=${s.fp} fn=${s.fn} noise_peaks=${s.noise}";
+    output+="ERRORS count=${fp+fn}";
+    val errors=mutableListOf<Row>();
+    for(b in beats)if(b.annotation==null)errors+=Row(b.sample,0,"false_positive beat=${b.number} sample=${b.sample} time_ms=${5*b.sample} label=${b.label}");
+    for(r in refs)if(r.beat==null)errors+=Row(r.sample,1,"false_negative sample=${r.sample} time_ms=${5*r.sample} label=${r.label}");
+    output+=ordered(errors);
+    SignalIo.write("performance.txt",output)
+private fun rhythm(beats: List<Beat>,refs: List<SignalIo.Annotation>,x: LongArray,p: Map<String,Int>) {
+    val start=p.getValue("strip_start_ms")/5;
+    val length=p.getValue("strip_ms")/5;
+    val columns=length/10;
+    val rows=p.getValue("strip_rows");
+    val detected=CharArray(columns) {
+        ' '
+    };
+    val reference=CharArray(columns) {
+        ' '
+    };
+    for(b in beats)if(b.sample in start until start+length)detected[(b.sample-start)/10]=b.label[0];
+    for(r in refs)if(r.sample in start until start+length)reference[(r.sample-start)/10]=r.label[0];
+    output+=" beats |"+detected.concatToString()+"|";
+    output+="  refs |"+reference.concatToString()+"|";
+    SignalIo.write("rhythm_strip.txt",output)
+    val x=SignalIo.ecg();
+    val refs=SignalIo.annotations();
+    val p=SignalIo.parameters();
+    val f=Filters.apply(x);
+    val peaks=Detector.peaks(f);
+    val d=Detection(peaks,f,p);
+    d.run(x.size);
+    val beats=beats(d,f,p);
+    match(beats,refs,p.getValue("match_ms")/5);
+    val segments=segments(beats,refs,peaks,x.size,p.getValue("segment_ms")/5);
+    lists(beats,refs,peaks,x,f,p);
+    performance(d,beats,refs,segments,x.size,p);
+    rhythm(beats,refs,x,p)
+    fun div(a: Long,b: Long)=Math.floorDiv(a,b)
+    fun rdiv(a: Long,b: Long)=div(2*a+b,2*b)
+    fun two(h: Long): String {
+        val a=kotlin.math.abs(h);
+        return (if(h<0)"-" else "")+"${a/100}."+(a%100).toString().padStart(2,'0')
+    }
+    fun fraction(a: Long,b: Long): String {
+        var x=a;
+        var y=b;
+        while(y!=0L) {
+            val remainder=x%y;
+            x=y;
+            y=remainder
+        };
+        return "${a/x}/${b/x}"
+    }
+    fun ratio(a: Long,b: Long)="$a/$b"+(if(b==0L)" none" else " reduced=${fraction(a,b)} percent=${two(rdiv(10000*a,b))}")

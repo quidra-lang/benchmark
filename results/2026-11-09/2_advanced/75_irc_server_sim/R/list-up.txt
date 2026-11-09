@@ -1,0 +1,389 @@
+read_inputs <- function() {
+  settings <- list(MOTD=character())
+  integers <- c(
+      "NICKLEN",
+      "CHANNELLEN",
+      "TOPICLEN",
+      "MAXCHANNELS",
+      "BUCKET",
+      "REFILL",
+      "QUEUE",
+      "PINGFREQ",
+      "TIMEOUT"
+  )
+  for (line in readLines("input/server.txt",warn=FALSE)) {
+    space <- regexpr(" ",line,fixed=TRUE)[1L]
+    key <- substr(line,1L,space-1L)
+    value <- substring(line,space+1L)
+    if (key == "MOTD") settings[[key]] <- c(
+        settings[[key]],
+        value
+    ) else settings[[key]] <- if (key %in% integers) as.integer(value) else value
+  }
+  traffic <- list()
+  counts <- new_counts()
+  for (line in readLines("input/traffic.txt",warn=FALSE)) {
+    first <- regexpr(" ",line,fixed=TRUE)[1L]
+    time <- as.integer(substr(line,1L,first-1L))
+    rest <- substring(line,first+1L)
+    second <- regexpr(" ",rest,fixed=TRUE)[1L]
+    id <- substr(rest,1L,second-1L)
+    body <- substring(rest,second+1L)
+    kind <- if (grepl(
+        "^CONNECT [A-Za-z0-9.-]{1,63}$",
+        body
+    )) "connect" else if (body == "DISCONNECT") "disconnect" else "messages"
+    traffic[[length(traffic)+1L]] <- list(time=time,identifier=id,kind=kind,body=body)
+    bump(counts,kind)
+  }
+  s <- new.env(parent=emptyenv())
+  s$settings <- settings
+  s$traffic <- traffic
+  s$finish <- tail(traffic,1L)[[1L]]$time
+  s$time <- 0L
+  s$clients <- s$channels <- s$gone <- list()
+  s$client_index <- s$channel_index <- NULL
+  s$client_index <- new_counts()
+  s$channel_index <- new_counts()
+  s$sent <- character()
+  s$commands <- new_counts()
+  s$numeric_counts <- new_counts()
+  s$line_counts <- counts
+  s$statistics <- new_counts()
+  s$disconnections <- new_counts()
+  s$peak_connections <- s$peak_registered <- c(0L,0L)
+  s
+}
+send_line <- function(s,client,line) {
+  s$sent <- c(s$sent,paste(s$time,client$identifier,line))
+  client$sent <- client$sent+1L
+}
+disconnect_client <- function(s,client,reason,kind) {
+  if (kind != "closed") {
+    send_line(s,client,paste0("ERROR :Closing Link: ",addressee(client),"[",client$hostname,"] (",reason,")"))
+    bump(s$statistics,"errors")
+  }
+  if (client$registered) send_peers(s,client,paste0(":",client_prefix(client)," QUIT :",reason))
+  for (i in client$channels) remove_member(s,client,s$channels[[i]])
+  bump(s$statistics,"discarded",length(client$queue))
+  client$queue <- character()
+  rm(list=client$identifier,envir=s$client_index)
+  client$active <- FALSE
+  s$gone[[length(s$gone)+1L]] <- list(
+      time=s$time,
+      identifier=client$identifier,
+      addressee=addressee(client),
+      reason=reason
+  )
+  bump(s$disconnections,kind)
+}
+process_line <- function(s,c,raw) {
+  bump(s$statistics,"processed")
+  parsed <- parse_message(raw)
+  command <- parsed$command
+  p <- parsed$parameters
+  if (!nzchar(command)) {
+    bump(s$statistics,"empty")
+    return(invisible(NULL))
+  }
+  bump(s$commands,command)
+  if (!c$registered && !(command %in% c("NICK","USER","PING","PONG","QUIT"))) {
+    numeric_reply(s,c,451L)
+    return(invisible(NULL))
+  }
+  if (command == "NICK") {
+    nick_command(s,c,p)
+  } else if (command == "USER") {
+    user_command(s,c,p)
+  } else if (command == "PING") {
+    if (!length(p) || !nzchar(p[1L])) numeric_reply(s,c,409L) else {
+      name <- s$settings$NAME
+      send_line(s,c,paste0(":",name," PONG ",name," :",p[1L]))
+    }
+  } else if (command == "PONG") {
+    return(invisible(NULL))
+  } else if (command == "QUIT") {
+    reason <- if (length(p) && nzchar(p[1L])) paste0("Quit: ",p[1L]) else "Client Quit"
+    disconnect_client(s,c,reason,"quit")
+  } else if (command == "JOIN") {
+    join_channels(s,c,p)
+  } else if (command == "PART") {
+    part_channels(s,c,p)
+  } else if (command %in% c("PRIVMSG","NOTICE")) {
+    message_command(s,c,p,command)
+  } else if (command == "TOPIC") {
+    topic_command(s,c,p)
+  } else if (command == "NAMES") {
+    names_command(s,c,p)
+  } else if (command == "WHOIS") {
+    whois_command(s,c,p)
+  } else if (command == "AWAY") {
+    c$away <- if (length(p) && nzchar(p[1L])) p[1L] else ""
+    numeric_reply(s,c,if (nzchar(c$away)) 306L else 305L)
+  } else if (command == "INVITE") {
+    invite_command(s,c,p)
+  } else if (command == "KICK") {
+    kick_command(s,c,p)
+  } else if (command == "MODE") {
+    if (!require_parameters(s,c,p,1L,"MODE")) return(invisible(NULL))
+    if (startsWith(p[1L],"#")) channel_mode(s,c,p) else user_mode(s,c,p)
+  } else {
+    numeric_reply(s,c,421L,command=command)
+  }
+  invisible(NULL)
+}
+arrival <- function(s,record) {
+  id <- record$identifier
+  kind <- record$kind
+  body <- record$body
+  if (kind == "connect") {
+    c <- new_client(length(s$clients)+1L,id,substring(body,9L),s$time,s$settings$BUCKET)
+    s$clients[[length(s$clients)+1L]] <- c
+    s$client_index[[id]] <- c$index
+    n <- length(ls(s$client_index,all.names=TRUE))
+    if (n > s$peak_connections[1L]) s$peak_connections <- c(n,s$time)
+    return(invisible(NULL))
+  }
+  index <- s$client_index[[id]]
+  if (kind == "disconnect") {
+    if (!is.null(index)) disconnect_client(s,s$clients[[index]],"Remote host closed the connection","closed")
+    return(invisible(NULL))
+  }
+  if (is.null(index)) {
+    bump(s$statistics,"dropped")
+    return(invisible(NULL))
+  }
+  c <- s$clients[[index]]
+  c$received <- c$received+1L
+  c$last_received <- s$time
+  c$ping_sent <- -1L
+  if (!length(c$queue) && c$tokens >= 1L) {
+    use_token(c,s$time,s$settings$BUCKET,s$settings$REFILL)
+    process_line(s,c,body)
+  } else if (length(c$queue) >= s$settings$QUEUE) {
+    bump(s$statistics,"discarded")
+    disconnect_client(s,c,"Excess Flood","flood")
+  } else {
+    c$queue <- c(c$queue,body)
+    bump(s$statistics,"queued")
+  }
+  invisible(NULL)
+}
+run_server <- function(s) {
+  position <- 1L
+  for (time in seq.int(0L,s$finish)) {
+    s$time <- time
+    for (c in active_clients(s)) {
+      refill(c,time,s$settings$BUCKET,s$settings$REFILL)
+      while (c$active && length(c$queue) && c$tokens >= 1L) {
+        use_token(c,time,s$settings$BUCKET,s$settings$REFILL)
+        raw <- c$queue[1L]
+        c$queue <- c$queue[-1L]
+        process_line(s,c,raw)
+      }
+    }
+    while (position <= length(s$traffic) && s$traffic[[position]]$time == time) {
+      arrival(s,s$traffic[[position]])
+      position <- position+1L
+    }
+    for (c in active_clients(s)) {
+      if (c$ping_sent != -1L) {
+        if (time-c$ping_sent >= s$settings$TIMEOUT) disconnect_client(
+            s,
+            c,
+            paste0("Ping timeout: ",time-c$last_received," seconds"),
+            "timeout"
+        )
+      } else if (time-c$last_received >= s$settings$PINGFREQ) {
+        send_line(s,c,paste0("PING :",s$settings$NAME))
+        bump(s$statistics,"pings")
+        c$ping_sent <- time
+      }
+    }
+  }
+}
+client_report <- function(s) {
+  lines <- character()
+  clients <- active_clients(s)
+  for (c in clients) {
+    username <- if (is.null(c$username)) "*" else c$username
+    signon <- if (c$registered) as.character(c$registration_time) else "-"
+    channels <- if (length(c$channels)) joined_channels(s,c,",") else "none"
+    invites <- if (length(c$invites)) paste(
+        vapply(s$channels[c$invites],function(ch) ch$name,character(1)),
+        collapse=","
+    ) else "none"
+    lines <- c(
+        lines,
+        words(
+            "CLIENT",
+            c$identifier,
+            addressee(c),
+            username,
+            c$hostname,
+            client_mode(c),
+            "connected",
+            c$connection_time,
+            "signon",
+            signon,
+            "received",
+            c$received,
+            "sent",
+            c$sent,
+            "tokens",
+            c$tokens,
+            "queue",
+            length(c$queue),
+            "channels",
+            channels,
+            "invites",
+            invites
+        )
+    )
+    if (nzchar(c$away)) lines <- c(lines,words("AWAY",c$identifier,c$away))
+  }
+  c(
+      lines,
+      words(
+          "TOTAL clients",
+          length(clients),
+          "registered",
+          sum(vapply(clients,function(c) c$registered,logical(1))),
+          "invisible",
+          sum(vapply(clients,function(c) c$invisible,logical(1))),
+          "away",
+          sum(vapply(clients,function(c) nzchar(c$away),logical(1)))
+      )
+  )
+}
+statistics_report <- function(s) {
+  pending <- sum(vapply(active_clients(s),function(c) length(c$queue),integer(1)))
+  stat <- function(key) counter(s$statistics,key)
+  numeric_names <- as.integer(ls(s$numeric_counts,all.names=TRUE))
+  numeric_total <- sum(vapply(numeric_names,function(n) counter(s$numeric_counts,n),integer(1)))
+  lines <- c(
+      paste("END",s$finish),
+      words(
+          "LINES total",
+          length(s$traffic),
+          "connect",
+          counter(s$line_counts,"connect"),
+          "disconnect",
+          counter(s$line_counts,"disconnect"),
+          "messages",
+          counter(s$line_counts,"messages")
+      ),
+      words(
+          "MESSAGES dropped",
+          stat("dropped"),
+          "queued",
+          stat("queued"),
+          "processed",
+          stat("processed"),
+          "discarded",
+          stat("discarded"),
+          "pending",
+          pending,
+          "empty",
+          stat("empty")
+      ),
+      words(
+          "SENT lines",
+          length(s$sent),
+          "numerics",
+          numeric_total,
+          "pings",
+          stat("pings"),
+          "errors",
+          stat("errors")
+      )
+  )
+  for (command in sort(ls(s$commands,all.names=TRUE),method="radix")) lines <- c(
+      lines,
+      words("COMMAND",command,counter(s$commands,command))
+  )
+  for (number in sort(numeric_names)) lines <- c(
+      lines,
+      words("NUMERIC",sprintf("%03d",number),counter(s$numeric_counts,number))
+  )
+  lines <- c(
+      lines,
+      words("PEAK connections",s$peak_connections[1L],"at",s$peak_connections[2L]),
+      words("PEAK registered",s$peak_registered[1L],"at",s$peak_registered[2L])
+  )
+  lines <- c(
+      lines,
+      paste(
+          "DISCONNECTS",
+          paste(
+              vapply(
+                  c("quit","closed","flood","timeout"),
+                  function(kind) words(kind,counter(s$disconnections,kind)),
+                  character(1)
+              ),
+              collapse=" "
+          )
+      )
+  )
+  for (record in s$gone) lines <- c(
+      lines,
+      words("GONE",record$time,record$identifier,record$addressee,record$reason)
+  )
+  lines
+}
+      "channels.txt"=channel_report(s),
+      "clients.txt"=client_report(s),
+      "stats.txt"=statistics_report(s)
+  )
+  dir.create("output",showWarnings=FALSE)
+  for (name in names(outputs)) {
+    connection <- file(paste0("output/",name),"wb")
+    if (length(outputs[[name]])) writeChar(
+        paste0(paste(outputs[[name]],collapse="\n"),"\n"),
+        connection,
+        eos=NULL,
+        useBytes=TRUE
+    )
+    close(connection)
+  }
+}
+use_token <- function(client,time,capacity,interval) {
+  if (client$tokens == capacity) client$refill_time <- time+interval
+  client$tokens <- client$tokens-1L
+}
+refill <- function(client,time,capacity,interval) {
+  if (client$refill_time == time) {
+    client$tokens <- client$tokens+1L
+    client$refill_time <- if (client$tokens < capacity) time+interval else -1L
+  }
+}
+parse_message <- function(raw) {
+  n <- nchar(raw)
+  position <- 1L
+  if (startsWith(raw,":")) {
+    position <- regexpr(" ",raw,fixed=TRUE)[1L]
+    if (position == -1L) return(list(command="",parameters=character()))
+  }
+  at <- function(i) substr(raw,i,i)
+  while (position <= n && at(position) == " ") position <- position+1L
+  start <- position
+  while (position <= n && at(position) != " ") position <- position+1L
+  command <- toupper(text_slice(raw,start,position-1L))
+  parameters <- character()
+  while (position <= n) {
+    while (position <= n && at(position) == " ") position <- position+1L
+    if (position > n) break
+    if (at(position) == ":") {
+      parameters <- c(parameters,text_slice(raw,position+1L))
+      break
+    }
+    if (length(parameters) == 14L) {
+      parameters <- c(parameters,text_slice(raw,position))
+      break
+    }
+    start <- position
+    while (position <= n && at(position) != " ") position <- position+1L
+    parameters <- c(parameters,text_slice(raw,start,position-1L))
+  }
+  list(command=command,parameters=parameters)
+}

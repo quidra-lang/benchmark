@@ -1,0 +1,5 @@
+The candidate optional starts null and is filled only for untaken zero-indegree courses, preferring lexicographically smallest names. `best orelse break` stops before any candidate access if no eligible course remains. Cycle rendering gathers !taken names, sorts them using nameLess, then emits that slice in alphabetical order. When all are taken the remaining slice length is zero, so no names are output. The code never removes from an empty candidate collection; it uses an optional decision instead.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,20 @@
+# Task B selection — TypeScript
+
+## Answer requirements shared across languages
+
+1. Identify the exact unblocked-wait total and count and the existing truncated hundredths conversion.
+2. Explain a local half-up conversion with 1/8 becoming 0.13, preserving individual waits, totals, empty summaries and two-digit output.
+
+## Selected source locations
+
+- `main.ts`: 457, 458, 459, 460, 461, 462, 463, 464
+
+## Evidence and language semantics
+
+The unblocked filter/reduce supply total and count; Math.floor is the existing truncation site, and the ternary preserves waits:none. For nonnegative exact total T and positive count N, compute integer hundredths H=floor((200*T+N)/(2*N)); equivalently divide 100*T by N then increment the quotient when twice its remainder is at least N. This gives H=13 for 1/8. Change only the waits-summary conversion; retain total T, each duration, and quotient/remainder display. In Python and J, use a waits-specific conversion rather than changing a shared truncation helper used by other summaries. Standard sum/filter/count, integer division, remainder, and padding semantics suffice.
+
+## Minimization and alternatives
+
+Each selected expression establishes a requested fact or its data dependency. The excerpt was read without unselected implementation details: removing the kind extraction, bounds/coordinate/default condition, state update, or output expression would lose that fact. A larger enclosing routine, unrelated commands, declarations with inferable types, and implementations of standard primitives were considered and excluded; no alternative smaller expression in this source establishes the same facts. Complete lines retain their original syntax even when one line includes incidental text.
+
+The excerpt contains 215 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

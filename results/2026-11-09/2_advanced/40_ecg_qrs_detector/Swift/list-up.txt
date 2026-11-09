@@ -1,0 +1,221 @@
+struct Annotation {
+    let sample: Int
+    let label: String
+    var beat: Int?
+}
+func readECG() throws -> [Int] {
+    try readLines("input/ecg.csv").dropFirst().map { Int($0.split(separator: ",")[1])! }
+}
+
+func readAnnotations() throws -> [Annotation] {
+    try readLines("input/annotations.csv").dropFirst().map { line in
+        let parts = line.split(separator: ",")
+        return Annotation(sample: Int(parts[0])!, label: String(parts[1]))
+    }
+}
+
+func readParameters() throws -> [String: Int] {
+    var parameters: [String: Int] = [:]
+    for line in try readLines("input/params.txt") {
+        let parts = line.split(separator: " ")
+        parameters[String(parts[0])] = Int(parts[1])!
+    }
+    return parameters
+}
+struct Beat {
+    let number: Int
+    let sample: Int
+    let rr: Int?
+    let heartRate: Int?
+    let width: Int
+    let label: String
+    let method: String
+    var annotation: Int?
+    var offset: Int?
+}
+func buildBeats(_ registered: [Peak], _ bandpass: [Int], _ parameters: [String: Int]) -> [Beat] {
+    var beats: [Beat] = []
+    for peak in registered {
+        let number = beats.count + 1
+        let sample = max(0, peak.r - 21)
+        let rr = beats.last.map { 5 * (sample - $0.sample) }
+        let width = widthMilliseconds(bandpass, peak.r)
+        var label = "N"
+        if number >= 10 {
+            let previousEight = beats[(number - 9)..<(number - 1)].reduce(0) { $0 + $1.rr! }
+            if 800 * rr! < parameters["premature_percent"]! * previousEight {
+                label = width > parameters["qrs_width_ms"]! ? "V" : "A"
+            }
+        }
+        beats.append(Beat(number: number, sample: sample, rr: rr, heartRate: rr.map { rdiv(6000000, $0) },
+                           width: width, label: label, method: peak.category == .qrs ? "threshold" : "searchback"))
+    }
+    return beats
+}
+
+func matchAnnotations(_ beats: inout [Beat], _ annotations: inout [Annotation], _ tolerance: Int) {
+    for index in beats.indices {
+        let sample = beats[index].sample
+        let candidates = annotations.indices.filter { annotations[$0].beat == nil && abs(annotations[$0].sample - sample) <= tolerance }
+        guard let chosen = candidates.min(by: { first, second in
+            let a = abs(annotations[first].sample - sample)
+            let b = abs(annotations[second].sample - sample)
+            return a == b ? annotations[first].sample < annotations[second].sample : a < b
+        }) else { continue }
+        annotations[chosen].beat = index
+        beats[index].annotation = chosen
+        beats[index].offset = 5 * (sample - annotations[chosen].sample)
+    }
+}
+
+func segmentRows(_ beats: [Beat], _ annotations: [Annotation], _ peaks: [Peak],
+                 _ sampleCount: Int, _ width: Int) -> [Segment] {
+    stride(from: 0, to: sampleCount, by: width).map { start in
+        let end = min(start + width, sampleCount)
+        let references = annotations.filter { start <= $0.sample && $0.sample < end }
+        let detected = beats.filter { start <= $0.sample && $0.sample < end }
+        let tp = references.filter { $0.beat != nil }.count
+        return Segment(start: 5 * start, end: 5 * end, references: references.count, tp: tp,
+                        fp: detected.filter { $0.annotation == nil }.count, fn: references.count - tp,
+                        noisePeaks: peaks.filter { $0.category == .noise && start <= $0.time && $0.time < end }.count,
+                        beats: detected.count, intervals: detected.compactMap { $0.rr })
+    }
+}
+func padded(_ text: String, _ width: Int) -> String { String(repeating: " ", count: max(0, width - text.count)) + text }
+func padded(_ value: Int, _ width: Int) -> String { padded(String(value), width) }
+
+func beatLines(_ beats: [Beat], _ annotations: [Annotation]) -> [String] {
+    ["beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"] + beats.map { beat in
+        let reference = beat.annotation.map { annotations[$0] }
+        return [String(beat.number), String(beat.sample), String(5 * beat.sample), missing(beat.rr),
+                beat.heartRate.map(two) ?? "-", String(beat.width), beat.label, beat.method,
+                missing(reference?.sample), reference?.label ?? "-"].joined(separator: ",")
+    }
+func matchingLines(_ beats: [Beat], _ annotations: [Annotation]) -> [String] {
+    var records: [(sample: Int, order: Int, line: String)] = []
+    for reference in annotations {
+        let fields: [String]
+        if let index = reference.beat {
+            let beat = beats[index]
+            fields = [String(reference.sample), reference.label, String(beat.number), String(beat.sample), beat.label,
+                      String(beat.offset!), "TP", reference.label == beat.label ? "yes" : "no"]
+        } else { fields = [String(reference.sample), reference.label, "-", "-", "-", "-", "FN", "-"] }
+        records.append((reference.sample, 0, fields.joined(separator: ",")))
+    }
+    for beat in beats where beat.annotation == nil {
+        records.append((beat.sample, 1, "-,-,\(beat.number),\(beat.sample),\(beat.label),-,FP,-"))
+    }
+    records.sort { $0.sample == $1.sample ? $0.order < $1.order : $0.sample < $1.sample }
+    return ["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"] + records.map { $0.line }
+}
+func matchingErrors(_ beats: [Beat], _ annotations: [Annotation]) -> [String] {
+    var events: [(sample: Int, order: Int, text: String)] = []
+    for beat in beats where beat.annotation == nil {
+        events.append((beat.sample, 0, "false_positive beat=\(beat.number) sample=\(beat.sample) time_ms=\(5 * beat.sample) label=\(beat.label)"))
+    }
+    for reference in annotations where reference.beat == nil {
+        events.append((reference.sample, 1, "false_negative sample=\(reference.sample) time_ms=\(5 * reference.sample) label=\(reference.label)"))
+    }
+    return events.sorted { $0.sample == $1.sample ? $0.order < $1.order : $0.sample < $1.sample }.map { $0.text }
+}
+
+func performanceLines(_ beats: [Beat], _ annotations: [Annotation], _ detection: Detection,
+                      _ parameters: [String: Int], _ segments: [Segment], _ count: Int) -> [String] {
+    let referenceTypes = Dictionary(grouping: annotations, by: { $0.label }).mapValues { $0.count }
+    let detectedTypes = Dictionary(grouping: beats, by: { $0.label }).mapValues { $0.count }
+    let tp = annotations.filter { $0.beat != nil }.count
+    let fn = annotations.count - tp
+    let fp = beats.filter { $0.annotation == nil }.count
+                 "tolerance_ms \(parameters["match_ms"]!)",
+                 "references \(annotations.count) " + labels.map { "\($0)=\(referenceTypes[$0, default: 0])" }.joined(separator: " "),
+                 "detections \(beats.count) " + labels.map { "\($0)=\(detectedTypes[$0, default: 0])" }.joined(separator: " "),
+                 "true_positives \(tp)", "false_positives \(fp)", "false_negatives \(fn)",
+                 "sensitivity " + ratio(tp, tp + fn), "positive_predictivity " + ratio(tp, tp + fp),
+                 "detection_error_rate " + ratio(fp + fn, annotations.count)]
+    let methods = ["threshold", "searchback"].map { method -> String in
+        let selected = beats.filter { $0.method == method }
+        return "\(method)=\(selected.filter { $0.annotation != nil }.count)/\(selected.count)"
+    }
+    lines.append("by_method " + methods.joined(separator: " "))
+    let offsets = beats.compactMap { $0.offset }
+    if !offsets.isEmpty {
+        lines.append("offset_ms mean=\(two(rdiv(100 * offsets.reduce(0, +), offsets.count))) "
+            + "mean_abs=\(two(rdiv(100 * offsets.map(abs).reduce(0, +), offsets.count))) max_abs=\(offsets.map(abs).max()!)")
+    } else { lines.append("offset_ms none") }
+    var confusion: [String: [String: Int]] = [:]
+    for reference in annotations {
+        let label = reference.beat.map { beats[$0].label } ?? "miss"
+        confusion[reference.label, default: [:]][label, default: 0] += 1
+    }
+    for beat in beats where beat.annotation == nil { confusion["extra", default: [:]][beat.label, default: 0] += 1 }
+    lines += ["CONFUSION", "ref  " + labels.map { padded($0, 6) }.joined() + "  miss"]
+    for label in labels {
+        let counts = labels.map { padded(confusion[label, default: [:]][$0, default: 0], 6) }.joined()
+        lines.append(label + "    " + counts + padded(confusion[label, default: [:]]["miss", default: 0], 6))
+    }
+    lines.append("extra" + labels.map { padded(confusion["extra", default: [:]][$0, default: 0], 6) }.joined())
+    for (label, prefix) in [("V", "veb"), ("A", "sveb")] {
+        let correct = confusion[label, default: [:]][label, default: 0]
+        lines.append(prefix + "_sensitivity " + ratio(correct, referenceTypes[label, default: 0]))
+        lines.append(prefix + "_positive_predictivity " + ratio(correct, detectedTypes[label, default: 0]))
+    }
+    lines.append("SEGMENTS segment_ms=\(parameters["segment_ms"]!) segments=\(segments.count)")
+    for segment in segments {
+        lines.append("\(segment.prefix) refs=\(segment.references) tp=\(segment.tp) fp=\(segment.fp) fn=\(segment.fn) noise_peaks=\(segment.noisePeaks)")
+    }
+    lines.append("ERRORS count=\(fp + fn)")
+    lines += matchingErrors(beats, annotations)
+    return lines
+}
+func rhythmStripLines(_ samples: [Int], _ beats: [Beat], _ annotations: [Annotation], _ parameters: [String: Int]) -> [String] {
+    let startMilliseconds = parameters["strip_start_ms"]!
+    let milliseconds = parameters["strip_ms"]!
+    let start = startMilliseconds / 5
+    let count = milliseconds / 5
+    let end = start + count
+    let columns = count / 10
+    let height = parameters["strip_rows"]!
+    var beatMarks = Array(repeating: " ", count: columns)
+    var referenceMarks = beatMarks
+    for beat in beats where start <= beat.sample && beat.sample < end { beatMarks[(beat.sample - start) / 10] = beat.label }
+    for reference in annotations where start <= reference.sample && reference.sample < end { referenceMarks[(reference.sample - start) / 10] = reference.label }
+    lines.append(" beats |" + beatMarks.joined() + "|")
+    lines.append("  refs |" + referenceMarks.joined() + "|")
+    return lines
+}
+let samples = try readECG()
+var annotations = try readAnnotations()
+let parameters = try readParameters()
+let signals = filterECG(samples)
+let peaks = findPeaks(signals)
+let detection = Detection(peaks, signals, parameters)
+detection.run(samples.count)
+var beats = buildBeats(detection.registered, signals.bandpass, parameters)
+matchAnnotations(&beats, &annotations, parameters["match_ms"]! / 5)
+let segments = segmentRows(beats, annotations, peaks, samples.count, parameters["segment_ms"]! / 5)
+try writeLines("beats.csv", beatLines(beats, annotations))
+try writeLines("matching.csv", matchingLines(beats, annotations))
+try writeLines("performance.txt", performanceLines(beats, annotations, detection, parameters, segments, samples.count))
+try writeLines("rhythm_strip.txt", rhythmStripLines(samples, beats, annotations, parameters))
+func floorDivide(_ value: Int, _ divisor: Int) -> Int { value / divisor - (value % divisor < 0 ? 1 : 0) }
+func rdiv(_ numerator: Int, _ denominator: Int) -> Int { floorDivide(2 * numerator + denominator, 2 * denominator) }
+
+func decimalDigits(_ value: Int, _ width: Int) -> String {
+    let text = String(value)
+    return String(repeating: "0", count: max(0, width - text.count)) + text
+}
+
+func two(_ value: Int) -> String {
+    (value < 0 ? "-" : "") + String(abs(value) / 100) + "." + decimalDigits(abs(value) % 100, 2)
+}
+func fraction(_ numerator: Int, _ denominator: Int) -> String {
+    var first = numerator
+    var second = denominator
+    while second != 0 { (first, second) = (second, first % second) }
+    return "\(numerator / first)/\(denominator / first)"
+}
+
+func ratio(_ numerator: Int, _ denominator: Int) -> String {
+    if denominator == 0 { return "\(numerator)/0 none" }
+    return "\(numerator)/\(denominator) reduced=\(fraction(numerator, denominator)) percent=\(two(rdiv(10000 * numerator, denominator)))"
+}

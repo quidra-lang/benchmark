@@ -1,0 +1,192 @@
+train_discrete <- function(rows,max_rounds,weights=NULL,shrinkage=1,space=NULL) {
+  if (is.null(space)) space <- search_space(rows)
+  labels <- vapply(rows,`[[`,integer(1),"label")
+  if (is.null(weights)) weights <- rep(1/length(rows),length(rows))
+  rounds <- list()
+  bound <- 1
+  stop <- "completed"
+  for (unused in seq_len(max_rounds)) {
+    best <- discrete_search(space,labels,weights)
+    error <- best$error
+    if (error >= 0.5) {
+      stop <- "weak"
+      break
+    }
+    alpha <- if (error <= 1e-10) 1 else shrinkage*(0.5*log((1-error)/error))
+    stump <- make_stump(best$feature,best$threshold,c(-best$polarity*alpha,best$polarity*alpha))
+    for (i in seq_along(rows)) {
+      row <- rows[[i]]
+      decision <- if (row$x[best$feature] > best$threshold) best$polarity else -best$polarity
+      factor <- if (decision == row$label) exp(-alpha) else exp(alpha)
+      weights[i] <- if (weights[i] == 0) 0 else weights[i]*factor
+    }
+    normalizer <- ordered_sum(weights)
+    weights <- weights/normalizer
+    rounds[[length(rounds)+1L]] <- round_record(
+        stump,
+        weights=before,
+        error=error,
+        alpha=alpha,
+        polarity=best$polarity,
+        z=normalizer,
+        bound=bound
+    )
+    if (error <= 1e-10) {
+      stop <- "perfect"
+      break
+    }
+  }
+  list(rounds=rounds,stop=stop,cuts=NULL)
+}
+ordered_sum <- function(values) {
+  total <- 0
+  for (value in values) total <- total+value
+  total
+}
+stump_output <- function(stump,values) stump$values[sum(values[stump$feature] > stump$thresholds)+1L]
+search_space <- function(rows) {
+  orders <- groups <- thresholds <- list()
+  for (j in seq_along(rows[[1L]]$x)) {
+    order <- order(vapply(rows,function(row) row$x[j],numeric(1)),seq_along(rows))
+    batches <- list()
+    distinct <- numeric()
+    for (i in order) {
+      value <- rows[[i]]$x[j]
+      if (!length(distinct) || value != tail(distinct,1L)) {
+        distinct <- c(distinct,value)
+        batches[[length(batches)+1L]] <- integer()
+      }
+      batches[[length(batches)]] <- c(batches[[length(batches)]],i)
+    }
+    cuts <- c(distinct[1L]-1,(head(distinct,-1L)+tail(distinct,-1L))/2)
+    orders[[j]] <- order
+    groups[[j]] <- batches
+    thresholds[[j]] <- cuts
+  }
+  list(rows=rows,orders=orders,groups=groups,thresholds=thresholds)
+}
+left_cumulative <- function(groups,values) {
+  result <- 0
+  total <- 0
+  for (group in groups[-length(groups)]) {
+    for (i in group) total <- total+values[i]
+    result <- c(result,total)
+  }
+  result
+}
+choose_candidate <- function(candidates) {
+  values <- vapply(candidates,`[[`,numeric(1),"error")
+  candidates[[which(values <= min(values)+1e-9)[1L]]]
+}
+discrete_search <- function(space,labels,weights) {
+  positive <- ifelse(labels == 1L,weights,0)
+  negative <- ifelse(labels == -1L,weights,0)
+  wp <- ordered_sum(positive)
+  wn <- ordered_sum(negative)
+  candidates <- list()
+  for (j in seq_along(space$thresholds)) {
+    lp <- left_cumulative(space$groups[[j]],positive)
+    ln <- left_cumulative(space$groups[[j]],negative)
+    for (k in seq_along(space$thresholds[[j]])) {
+      threshold <- space$thresholds[[j]][k]
+      candidates[[length(candidates)+1L]] <- list(
+          error=lp[k]+(wn-ln[k]),
+          feature=j,
+          threshold=threshold,
+          polarity=1L
+      )
+      candidates[[length(candidates)+1L]] <- list(
+          error=ln[k]+(wp-lp[k]),
+          feature=j,
+          threshold=threshold,
+          polarity=-1L
+      )
+    }
+  }
+  choose_candidate(candidates)
+}
+prediction <- function(score) if (score > 0) 1L else -1L
+row_score <- function(rounds,values) ordered_sum(vapply(
+    rounds,
+    function(r) stump_output(r$stump,values),
+    numeric(1)
+))
+score_rows <- function(rounds,rows) vapply(rows,function(row) row_score(rounds,row$x),numeric(1))
+count_errors <- function(rows,scores) sum(vapply(
+    seq_along(rows),
+    function(i) prediction(scores[i]) != rows[[i]]$label,
+    logical(1)
+))
+add_round_scores <- function(record,rows,scores) {
+  for (i in seq_along(rows)) scores[i] <- scores[i]+stump_output(record$stump,rows[[i]]$x)
+  scores
+}
+training_curve <- function(rounds,training,testing,variant) {
+  train_scores <- numeric(length(training))
+  test_scores <- numeric(length(testing))
+  scale <- 0
+  curve <- list()
+  for (t in seq_along(rounds)) {
+    record <- rounds[[t]]
+    train_scores <- add_round_scores(record,training,train_scores)
+    test_scores <- add_round_scores(record,testing,test_scores)
+    scale <- scale+magnitude(record)
+    margins <- vapply(seq_along(training),function(i) training[[i]]$label*train_scores[i],numeric(1))
+    curve[[t]] <- list(round=t,train_errors=count_errors(training,train_scores),test_errors=count_errors(testing,test_scores),
+      train_loss=loss(
+          training,
+          train_scores,
+          variant
+      ),test_loss=loss(testing,test_scores,variant),margin=min(margins)/scale)
+  }
+  curve
+}
+cross_validate <- function(rows,params) {
+  space <- search_space(rows)
+  maximum_rounds <- params$ROUNDS[1L]
+  k <- params$FOLDS[1L]
+  folds <- list()
+  errors <- integer(maximum_rounds)
+  assignment <- (seq_along(rows)-1L) %% k
+  for (fold in seq_len(k)-1L) {
+    indices <- which(assignment == fold)
+    n <- length(rows)-length(indices)
+    weights <- ifelse(assignment == fold,0,1/n)
+    model <- train_discrete(rows,maximum_rounds,weights=weights,space=space)
+    validation <- rows[indices]
+    scores <- numeric(length(indices))
+    fold_errors <- integer(maximum_rounds)
+    for (t in seq_len(maximum_rounds)) {
+      if (t <= length(model$rounds)) scores <- add_round_scores(model$rounds[[t]],validation,scores)
+      fold_errors[t] <- count_errors(validation,scores)
+      errors[t] <- errors[t]+fold_errors[t]
+    }
+    folds[[length(folds)+1L]] <- list(indices=indices,train=n,model=model,errors=fold_errors)
+  }
+  selected <- which.min(errors)
+  scores <- numeric(length(rows))
+  for (fold in folds) {
+    rounds <- head(fold$model$rounds,selected)
+    for (i in fold$indices) scores[i] <- row_score(rounds,rows[[i]]$x)
+  }
+  list(folds=folds,errors=errors,selected=selected,scores=scores)
+}
+analyze_variants <- function(inputs,selected) {
+  analysis <- list()
+  for (variant in inputs$params$VARIANTS) {
+    model <- train_variant(variant,inputs$train,inputs$params)
+    rounds <- if (variant == "discrete") head(model$rounds,selected) else model$rounds
+    analysis[[variant]] <- list(full=model,rounds=rounds,scale=total_magnitude(rounds),train=score_rows(rounds,inputs$train),
+      test=score_rows(rounds,inputs$test),curve=training_curve(model$rounds,inputs$train,inputs$test,variant),
+      importance=magnitude_importance(rounds,length(inputs$features)))
+  }
+  analysis
+}
+  for (variant in variants) {
+    r <- analysis[[variant]]
+    rounds <- length(r$rounds)
+    lines <- c(
+        lines,
+        metrics_line("train",variant,rounds,training,r$train),
+        metrics_line("test",variant,rounds,testing,r$test)
+    )

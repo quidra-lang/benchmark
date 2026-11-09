@@ -1,0 +1,206 @@
+    fun send(client: Clients.Client,line: String) {
+        sent.add("$time ${client.identifier} $line");
+        client.sent++
+    }
+    fun disconnect(client: Clients.Client,reason: String,kind: String) {
+        if(kind!="closed") {
+            send(client,"ERROR :Closing Link: ${client.addressee}[${client.hostname}] ($reason)");
+            add(statistics,"errors",1)
+        };
+        if(client.registered)peers(client,":${client.prefix} QUIT :$reason");
+        for(channel in client.channels.toList())removeMember(client,channel);
+        add(statistics,"discarded",client.queue.size);
+        client.queue.clear();
+        clients.remove(client.identifier);
+        client.active=false;
+        gone.add(Gone(time,client.identifier,client.addressee,reason));
+        add(disconnections,kind,1)
+    }
+    fun process(client: Clients.Client,raw: String) {
+        add(statistics,"processed",1);
+        val parsed=Protocol.parse(raw);
+        val command=parsed.command;
+        val p=parsed.parameters;
+        if(command.isEmpty()) {
+            add(statistics,"empty",1);
+            return
+        };
+        add(commands,command,1);
+        if(!client.registered&&command !in setOf("NICK","USER","PING","PONG","QUIT")) {
+            error(client,451);
+            return
+        };
+        when(command) {
+            "NICK"->nick(client,p);
+            "USER"->user(client,p);
+            "PING"->ping(client,p);
+            "PONG"->Unit;
+            "QUIT"->disconnect(client,if(p.isNotEmpty()&&p.first().isNotEmpty())"Quit: ${p.first()}" else "Client Quit",
+                "quit");
+            "JOIN"->join(client,p);
+            "PART"->part(client,p);
+            "PRIVMSG","NOTICE"->message(client,p,command);
+            "TOPIC"->topic(client,p);
+            "NAMES"->names(client,p);
+            "WHOIS"->whois(client,p);
+            "AWAY"->away(client,p);
+            "INVITE"->invite(client,p);
+            "KICK"->kick(client,p);
+            "MODE"->if(require(client,p,1,"MODE")) {
+                if(p.first().startsWith('#'))channelMode(client,p) else userMode(client,p)
+            };
+            else->error(client,421,command)
+        }
+    }
+    fun arrival(record: Traffic) {
+        val kind=record.kind;
+        if(kind=="connect") {
+            val client=Clients.Client(record.identifier,record.body.substring(8),time,setting("BUCKET"));
+            clients[client.identifier]=client;
+            if(clients.size>peakConnections) {
+                peakConnections=clients.size;
+                peakConnectionsTime=time
+            };
+            return
+        };
+        val client=clients[record.identifier];
+        if(kind=="disconnect") {
+            if(client!=null)disconnect(client,"Remote host closed the connection","closed");
+            return
+        };
+        if(client==null) {
+            add(statistics,"dropped",1);
+            return
+        };
+        client.received++;
+        client.lastReceived=time;
+        client.pingSent=-1;
+        if(client.queue.isEmpty()&&client.tokens>=1) {
+            client.useToken(time,setting("BUCKET"),setting("REFILL"));
+            process(client,record.body)
+        } else if(client.queue.size>=setting("QUEUE")) {
+            add(statistics,"discarded",1);
+            disconnect(client,"Excess Flood","flood")
+        } else {
+            client.queue.addLast(record.body);
+            add(statistics,"queued",1)
+        }
+    }
+    fun simulate() {
+        var position=0;
+        for(t in 0..end) {
+            time=t;
+            for(client in clients.values.toList()) {
+                client.refill(time,setting("BUCKET"),setting("REFILL"));
+                while(client.active&&client.queue.isNotEmpty()&&client.tokens>=1) {
+                    client.useToken(time,setting("BUCKET"),setting("REFILL"));
+                    process(client,client.queue.removeFirst())
+                }
+            };
+            while(position<traffic.size&&traffic[position].time==time)arrival(traffic[position++]);
+            for(client in clients.values.toList())if(client.pingSent>=0) {
+                if(time-client.pingSent>=setting("TIMEOUT"))disconnect(client,"Ping timeout: ${time-client.lastReceived} seconds",
+                    "timeout")
+            } else if(time-client.lastReceived>=setting("PINGFREQ")) {
+                send(client,"PING :${settings.getValue("NAME")}");
+                add(statistics,"pings",1);
+                client.pingSent=time
+            }
+        }
+    }
+    fun clientReport(): List<String> {
+        val lines=mutableListOf<String>();
+        for(client in clients.values) {
+            val joined=joined(client,",").ifEmpty {
+                "none"
+            };
+            val invites=client.invites.joinToString(",") {
+                it.name
+            }.ifEmpty {
+                "none"
+            };
+            val signon=if(client.registered)client.registrationTime.toString() else "-";
+            lines.add("CLIENT ${client.identifier} ${client.addressee} ${client.username?:"*"} ${client.hostname} ${client.mode} connected ${client.connectionTime} signon $signon received ${client.received} sent ${client.sent} tokens ${client.tokens} queue ${client.queue.size} channels $joined invites $invites");
+            if(client.away.isNotEmpty())lines.add("AWAY ${client.identifier} ${client.away}")
+        };
+        lines.add("TOTAL clients ${clients.size} registered ${clients.values.count{it.registered}} invisible ${clients.values.count{it.invisible}} away ${clients.values.count{it.away.isNotEmpty()}}");
+        return lines
+    }
+    fun statisticsReport(): List<String> {
+        val pending=clients.values.sumOf {
+            it.queue.size
+        };
+        val numericTotal=numerics.values.sum();
+        val lines=mutableListOf("END $end","LINES total ${traffic.size} connect ${lineCounts.getOrDefault("connect",0)} disconnect ${lineCounts.getOrDefault("disconnect",0)} messages ${lineCounts.getOrDefault("messages",0)}",
+            "MESSAGES dropped ${stat("dropped")} queued ${stat("queued")} processed ${stat("processed")} discarded ${stat("discarded")} pending $pending empty ${stat("empty")}",
+            "SENT lines ${sent.size} numerics $numericTotal pings ${stat("pings")} errors ${stat("errors")}");
+        for((command,count) in commands)lines.add("COMMAND $command $count");
+        for((code,count) in numerics)lines.add("NUMERIC ${number(code)} $count");
+        lines.add("PEAK connections $peakConnections at $peakConnectionsTime");
+        lines.add("PEAK registered $peakRegistered at $peakRegisteredTime");
+        lines.add("DISCONNECTS "+listOf("quit","closed","flood","timeout").joinToString(" ") {
+            "$it ${disconnections.getOrDefault(it,0)}"
+        });
+        for(record in gone)lines.add("GONE ${record.time} ${record.identifier} ${record.addressee} ${record.reason}");
+        return lines
+    }
+    fun run() {
+        for(line in File("input/server.txt").readLines()) {
+            val separator=line.indexOf(' ');
+            val key=line.substring(0,separator);
+            val value=line.substring(separator+1);
+            if(key=="MOTD")motd.add(value) else settings[key]=value
+        };
+        for(line in File("input/traffic.txt").readLines()) {
+            val fields=line.split(' ',limit=3);
+            val body=fields[2];
+            val kind=if(body.startsWith("CONNECT ")&&body.substring(8).matches(Regex("[A-Za-z0-9.-]{1,63}")))"connect" else if(body=="DISCONNECT")"disconnect" else "messages";
+            traffic.add(Traffic(fields[0].toInt(),fields[1],kind,body));
+            add(lineCounts,kind,1)
+        };
+        end=traffic.last().time;
+        simulate();
+        File("output").mkdirs();
+        write("sent.txt",sent);
+        write("channels.txt",channelReport());
+        write("clients.txt",clientReport());
+        write("stats.txt",statisticsReport())
+    }
+        fun useToken(time: Int,capacity: Int,interval: Int) {
+            if(tokens==capacity)refillTime=time+interval;
+            tokens--
+        }
+        fun refill(time: Int,capacity: Int,interval: Int) {
+            if(refillTime==time) {
+                tokens++;
+                refillTime=if(tokens<capacity)time+interval else -1
+            }
+        }
+    fun parse(raw: String): Message {
+        var position=0;
+        if(raw.startsWith(':')) {
+            position=raw.indexOf(' ');
+            if(position<0)return Message("",emptyList())
+        };
+        while(position<raw.length&&raw[position]==' ')position++;
+        var start=position;
+        while(position<raw.length&&raw[position]!=' ')position++;
+        val command=raw.substring(start,position).uppercase();
+        val parameters=mutableListOf<String>();
+        while(position<raw.length) {
+            while(position<raw.length&&raw[position]==' ')position++;
+            if(position==raw.length)break;
+            if(raw[position]==':') {
+                parameters.add(raw.substring(position+1));
+                break
+            };
+            if(parameters.size==14) {
+                parameters.add(raw.substring(position));
+                break
+            };
+            start=position;
+            while(position<raw.length&&raw[position]!=' ')position++;
+            parameters.add(raw.substring(start,position))
+        };
+        return Message(command,parameters)
+    }

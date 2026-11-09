@@ -1,0 +1,319 @@
+signatures <- list(
+    ABS=c("I"), SGN=c("I"), INT=c("I"), SQR=c("I"), RND=c("I"),
+)
+operators <- list(
+    c("OR"), c("AND"), character(),
+    c("=","<>","<",">","<=",">="),
+    c("+","-"), c("*","/","MOD"), character(), c("^")
+)
+
+syntax <- function() {
+    stop(structure(list(message="SYNTAX ERROR",call=NULL),
+                   class=c("syntax_fault","error","condition")))
+}
+
+fault <- function(reason) {
+    stop(structure(list(message=reason,call=NULL),
+                   class=c("basic_fault","error","condition")))
+}
+name_type <- function(name) {
+    if (endsWith(name,"$")) "S" else "I"
+}
+expr <- function(kind,type,value,args=list()) {
+    list(kind=kind,type=type,value=value,args=args)
+}
+
+new_stmt <- function(kind) {
+    s <- new.env(parent=emptyenv())
+    s$kind <- kind
+    s$line <- 0
+    s$following <- NULL
+    s$items <- list()
+    s
+}
+tokenize <- function(text) {
+    tokens <- list()
+    p <- 1L
+    n <- nchar(text,type="bytes")
+    take_word <- function(start,stop) substr(text,start,stop)
+    add <- function(kind,word,value) {
+        tokens[[length(tokens)+1L]] <<- list(kind=kind,text=word,value=value)
+    }
+    while (p<=n) {
+        ch <- substr(text,p,p)
+        if (ch==" ") {
+            p <- p+1L
+        } else if (ch=="\"") {
+            ending <- regexpr("\"",substring(text,p+1L),fixed=TRUE)[[1]]
+            if (ending<0L) syntax()
+            ending <- p+ending
+            add("S",take_word(p,ending),take_word(p+1L,ending-1L))
+            p <- ending+1L
+        } else if (grepl("^[0-9]$",ch)) {
+            start <- p
+            while (p<=n && grepl("^[0-9]$",substr(text,p,p))) p <- p+1L
+            word <- take_word(start,p-1L)
+            value <- suppressWarnings(as.numeric(word))
+            if (!is.finite(value) || value>32767) syntax()
+            add("I",word,value)
+        } else if (grepl("^[A-Z]$",ch)) {
+            start <- p
+            while (p<=n && grepl("^[A-Z0-9]$",substr(text,p,p))) p <- p+1L
+            if (p<=n && substr(text,p,p)=="$") p <- p+1L
+            word <- take_word(start,p-1L)
+            add("W",word,word)
+        } else {
+            if (!grepl(ch,"+-*/^=<>() ,;:",fixed=TRUE)) syntax()
+            word <- substr(text,p,p+1L)
+            if (!word %in% c("<>","<=",">=")) word <- ch
+            add("P",word,word)
+            p <- p+nchar(word,type="bytes")
+        }
+    }
+    add("E","","")
+    tokens
+}
+
+Parser <- function(tokens) {
+    p <- new.env(parent=emptyenv())
+    p$tokens <- tokens
+    p$position <- 1L
+    p$current <- function() p$tokens[[p$position]]
+    p$at <- function(word) {
+        t <- p$current()
+        t$kind %in% c("W","P") && t$text==word
+    }
+    p$take <- function(word) {
+        if (!p$at(word)) return(FALSE)
+        p$position <- p$position+1L
+        TRUE
+    }
+    p$expect <- function(word) if (!p$take(word)) syntax()
+    p$integer <- function(level=0L) {
+        e <- p$expression(level)
+        if (e$type!="I") syntax()
+        e
+    }
+    p$primary <- function() {
+        t <- p$current()
+        if (t$kind %in% c("I","S")) {
+            p$position <- p$position+1L
+            return(expr("constant",t$kind,t$value))
+        }
+        if (p$take("(")) {
+            e <- p$expression()
+            p$expect(")")
+            return(e)
+        }
+        if (t$kind=="W" && !is.null(signatures[[t$text]])) {
+            p$position <- p$position+1L
+            p$expect("(")
+            args <- list(p$expression())
+            while (p$take(",")) args[[length(args)+1L]] <- p$expression()
+            p$expect(")")
+            signature <- paste(vapply(args,function(e) e$type,""),collapse="")
+            if (!signature %in% signatures[[t$text]]) syntax()
+            return(expr("call",name_type(t$text),t$text,args))
+        }
+        syntax()
+    }
+    p$expression <- function(level=0L) {
+        if (level==2L && p$take("NOT"))
+            return(expr("unary","I","NOT",list(p$integer(2L))))
+        if (level==6L && p$take("-"))
+            return(expr("unary","I","-",list(p$integer(6L))))
+        if (level==8L) return(p$primary())
+        left <- p$expression(level+1L)
+        while (p$current()$text %in% operators[[level+1L]]) {
+            op <- p$current()$text
+            p$position <- p$position+1L
+            right <- p$expression(if (level==7L) 6L else level+1L)
+            if (left$type!=right$type ||
+                (left$type=="S" && level!=3L && op!="+")) syntax()
+            left <- expr("binary",if (level==3L) "I" else left$type,
+                         op,list(left,right))
+            if (level==7L) break
+        }
+        left
+    }
+    p$listing <- function(in_clause=FALSE) {
+        statements <- list(p$statement(in_clause))
+        while (p$take(":"))
+            statements[[length(statements)+1L]] <- p$statement(in_clause)
+        statements
+    }
+    p$statement <- function(in_clause) {
+        word <- p$current()$text
+        if (in_clause && word %in% c("IF","FOR","NEXT","WHILE","WEND","DATA"))
+            syntax()
+        s <- new_stmt(word)
+        if (p$take("PRINT")) {
+            expression_last <- FALSE
+            while (p$current()$kind!="E" && !p$at(":") && !p$at("ELSE")) {
+                if (p$take(";")) {
+                    s$items[[length(s$items)+1L]] <- list(kind=";",node=NULL)
+                    expression_last <- FALSE
+                } else if (p$take(",")) {
+                    s$items[[length(s$items)+1L]] <- list(kind=",",node=NULL)
+                    expression_last <- FALSE
+                } else {
+                    kind <- if (p$at("TAB")) "TAB" else if (p$at("SPC")) "SPC" else "value"
+                    if (kind=="value" && expression_last) syntax()
+                    if (kind=="value") {
+                        e <- p$expression()
+                    s$items[[length(s$items)+1L]] <- list(kind=kind,node=e)
+                    expression_last <- kind=="value"
+                }
+            }
+            return(s)
+        }
+    p$parse <- function() {
+        result <- p$listing()
+        if (p$current()$kind!="E") syntax()
+        result
+    }
+    p
+}
+
+Machine <- function(inputs) {
+    m <- new.env(parent=emptyenv())
+    m$random <- 1
+    m$handler <- 0
+    m$handling <- FALSE
+    m$buffer <- ""
+    m$output <- character()
+    m$end_line <- function() {
+        m$output <- c(m$output,sub(" +$","",m$buffer))
+        m$buffer <- ""
+    }
+    m$message <- function(text) {
+        if (nchar(m$buffer,type="bytes")>0) m$end_line()
+        m$output <- c(m$output,text)
+    }
+    m$checked <- function(n) {
+        if (n < -32768 || n > 32767) fault("OVERFLOW")
+        n
+    }
+    m$evaluate <- function(e) {
+        op <- e$value
+        if (e$kind=="constant") return(op)
+        if (e$kind=="unary") {
+            a <- m$evaluate(e$args[[1]])
+            if (op=="NOT") return(bitwNot(as.integer(a)))
+            return(m$checked(-a))
+        }
+        values <- lapply(e$args,m$evaluate)
+        if (e$kind=="call") return(m$call(op,values))
+        a <- values[[1]]
+        b <- values[[2]]
+        if (op=="/" || op=="MOD") {
+            if (b==0) fault("DIVISION BY ZERO")
+            q <- if ((a<0)!=(b<0)) -floor(abs(a)/abs(b)) else floor(abs(a)/abs(b))
+            return(if (op=="/") m$checked(q) else a-b*q)
+        }
+        if (op=="AND") return(bitwAnd(as.integer(a),as.integer(b)))
+        if (op=="OR") return(bitwOr(as.integer(a),as.integer(b)))
+        fault("ILLEGAL FUNCTION CALL")
+    }
+    m$call <- function(name,args) {
+        a <- args[[1]]
+        b <- if (length(args)>1) args[[2]] else NULL
+        c <- if (length(args)>2) args[[3]] else NULL
+        if (name=="RND") {
+            if (a<1) fault("ILLEGAL FUNCTION CALL")
+            m$random <- (48271*m$random)%%2147483647
+            return(m$random%%a+1)
+        }
+    m$execute <- function(s) {
+        following <- s$following
+        } else if (s$kind=="PRINT") {
+            for (item in s$items) {
+                if (item$kind==",") {
+                    m$buffer <- paste0(m$buffer,
+                                       strrep(" ",10-nchar(m$buffer)%%10))
+                } else if (item$kind!=";") {
+                    value <- m$evaluate(item$node)
+                    if (item$kind=="value") {
+                        m$buffer <- paste0(m$buffer,as.character(value))
+                }
+            }
+            if (!length(s$items) ||
+                !(tail(s$items,1L)[[1]]$kind %in% c(";",","))) m$end_line()
+        following
+    m$connect <- function(body,after,number) {
+        following <- after
+        for (i in rev(seq_along(body))) {
+            s <- body[[i]]
+            s$line <- number
+            s$following <- following
+            following <- s
+        }
+    }
+    m$finish <- function() {
+        if (nchar(m$buffer,type="bytes")>0) m$end_line()
+        c(m$output,"READY")
+    }
+    m$run <- function(source) {
+        parsed <- list()
+        for (key in sort(as.numeric(names(source)))) {
+            number <- as.numeric(key)
+            code <- source[[as.character(key)]]
+            body <- tryCatch(Parser(tokenize(code))$parse(),error=function(e) e)
+            if (inherits(body,"error")) {
+                m$message(paste0("ERROR IN LINE ",number,": SYNTAX ERROR"))
+                return(m$finish())
+            }
+            parsed[[length(parsed)+1L]] <- list(number=number,body=body)
+        }
+        after <- NULL
+        for (entry in rev(parsed)) {
+            m$connect(entry$body,after,entry$number)
+            assign(as.character(entry$number),entry$body[[1]],envir=m$entries)
+            after <- entry$body[[1]]
+        }
+        position <- after
+        while (!is.null(position)) {
+            current <- position
+            result <- tryCatch(m$execute(current),error=function(e) e)
+            if (inherits(result,"error")) {
+                failure <- conditionMessage(result)
+                if (m$handler!=0 && !m$handling) {
+                } else {
+                    m$message(paste0("ERROR IN LINE ",current$line,": ",failure))
+                    position <- NULL
+                }
+            } else {
+                position <- result
+            }
+        }
+        m$finish()
+    }
+    m
+}
+lines <- readLines("stdin",warn=FALSE)
+cursor <- 2L
+output <- character()
+for (i in seq_len(as.integer(lines[[1]]))) {
+    source <- list()
+    while (lines[[cursor]]!="RUN") {
+        line <- lines[[cursor]]
+        cursor <- cursor+1L
+        parts <- regmatches(line,regexec("^([0-9]+)(?: +(.*))?$",line))[[1]]
+        number <- as.numeric(parts[[2]])
+        key <- as.character(number)
+        if (length(parts)>2L) {
+            source[[key]] <- parts[[3]]
+        } else {
+            source[[key]] <- NULL
+        }
+    }
+    cursor <- cursor+1L
+    inputs <- character()
+    while (lines[[cursor]]!="END") {
+        inputs <- c(inputs,lines[[cursor]])
+        cursor <- cursor+1L
+    }
+    cursor <- cursor+1L
+    output <- c(output,Machine(inputs)$run(source))
+}
+cat(paste(output,collapse="\n"),"\n",sep="")

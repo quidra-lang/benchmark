@@ -1,0 +1,313 @@
+function read_inputs()
+    settings = Dict{String,Any}("MOTD"=>String[])
+    integers = Set([
+        "NICKLEN",
+        "CHANNELLEN",
+        "TOPICLEN",
+        "MAXCHANNELS",
+        "BUCKET",
+        "REFILL",
+        "QUEUE",
+        "PINGFREQ",
+        "TIMEOUT"
+    ])
+    for line in readlines("input/server.txt")
+        key,value = split(line,' ';limit=2)
+        if key=="MOTD"
+            push!(settings[key],value)
+        else
+            settings[key] = key in integers ? parse(Int,value) : String(value)
+        end
+    end
+    traffic = NamedTuple[]
+    counts = Dict{String,Int}()
+    for line in readlines("input/traffic.txt")
+        time,id,body = split(line,' ';limit=3)
+        kind = occursin(
+            r"^CONNECT [A-Za-z0-9.-]{1,63}$",
+            body
+        ) ? "connect" : body=="DISCONNECT" ? "disconnect" : "messages"
+        push!(traffic,(time=parse(Int,time),identifier=String(id),kind=kind,body=String(body)))
+        bump!(counts,kind)
+    end
+    IrcServer(settings=settings,traffic=traffic,finish=traffic[end].time,line_counts=counts)
+end
+function send_line!(s,client,line)
+    push!(s.sent,"$(s.time) $(client.identifier) $line")
+    client.sent += 1
+end
+function disconnect!(s,client,reason,kind)
+    if kind!="closed"
+        send_line!(s,client,"ERROR :Closing Link: $(addressee(client))[$(client.hostname)] ($reason)")
+        bump!(s.statistics,"errors")
+    end
+    client.registered && send_peers!(s,client,":"*client_prefix(client)*" QUIT :$reason")
+    for i in copy(client.channels)
+        remove_member!(s,client,s.channels[i])
+    end
+    bump!(s.statistics,"discarded",length(client.queue))
+    empty!(client.queue)
+    delete!(s.client_index,client.identifier)
+    client.active = false
+    push!(s.gone,(s.time,client.identifier,addressee(client),reason))
+    bump!(s.disconnections,kind)
+end
+function process_line!(s,c,raw)
+    bump!(s.statistics,"processed")
+    command,p = parse_message(raw)
+    if isempty(command)
+        bump!(s.statistics,"empty")
+        return
+    end
+    bump!(s.commands,command)
+    if !c.registered && !(command in ("NICK","USER","PING","PONG","QUIT"))
+        numeric!(s,c,451)
+        return
+    end
+    if command=="NICK"
+        nick!(s,c,p)
+    elseif command=="USER"
+        user!(s,c,p)
+    elseif command=="PING"
+        if isempty(p) || isempty(p[1])
+            numeric!(s,c,409)
+        else
+            name = s.settings["NAME"]
+            send_line!(s,c,":$name PONG $name :$(p[1])")
+        end
+    elseif command=="PONG"
+        return
+    elseif command=="QUIT"
+        reason = !isempty(p) && !isempty(p[1]) ? "Quit: "*p[1] : "Client Quit"
+        disconnect!(s,c,reason,"quit")
+    elseif command=="JOIN"
+        join_channels!(s,c,p)
+    elseif command=="PART"
+        part_channels!(s,c,p)
+    elseif command in ("PRIVMSG","NOTICE")
+        message!(s,c,p,command)
+    elseif command=="TOPIC"
+        topic!(s,c,p)
+    elseif command=="NAMES"
+        names!(s,c,p)
+    elseif command=="WHOIS"
+        whois!(s,c,p)
+    elseif command=="AWAY"
+        c.away = !isempty(p) && !isempty(p[1]) ? p[1] : ""
+        numeric!(s,c,isempty(c.away) ? 305 : 306)
+    elseif command=="INVITE"
+        invite!(s,c,p)
+    elseif command=="KICK"
+        kick!(s,c,p)
+    elseif command=="MODE"
+        require_parameters(s,c,p,1,"MODE") || return
+        startswith(p[1],"#") ? channel_mode!(s,c,p) : user_mode!(s,c,p)
+    else
+        numeric!(s,c,421;command=command)
+    end
+end
+function arrival!(s,record)
+    id,kind,body = record.identifier,record.kind,record.body
+    if kind=="connect"
+        c = IrcClient(
+            index=length(s.clients)+1,
+            identifier=id,
+            hostname=body[9:end],
+            connection_time=s.time,
+            last_received=s.time,
+            tokens=s.settings["BUCKET"]
+        )
+        push!(s.clients,c)
+        s.client_index[id] = c.index
+        n = length(s.client_index)
+        n>s.peak_connections[1] && (s.peak_connections=(n,s.time))
+        return
+    end
+    index = get(s.client_index,id,0)
+    if kind=="disconnect"
+        index!=0 && disconnect!(s,s.clients[index],"Remote host closed the connection","closed")
+        return
+    elseif index==0
+        bump!(s.statistics,"dropped")
+        return
+    end
+    c = s.clients[index]
+    c.received,c.last_received,c.ping_sent = c.received+1,s.time,-1
+    if isempty(c.queue) && c.tokens>=1
+        use_token!(c,s.time,s.settings["BUCKET"],s.settings["REFILL"])
+        process_line!(s,c,body)
+    elseif length(c.queue)>=s.settings["QUEUE"]
+        bump!(s.statistics,"discarded")
+        disconnect!(s,c,"Excess Flood","flood")
+    else
+        push!(c.queue,body)
+        bump!(s.statistics,"queued")
+    end
+end
+function run_server!(s)
+    position = 1
+    for time in 0:s.finish
+        s.time = time
+        for c in active_clients(s)
+            refill!(c,time,s.settings["BUCKET"],s.settings["REFILL"])
+            while c.active && !isempty(c.queue) && c.tokens>=1
+                use_token!(c,time,s.settings["BUCKET"],s.settings["REFILL"])
+                process_line!(s,c,popfirst!(c.queue))
+            end
+        end
+        while position<=length(s.traffic) && s.traffic[position].time==time
+            arrival!(s,s.traffic[position])
+            position += 1
+        end
+        for c in active_clients(s)
+            if c.ping_sent!=-1
+                time-c.ping_sent>=s.settings["TIMEOUT"] && disconnect!(
+                    s,
+                    c,
+                    "Ping timeout: $(time-c.last_received) seconds",
+                    "timeout"
+                )
+            elseif time-c.last_received>=s.settings["PINGFREQ"]
+                send_line!(s,c,"PING :$(s.settings["NAME"])")
+                bump!(s.statistics,"pings")
+                c.ping_sent = time
+            end
+        end
+    end
+end
+function client_report(s)
+    lines = String[]
+    clients = active_clients(s)
+    for c in clients
+        username = isnothing(c.username) ? "*" : c.username
+        signon = c.registered ? string(c.registration_time) : "-"
+        channels = isempty(c.channels) ? "none" : joined_channels(s,c,",")
+        invites = isempty(c.invites) ? "none" : join([s.channels[i].name for i in c.invites],',')
+        push!(lines,words("CLIENT",c.identifier,addressee(c),username,c.hostname,client_mode(c),"connected",c.connection_time,"signon",signon,
+            "received",c.received,"sent",c.sent,"tokens",c.tokens,"queue",length(c.queue),"channels",channels,"invites",invites))
+        !isempty(c.away) && push!(lines,words("AWAY",c.identifier,c.away))
+    end
+    push!(
+        lines,
+        words(
+            "TOTAL clients",
+            length(clients),
+            "registered",
+            count(c->c.registered,clients),
+            "invisible",
+            count(c->c.invisible,clients),
+            "away",
+            count(c->!isempty(c.away),clients)
+        )
+    )
+    lines
+end
+function statistics_report(s)
+    pending = sum((length(c.queue) for c in s.clients if c.active);init=0)
+    stat(key) = get(s.statistics,key,0)
+    lines = ["END $(s.finish)",words("LINES total",length(s.traffic),"connect",get(s.line_counts,"connect",0),
+        "disconnect",get(s.line_counts,"disconnect",0),"messages",get(s.line_counts,"messages",0)),
+        words(
+            "MESSAGES dropped",
+            stat("dropped"),
+            "queued",
+            stat("queued"),
+            "processed",
+            stat("processed"),
+            "discarded",
+            stat("discarded"),
+            "pending",
+            pending,
+            "empty",
+            stat("empty")
+        ),
+        words(
+            "SENT lines",
+            length(s.sent),
+            "numerics",
+            sum(values(s.numeric_counts);init=0),
+            "pings",
+            stat("pings"),
+            "errors",
+            stat("errors")
+        )]
+    for command in sort!(collect(keys(s.commands)))
+        push!(lines,words("COMMAND",command,s.commands[command]))
+    end
+    for number in sort!(collect(keys(s.numeric_counts)))
+        push!(lines,words("NUMERIC",lpad(string(number),3,'0'),s.numeric_counts[number]))
+    end
+    push!(lines,words("PEAK connections",s.peak_connections[1],"at",s.peak_connections[2]))
+    push!(lines,words("PEAK registered",s.peak_registered[1],"at",s.peak_registered[2]))
+    push!(
+        lines,
+        "DISCONNECTS "*join(
+            [words(kind,get(s.disconnections,kind,0)) for kind in ("quit","closed","flood","timeout")],
+            ' '
+        )
+    )
+    for record in s.gone
+        push!(lines,words("GONE",record...))
+    end
+    lines
+end
+function main()
+    s = read_inputs()
+    run_server!(s)
+    outputs = [
+        ("sent.txt",s.sent),
+        ("channels.txt",channel_report(s)),
+        ("clients.txt",client_report(s)),
+        ("stats.txt",statistics_report(s))
+    ]
+    mkpath("output")
+    for (filename,lines) in outputs
+        write(joinpath("output",filename),isempty(lines) ? "" : join(lines,"\n")*"\n")
+    end
+end
+function use_token!(client,time,capacity,interval)
+    client.tokens==capacity && (client.refill_time=time+interval)
+    client.tokens -= 1
+end
+function refill!(client,time,capacity,interval)
+    if client.refill_time==time
+        client.tokens += 1
+        client.refill_time = client.tokens<capacity ? time+interval : -1
+    end
+end
+function parse_message(raw)
+    n,position = length(raw),1
+    if startswith(raw,":")
+        first_space = findfirst(==(' '),raw)
+        isnothing(first_space) && return "",String[]
+        position = first_space
+    end
+    while position<=n && raw[position]==' '
+        position += 1
+    end
+    start = position
+    while position<=n && raw[position]!=' '
+        position += 1
+    end
+    command = uppercase(raw[start:position-1])
+    parameters = String[]
+    while position<=n
+        while position<=n && raw[position]==' '
+            position += 1
+        end
+        position>n && break
+        if raw[position]==':'
+            push!(parameters,raw[position+1:end])
+            break
+        elseif length(parameters)==14
+            push!(parameters,raw[position:end])
+            break
+        end
+        start = position
+        while position<=n && raw[position]!=' '
+            position += 1
+        end
+        push!(parameters,raw[start:position-1])
+    end
+    command,parameters
+end

@@ -1,0 +1,273 @@
+const categories = ['ONES', 'TWOS', 'THREES', 'FOURS', 'FIVES', 'SIXES', 'THREEKIND', 'FOURKIND', 'FULLHOUSE', 'SMALL', 'LARGE', 'YAHTZEE', 'CHANCE'];
+enum JokerRule {
+  forced('FORCED'), free('FREE'), off('OFF');
+  final String label;
+  const JokerRule(this.label);
+}
+
+class CommandError implements Exception {
+  final String message;
+  CommandError(this.message);
+int sum(Iterable<int> values) => values.fold(0, (total, value) => total + value);
+
+int positive(String word, int maximum) {
+  if (word.codeUnitAt(0) < 49 || word.codeUnitAt(0) > 57 || word.codeUnits.any((c) => c < 48 || c > 57)) {
+    throw CommandError('bad value $word');
+  }
+  final value = int.parse(word);
+  if (value > maximum) throw CommandError('bad value $word');
+  return value;
+}
+
+void checkName(String word) {
+  if (word.length > 8 || word.codeUnits.any((c) => c < 65 || c > 90)) throw CommandError('bad name $word');
+}
+
+int parsePattern(String word) {
+  if (word.length != 5 || word.codeUnits.any((c) => c != 48 && c != 49)) throw CommandError('bad pattern $word');
+  return int.parse(word, radix: 2);
+}
+
+int parseCategory(String word) {
+  final category = categories.indexOf(word);
+  if (category < 0) throw CommandError('bad category $word');
+  return category;
+bool isHeld(int mask, int die) => (mask & (1 << (4 - die))) != 0;
+String patternText(int mask) => mask.toRadixString(2).padLeft(5, '0');
+
+String facesText(List<int>? faces, [int mask = 31]) {
+  final selected = <int>[];
+  if (faces != null) {
+    for (var i = 0; i < 5; i++) {
+      if (isHeld(mask, i)) selected.add(faces[i]);
+    }
+  }
+  return selected.isEmpty ? '-' : selected.join(' ');
+}
+
+List<int> faceCounts(List<int> faces) {
+  final counts = List.filled(6, 0);
+  for (final face in faces) counts[face - 1]++;
+  return counts;
+int normalScore(int category, List<int> counts) {
+  if (category < 6) return (category + 1) * counts[category];
+  var total = 0, largest = 0, bits = 0;
+  for (var i = 0; i < 6; i++) {
+    total += (i + 1) * counts[i];
+    largest = max(largest, counts[i]);
+    if (counts[i] > 0) bits |= 1 << i;
+  }
+  return switch (category) {
+    6 => largest >= 3 ? total : 0,
+    7 => largest >= 4 ? total : 0,
+    8 => counts.contains(3) && counts.contains(2) ? 25 : 0,
+    9 => (bits & 15) == 15 || (bits & 30) == 30 || (bits & 60) == 60 ? 30 : 0,
+    10 => bits == 31 || bits == 62 ? 40 : 0,
+    11 => largest == 5 ? 50 : 0,
+    _ => total,
+class Player {
+  final String name;
+  Strategy strategy;
+  final scores = List<int?>.filled(13, null);
+  int yahtzeeBonus = 0;
+  Player(this.name, [this.strategy = Strategy.kind]);
+  int get upper => sum(scores.take(6).map((value) => value ?? 0));
+  int get upperBonus => upper >= 63 ? 35 : 0;
+  int get total => sum(scores.map((value) => value ?? 0)) + upperBonus + yahtzeeBonus;
+  int get round => scores.where((value) => value != null).length + 1;
+}
+
+typedef Candidates = ({List<int> points, int allowed, bool joker, int best});
+
+Candidates evaluate(Player player, List<int> counts, JokerRule rule) {
+  var allowed = 0;
+  for (var c = 0; c < 13; c++) {
+    if (player.scores[c] == null) allowed |= 1 << c;
+  }
+  final joker = rule != JokerRule.off && counts.contains(5) && player.scores[11] != null;
+  if (joker && rule == JokerRule.forced) {
+  final points = List.filled(13, -1);
+  var best = -1;
+  for (var c = 0; c < 13; c++) {
+    if (player.scores[c] != null) continue;
+    points[c] = (allowed & (1 << c)) == 0 ? 0
+        : joker && c >= 8 && c <= 10 ? const [25, 30, 40][c - 8] : normalScore(c, counts);
+    if (best < 0 || points[c] > points[best]) best = c;
+  }
+  return (points: points, allowed: allowed, joker: joker, best: best);
+class Turn {
+  final int seat, rolls, hold;
+  final List<int>? faces;
+  final bool finished;
+  Turn({this.seat = 0, this.rolls = 0, List<int>? faces, this.hold = 0, this.finished = false})
+      : faces = faces == null ? null : List.unmodifiable(faces);
+}
+
+class ScoreEntry {
+  final Turn before;
+  final int category, points, bonus;
+  final bool joker;
+  ScoreEntry(this.before, this.category, this.points, this.bonus, this.joker);
+}
+
+typedef RedoEntry = ({Turn after, ScoreEntry entry});
+
+class Game {
+  final List<Player> players;
+  int randomState;
+  final int maxRolls;
+  final JokerRule joker;
+  final void Function(String)? output;
+  final loaded = Queue<int>();
+  final faceTotals = List.filled(6, 0);
+  final entries = <ScoreEntry>[];
+  final redoList = <RedoEntry>[];
+  Turn state = Turn();
+  Game(this.randomState, this.players, this.maxRolls, this.joker, [this.output]);
+  Player get current => players[state.seat];
+  void emit(String line) => output?.call(line);
+
+  void checkTurn() {
+    if (state.finished) throw CommandError('game over');
+  }
+
+  void checkRolled() {
+    checkTurn();
+    if (state.rolls == 0) throw CommandError('not rolled');
+  }
+
+  void checkRollsLeft() {
+    checkRolled();
+    if (state.rolls == maxRolls) throw CommandError('no rolls left');
+  }
+
+  void roll() {
+    checkTurn();
+    if (state.rolls == maxRolls) throw CommandError('no rolls left');
+    if (state.hold == 31) throw CommandError('all dice held');
+    redoList.clear();
+    final faces = state.faces == null ? List.filled(5, 0) : List<int>.of(state.faces!);
+    for (var i = 0; i < 5; i++) {
+      if (state.rolls > 0 && isHeld(state.hold, i)) continue;
+      if (loaded.isNotEmpty) {
+        faces[i] = loaded.removeFirst();
+      } else {
+        randomState = 48271 * randomState % 2147483647;
+        faces[i] = randomState % 6 + 1;
+      }
+      faceTotals[faces[i] - 1]++;
+    }
+    state = Turn(seat: state.seat, rolls: state.rolls + 1, faces: faces, hold: state.hold);
+    emit('${current.name} roll ${state.rolls}: ${facesText(faces)}');
+  }
+
+  void hold(int mask) {
+    checkRollsLeft();
+    redoList.clear();
+    state = Turn(seat: state.seat, rolls: state.rolls, faces: state.faces, hold: mask);
+    emit('${current.name} holds ${patternText(mask)}: ${facesText(state.faces, mask)}');
+  void score(int category, {bool preview = false}) {
+    checkRolled();
+    final player = current;
+    if (player.scores[category] != null) throw CommandError('${categories[category]} already used');
+    final counts = faceCounts(state.faces!);
+    final candidates = evaluate(player, counts, joker);
+    if ((candidates.allowed & (1 << category)) == 0) {
+      final upper = counts.indexOf(5);
+      throw CommandError('joker requires ${player.scores[upper] == null ? categories[upper] : 'lower box'}');
+    }
+    final points = candidates.points[category];
+    final bonus = counts.contains(5) && player.scores[11] == 50 ? 100 : 0;
+    final upperBonus = category < 6 && player.upper < 63 && player.upper + points >= 63 ? 35 : 0;
+    var line = '${player.name} ${preview ? 'would score' : 'scores'} $points in ${categories[category]}';
+    if (candidates.joker) line += ' joker';
+    if (bonus != 0) line += ' ybonus 100';
+    if (upperBonus != 0) line += ' ubonus 35';
+    line += ' total ${player.total + points + bonus + upperBonus}';
+    if (preview) { emit(line); return; }
+    redoList.clear();
+    entries.add(ScoreEntry(state, category, points, bonus, candidates.joker));
+    player.scores[category] = points;
+    player.yahtzeeBonus += bonus;
+    state = entries.length == 13 * players.length ? Turn(finished: true) : Turn(seat: (state.seat + 1) % players.length);
+    emit(line);
+    emit(state.finished ? 'game over' : 'turn ${current.round} ${current.name}');
+  }
+
+  void undo() {
+    if (entries.isEmpty) throw CommandError('nothing to undo');
+    final entry = entries.removeLast();
+    redoList.add((after: state, entry: entry));
+    final player = players[entry.before.seat];
+    player.scores[entry.category] = null;
+    player.yahtzeeBonus -= entry.bonus;
+    state = entry.before;
+    emit('undo ${player.name} ${categories[entry.category]} ${entry.points}');
+  }
+
+  void redo() {
+    if (redoList.isEmpty) throw CommandError('nothing to redo');
+    final saved = redoList.removeLast();
+    final entry = saved.entry;
+    final player = players[entry.before.seat];
+    player.scores[entry.category] = entry.points;
+    player.yahtzeeBonus += entry.bonus;
+    entries.add(entry);
+    state = saved.after;
+    emit('redo ${player.name} ${categories[entry.category]} ${entry.points}');
+class Program {
+  int rolls = 3;
+  JokerRule joker = JokerRule.forced;
+  Game? game;
+  final output = StringBuffer();
+  void emit(String line) => output.writeln(line);
+  Game table() => game ?? (throw CommandError('no game'));
+  void execute(List<String> words) {
+    switch (words[0]) {
+      case 'GAME':
+        final seed = positive(words[1], 2147483646);
+        final names = words.sublist(2);
+        for (final name in names) checkName(name);
+        if (names.length > 6) throw CommandError('too many players');
+        if (game != null) throw CommandError('game in progress');
+        final seen = <String>{};
+        for (final name in names) {
+          if (!seen.add(name)) throw CommandError('duplicate name $name');
+        }
+        game = Game(seed, names.map((name) => Player(name)).toList(), rolls, joker, emit);
+        emit('game seed $seed players ${names.join(' ')}');
+        emit('turn 1 ${names.first}');
+        return;
+      case 'LOAD':
+        final values = words.skip(1).map((word) => positive(word, 6)).toList();
+        final table = this.table();
+        if (words[0] == 'KEEP') {
+        } else {
+          table.loaded.addAll(values);
+          emit('loaded ${table.loaded.length}');
+        }
+        return;
+      case 'ROLL': table().roll(); return;
+      case 'HOLD':
+      case 'ODDS':
+        final mask = parsePattern(words[1]);
+        final table = this.table();
+        if (words[0] == 'HOLD') { table.hold(mask); } else { odds(table, mask); }
+        return;
+      case 'SCORE':
+      case 'WHATIF':
+        final category = parseCategory(words[1]);
+        table().score(category, preview: words[0] == 'WHATIF');
+        return;
+      case 'UNDO': table().undo(); return;
+      case 'REDO': table().redo(); return;
+      default: throw CommandError('unknown command ${words[0]}');
+void main() {
+  final count = int.parse(stdin.readLineSync()!);
+  final program = Program();
+  for (var i = 0; i < count; i++) {
+    final words = stdin.readLineSync()!.split(' ');
+    try { program.execute(words); }
+    on CommandError catch (error) { program.emit('error: ${error.message}'); }
+  }
+  stdout.write(program.output);

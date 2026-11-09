@@ -1,0 +1,548 @@
+struct Entry {
+    tx: Transaction,
+    fee: i64,
+    arrival: i64
+}
+    fn refresh(&mut self) {
+        self.main = chain_to(self.tip.clone());
+        self.confirmed.clear();
+        for r in &self.main {
+            for tx in &r.block.transactions {
+                self.confirmed.insert(tx.txid.clone(), r.block.height);
+            }
+        }
+    }
+    fn log(&mut self, line: String) {
+        self.log.push(format!("{} {line}", self.now));
+    }
+    fn height(&self) -> usize {
+        self.tip.block.height+1
+    }
+    fn reward(&self, h: usize) -> i64 {
+        reward(h, self.p.get("REWARD", 0), self.p.get("REWARD", 1) as usize)
+    }
+    fn difficulty(&self, r: Rc<BlockRecord>) -> usize {
+        required_difficulty(r, self.p.n("DIFFICULTY"), self.p.n("RETARGET"), self.p.get("RETARGET", 1))
+    }
+    fn locked(&self) -> BTreeSet<Reference> {
+        self.mempool.iter().flat_map(|e|e.tx.inputs.clone()).collect()
+    }
+    fn ranked(&self) -> Vec<Entry> {
+        let mut out = self.mempool.clone();
+        out.sort_by(|a, b|(b.fee*a.tx.size()).cmp(&(a.fee*b.tx.size())).then(a.tx.txid.cmp(&b.tx.txid)));
+        out
+    }
+    fn balance(&self, a: &str) -> i64 {
+        self.tip.utxo.values().filter(|c|c.address == a).map(|c|c.amount).sum()
+    }
+    fn acceptance(&self, tx: &Transaction) -> Result<Acceptance, String> {
+        if tx.coinbase() {
+            return Err("coinbase".into())
+        }
+        if self.confirmed.contains_key(&tx.txid) || self.mempool.iter().any(|e|e.tx.txid == tx.txid) {
+            return Err("duplicate".into())
+        }
+        let fee = check(tx, &self.tip.utxo, &BTreeSet::new(), self.height(), &self.owners, self.p.n("MATURITY"))?;
+        if fee*1000<self.p.get("MINFEERATE", 0)*tx.size() {
+            return Err("low-fee".into())
+        }
+        let conflicts: Vec<&Entry >= self.mempool.iter().filter(|e|e.tx.inputs.iter().any(|r|tx.inputs.contains(r))).collect();
+        if !conflicts.is_empty() && (fee <= conflicts.iter().map(|e|e.fee).sum() || conflicts.iter().any(|e|fee*e.tx.size() <= e.fee*tx.size())) {
+            return Err("conflict".into())
+        }
+        Ok(Acceptance {
+            fee,
+            conflicts: conflicts.iter().map(|e|e.tx.txid.clone()).collect()
+        })
+    }
+    fn drop(&mut self, id: &str, reason: &str) {
+        self.mempool.retain(|e|e.tx.txid != id);
+        self.drops.insert(id.into(), reason.into());
+        self.log(format!("DROP {} {reason}", short(id)));
+    }
+    fn register(&mut self, tx: Transaction, a: Acceptance, arrival: i64) {
+        for id in a.conflicts {
+            self.drop(&id, "replaced");
+        }
+        self.mempool.push(Entry {
+            tx,
+            fee: a.fee,
+            arrival
+        });
+        if self.mempool.len()>self.p.n("MEMPOOL") {
+            let id = self.ranked().last().unwrap().tx.txid.clone();
+            self.drop(&id, "mempool-full");
+        }
+    }
+    fn switch(&mut self, target: Rc<BlockRecord>) {
+        let old = self.tip.clone();
+        let fork = fork_point(old.clone(), target.clone());
+        let f = fork.block.height;
+        let d = old.block.height-f;
+        let c = target.block.height-f;
+        if d>self.p.n("MAXREORG") {
+            self.log(format!("REFUSE {} {} work {} fork {f} depth {d}", target.block.height, short(&target.block.hash), target.cumulative_work));
+            return
+        }
+        let returned: Vec<Transaction >= self.main.iter().skip(f+1).flat_map(|r|r.block.transactions.iter().skip(1).cloned()).collect();
+        self.tip = target.clone();
+        self.refresh();
+        if d == 0 {
+            self.log(format!("TIP {} {} work {}", target.block.height, short(&target.block.hash), target.cumulative_work));
+        }else {
+            self.log(format!("REORG {} {} work {} fork {f} disconnected {d} connected {c}", target.block.height, short(&target.block.hash), target.cumulative_work));
+            self.reorganizations.push(Reorganization {
+                time: self.now,
+                fork: f,
+                disconnected: d,
+                connected: c,
+                old: old.block.hash.clone(),
+                new: target.block.hash.clone()
+            });
+        }
+        let previous = std::mem::take(&mut self.mempool);
+        let candidates = returned.into_iter().map(|t|(t, self.now, true)).chain(previous.into_iter().map(|e|(e.tx, e.arrival, false))).collect::<Vec<_>>();
+        for (tx, arrival, is_returned) in candidates {
+            if self.confirmed.contains_key(&tx.txid) {
+                continue
+            }
+            match self.acceptance(&tx) {
+                Err(reason) => self.drop(&tx.txid, &reason), Ok(a) => {
+                    if is_returned {
+                        self.log(format!("RETURN {}", short(&tx.txid)));
+                    }
+                    self.register(tx, a, arrival);
+                }
+            }
+        }
+    }
+    fn validate(&self, b: &Block, p: Rc<BlockRecord>) -> Result<(Utxo, Vec<i64>), String> {
+        if b.height != p.block.height+1 {
+            return Err("bad-height".into())
+        }
+        if b.difficulty != self.difficulty(p.clone()) {
+            return Err("bad-difficulty".into())
+        }
+        if b.timestamp <= median_time(p.clone()) {
+            return Err("time-too-old".into())
+        }
+        if b.timestamp>self.now+self.p.get("DRIFT", 0) {
+            return Err("time-too-new".into())
+        }
+        let mut utxo = p.utxo.clone();
+        let mut spent = BTreeSet::new();
+        let mut fees = vec![];
+        for (i, tx) in b.transactions.iter().enumerate().skip(1) {
+            let fee = check(tx, &utxo, &spent, b.height, &self.owners, self.p.n("MATURITY")).map_err(|r|format!("{r} tx {}", i+1))?;
+            spent.extend(tx.inputs.clone());
+            apply(&mut utxo, tx, b.height);
+            fees.push(fee);
+        }
+        let cb = &b.transactions[0];
+        if cb.outputs.iter().any(|(a, v)|!self.owners.contains_key(a) || *v == 0) {
+            return Err("bad-output tx 1".into())
+        }
+        if cb.total()>self.reward(b.height)+fees.iter().sum::<i64>() {
+            return Err("bad-coinbase".into())
+        }
+        apply(&mut utxo, cb, b.height);
+        Ok((utxo, fees))
+    }
+    fn reject(&mut self, kind: &str, b: &Block, peer: &str, reason: &str) {
+        self.rejected.insert(b.hash.clone());
+        self.peers.get_mut(peer).unwrap().rejected_blocks += 1;
+        self.tally("block", reason.split(' ').next().unwrap());
+        self.log(format!("{kind} {peer} {} {} rejected {reason}", b.height, short(&b.hash)));
+        if reason != "time-too-new" {
+            self.penalize(peer, self.p.get("BAN", 1));
+        }
+    }
+    fn connect(&mut self, kind: &str, b: Block, peer: &str) {
+        let parent = self.records[&b.previous].clone();
+        match self.validate(&b, parent.clone()) {
+            Err(reason) => self.reject(kind, &b, peer, &reason), Ok((utxo, fees)) => {
+                let r = BlockRecord::new(b, Some(parent), utxo, fees, peer.into());
+                self.records.insert(r.block.hash.clone(), r.clone());
+                self.peers.get_mut(peer).unwrap().accepted_blocks += 1;
+                self.log(format!("{kind} {peer} {} {} accepted work {}", r.block.height, short(&r.block.hash), r.cumulative_work));
+                if r.cumulative_work>self.tip.cumulative_work {
+                    self.switch(r)
+                }
+            }
+        }
+    }
+    fn resolve(&mut self, start: String) {
+        let mut queue = VecDeque::from([start]);
+        while let Some(parent) = queue.pop_front() {
+            let children = self.orphans.iter().filter(|(b, _)|b.previous == parent).cloned().collect::<Vec<_>>();
+            for (b, peer) in children {
+                self.orphans.retain(|(o, _)|o.hash != b.hash);
+                let hash = b.hash.clone();
+                if self.rejected.contains(&parent) {
+                    self.reject("UNORPHAN", &b, &peer, "bad-parent");
+                }else {
+                    self.connect("UNORPHAN", b, &peer);
+                }
+                queue.push_back(hash);
+            }
+        }
+    }
+    fn receive_block(&mut self, peer: &str, b: Block) {
+        if self.records.contains_key(&b.hash) || self.orphans.iter().any(|(o, _)|o.hash == b.hash) || self.rejected.contains(&b.hash) {
+            self.log(format!("BLOCK {peer} {} {} rejected duplicate", b.height, short(&b.hash)));
+            self.peers.get_mut(peer).unwrap().rejected_blocks += 1;
+            self.tally("block", "duplicate");
+            return
+        }
+        let reason = b.context_error(self.p.get("MAXBLOCK", 0)).or_else( || if self.rejected.contains(&b.previous) {
+            Some("bad-parent".into())
+        }else {
+            None
+        });
+        let hash = b.hash.clone();
+        if let Some(r) = reason {
+            self.reject("BLOCK", &b, peer, &r);
+            self.resolve(hash);
+            return
+        }
+        if !self.records.contains_key(&b.previous) {
+            self.log(format!("BLOCK {peer} {} {} orphan parent {}", b.height, short(&b.hash), short(&b.previous)));
+            self.orphans.push((b, peer.into()));
+            self.peers.get_mut(peer).unwrap().orphans += 1;
+            if self.orphans.len()>self.p.n("ORPHANS") {
+                let(o, _) = self.orphans.remove(0);
+                self.log(format!("EVICT {} orphan-limit", short(&o.hash)));
+            }
+            return
+        }
+        self.connect("BLOCK", b, peer);
+        self.resolve(hash);
+    }
+    fn process(&mut self, f: &[&str], texts: &[&str]) {
+        self.now = f[0].parse().unwrap();
+        let expired = self.mempool.iter().filter(|e|self.now-e.arrival >= self.p.get("EXPIRY", 0)).map(|e|e.tx.txid.clone()).collect::<Vec<_>>();
+        for id in expired {
+            self.drop(&id, "expired");
+        }
+        match f[1] {
+            "PAY" => self.pay(f), "BUMP" => self.bump(f[2], f[3].parse().unwrap()), "MINE" => self.mine(f[2]), "STATUS" => self.status(f[2]), "PRINT" => self.print(), kind => {
+                let peer = f[2];
+                let p = self.peers.entry(peer.into()).or_default();
+                if p.score >= self.p.get("BAN", 0) {
+                    p.ignored += 1;
+                    self.log(format!("IGNORE {peer} {kind}"));
+                }else if kind == "TX" {
+                    self.receive_tx(peer, Transaction::parse(f[3]));
+                }else {
+                    self.receive_block(peer, Block::parse(f, texts));
+                }
+            }
+        }
+    }
+    fn chain_lines(&self) -> Vec<String> {
+        let tip = &self.tip;
+        let mut lines = vec![format!("TIP {} {} work {} stored {} orphans {}", tip.block.height, tip.block.hash, tip.cumulative_work, self.records.len(), self.orphans.len())];
+        for r in &self.main {
+            let b = &r.block;
+            let miner = if b.height == 0 {
+                "-"
+            }else {
+                self.miner(r)
+            };
+            lines.push(format!("BLOCK {} {} prev {} time {} bits {} nonce {} txs {} size {} fees {} miner {miner} source {} work {}", b.height, b.hash, short(&b.previous), b.timestamp, b.difficulty, b.nonce, b.transactions.len(), b.size(), r.fees, r.source, r.cumulative_work));
+        }
+        let main: BTreeSet<String >= self.main.iter().map(|r|r.block.hash.clone()).collect();
+        let mut stale = self.records.values().filter(|r|!main.contains(&r.block.hash)).collect::<Vec<_>>();
+        stale.sort_by_key(|r|(r.block.height, r.block.hash.clone()));
+        for r in stale {
+            lines.push(format!("STALE {} {} prev {} source {} work {}", r.block.height, r.block.hash, short(&r.block.previous), r.source, r.cumulative_work));
+        }
+        for r in &self.reorganizations {
+            lines.push(format!("REORG {} fork {} disconnected {} connected {} old {} new {}", r.time, r.fork, r.disconnected, r.connected, short(&r.old), short(&r.new)));
+        }
+        for (i, e) in self.ranked().iter().enumerate() {
+            lines.push(format!("MEMPOOL {} {} fee {} size {} time {}", i+1, e.tx.txid, e.fee, e.tx.size(), e.arrival));
+        }
+        lines
+    }
+    fn balance_lines(&self) -> Vec<String> {
+        let locked = self.locked();
+        let mut lines = vec!["wallet,address,balance,immature,locked,incoming,utxos".into()];
+        for w in &self.wallets {
+            let coins = self.tip.utxo.iter().filter(|(_, c)|c.address == w.address).collect::<Vec<_>>();
+            let immature: i64 = coins.iter().filter(|(_, c)|!c.mature(self.height(), self.p.n("MATURITY"))).map(|(_, c)|c.amount).sum();
+            let amount: i64 = coins.iter().filter(|(r, _)|locked.contains(*r)).map(|(_, c)|c.amount).sum();
+            let incoming: i64 = self.mempool.iter().flat_map(|e|&e.tx.outputs).filter(|o|o.0 == w.address).map(|o|o.1).sum();
+            lines.push(format!("{},{},{},{immature},{amount},{incoming},{}", w.name, w.address, self.balance(&w.address), coins.len()));
+        }
+        lines
+    }
+    fn utxo_lines(&self) -> Vec<String> {
+        let locked = self.locked();
+        let mut lines = vec![];
+        for((id, i), c)in &self.tip.utxo {
+            let category = if c.height == 0 {
+                "genesis"
+            }else if c.coinbase {
+                "coinbase"
+            }else {
+                "payment"
+            };
+            let state = if !c.mature(self.height(), self.p.n("MATURITY")) {
+                "immature"
+            }else if locked.contains(&(id.clone(), *i)) {
+                "locked"
+            }else {
+                "free"
+            };
+            lines.push(format!("{id}:{i} {} {} height {} {category} {state}", self.owners[&c.address].name, c.amount, c.height));
+        }
+        let root = merkle_root(lines.iter().map(|s|digest(s)).collect());
+        lines.push(format!("TOTAL {} {}", self.tip.utxo.len(), self.tip.utxo.values().map(|c|c.amount).sum::<i64>()));
+        lines.push(format!("ROOT {root}"));
+        lines
+    }
+    fn history_lines(&self) -> Vec<String> {
+        let mut confirmed = BTreeMap::new();
+        for r in &self.main {
+            for t in &r.block.transactions {
+                confirmed.insert(t.txid.clone(), t);
+            }
+        }
+        let mut lines = vec![];
+        for w in &self.wallets {
+            lines.push(format!("WALLET {} {}", w.name, w.address));
+            let(mut count, mut spent_total, mut received_total, mut balance) = (0, 0, 0, 0);
+            for r in &self.main {
+                for t in &r.block.transactions {
+                    let mut spent = 0;
+                    let mut involved = false;
+                    for(id, i)in &t.inputs {
+                        let(a, v) = &confirmed[id].outputs[*i];
+                        if *a == w.address {
+                            spent += v;
+                            involved = true;
+                        }
+                    }
+                    let mut received = 0;
+                    for(a, v)in &t.outputs {
+                        if *a == w.address {
+                            received += v;
+                            involved = true;
+                        }
+                    }
+                    if !involved {
+                        continue
+                    }
+                    count += 1;
+                    spent_total += spent;
+                    received_total += received;
+                    balance += received-spent;
+                    let category = if !t.coinbase() {
+                        "payment"
+                    }else if r.block.height == 0 {
+                        "genesis"
+                    }else {
+                        "coinbase"
+                    };
+                    lines.push(format!("{} {} {category} spent {spent} received {received} net {:+} balance {balance}", r.block.height, short(&t.txid), received-spent));
+                }
+            }
+            let mut pending = 0;
+            for e in self.ranked() {
+                let spent: i64 = e.tx.inputs.iter().map(|r|&self.tip.utxo[r]).filter(|c|c.address == w.address).map(|c|c.amount).sum();
+                let received: i64 = e.tx.outputs.iter().filter(|o|o.0 == w.address).map(|o|o.1).sum();
+                if spent != 0 || received != 0 {
+                    pending += 1;
+                    lines.push(format!("pending {} spent {spent} received {received} net {:+}", short(&e.tx.txid), received-spent));
+                }
+            }
+            lines.push(format!("END {} txs {count} spent {spent_total} received {received_total} balance {balance} pending {pending}", w.name));
+        }
+        lines
+    }
+    let text = fs::read_to_string("input/events.txt")?;
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut i = 0;
+    while i<lines.len() {
+        let f = lines[i].split(' ').collect::<Vec<_>>();
+        let count = if f[1] == "BLOCK" {
+            f[9].parse().unwrap()
+        }else {
+            0
+        };
+        n.process(&f, &lines[i+1..i+1+count]);
+        i += count+1;
+    }
+    fs::create_dir_all("output")?;
+    write_lines("chain.txt", n.chain_lines())?;
+    write_lines("balances.csv", n.balance_lines())?;
+    write_lines("utxo.txt", n.utxo_lines())?;
+    write_lines("history.txt", n.history_lines())?;
+    write_lines("log.txt", n.log)
+pub struct BlockRecord {
+    pub block: Block,
+    pub parent: Option<Rc<BlockRecord>>,
+    pub utxo: Utxo,
+    pub transaction_fees: Vec<i64>,
+    pub fees: i64,
+    pub source: String,
+    pub cumulative_work: i64
+}
+impl BlockRecord {
+    pub fn new(block: Block, parent: Option<Rc<BlockRecord>>, utxo: Utxo, transaction_fees: Vec<i64>, source: String) -> Rc<Self> {
+        let cumulative_work = parent.as_ref().map_or(1, |p|p.cumulative_work+16i64.pow(block.difficulty as u32));
+        let fees = transaction_fees.iter().sum();
+        Rc::new(Self {
+            block,
+            parent,
+            utxo,
+            transaction_fees,
+            fees,
+            source,
+            cumulative_work
+        })
+    }
+}
+pub fn ancestor(mut r: Rc<BlockRecord>, height: usize) -> Rc<BlockRecord> {
+    while r.block.height>height {
+        r = r.parent.as_ref().unwrap().clone();
+    }
+    r
+}
+pub fn chain_to(mut r: Rc<BlockRecord>) -> Vec<Rc<BlockRecord>> {
+    let mut out = vec![];
+    loop {
+        out.push(r.clone());
+        if let Some(p) = &r.parent {
+            r = p.clone();
+        }else {
+            break
+        }
+    }
+    out.reverse();
+    out
+}
+pub fn fork_point(a: Rc<BlockRecord>, b: Rc<BlockRecord>) -> Rc<BlockRecord> {
+    let h = a.block.height.min(b.block.height);
+    let mut a = ancestor(a, h);
+    let mut b = ancestor(b, h);
+    while a.block.hash != b.block.hash {
+        a = a.parent.as_ref().unwrap().clone();
+        b = b.parent.as_ref().unwrap().clone();
+    }
+    a
+}
+pub struct Block {
+    pub height: usize,
+    pub previous: String,
+    pub merkle: String,
+    pub timestamp: i64,
+    pub difficulty: usize,
+    pub nonce: i64,
+    pub transactions: Vec<Transaction>,
+    pub hash: String
+}
+impl Block {
+    pub fn new(height: usize, previous: String, merkle: String, timestamp: i64, difficulty: usize, nonce: i64, transactions: Vec<Transaction>) -> Self {
+        let hash = digest(&format!("{height}|{previous}|{merkle}|{timestamp}|{difficulty}|{nonce}"));
+        Self {
+            height,
+            previous,
+            merkle,
+            timestamp,
+            difficulty,
+            nonce,
+            transactions,
+            hash
+        }
+    }
+    pub fn parse(fields: &[&str], texts: &[&str]) -> Self {
+        Self::new(fields[3].parse().unwrap(), fields[4].into(), fields[5].into(), fields[6].parse().unwrap(), fields[7].parse().unwrap(), fields[8].parse().unwrap(), texts.iter().map(|s|Transaction::parse(s)).collect())
+    }
+    pub fn size(&self) -> i64 {
+        self.transactions.iter().skip(1).map(Transaction::size).sum()
+    }
+    pub fn txids(&self) -> Vec<String> {
+        self.transactions.iter().map(|t|t.txid.clone()).collect()
+    }
+    pub fn context_error(&self, max_size: i64) -> Option<String> {
+        let reason = if !self.hash.starts_with(&"0".repeat(self.difficulty)) {
+            "bad-pow"
+        }
+        else if merkle_root(self.txids()) != self.merkle {
+            "bad-merkle"
+        }
+        else if self.transactions[0].coinbase_height != Some(self.height) || self.transactions.iter().skip(1).any(Transaction::coinbase) {
+            "bad-structure"
+        }
+        else if self.size()>max_size {
+            "too-large"
+        }else {
+            return None
+        };
+        Some(reason.into())
+    }
+pub type Reference = (String, usize);
+pub type Utxo = BTreeMap<Reference, Coin>;
+#[derive(Clone)]
+pub struct Coin {
+    pub address: String,
+    pub amount: i64,
+    pub height: usize,
+    pub coinbase: bool
+}
+impl Coin {
+    pub fn mature(&self, height: usize, maturity: usize) -> bool {
+        !self.coinbase || self.height == 0 || height >= self.height+maturity
+    }
+    pub fn size(&self) -> i64 {
+        self.text.len() as i64
+    }
+    pub fn body(&self) -> &str {
+        self.text.split_once(";sig=").unwrap().0
+    }
+    pub fn total(&self) -> i64 {
+        self.outputs.iter().map(|o|o.1).sum()
+    }
+    pub fn coinbase(&self) -> bool {
+        self.coinbase_height.is_some()
+    }
+pub fn check(tx: &Transaction, utxo: &Utxo, spent: &BTreeSet<Reference>, height: usize, owners: &BTreeMap<String, Wallet>, maturity: usize) -> Result<i64, String> {
+    if tx.outputs.iter().any(|(a, v)|!owners.contains_key(a) || *v == 0) {
+        return Err("bad-output".into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut total = 0;
+    for (i, r) in tx.inputs.iter().enumerate() {
+        if spent.contains(r) || !seen.insert(r.clone()) {
+            return Err("double-spend".into());
+        }
+        let coin = utxo.get(r).ok_or("missing-input")?;
+        if !coin.mature(height, maturity) {
+            return Err("immature".into());
+        }
+        if tx.signatures[i] != sign(&owners[&coin.address].secret, i, tx.body()) {
+            return Err("bad-sig".into());
+        }
+        total += coin.amount;
+    }
+    if total<tx.total() {
+        Err("overspend".into())
+    }else {
+        Ok(total-tx.total())
+    }
+}
+pub fn apply(utxo: &mut Utxo, tx: &Transaction, height: usize) {
+    for r in &tx.inputs {
+        utxo.remove(r);
+    }
+    for (i, (address, amount)) in tx.outputs.iter().enumerate() {
+        utxo.insert((tx.txid.clone(), i), Coin {
+            address: address.clone(),
+            amount: *amount,
+            height,
+            coinbase: tx.coinbase()
+        });
+    }
+}

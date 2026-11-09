@@ -1,0 +1,210 @@
+private class Problem(val text: String) : RuntimeException(text)
+private fun fail(reason: String): Nothing = throw Problem(reason)
+private fun time(s: String): Int {
+    val p = s.split(':')
+    return p[0].toInt()*60+p[1].toInt()
+}
+private fun pair(a: String, b: String) = if (a < b) a to b else b to a
+private data class Station(val zone: Int, val name: String, var transfer: Int = 0, var closed: Boolean = false)
+private data class Line(val first: Int, val last: Int, val headway: Int, val stops: List<String>, val offsets: List<Int>, var delay: Int = 0, var suspended: Boolean = false) {
+    val total get() = offsets.last()
+    val trips get() = (last-first)/headway+1
+    fun direction(reverse: Boolean) = if (reverse) stops.asReversed() to offsets.asReversed().map {
+        total-it
+    } else stops to offsets
+    fun next(offset: Int, ready: Int): Int? {
+        val delta = ready-first-delay-offset
+        val q = if (delta <= 0) 0 else (delta+headway-1)/headway
+        return q.takeIf {
+            it < trips
+        }
+    }
+    fun at(q: Int, offset: Int) = first+delay+q*headway+offset
+}
+private sealed interface Leg {
+    val end: Int
+}
+private data class Ride(val line: String, val terminal: String, val from: String, val departure: Int, val to: String, val arrival: Int, val stops: Int) : Leg {
+    override val end get() = arrival
+}
+private data class Walk(val from: String, val departure: Int, val to: String, val arrival: Int) : Leg {
+    override val end get() = arrival
+}
+private data class Stay(val station: String, val start: Int, override val end: Int) : Leg
+private data class Label(val arrival: Int, val journey: List<Leg>)
+private typealias Labels = Map<String,Label>
+private data class Tariff(val discount: Int, val window: Int, val prices: List<Int>)
+private fun rides(journey: List<Leg>) = journey.count {
+    it is Ride
+}
+private fun relax(labels: MutableMap<String,Label>, station: String, arrival: Int, journey: List<Leg>, leg: Leg): Boolean {
+    if (labels[station]?.let {
+        it.arrival <= arrival
+    } == true) return false
+    labels[station] = Label(arrival,journey+leg)
+    return true
+}
+private class Planner {
+    val stations = sortedMapOf<String,Station>()
+    val lines = sortedMapOf<String,Line>()
+    val walks = mutableMapOf<Pair<String,String>,Int>()
+    val closed = mutableSetOf<Pair<String,String>>()
+    var tariff: Tariff? = null
+    fun station(s: String) = stations[s] ?: fail("unknown station $s")
+    fun line(s: String) = lines[s] ?: fail("unknown line $s")
+    fun openStation(s: String) {
+        if (station(s).closed) fail("station $s is closed")
+    }
+    fun common(a: String, b: String) {
+        station(a)
+        station(b)
+        if (a == b) fail("origin and destination are the same")
+        openStation(a)
+        openStation(b)
+    }
+    fun neighbors(s: String) = walks.mapNotNull {
+        (key,t) -> when(s) {
+            key.first -> key.second to t
+            key.second -> key.first to t
+            else -> null
+        }
+    }.sortedBy {
+        it.first
+    }
+    fun earliest(origin: String, departure: Int): Labels {
+        val labels = mutableMapOf(origin to Label(departure,emptyList()))
+        val settled = mutableSetOf<String>()
+        while (true) {
+            val entry = labels.entries.filter {
+                it.key !in settled
+            }.minWithOrNull(compareBy<Map.Entry<String,Label>> {
+                it.value.arrival
+            }.thenBy {
+                it.key
+            }) ?: break
+            val u = entry.key
+            val label = entry.value
+            settled.add(u)
+            val ready = label.arrival+(if (u == origin) 0 else station(u).transfer)
+            for ((id,line) in lines) {
+                if (line.suspended || u !in line.stops) continue
+                for (reverse in listOf(false,true)) {
+                    val (stops,offsets) = line.direction(reverse)
+                    val i = stops.indexOf(u)
+                    if (i == stops.lastIndex) continue
+                    val q = line.next(offsets[i],ready) ?: continue
+                    val d = line.at(q,offsets[i])
+                    for (j in i+1 until stops.size) {
+                        if (pair(stops[j-1],stops[j]) in closed) break
+                        if (station(stops[j]).closed) continue
+                        val t = line.at(q,offsets[j])
+                        relax(labels,stops[j],t,label.journey,Ride(id,stops.last(),u,d,stops[j],t,j-i))
+                    }
+                }
+            }
+            for ((v,w) in neighbors(u)) {
+                val t = label.arrival+w
+                if (!station(v).closed && t <= 1440) relax(labels,v,t,label.journey,Walk(u,label.arrival,v,t))
+            }
+        }
+        return labels
+    }
+    fun fare(journey: List<Leg>, child: Boolean): Pair<Int,List<String>> {
+        val tariff = tariff!!
+        fun half(n: Int) = (n+19)/20*10
+        val cap = if (child) half(tariff.discount) else tariff.discount
+        var previous: Int? = null
+        var total = 0
+        val tickets = mutableListOf<String>()
+        for (leg in journey) if (leg is Ride) {
+            val stops = line(leg.line).stops
+            val a = stops.indexOf(leg.from)
+            val b = stops.indexOf(leg.to)
+            val zones = stops.subList(minOf(a,b),maxOf(a,b)+1).map {
+                station(it).zone
+            }.toSet().size
+            var price = tariff.prices[minOf(zones,tariff.prices.size)-1]
+            if (child) price = half(price)
+            val reduction = if (previous?.let {
+                leg.departure-it <= tariff.window
+            } == true) minOf(cap,price) else 0
+            val pay = price-reduction
+            total += pay
+            previous = leg.arrival
+            tickets.add("TICKET ${leg.line} ${leg.from} ${leg.to} zones $zones price $price discount $reduction pay $pay")
+        }
+        return total to tickets
+    }
+    fun command(w: List<String>): List<String> {
+        val c = w[0]
+        val a = w.drop(1)
+        fun num(i: Int) = a[i].toInt()
+        val out = mutableListOf<String>()
+        when(c) {
+            "STATION" -> {
+                if (a[0] in stations) fail("station ${a[0]} already exists")
+                stations[a[0]] = Station(num(1),a[2])
+            }
+            "LINE" -> {
+                if (a[0] in lines) fail("line ${a[0]} already exists")
+                val stops = (4 until a.size step 2).map {
+                    a[it]
+                }
+                for (s in stops) station(s)
+                val seen = mutableSetOf<String>()
+                for (s in stops) if (!seen.add(s)) fail("station $s appears twice on line ${a[0]}")
+                val first = time(a[1])
+                val last = time(a[2])
+                val offsets = mutableListOf(0)
+                for (i in 5 until a.size step 2) offsets.add(offsets.last()+num(i))
+                if (first > last) fail("line ${a[0]} first departure is after last departure")
+                if (last+offsets.last() > 1440) fail("line ${a[0]} runs past 24:00")
+                val line = Line(first,last,num(3),stops,offsets)
+                lines[a[0]] = line
+            }
+            "WALK" -> {
+                station(a[0])
+                station(a[1])
+                if (a[0] == a[1]) fail("walk from ${a[0]} to itself")
+                val old = walks.put(pair(a[0],a[1]),num(2))
+            }
+            "TARIFF" -> {
+                val prices = (2 until a.size).map(::num)
+                if (prices.zipWithNext().any {
+                    it.first > it.second
+                }) fail("tariff prices must not decrease")
+                tariff = Tariff(num(0),num(1),prices)
+            }
+            "ROUTE","FEWEST","PARETO","FARE","LASTTRAIN","ARRIVEBY","PROFILE" -> {
+                common(a[0],a[1])
+                if (c == "FARE") {
+                    if (a[3] !in setOf("ADULT","CHILD")) fail("unknown fare class ${a[3]}")
+                    if (tariff == null) fail("no tariff")
+                }
+                val heading = "$c ${a[0]} ${a[1]}"
+                } else {
+                    val start = time(a[2])
+                    val label = earliest(a[0],start)[a[1]]
+                    if (label == null) out.add("$heading ${a[2]}${if (c == "FARE") " "+a[3] else ""} unreachable")
+                    else if (c == "FARE") {
+                        val (total,tickets) = fare(label.journey,a[3] == "CHILD")
+                        out.add("$heading ${a[2]} ${a[3]} rides ${rides(label.journey)} total $total")
+                        out.addAll(tickets)
+                    }
+                }
+            }
+            }
+        }
+        return out
+    }
+}
+fun main() {
+    val planner = Planner()
+    repeat(readLine()!!.toInt()) {
+        try {
+            planner.command(readLine()!!.split(' ')).forEach(::println)
+        } catch (p: Problem) {
+            println("ERROR ${p.text}")
+        }
+    }
+}

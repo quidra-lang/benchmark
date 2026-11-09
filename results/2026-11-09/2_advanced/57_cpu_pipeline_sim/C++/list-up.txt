@@ -1,0 +1,240 @@
+inline constexpr std::array<const char *, 7> classes{"ALU",    "MUL",  "LOAD", "STORE",
+                                                     "BRANCH", "JUMP", "NOP"};
+inline constexpr std::array<const char *, 4> causes{"control", "structural", "load_use", "raw"};
+enum Class { alu, multiply, load, store, branch, jump, nop };
+    Input out;
+    std::ifstream trace("input/trace.txt");
+    std::string text;
+    while (std::getline(trace, text))
+        out.trace.push_back(text);
+    std::ifstream config("input/config.txt");
+    while (std::getline(config, text)) {
+        std::istringstream row(text);
+        std::string key;
+        row >> key;
+        } else if (key == "VARIANT") {
+            Variant v;
+            std::string forward, stage;
+            row >> v.name >> forward >> stage >> v.latency;
+            v.forwarding = forward == "ON";
+            v.id = stage == "ID";
+            out.config.variants.push_back(v);
+        } else if (key == "PRIMARY")
+            row >> out.config.primary_variant >> out.config.primary_predictor;
+        else if (key == "WINDOW")
+            row >> out.config.start >> out.config.end;
+int parse_register(const std::string &text) {
+    if (text == "-")
+        return -1;
+    if (text.size() < 2 || text.size() > 3 || text[0] != 'r' ||
+        (text.size() == 3 && text[1] == '0'))
+        return -2;
+    int out = 0;
+    for (std::size_t i = 1; i < text.size(); ++i) {
+        if (text[i] < '0' || text[i] > '9')
+            return -2;
+        out = 10 * out + text[i] - '0';
+    }
+    return out <= 31 ? out : -2;
+}
+Sources dependencies(const std::vector<Instruction> &instructions) {
+    std::array<int, 32> last;
+    last.fill(-1);
+    Sources out;
+    for (int i = 0; i < int(instructions.size()); ++i) {
+        const Instruction &instruction = instructions[i];
+        out.push_back({instruction.rs1 > 0 ? last[instruction.rs1] : -1,
+                       instruction.rs2 > 0 ? last[instruction.rs2] : -1});
+        if (instruction.rd > 0)
+            last[instruction.rd] = i;
+    }
+    return out;
+}
+bool id_resolved(const Instruction &instruction, const Variant &variant) {
+    return (instruction.kind == jump && instruction.rs1 < 0) ||
+           (instruction.control() && variant.id);
+}
+int ready_cycle(const Instruction &consumer, const Instruction &producer, const Timing &time,
+                const Variant &variant) {
+    if (!variant.forwarding)
+        return time.w + 1;
+    return (producer.kind == load ? time.w : time.m) + int(id_resolved(consumer, variant));
+Run simulate(const std::vector<Instruction> &instructions, const Sources &sources,
+             const Variant &variant, const std::vector<bool> &mispredicted) {
+    Run out;
+    out.timings.resize(instructions.size());
+    for (int i = 0; i < int(instructions.size()); ++i) {
+        Timing &time = out.timings[i];
+        const int execute = instructions[i].kind == multiply ? variant.latency : 1;
+        if (i == 0) {
+            time.f = 1;
+            time.d = 2;
+            time.x = 3;
+        } else {
+            const Timing &previous = out.timings[i - 1];
+            time.f = mispredicted[i - 1] ? previous.x + !id_resolved(instructions[i - 1], variant)
+                                         : previous.d;
+            time.d = std::max(time.f + 1, previous.x);
+            const int ideal = previous.x + 1;
+            std::array<int, 4> bound{time.d + 1, previous.m, ideal, ideal},
+                producer{-1, -1, -1, -1};
+            for (int p : sources[i])
+                if (p >= 0) {
+                    const int cause = instructions[p].kind == load ? 2 : 3;
+                    const int ready =
+                        ready_cycle(instructions[i], instructions[p], out.timings[p], variant);
+                    if (ready > bound[cause]) {
+                        bound[cause] = ready;
+                        producer[cause] = p;
+                    }
+                }
+            time.x = ideal;
+            for (int cause = 0; cause < 4; ++cause)
+                if (bound[cause] > time.x) {
+                    out.records.push_back(
+                        {cause, bound[cause] - time.x, cause < 2 ? i - 1 : i, i, producer[cause]});
+                    time.x = bound[cause];
+                }
+        }
+        time.m = time.x + execute;
+        time.w = time.m + 1;
+    }
+    for (const Record &record : out.records) {
+        out.stalls[record.cause] += record.cycles;
+        ++out.events[record.cause];
+    }
+    out.cycles = out.timings.back().w;
+    return out;
+static std::optional<Instruction> check(const std::string &text, const Trace &trace,
+                                        std::string &error) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= text.size(); ++i)
+        if (i == text.size() || text[i] == ' ') {
+            fields.push_back(text.substr(start, i - start));
+            start = i + 1;
+        }
+    const auto pc = parse_hex(fields[0]);
+    if (!pc || *pc % 4)
+        return reject("pc");
+    const auto kind = std::find(classes.begin(), classes.end(), fields[1]);
+    if (kind == classes.end())
+        return reject("class");
+    Instruction out;
+    out.pc = *pc;
+    out.kind = Class(kind - classes.begin());
+    const std::array<int, 3> registers{parse_register(fields[2]), parse_register(fields[3]),
+                                       parse_register(fields[4])};
+    out.rd = registers[0];
+    out.rs1 = registers[1];
+    out.rs2 = registers[2];
+    out.next = out.taken ? out.target : out.pc + 4;
+    return out;
+}
+static Trace validate(const Lines &lines) {
+    Trace trace;
+    for (int i = 0; i < int(lines.size()); ++i) {
+        std::string error;
+        auto instruction = check(lines[i], trace, error);
+        if (!instruction) {
+            trace.rejected.push_back({i + 1, error});
+            continue;
+        }
+        instruction->line = i + 1;
+        if (!trace.instructions.empty() && trace.instructions.back().next != instruction->pc)
+            trace.gaps.push_back({i + 1, trace.instructions.back().next, instruction->pc});
+        trace.first.emplace(instruction->pc, int(trace.instructions.size()));
+        trace.instructions.push_back(*instruction);
+    }
+    return trace;
+    line(out.lines, "pipeline variant=", variant.name, " predictor=", config.primary_predictor,
+         " cycles ", config.start, "-", config.end);
+    std::vector<std::string> annotations(instructions.size());
+    for (const Record &record : run.records)
+        if (record.waiting >= 0)
+            annotations[record.waiting] +=
+                " " + std::string(causes[record.cause]) + " " + std::to_string(record.cycles);
+    for (int i = 0; i < int(instructions.size()); ++i) {
+        const Timing &t = run.timings[i];
+        const Instruction &instruction = instructions[i];
+        std::string annotation = annotations[i];
+        add(i + 1, instruction.pc, classes[instruction.kind],
+            {{t.f, t.f, 'F', 0},
+             {t.f + 1, t.d - 1, '*', 0},
+             {t.d, t.d, 'D', 1},
+             {t.d + 1, t.x - 1, '*', 1},
+             {t.x, t.m - 1, 'X', 2},
+             {t.m, t.m, 'M', 3},
+             {t.w, t.w, 'W', 4}},
+            annotation);
+int main() {
+    const Input input = read_inputs();
+    const Config &config = input.config;
+    const Trace trace = validate(input.trace);
+    const std::vector<Instruction> &instructions = trace.instructions;
+    const int n = int(instructions.size());
+    const Sources sources = dependencies(instructions);
+    for (int i = 0; i < int(config.variants.size()); ++i)
+        if (config.variants[i].name == config.primary_variant)
+            primary_variant = i;
+    std::vector<Combination> combinations;
+    std::vector<std::vector<int>> table(config.variants.size(),
+                                        std::vector<int>(config.predictors.size()));
+    Run primary;
+    for (int v = 0; v < int(config.variants.size()); ++v)
+        for (int p = 0; p < int(predictions.size()); ++p) {
+            Run run = simulate(instructions, sources, config.variants[v], predictions[p].flags);
+            if (v == primary_variant && p == primary_predictor)
+                primary = std::move(run);
+        }
+    const Variant &variant = config.variants[primary_variant];
+    const Prediction &prediction = predictions[primary_predictor];
+    const int cycles = primary.cycles;
+    const Diagram picture = diagram(instructions, primary, variant, prediction, config);
+    save("pipeline.txt", picture.lines);
+    line(stats, "timing variant=", variant.name, " predictor=", config.primary_predictor);
+    line(stats, "forwarding ", variant.forwarding ? "on" : "off", " branch_stage ",
+         variant.id ? "ID" : "EX", " mul_latency ", variant.latency);
+    line(stats, "cycles ", cycles);
+    line(stats, "cpi ", fraction(cycles, n), " ", decimal(cycles, n));
+    line(stats, "ipc ", decimal(n, cycles));
+    const I total_stalls = std::accumulate(primary.stalls.begin(), primary.stalls.end(), I(0));
+    line(stats, "stall_cycles total ", total_stalls, " control ", primary.stalls[0], " structural ",
+         primary.stalls[1], " load_use ", primary.stalls[2], " raw ", primary.stalls[3]);
+    line(stats, "stall_events control ", primary.events[0], " structural ", primary.events[1],
+         " load_use ", primary.events[2], " raw ", primary.events[3]);
+    save("stats.txt", stats);
+    std::map<I, ProfileSegment> segment_groups;
+    for (int a = 0; a < n;) {
+        int b = a;
+        while (b < n - 1 && !instructions[b].control())
+            ++b;
+        auto &group = segment_groups[instructions[a].pc];
+        group.pc = instructions[a].pc;
+        ++group.instances;
+        group.instructions += b - a + 1;
+        group.cycles += primary.timings[b].w - (a ? primary.timings[a - 1].w : 0);
+        a = b + 1;
+    }
+    std::vector<ProfileSegment> segments_rank;
+    for (const auto &[pc, group] : segment_groups)
+        segments_rank.push_back(group);
+    std::sort(segments_rank.begin(), segments_rank.end(),
+              [](const ProfileSegment &a, const ProfileSegment &b) {
+                  return a.cycles != b.cycles ? a.cycles > b.cycles : a.pc < b.pc;
+              });
+    profile.push_back("");
+    line(profile, "segments total ", segments_rank.size());
+    for (int i = 0; i < std::min(config.top, int(segments_rank.size())); ++i) {
+        const ProfileSegment &r = segments_rank[i];
+        line(profile, i + 1, " ", hexadecimal(r.pc), " instances ", r.instances, " instructions ",
+             r.instructions, " cycles ", r.cycles, " cpi ", decimal(r.cycles, r.instructions));
+    profile.push_back("instructions");
+    for (const auto &[pc, indices] : executions) {
+        const Instruction &r = instructions[indices[0]];
+        const auto &stalls = stalls_by_pc[pc];
+        line(profile, hexadecimal(pc), " ", classes[r.kind], " ", register_name(r.rd), " ",
+             register_name(r.rs1), " ", register_name(r.rs2), " executions ", indices.size(),
+             " stall_cycles ", std::accumulate(stalls.begin(), stalls.end(), I(0)));
+    }
+    save("profile.txt", profile);

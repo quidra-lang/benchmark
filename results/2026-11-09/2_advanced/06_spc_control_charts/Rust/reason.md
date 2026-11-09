@@ -1,0 +1,18 @@
+# Task B — signal events and next-period estimation
+
+The answer requirements are identical across languages: map I/MR ending sample positions to subgroup numbers; establish sorting and duplicate-number handling; explain the rolling last-end gap test rather than a total-span cap; establish inclusive event membership/number for an unsignalled interior subgroup; show which complete subgroup interval contributes to event summaries while signal records remain the actual signals; trace exclusion from next-period points, including retained phase-one points and I/MR sample expansion.
+
+## Source evidence and guarantees
+
+Signal::subgroup maps numeric chart IDs4/5 (CHARTS I/MR). BTreeSet supplies sorted unique subgroup numbers; ranges.last_mut().1 is the rolling endpoint, and its update plus continue avoids a new interval. group_events retains original signals in the inclusive start..=end interval and aggregates the full group slice for event statistics. Event.contains and event_number associate every interior subgroup with its one-based interval position. The proposal path clones retained phase-one indexes and extends only event-free phase-two groups, using complete inclusive sample ranges for family2/I_MR, before variable_limits. Option::is_none and map_or_else establish absence and rendered event numbering.
+
+Writing n for the source subgroup size, I/MR map the signal's ending sample e to floor((e−1)/n)+1; other monitored charts already use subgroup endpoints. For example n=5,e=6 maps to subgroup2, including an MR whose preceding sample belongs to subgroup1. Duplicate subgroup numbers do not create distinct event intervals, although distinct original signals can still be counted as signals. With gap2 and phase-two signalled groups3,6,6,9, the rolling gaps are6−3−1=2 and9−6−1=2: one event spans3..9 even though its total span exceeds2. Groups4,5,7,8 have no own signal but lie inside that event. They receive its number, contribute their measurements to interval-based summaries, and cannot be added as event-free phase-two data for the next-period estimates. This does not manufacture signal records for those interior groups. The next-period input combines the retained phase-one data with event-free phase-two groups; I/MR expand the latter to every sample in each accepted subgroup.
+
+## Necessity and minimization
+
+- `main.rs`: 16, 17, 42, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 148, 149, 150, 151, 152, 153, 154, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 216, 273, 274
+- `run_rules.rs`: 22
+
+The selected endpoint mapping, deduplication/order, last-end update, inclusive membership, interval aggregation and proposal input selection each establish a different required boundary. A point-membership check alone would not prove summary or estimation behavior, so those consumers remain. Entire monitoring/rule algorithms, control-limit formulas, formatting, event-type tie resolution and unrelated attribute/capability calculations were considered and excluded: the question concerns data membership and propagation, rather than their numeric formulas. Language/library container ordering and slicing guarantees are used directly; custom interval/membership helpers are retained where needed. Full source lines and original per-file order are preserved, with no invented context or separators.
+
+The excerpt contains 1136 tokens with `metric/tokenizer.py`. A fresh excerpt-only review checked every requirement, especially an interior unsignalled subgroup, deduplicated grouping versus real signals, the rolling gap and the next-period filter. No Task A source was changed and execution correctness was not claimed.

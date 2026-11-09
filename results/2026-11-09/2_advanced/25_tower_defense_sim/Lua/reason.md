@@ -1,0 +1,7 @@
+With no eligible enemy, target selection returns nil. The result represents an enemy table; the immediate firing guard is if target then, so no shot is created for an empty choice. It cannot be confused with the first enemy’s number: absence is a separate sentinel/optional value, and where the result is an index its mapping to an enemy is shown in the firing path.
+
+An uninitialized local best is nil. Actual enemy tables are truthy; Lua numbers including0 are also truthy, but target here is a table or nil, not a number.
+
+Evidence: towers.lua: 41–50; main.lua: 263. The selected complete lines contain the decision and its necessary data dependencies. The initialization/empty collection result, eligibility filtering, return and immediate guard establish the complete empty-set path. Target-priority arithmetic is irrelevant when no candidate survives, so its internal formulas are omitted where they would add lines; there is no need to inspect projectile travel or damage.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 209 tokenizer tokens. The full selected source file(s) would be 12117 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

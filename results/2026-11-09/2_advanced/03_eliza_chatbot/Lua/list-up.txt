@@ -1,0 +1,322 @@
+local globals = {INITIAL=true, FINAL=true, QUIT=true, STOP=true, DEFAULT=true, QUESTION=true, REPEAT=true, MEMSIZE=true, PERSIST=true, PRE=true, POST=true, SYNON=true}
+local texts = {INITIAL=true, FINAL=true, DEFAULT=true, QUESTION=true, REPEAT=true}
+local rules = {DECOMP=true, MEMORY=true}
+local items = {REASM=true, GOTO=true, NEWKEY=true, RESTATE=true}
+function M.words(text)
+    local result = {}
+    for word in text:gmatch("[^ ]+") do result[#result+1] = word end
+    return result
+end
+function M.word(text)
+    return text ~= "" and text:sub(1,1) ~= "'" and text:sub(-1) ~= "'" and not text:find("[^a-z0-9']")
+end
+function M.reference(text) return text:match("^%(%d%)$") ~= nil end
+function M.wildcard(text) return text == "*" or text == "#" or text:sub(1,1) == "@" end
+local function number(text) return text:match("^%d%d?$") ~= nil end
+local function every(arguments, first, predicate)
+    for i=first,#arguments do if not predicate(arguments[i]) then return false end end
+    return true
+end
+local function formed(name, args)
+    local count = #args
+    if texts[name] or name == "REASM" then return count >= 1 end
+    if name == "QUIT" or name == "STOP" then return count >= 1 and every(args,1,M.word) end
+    if name == "KEY" then return count == 2 and M.word(args[1]) and number(args[2]) end
+    if rules[name] then
+        return count >= 1 and every(args,1,function(x) return x == "*" or x == "#" or (x:sub(1,1) == "@" and M.word(x:sub(2))) or M.word(x) end)
+    end
+end
+function M.load(path)
+    local s = {lines={}, texts={}, quit={}, stop={}, memsize=3, persist={}, pres={}, posts={}, pre={}, post={}, groups={}, group={}, keywords={}, keyword={}, rules={}, items={}, diagnostics={}}
+    for name in pairs(texts) do s.texts[name] = {} end
+    local current, rule, ignoring, definitions = nil,nil,false,{}
+    for line in io.lines(path) do
+        s.lines[#s.lines+1] = line
+        local number_line = #s.lines
+        if line ~= "" and line:sub(1,1) ~= "#" then
+            local name, text = line:match("^([^ ]+) (.*)$")
+            if not name then name,text = line,"" end
+            local args = M.words(text)
+            local skip = false
+            if globals[name] or name == "KEY" then current,rule,ignoring = nil,nil,false
+            elseif rules[name] or items[name] then
+                if ignoring then skip = true elseif rules[name] then rule = nil end
+            end
+            if not skip then
+                local code, message
+                local definition = name == "MEMSIZE" and "MEMSIZE" or ((name == "KEY" or name == "PRE" or name == "POST" or name == "SYNON" or name == "PERSIST") and (name.." "..(args[1] or "")) or nil)
+                if not (globals[name] or name == "KEY" or rules[name] or items[name]) then code,message = "SYNTAX","unknown directive "..name
+                elseif not formed(name,args) then code,message = "SYNTAX","bad arguments for "..name
+                elseif rules[name] and not current then code,message = "ORPHAN",name.." without KEY"
+                elseif name == "REASM" and not rule then code,message = "ORPHAN","REASM without DECOMP or MEMORY"
+                elseif (name == "GOTO" or name == "NEWKEY" or name == "RESTATE") and (not rule or rule.kind == "MEMORY") then code,message = "ORPHAN",name.." without DECOMP"
+                elseif definition and definitions[definition] then
+                    code,message = "DUPLICATE",definition.." first defined at line "..definitions[definition]
+                    if name == "KEY" then ignoring = true end
+                end
+                if code then s.diagnostics[#s.diagnostics+1] = {line=number_line,code=code,message=message}
+                else
+                    if definition then definitions[definition] = number_line end
+                    if texts[name] then table.insert(s.texts[name],text)
+                    elseif name == "QUIT" or name == "STOP" then for _,word in ipairs(args) do s[name == "QUIT" and "quit" or "stop"][word] = true end
+                    elseif name == "KEY" then
+                        current = {word=args[1],rank=tonumber(args[2]),line=number_line,index=#s.keywords+1,memories={},decomps={}}
+                        table.insert(s.keywords,current); s.keyword[current.word] = current
+                    elseif rules[name] then
+                        rule = {kind=name,pattern=args,line=number_line,index=#s.rules+1,items={}}
+                        table.insert(s.rules,rule); table.insert(current[name == "MEMORY" and "memories" or "decomps"],rule)
+                    else
+                        local item = {kind=name,text=text,args=args,line=number_line,index=#s.items+1}
+                        table.insert(s.items,item); table.insert(rule.items,item)
+                    end
+                end
+            end
+        end
+    end
+    return s
+end
+function M.new(capacity) return {capacity=capacity,texts={},log={}} end
+function M.store(memory,prefix,keyword,text)
+    for _,stored in ipairs(memory.texts) do
+        if stored == text then table.insert(memory.log,prefix.." SKIP "..keyword.." "..text); return false end
+    end
+    if #memory.texts == memory.capacity then table.insert(memory.log,prefix.." DROP "..table.remove(memory.texts,1)) end
+    table.insert(memory.texts,text); table.insert(memory.log,prefix.." STORE "..keyword.." "..text)
+    return true
+end
+function M.reply(text,bindings,post)
+    local result = text:gsub("%((%d)%)",function(number) return table.concat(M.reflect(bindings[tonumber(number)] or {},post)," ") end)
+    result = result:gsub(" +"," "):match("^ *(.-) *$")
+    return (result:gsub("^%l",string.upper))
+end
+function M.wrap(text)
+    local lines = {}; local line = "ELIZA:"
+    for word in text:gmatch("[^ ]+") do
+        if line == "ELIZA:" or #line+1+#word <= 72 then line = line.." "..word
+        else lines[#lines+1] = line; line = "       "..word end
+    end
+    lines[#lines+1] = line
+    return lines
+end
+function M.match(pattern, words, groups)
+    local ends = {}
+    local function visit(i,j)
+        if i > #pattern then return j > #words end
+        local element = pattern[i]
+        if element == "*" then
+        elseif j <= #words and (element == "#" or element == words[j] or (element:sub(1,1) == "@" and (groups[element:sub(2)] or {})[words[j]])) then
+            ends[i] = j; if visit(i+1,j+1) then return true end
+        end
+        return false
+    end
+    if not visit(1,1) then return nil end
+    local bindings,start = {},1
+    return bindings
+end
+local sources = {"keyword","memory","question","default","repeat"}
+local function copy(value)
+    if type(value) ~= "table" then return value end
+    local result = {}; for key,item in pairs(value) do result[key] = copy(item) end
+    return result
+end
+local function append(target,values) for _,value in ipairs(values) do target[#target+1] = value end end
+local function normalize(text)
+    local clauses,words,word = {},{},""
+    local function finish_word()
+        word = word:gsub("^'+",""):gsub("'+$","")
+        if word ~= "" then words[#words+1] = word end
+        word = ""
+    end
+    for character in (text:lower().."."):gmatch(".") do
+        if character:match("[a-z0-9']") then word=word..character
+        else
+            finish_word()
+            if character:find("[,%.%?!;]") and #words > 0 then clauses[#clauses+1]=words; words={} end
+        end
+    end
+    return clauses
+end
+local function flatten(clauses) local words={}; for _,clause in ipairs(clauses) do append(words,clause) end; return words end
+local function clause_key(clauses)
+    local result={}; for _,clause in ipairs(clauses) do result[#result+1]=table.concat(clause,"\0") end
+    return table.concat(result,"\1")
+end
+local function ranked_counts(counts)
+    local words={}; for word in pairs(counts) do words[#words+1]=word end
+    table.sort(words,function(a,b) return counts[a] == counts[b] and a < b or counts[a] > counts[b] end)
+    local result={}; for i=1,math.min(5,#words) do result[#result+1]=words[i].." "..counts[words[i]] end
+    return #result == 0 and "none" or table.concat(result,", ")
+end
+local function source_line(session)
+    local result={"turns="..session.turns}
+    for _,name in ipairs(sources) do result[#result+1]=name.."="..session.sources[name] end
+    return table.concat(result," ")
+end
+local Bot={}; Bot.__index=Bot
+function Bot.new(script)
+    local state={positions={},hits={},item_uses={},uses={},replies={},list_positions={DEFAULT=1,QUESTION=1,REPEAT=1},memory=memory.new(script.memsize)}
+    for _,rule in ipairs(script.rules) do state.positions[rule.index]=1; state.hits[rule.index]=0 end
+    for _,item in ipairs(script.items) do state.item_uses[item.index]=0 end
+    for _,key in ipairs(script.keywords) do state.uses[key.index]=0; state.replies[key.index]=0 end
+    return setmetatable({script=script,state=state,transcript={},total={turns=0,sources={keyword=0,memory=0,question=0,default=0,["repeat"]=0}}},Bot)
+end
+function Bot:prefix() return self.state.session.name.." "..self.state.session.turns end
+function Bot:take_item(rule)
+    local position=self.state.positions[rule.index]
+    local item=rule.items[position]
+    self.state.positions[rule.index]=position % #rule.items+1
+    self.state.item_uses[item.index]=self.state.item_uses[item.index]+1
+    return item,position
+end
+function Bot:prepared(text)
+    local clauses=normalize(text)
+    for i,clause in ipairs(clauses) do
+        local words={}; for _,word in ipairs(clause) do append(words,self.script.pre[word] or {word}) end
+        clauses[i]=words
+    end
+    return clauses
+end
+function Bot:is_quit(text)
+    local words=flatten(normalize(text)); return #words == 1 and self.script.quit[words[1]] == true
+end
+function Bot:keyword_list(words)
+    local result,seen={},{ }
+    for _,word in ipairs(words) do if self.script.keyword[word] and not seen[word] then result[#result+1]=self.script.keyword[word]; seen[word]=#result end end
+    table.sort(result,function(a,b) return a.rank == b.rank and seen[a.word] < seen[b.word] or a.rank > b.rank end)
+    return result
+end
+function Bot:selected(clauses)
+    for i,clause in ipairs(clauses) do for _,word in ipairs(clause) do if self.script.keyword[word] then return i,clause end end end
+end
+function Bot:find_rule(rules,words)
+    for number,rule in ipairs(rules) do local bindings=matcher.match(rule.pattern,words,self.script.group); if bindings then return rule,number,bindings end end
+end
+function Bot:keyword_reply(clauses,trace)
+    local number,words=self:selected(clauses)
+    if not number then trace[#trace+1]="CLAUSE none"; return nil end
+    trace[#trace+1]="CLAUSE "..number.." "..table.concat(words," ")
+    local keys=self:keyword_list(words); local names={}; for _,key in ipairs(keys) do names[#names+1]=key.word end
+    trace[#trace+1]="KEYS "..table.concat(names," ")
+    local rule,n,bindings=self:find_rule(keys[1].memories,words)
+    if rule then
+        trace[#trace+1]="MEMORY "..keys[1].word.." "..n
+        self.state.hits[rule.index]=self.state.hits[rule.index]+1
+        if #rule.items > 0 then
+            local item=self:take_item(rule)
+            local text=responder.reply(item.text,bindings,self.script.post)
+            if memory.store(self.state.memory,self:prefix(),keys[1].word,text) then self.state.session.stored=self.state.session.stored+1 end
+        end
+    end
+    local entered={}
+    for _,initial in ipairs(keys) do if not entered[initial.word] then
+        trace[#trace+1]="ENTER "..initial.word
+        local key,current=initial,words
+        while key do
+            entered[key.word]=true
+            self.state.uses[key.index]=self.state.uses[key.index]+1
+            rule,n,bindings=self:find_rule(key.decomps,current)
+            if not rule then trace[#trace+1]="NOMATCH "..key.word; break end
+            self.state.hits[rule.index]=self.state.hits[rule.index]+1
+            if #rule.items == 0 then trace[#trace+1]="DECOMP "..key.word.." "..n.." 0"; break end
+            local item,position=self:take_item(rule)
+            trace[#trace+1]="DECOMP "..key.word.." "..n.." "..position
+            if item.kind == "REASM" then
+                self.state.replies[key.index]=self.state.replies[key.index]+1
+                self.state.session.topics[key.word]=(self.state.session.topics[key.word] or 0)+1
+                return responder.reply(item.text,bindings,self.script.post)
+            end
+        end
+    end end
+end
+function Bot:decide(text)
+    local session=self.state.session
+    local clauses=normalize(text); local trace,reply,source={}
+    if #self.script.texts.REPEAT > 0 and #clauses > 0 and clause_key(clauses) == session.previous then
+        trace[#trace+1]="REPEAT"; reply=self:take_text("REPEAT"); source="repeat"
+    else
+        reply=self:keyword_reply(self:prepared(text),trace); source="keyword"
+        if not reply then
+            if #self.state.memory.texts > 0 then reply=memory.recall(self.state.memory,self:prefix()); source="memory"; session.recalled=session.recalled+1
+            elseif text:sub(-1) == "?" and #self.script.texts.QUESTION > 0 then reply=self:take_text("QUESTION"); source="question"
+            else reply=self:take_text("DEFAULT"); source="default" end
+        end
+    end
+    trace[#trace+1]="REPLY "..source
+    session.previous=clause_key(clauses); session.sources[source]=session.sources[source]+1
+    if source == "question" or source == "default" then session.unrecognized[#session.unrecognized+1]=session.turns end
+    return reply,trace
+end
+function Bot:command(line)
+    local name,text=line:match("^([^ ]+) (.*)$"); if not name then name,text=line,"" end
+    local args=loader.words(text)
+    local none={ [":keys"]=true,[":why"]=true,[":history"]=true,[":memory"]=true,[":forget"]=true,[":reset"]=true,[":unused"]=true,[":stats"]=true,[":undo"]=true }
+    local one={ [":groups"]=true,[":find"]=true,[":script"]=true,[":cycles"]=true,[":coverage"]=true }
+    local free={ [":prepare"]=true,[":reflect"]=true,[":say"]=true,[":explain"]=true }
+    if not (none[name] or one[name] or free[name] or name == ":trace" or name == ":test") then return {"unknown command "..name} end
+    if (none[name] and #args > 0) or (one[name] and #args ~= 1) or (free[name] and text == "") or (name == ":test" and #args < 2) or (name == ":trace" and (#args ~= 1 or (args[1] ~= "on" and args[1] ~= "off"))) then return {"bad arguments"} end
+    if (name == ":script" or name == ":cycles" or name == ":coverage" or name == ":test") and not self.script.keyword[args[1]] then return {"unknown keyword "..args[1]} end
+    local result,session={},self.state.session
+    elseif name == ":say" or name == ":explain" then
+        if self:is_quit(text) then result={"would quit"}
+        else
+            local saved=copy(self.state); local reply,trace=self:decide(text); self.state=saved
+            result=name == ":say" and {reply} or trace
+        end
+    elseif name == ":undo" then
+        if not session.undo then result={"nothing to undo"}
+        else self.state=session.undo; result={"undone turn "..(self.state.session.turns+1)} end
+    end
+    return result
+end
+function Bot:indented(lines) for _,line in ipairs(lines) do self.transcript[#self.transcript+1]="  "..line end end
+function Bot:notes()
+    local session=self.state.session
+    self.transcript[#self.transcript+1]="NOTES "..session.name
+    local unrecognized={}; for _,n in ipairs(session.unrecognized) do unrecognized[#unrecognized+1]=tostring(n) end
+    self:indented({source_line(session),"topics: "..ranked_counts(session.topics),"words: "..ranked_counts(session.words),"memory: stored="..session.stored.." recalled="..session.recalled.." pending="..#self.state.memory.texts,"unrecognized: "..(#unrecognized == 0 and "none" or table.concat(unrecognized," "))})
+    self.total.turns=self.total.turns+session.turns
+    for _,name in ipairs(sources) do self.total.sources[name]=self.total.sources[name]+session.sources[name] end
+end
+function Bot:run(path)
+    local sessions=0
+    for line in io.lines(path) do
+        if line:sub(1,8) == "SESSION " then
+            sessions=sessions+1; local name=line:sub(9)
+            self.state.session={name=name,turns=0,sources={keyword=0,memory=0,question=0,default=0,["repeat"]=0},history={},trace_on=false,topics={},words={},stored=0,recalled=0,unrecognized={}}
+            self.transcript[#self.transcript+1]=line
+            append(self.transcript,responder.wrap(self.script.texts.INITIAL[(sessions-1)%#self.script.texts.INITIAL+1]))
+        elseif line:sub(1,1) == ":" then self.transcript[#self.transcript+1]=line; self:indented(self:command(line))
+        else
+            self.transcript[#self.transcript+1]="YOU: "..line
+            if self:is_quit(line) then append(self.transcript,responder.wrap(self.script.texts.FINAL[(sessions-1)%#self.script.texts.FINAL+1])); self:notes()
+            else
+                local snapshot=copy(self.state); snapshot.session.undo=nil
+                local session=self.state.session; session.undo=snapshot; session.turns=session.turns+1
+                for _,word in ipairs(flatten(normalize(line))) do if not self.script.stop[word] then session.words[word]=(session.words[word] or 0)+1 end end
+                session.history[#session.history+1]=session.turns..": "..line
+                local reply,trace=self:decide(line); append(self.transcript,responder.wrap(reply)); session.last_trace=trace
+                if session.trace_on then self:indented(trace) end
+            end
+        end
+    end
+    self.transcript[#self.transcript+1]=""; self.transcript[#self.transcript+1]="SUMMARY sessions="..sessions.." "..source_line(self.total)
+end
+function Bot:statistics()
+    local keys={}; for _,key in ipairs(self.script.keywords) do keys[#keys+1]=key end
+    table.sort(keys,function(a,b) return self.state.uses[a.index] == self.state.uses[b.index] and a.word < b.word or self.state.uses[a.index] > self.state.uses[b.index] end)
+    local lines={"keyword,rank,uses,replies,decomposition_hits"}
+    for _,key in ipairs(keys) do
+        local hits={}; for _,rule in ipairs(key.decomps) do hits[#hits+1]=tostring(self.state.hits[rule.index]) end
+        lines[#lines+1]=key.word..","..key.rank..","..self.state.uses[key.index]..","..self.state.replies[key.index]..","..(#hits == 0 and "-" or table.concat(hits,"/"))
+    end
+    return lines
+end
+local function write(path,lines)
+    local file=assert(io.open(path,"w")); for _,line in ipairs(lines) do file:write(line,"\n") end; file:close()
+end
+local script=loader.load("input/script.txt")
+os.execute("mkdir -p output")
+local bot=Bot.new(script); bot:run("input/dialogue.txt")
+write("output/transcript.txt",bot.transcript)
+write("output/keyword_stats.csv",bot:statistics())
+write("output/memory_log.txt",bot.state.memory.log)

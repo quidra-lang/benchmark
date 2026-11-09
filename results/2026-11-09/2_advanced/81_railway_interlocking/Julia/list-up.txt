@@ -1,0 +1,114 @@
+function start_throw!(simulation, point, target)
+    point.moving, point.target = true, target
+    point.completion = simulation.time + simulation.throw_time
+    log_event!(simulation, "MOVE $(point.name) $target until $(point.completion)")
+end
+function add_request!(simulation, name, requester)
+    simulation.request_count += 1
+    request = RouteRequest(simulation.request_count, name, simulation.time, "")
+    push!(simulation.queue, request)
+    simulation.routes[name].requests += 1
+    log_event!(simulation, "REQUEST q$(request.number) $name $requester")
+end
+function cancel_route!(simulation, name)
+    removed = [request for request in simulation.queue if request.route == name]
+    if !isempty(removed)
+        for request in removed
+            log_event!(simulation, "DROP q$(request.number) $name")
+            simulation.dropped += 1
+        end
+        filter!(request -> request.route != name, simulation.queue)
+        return
+    end
+    route = simulation.routes[name]
+    if route.state == "LOCKED"
+        route.cancels += 1
+        signal = simulation.layout.signals[route.start]
+        if signal.aspect != "RED" && track_occupied(simulation, signal.section)
+            route.state = "APPROACH"
+            route.release_time = simulation.time + route.approach_time
+            log_event!(simulation, "CANCEL $name approach until $(route.release_time)")
+        else
+            release_route!(simulation.layout, route)
+            log_event!(simulation, "CANCEL $name released")
+        end
+    else
+        log_event!(simulation, "CANCEL $name " * (isempty(route.state) ? "none" : "refused"))
+    end
+end
+function request_reason(simulation, route)
+    !isempty(route.state) && return "busy"
+    for name in route.conflicts
+        simulation.routes[name].state in ("LOCKED", "APPROACH") && return "conflict $name"
+    end
+    for name in route.sections
+        section = simulation.layout.sections[name]
+        track_occupied(simulation, name) && return "occupied $name"
+        (!isempty(section.route_lock) || opposite_lock(
+            simulation,
+            section.overlap_locks,
+            route
+        )) && return "locked $name"
+    end
+    for name in route.overlap
+        section = simulation.layout.sections[name]
+        track_occupied(simulation, name) && return "occupied $name"
+        locks = copy(section.overlap_locks)
+        !isempty(section.route_lock) && push!(locks, section.route_lock)
+        opposite_lock(simulation, locks, route) && return "locked $name"
+    end
+    for (name, target) in route.requirements
+        point = simulation.layout.points[name]
+        any(lock -> lock[2] != target, point.locks) && return "point $name locked"
+        ((!point.moving && point.position == target) || (point.moving && point.target == target)) && continue
+        point.failed && return "point $name failed"
+        point.moving && return "point $name moving"
+        track_occupied(simulation, point.common) && return "point $name occupied"
+    end
+    return nothing
+end
+function judge_requests!(simulation)
+    waiting = RouteRequest[]
+    for request in simulation.queue
+        route = simulation.routes[request.route]
+        reason = request_reason(simulation, route)
+        if reason !== nothing
+            if reason != request.reason
+                log_event!(simulation, "WAIT q$(request.number) $(route.name) $reason")
+                request.reason = reason
+            end
+            push!(waiting, request)
+            continue
+        end
+        lock_route!(simulation.layout, route)
+        wait = simulation.time - request.time
+        route.grants += 1
+        route.wait += wait
+        route.maxwait = max(route.maxwait, wait)
+        log_event!(simulation, "GRANT q$(request.number) $(route.name) wait $wait")
+        for (name, target) in route.requirements
+            point = simulation.layout.points[name]
+            !point.moving && point.position != target && start_throw!(simulation, point, target)
+        end
+    end
+    simulation.queue = waiting
+end
+        for (train, route) in get(simulation.planned, time, Tuple{String,String}[])
+            add_request!(simulation, route, train)
+        end
+        execute_events!(simulation)
+        judge_requests!(simulation)
+function lock_route!(layout, route)
+    route.state, route.release_time = "LOCKED", -1
+    empty!(route.passed)
+    route.overlap_locked, route.overlap_counter = true, 0
+    for name in route.sections
+        layout.sections[name].route_lock = route.name
+    end
+    for name in route.overlap
+        push!(layout.sections[name].overlap_locks, route.name)
+    end
+    for (name, position) in route.requirements
+        push!(layout.points[name].locks, (route.name, position))
+    end
+end

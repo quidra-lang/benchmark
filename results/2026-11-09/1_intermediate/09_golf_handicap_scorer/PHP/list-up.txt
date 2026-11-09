@@ -1,0 +1,206 @@
+<?php
+$courses = [];
+$players = [];
+function fail(string $message): never { throw new InvalidArgumentException($message); }
+function floor_div(int $a,int $b): int
+{
+    $q = intdiv($a,$b);
+    return $a<0 && $a%$b!==0 ? $q-1 : $q;
+}
+function half_up(int $a,int $b): int { return floor_div(2*$a+$b,2*$b); }
+function half_away(int $a,int $b): int { return ($a<0 ? -1 : 1)*intdiv(2*abs($a)+$b,2*$b); }
+function decimal(int $v): string { return intdiv(abs($v),10) . '.' . abs($v)%10; }
+function index_text(?int $v): string { return $v===null ? 'none' : ($v<0 ? '+' : '') . decimal($v); }
+function signed_text(int $v): string { return ($v<0 ? '-' : '') . decimal($v); }
+function get_player(string $id): object
+{
+    global $players;
+    if (!isset($players[$id])) fail('unknown player');
+    return $players[$id];
+}
+function get_course(string $id): object
+{
+    global $courses;
+    if (!isset($courses[$id])) fail('unknown course');
+    return $courses[$id];
+}
+function tee_check(string $course,string $tee): array
+{
+    $c = get_course($course);
+    if (!isset($c->tees[$tee])) fail('unknown tee');
+    return [$c,$c->tees[$tee]];
+}
+function course_handicap(int $index,object $c,array $tee): int
+{
+    return half_up($index*$tee[1]+113*($tee[0]-10*array_sum($c->pars)),1130);
+}
+function allocate(int $handicap,array $si): array
+{
+    $q = intdiv(abs($handicap),18);
+    $r = abs($handicap)%18;
+    return array_map(fn($rank)=>$handicap>=0 ? $q+(int)($rank<=$r) : -$q-(int)($rank>=19-$r),$si);
+}
+function low_index(object $p,int $day): ?array
+{
+    $best = null;
+    foreach ($p->records as $record) {
+        if ($record[0]>=$day-365 && $record[0]<$day && ($best===null || [$record[1],$record[0]]<[$best[1],$best[0]])) $best = $record;
+    }
+    return $best;
+}
+function counting_rule(int $n): array
+{
+    if ($n<3) return [0,0];
+    if ($n===3) return [1,-20];
+    if ($n===4) return [1,-10];
+}
+function eligible(object $p): array
+{
+    $result = [];
+    $reduction = 0;
+    for ($i=count($p->rounds)-1; $i>=max(0,count($p->rounds)-20); --$i) {
+        $r = $p->rounds[$i];
+        $reduction += $r->exceptional;
+        $result[] = ['number'=>$i+1,'round'=>$r,'adjusted'=>$r->diff-$reduction];
+    }
+    return array_reverse($result);
+}
+function counting(array $eligible): array
+{
+    [$k] = counting_rule(count($eligible));
+    usort($eligible,fn($a,$b)=>[$a['adjusted'],-$a['number']]<=>[$b['adjusted'],-$b['number']]);
+    return array_slice($eligible,0,$k);
+}
+function update_index(object $p,int $day): void
+{
+    $eligible = eligible($p);
+    [$k,$adjustment] = counting_rule(count($eligible));
+    if ($k===0) {
+        $p->calculation = null;
+        return;
+    }
+    $sum = array_sum(array_column(counting($eligible),'adjusted'));
+    $average = half_away($sum,$k);
+    $value = $average+$adjustment;
+    $low = low_index($p,$day);
+    $soft = false;
+    $hard = false;
+    $maximum = false;
+    if ($low!==null) {
+        $l = $low[1];
+        if ($value-$l>30) {
+            $new = $l+30+intdiv($value-$l-30,2);
+            $soft = $new!==$value;
+            $value = $new;
+        }
+        if ($value-$l>50) {
+            $value = $l+50;
+            $hard = true;
+        }
+    }
+    if ($value>540) {
+        $value = 540;
+        $maximum = true;
+    }
+    $p->index = $value;
+    $p->calculation = ['k'=>$k,'average'=>$average,'adjustment'=>$adjustment,'low'=>$low===null ? null : $low[1],'hard'=>$hard,'soft'=>$soft,'maximum'=>$maximum];
+}
+function execute(string $line): array
+{
+    global $courses,$players,$events,$eventOrder;
+    $t = explode(' ',$line);
+    $cmd = $t[0];
+    $out = [];
+    if ($cmd==='COURSE') {
+        if (isset($courses[$t[1]])) fail('duplicate course');
+        $pars = array_map('intval',array_slice($t,2,18));
+        $si = array_map('intval',array_slice($t,20,18));
+        $sorted = $si;
+        sort($sorted,SORT_NUMERIC);
+        if (array_any($pars,fn($par)=>!in_array($par,[3,4,5],true)) || $sorted!==range(1,18)) fail('invalid course');
+        $courses[$t[1]] = (object)['id'=>$t[1],'pars'=>$pars,'si'=>$si,'tees'=>[]];
+    } elseif ($cmd==='TEE') {
+        $c = get_course($t[1]);
+        if (isset($c->tees[$t[2]])) fail('duplicate tee');
+        [$rating,$slope] = [(int)$t[3],(int)$t[4]];
+        if ($rating<500 || $rating>900 || $slope<55 || $slope>155) fail('invalid tee');
+        $c->tees[$t[2]] = [$rating,$slope];
+    } elseif ($cmd==='PLAYER') {
+        if (isset($players[$t[1]])) fail('duplicate player');
+        $index = isset($t[3]) ? (int)$t[3] : null;
+        if ($index!==null && ($index < -100 || $index>540)) fail('invalid index');
+        $players[$t[1]] = (object)['id'=>$t[1],'name'=>$t[2],'index'=>$index,'rounds'=>[],'records'=>[],'calculation'=>null];
+    } elseif ($cmd==='ROUND') {
+        $p = get_player($t[1]);
+        [$c,$tee] = tee_check($t[2],$t[3]);
+        $day = (int)$t[4];
+        if ($p->rounds!==[] && $day<$p->rounds[count($p->rounds)-1]->day) fail('invalid day');
+        $scores = array_slice($t,5);
+        if (count(array_filter($scores,fn($score)=>$score==='-'))>=5) fail('too few holes');
+        $hcp = $p->index===null ? null : course_handicap($p->index,$c,$tee);
+        $strokes = allocate($hcp ?? 0,$c->si);
+        $adjusted = [];
+        foreach ($scores as $h=>$score) {
+            $limit = $c->pars[$h]+($p->index===null ? 5 : 2+$strokes[$h]);
+            if ($score==='X') $adjusted[] = $limit;
+            elseif ($score==='-') $adjusted[] = $c->pars[$h]+$strokes[$h];
+            else $adjusted[] = min((int)$score,$limit);
+        }
+        $ags = array_sum($adjusted);
+        $diff = half_away(113*(10*$ags-$tee[0]),$tee[1]);
+        $exceptional = 0;
+        if ($p->index!==null && $p->index-$diff>=70) $exceptional = $p->index-$diff>=100 ? 20 : 10;
+        $r = (object)['day'=>$day,'course'=>$c->id,'tee'=>$t[3],'scores'=>$scores,'handicap'=>$hcp,'adjusted'=>$adjusted,'ags'=>$ags,'diff'=>$diff,'exceptional'=>$exceptional,
+            'beforeIndex'=>$p->index,'beforeRecords'=>count($p->records),'beforeCalculation'=>$p->calculation];
+        $p->rounds[] = $r;
+        update_index($p,$day);
+        if ($p->index!==null) $p->records[] = [$day,$p->index];
+        $out[] = "round $p->id " . count($p->rounds) . ": ags $ags diff " . signed_text($diff) . ($exceptional===0 ? '' : ' exceptional ' . signed_text(-$exceptional)) . ' index ' . index_text($p->index);
+    } elseif ($cmd==='REMOVE') {
+        $p = get_player($t[1]);
+        if ($p->rounds===[]) fail('no rounds');
+        $number = count($p->rounds);
+        $r = array_pop($p->rounds);
+        $p->index = $r->beforeIndex;
+        $p->records = array_slice($p->records,0,$r->beforeRecords);
+        $p->calculation = $r->beforeCalculation;
+        $out[] = "removed $p->id $number: index " . index_text($p->index);
+    } elseif (in_array($cmd,['INDEX','HISTORY','LOWINDEX','COURSEHCP','CARD','STATS'],true)) {
+        $p = get_player($t[1]);
+        if ($cmd==='INDEX') {
+            $text = "index $p->id: " . index_text($p->index) . ' rounds ' . count($p->rounds);
+            $calc = $p->calculation;
+            if ($calc!==null) {
+                $text .= ' lowest ' . $calc['k'] . ' average ' . signed_text($calc['average']) . ' adjustment ' . signed_text($calc['adjustment']);
+                if ($calc['low']!==null) $text .= ' low ' . index_text($calc['low']);
+                if ($calc['hard']) $text .= ' hard cap';
+                elseif ($calc['soft']) $text .= ' soft cap';
+                if ($calc['maximum']) $text .= ' maximum';
+            }
+            $out[] = $text;
+        } elseif ($cmd==='HISTORY') {
+            $out[] = "history $p->id: rounds " . count($p->rounds);
+            $eligible = eligible($p);
+            $counted = array_column(counting($eligible),'number');
+            foreach ($eligible as $item) {
+                $r = $item['round'];
+                $text = $item['number'] . " day $r->day $r->course $r->tee ags $r->ags diff " . signed_text($r->diff);
+                if ($item['adjusted']!==$r->diff) $text .= ' adjusted ' . signed_text($item['adjusted']);
+                if (in_array($item['number'],$counted,true)) $text .= ' *';
+                $out[] = $text;
+            }
+        } elseif ($cmd==='LOWINDEX') {
+            $low = low_index($p,(int)$t[2]);
+            $out[] = "lowindex $p->id $t[2]: " . ($low===null ? 'none' : index_text($low[1]) . " day $low[0]");
+    }
+    return $out;
+}
+$n = (int)fgets(STDIN);
+for ($i=0; $i<$n; ++$i) {
+    $line = rtrim(fgets(STDIN),"\r\n");
+    try {
+        foreach (execute($line) as $output) echo $output,"\n";
+    } catch (InvalidArgumentException $error) {
+        echo 'ERROR ',$error->getMessage(),"\n";
+    }
+}

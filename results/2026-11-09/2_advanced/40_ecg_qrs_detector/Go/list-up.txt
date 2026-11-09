@@ -1,0 +1,356 @@
+func integer(text string) int64 {
+	v, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+func readECG() []int64 {
+	samples := []int64{}
+	for _, line := range readLines("input/ecg.csv")[1:] {
+		fields := strings.Split(line, ",")
+		samples = append(samples, integer(fields[1]))
+	}
+	return samples
+}
+
+type Annotation struct {
+	Sample int
+	Label  string
+	Beat   *Beat
+}
+
+func readAnnotations() []*Annotation {
+	refs := []*Annotation{}
+	for _, line := range readLines("input/annotations.csv")[1:] {
+		fields := strings.Split(line, ",")
+		refs = append(refs, &Annotation{Sample: int(integer(fields[0])), Label: fields[1]})
+	}
+	return refs
+}
+func readParams() map[string]int64 {
+	params := map[string]int64{}
+	for _, line := range readLines("input/params.txt") {
+		fields := strings.Split(line, " ")
+		params[fields[0]] = integer(fields[1])
+	}
+	return params
+}
+type Beat struct {
+	Number, Sample int
+	Peak           *Peak
+	RR, HR, Width  int64
+	Label, Method  string
+	Annotation     *Annotation
+	Offset         int64
+}
+
+func buildBeatList(registered []*Peak, band []int64, p map[string]int64) []*Beat {
+	beats := []*Beat{}
+	for _, peak := range registered {
+		number := len(beats) + 1
+		sample := max(0, peak.R-21)
+		var rr, hr int64
+		if len(beats) > 0 {
+			rr = int64(5 * (sample - beats[len(beats)-1].Sample))
+			hr = rdiv(6000000, rr)
+		}
+		width := widthMS(band, peak.R)
+		label := "N"
+		if number >= 10 {
+			var preceding int64
+			for k := number - 8; k < number; k++ {
+				preceding += beats[k-1].RR
+			}
+			if 800*rr < p["premature_percent"]*preceding {
+				label = "A"
+				if width > p["qrs_width_ms"] {
+					label = "V"
+				}
+			}
+		}
+		method := "threshold"
+		if peak.Class == "searchback" {
+			method = "searchback"
+		}
+		beats = append(beats, &Beat{Number: number, Sample: sample, Peak: peak, RR: rr, HR: hr, Width: width, Label: label, Method: method})
+	}
+	return beats
+}
+func matchAnnotations(beats []*Beat, refs []*Annotation, p map[string]int64) {
+	tolerance := p["match_ms"] / 5
+	for _, b := range beats {
+		var chosen *Annotation
+		best := int64(0)
+		for _, ref := range refs {
+			distance := abs(int64(ref.Sample - b.Sample))
+			if ref.Beat == nil && distance <= tolerance && (chosen == nil || distance < best) {
+				chosen = ref
+				best = distance
+			}
+		}
+		if chosen != nil {
+			chosen.Beat = b
+			b.Annotation = chosen
+			b.Offset = int64(5 * (b.Sample - chosen.Sample))
+		}
+	}
+}
+func beatLines(beats []*Beat) []string {
+	lines := []string{"beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"}
+	for _, b := range beats {
+		hr := "-"
+		if b.RR > 0 {
+			hr = two(b.HR)
+		}
+		refSample, refLabel := "-", "-"
+		if b.Annotation != nil {
+			refSample = fmt.Sprint(b.Annotation.Sample)
+			refLabel = b.Annotation.Label
+		}
+		lines = append(lines, fmt.Sprintf("%d,%d,%d,%s,%s,%d,%s,%s,%s,%s", b.Number, b.Sample, 5*b.Sample,
+			optional(b.RR), hr, b.Width, b.Label, b.Method, refSample, refLabel))
+	}
+	return lines
+}
+type OrderedLine struct {
+	Sample, Priority int
+	Text             string
+}
+
+func orderedTexts(records []OrderedLine) []string {
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		if a.Sample != b.Sample {
+			return a.Sample < b.Sample
+		}
+		return a.Priority < b.Priority
+	})
+	lines := []string{}
+	for _, r := range records {
+		lines = append(lines, r.Text)
+	}
+	return lines
+}
+func matchingLines(beats []*Beat, refs []*Annotation) []string {
+	records := []OrderedLine{}
+	for _, ref := range refs {
+		text := fmt.Sprintf("%d,%s,-,-,-,-,FN,-", ref.Sample, ref.Label)
+		if b := ref.Beat; b != nil {
+			agree := "no"
+			if ref.Label == b.Label {
+				agree = "yes"
+			}
+			text = fmt.Sprintf("%d,%s,%d,%d,%s,%d,TP,%s", ref.Sample, ref.Label, b.Number, b.Sample, b.Label, b.Offset, agree)
+		}
+		records = append(records, OrderedLine{ref.Sample, 0, text})
+	}
+	for _, b := range beats {
+		if b.Annotation == nil {
+			records = append(records, OrderedLine{b.Sample, 1, fmt.Sprintf("-,-,%d,%d,%s,-,FP,-", b.Number, b.Sample, b.Label)})
+		}
+	}
+	return append([]string{"ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"}, orderedTexts(records)...)
+}
+type Segment struct {
+	StartMS, EndMS                      int
+	Refs, TP, FP, FN, NoisePeaks, Beats int
+	RR                                  []int64
+}
+
+func segmentRows(beats []*Beat, refs []*Annotation, peaks []*Peak, count int, p map[string]int64) []*Segment {
+	g := int(p["segment_ms"] / 5)
+	segments := []*Segment{}
+	for start := 0; start < count; start += g {
+		stop := min(start+g, count)
+		s := &Segment{StartMS: 5 * start, EndMS: 5 * stop}
+		for _, ref := range refs {
+			if start <= ref.Sample && ref.Sample < stop {
+				s.Refs++
+				if ref.Beat != nil {
+					s.TP++
+				}
+			}
+		}
+		s.FN = s.Refs - s.TP
+		for _, b := range beats {
+			if start <= b.Sample && b.Sample < stop {
+				s.Beats++
+				if b.Annotation == nil {
+					s.FP++
+				}
+				if b.RR > 0 {
+					s.RR = append(s.RR, b.RR)
+				}
+			}
+		}
+		for _, peak := range peaks {
+			if peak.Class == "noise" && start <= peak.Time && peak.Time < stop {
+				s.NoisePeaks++
+			}
+		}
+		segments = append(segments, s)
+	}
+	return segments
+}
+func matchingErrors(beats []*Beat, refs []*Annotation) []string {
+	records := []OrderedLine{}
+	for _, b := range beats {
+		if b.Annotation == nil {
+			records = append(records, OrderedLine{b.Sample, 0, fmt.Sprintf("false_positive beat=%d sample=%d time_ms=%d label=%s",
+				b.Number, b.Sample, 5*b.Sample, b.Label)})
+		}
+	}
+	for _, ref := range refs {
+		if ref.Beat == nil {
+			records = append(records, OrderedLine{ref.Sample, 1, fmt.Sprintf("false_negative sample=%d time_ms=%d label=%s", ref.Sample, 5*ref.Sample, ref.Label)})
+		}
+	}
+	return orderedTexts(records)
+}
+func performanceLines(beats []*Beat, refs []*Annotation, peaks []*Peak, d *Detection, p map[string]int64, segments []*Segment, count int) []string {
+	classes, referenceTypes, detectedTypes := map[string]int{}, map[string]int{}, map[string]int{}
+	tp, fp := 0, 0
+	confusion := map[[2]string]int{}
+	for _, ref := range refs {
+		referenceTypes[ref.Label]++
+		label := "miss"
+		if ref.Beat != nil {
+			tp++
+			label = ref.Beat.Label
+		}
+		confusion[[2]string{ref.Label, label}]++
+	}
+	offsets := []int64{}
+	for _, b := range beats {
+		detectedTypes[b.Label]++
+		if b.Annotation == nil {
+			fp++
+			confusion[[2]string{"extra", b.Label}]++
+		} else {
+			offsets = append(offsets, b.Offset)
+		}
+	}
+	fn := len(refs) - tp
+			strings.Join(detectedParts, " ")), fmt.Sprintf("true_positives %d", tp), fmt.Sprintf("false_positives %d",
+			fp), fmt.Sprintf("false_negatives %d", fn), "sensitivity " + ratio(int64(tp), int64(tp+fn)),
+		"positive_predictivity " + ratio(int64(tp), int64(tp+fp)), "detection_error_rate " + ratio(int64(fp+fn),
+			int64(len(refs)))}
+	parts = []string{}
+	for _, method := range []string{"threshold", "searchback"} {
+		selected, matched := 0, 0
+		for _, b := range beats {
+			if b.Method == method {
+				selected++
+				if b.Annotation != nil {
+					matched++
+				}
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d/%d", method, matched, selected))
+	}
+	lines = append(lines, "by_method "+strings.Join(parts, " "))
+	if len(offsets) > 0 {
+		var absolute, maximum int64
+		for _, v := range offsets {
+			absolute += abs(v)
+			maximum = max(maximum, abs(v))
+		}
+		lines = append(lines, fmt.Sprintf("offset_ms mean=%s mean_abs=%s max_abs=%d", two(rdiv(100*sum(offsets),
+			int64(len(offsets)))), two(rdiv(100*absolute, int64(len(offsets)))), maximum))
+	} else {
+		lines = append(lines, "offset_ms none")
+	}
+	lines = append(lines, "CONFUSION", fmt.Sprintf("ref  %6s%6s%6s  miss", "N", "V", "A"))
+	for _, refLabel := range labels {
+		text := refLabel + "    "
+		for _, label := range append(append([]string(nil), labels...), "miss") {
+			text += fmt.Sprintf("%6d", confusion[[2]string{refLabel, label}])
+		}
+		lines = append(lines, text)
+	}
+	text := "extra"
+	for _, label := range labels {
+		text += fmt.Sprintf("%6d", confusion[[2]string{"extra", label}])
+	}
+	lines = append(lines, text)
+	for _, item := range [][2]string{{"V", "veb"}, {"A", "sveb"}} {
+		label, prefix := item[0], item[1]
+		correct := int64(confusion[[2]string{label, label}])
+		lines = append(lines, prefix+"_sensitivity "+ratio(correct, int64(referenceTypes[label])), prefix+"_positive_predictivity "+ratio(correct,
+			int64(detectedTypes[label])))
+	}
+	lines = append(lines, fmt.Sprintf("SEGMENTS segment_ms=%d segments=%d", p["segment_ms"], len(segments)))
+	for _, s := range segments {
+		lines = append(lines, fmt.Sprintf("%6d-%6d refs=%d tp=%d fp=%d fn=%d noise_peaks=%d", s.StartMS, s.EndMS, s.Refs, s.TP, s.FP, s.FN, s.NoisePeaks))
+	}
+	lines = append(lines, fmt.Sprintf("ERRORS count=%d", fp+fn))
+	return append(lines, matchingErrors(beats, refs)...)
+}
+func rhythmStripLines(samples []int64, beats []*Beat, refs []*Annotation, p map[string]int64) []string {
+	start, count := int(p["strip_start_ms"]/5), int(p["strip_ms"]/5)
+	columns, height := count/10, int(p["strip_rows"])
+	lines = append(lines, drawLabels("s", markers))
+	beatMarkers, refMarkers := []byte(strings.Repeat(" ", columns)), []byte(strings.Repeat(" ", columns))
+	for _, b := range beats {
+		if start <= b.Sample && b.Sample < end {
+			beatMarkers[(b.Sample-start)/10] = b.Label[0]
+		}
+	}
+	for _, ref := range refs {
+		if start <= ref.Sample && ref.Sample < end {
+			refMarkers[(ref.Sample-start)/10] = ref.Label[0]
+		}
+	}
+	return append(lines, " beats |"+string(beatMarkers)+"|", "  refs |"+string(refMarkers)+"|")
+}
+	samples, refs, p := readECG(), readAnnotations(), readParams()
+	signals := filterECG(samples)
+	peaks := findPeaks(signals)
+	detection := detectBeats(peaks, signals, p)
+	beats := buildBeatList(detection.Registered, signals.Bandpass, p)
+	matchAnnotations(beats, refs, p)
+	segments := segmentRows(beats, refs, peaks, len(samples), p)
+	if err := os.MkdirAll("output", 0755); err != nil {
+		panic(err)
+	}
+	writeLines("beats.csv", beatLines(beats))
+	writeLines("peaks.csv", peakLines(peaks))
+	writeLines("matching.csv", matchingLines(beats, refs))
+	writeLines("performance.txt", performanceLines(beats, refs, peaks, detection, p, segments, len(samples)))
+	writeLines("rhythm_strip.txt", rhythmStripLines(samples, beats, refs, p))
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if a%b < 0 {
+		q--
+	}
+	return q
+}
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+func rdiv(a, b int64) int64 { return floorDiv(2*a+b, 2*b) }
+func two(v int64) string {
+	sign := ""
+	if v < 0 {
+		sign = "-"
+		v = -v
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, v/100, v%100)
+}
+func fraction(a, b int64) string {
+	x, y := a, b
+	for y != 0 {
+		x, y = y, x%y
+	}
+	return fmt.Sprintf("%d/%d", a/x, b/x)
+}
+func ratio(a, b int64) string {
+	if b == 0 {
+		return fmt.Sprintf("%d/0 none", a)
+	}
+	return fmt.Sprintf("%d/%d reduced=%s percent=%s", a, b, fraction(a, b), two(rdiv(10000*a, b)))
+}

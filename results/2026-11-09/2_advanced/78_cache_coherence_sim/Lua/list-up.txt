@@ -1,0 +1,51 @@
+function Simulation:access(event, issue)
+    local config, core, block, word = self.config, event.core, event.block, event.word
+    local counter, cache = self.cores[core + 1], self.l1[core + 1]
+    local before = {}; if self.primary then for _, watched in ipairs(config.watch) do before[watched] = self:line_states(watched) end end
+    local old, miss = cache:state(block), nil
+    local hit = old ~= 'I'
+    local simple = counter.simple
+    simple.accesses = simple.accesses + 1
+    local operation_key, hit_key = event.operation == 'R' and 'reads' or 'writes', hit and 'hits' or 'misses'
+    simple[operation_key], simple[hit_key] = simple[operation_key] + 1, simple[hit_key] + 1
+    local other_has_line = false
+    for index, other in ipairs(self.l1) do if index ~= core + 1 and other:state(block) ~= 'I' then other_has_line = true end end
+    local kind, new = protocol.requester(self.scenario.protocol, old, event.operation, other_has_line)
+    if hit then cache:touch(block)
+    local completion, service
+    if kind then
+        local tx; completion, tx = self:transaction(core, kind, block, word, issue + config.t1)
+        service = kind == 'BusUpgr' and 'upgrade' or kind == 'BusWr' and 'through' or tx.supplier ~= nil and 'cache' or tx.l2 == 'hit' and 'l2' or 'memory'
+    else completion, service = issue + config.t1, 'l1' end
+    if old ~= 'I' then cache:change(block, new)
+    local latency = completion - issue
+    counter.service[service], simple.latency = counter.service[service] + 1, simple.latency + latency
+    if event.operation == 'R' then simple.read_latency, self.ready[core + 1] = simple.read_latency + latency, completion
+    else simple.write_latency, self.ready[core + 1] = simple.write_latency + latency, issue + config.t1; self.write_completion[core + 1] = math.max(self.write_completion[core + 1], completion) end
+    counter.finish = math.max(counter.finish, completion)
+    self.accesses[#self.accesses + 1] = {event = event, issue = issue, latency = latency, service = service, miss = miss, hit = hit}
+    if self.primary then
+function Cache:touch_way(row, way, fill)
+    if self.replacement == 'LRU' or self.replacement == 'FIFO' and fill then self.clock = self.clock + 1; self.touched[row][way] = self.clock
+    elseif self.replacement == 'PLRU' then
+        local low, high, node = 0, self.ways, 1
+        while high - low > 1 do
+            local middle = (low + high) // 2
+            if way - 1 < middle then self.bits[row][node], high, node = 1, middle, node * 2
+            else self.bits[row][node], low, node = 0, middle, node * 2 + 1 end
+        end
+    end
+end
+function protocol.requester(name, old, operation, other_has_line)
+    if name == 'VI' then
+        if operation == 'R' then if old == 'I' then return 'BusRd', 'V' end; return nil, 'V' end
+        return 'BusWr', old == 'I' and 'I' or 'V'
+    end
+    if old == 'I' then
+        if operation == 'W' then return 'BusRdX', 'M' end
+        return 'BusRd', (name == 'MSI' or other_has_line) and 'S' or 'E'
+    end
+    if operation == 'R' then return nil, old end
+    if old == 'M' or old == 'E' then return nil, 'M' end
+    return 'BusUpgr', 'M'
+end

@@ -1,0 +1,9 @@
+The current question asks: Explain the identifier-conversion operation for ShoppingCartItem, from splitting and discarding empty parts through lowercase word normalization to the four naming forms. Identify each per-identifier initial state or newly constructed value, particularly the first camel word versus later capitalized words, and show why no empty leading part or preceding identifier's text leaks into a result. Derive the four forms from the source.
+
+Answer and source evidence: ShoppingCartItem splits at uppercase boundaries into shopping,cart,item after empty leading parts are discarded and letters lowercased. Each identifier starts fresh words/word/caps/camel values inside its loop. Camel retains the first lower word and capitalizes only later words; Pascal capitalizes all, snake joins with _, kebab with -. Results are shopping_cart_item, shoppingCartItem, ShoppingCartItem and shopping-cart-item. No preceding identifier text or empty leading token survives the per-identifier reset/nonempty split.
+
+Selection: `main.swift` lines 7, 8, 9, 10, 11, 12. The complete splitting/normalization/construction operation is needed; unrelated separately stored identifiers and wrappers are omitted where possible.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

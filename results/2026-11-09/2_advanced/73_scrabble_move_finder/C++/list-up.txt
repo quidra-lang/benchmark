@@ -1,0 +1,673 @@
+#include "scrabble.hpp"
+bool Trie::add(const std::string &word) {
+    int node = 0;
+    for (char letter : word) {
+        int index = letter - 'A';
+        if (nodes[node].children[index] < 0) {
+            int child = int(nodes.size());
+            nodes[node].children[index] = child;
+            nodes.emplace_back();
+        }
+        node = nodes[node].children[index];
+    }
+    if (nodes[node].terminal)
+        return false;
+    nodes[node].terminal = true;
+    ++words;
+    return true;
+}
+int Trie::prefix(const std::string &word) const {
+    int node = 0;
+    for (char letter : word) {
+        node = nodes[node].children[letter - 'A'];
+        if (node < 0)
+            break;
+    }
+    return node;
+}
+bool Trie::contains(const std::string &word) const {
+    int node = prefix(word);
+    return node >= 0 && nodes[node].terminal;
+}
+#include "scrabble.hpp"
+void shuffle(std::string &bag, Minstd &random) {
+    for (int i = int(bag.size()) - 1; i >= 1; --i) {
+        int j = int(random.next() % (i + 1));
+        std::swap(bag[i], bag[j]);
+    }
+}
+std::string make_bag(const Counts &counts, Minstd &random) {
+    std::string out;
+    for (int tile = 0; tile < 27; ++tile)
+        out.append(counts[tile], tile_order[tile]);
+    shuffle(out, random);
+    return out;
+}
+std::string draw(std::string &bag, int count) {
+    std::string out;
+    while (count-- > 0 && !bag.empty()) {
+        out += bag.back();
+        bag.pop_back();
+    }
+    return out;
+}
+Squares anchors(const Board &board) {
+    if (board_tiles(board).empty())
+        return {{7, 7}};
+    Squares out;
+    for (int row = 0; row < 15; ++row)
+        for (int column = 0; column < 15; ++column)
+            if (board[row][column] == '.')
+                for (auto adjacent : neighbors(row, column))
+                    if (board[adjacent.first][adjacent.second] != '.') {
+                        out.insert({row, column});
+                        break;
+                    }
+    return out;
+}
+Checks cross_checks(const Board &board, const Trie &trie) {
+    Checks out;
+    for (int row = 0; row < 15; ++row)
+        for (int column = 0; column < 15; ++column) {
+            if (board[row][column] != '.')
+                continue;
+            int first = row, last = row;
+            while (first > 0 && board[first - 1][column] != '.')
+                --first;
+            while (last + 1 < 15 && board[last + 1][column] != '.')
+                ++last;
+            if (first == last)
+                continue;
+            std::string prefix, suffix;
+            for (int r = first; r < row; ++r)
+                prefix += board[r][column];
+            for (int r = row + 1; r <= last; ++r)
+                suffix += board[r][column];
+            prefix = uppercase(prefix);
+            suffix = uppercase(suffix);
+            std::uint32_t mask = 0;
+            for (int letter = 0; letter < 26; ++letter)
+                if (trie.contains(prefix + char('A' + letter) + suffix))
+                    mask |= std::uint32_t(1) << letter;
+            out[{row, column}] = mask;
+        }
+    return out;
+}
+static std::vector<Move> across_moves(const Board &board, const std::string &rack, const Trie &trie,
+                                      const Squares &anchor_squares, const Checks &checks) {
+    std::vector<Move> out;
+    Counts counts{};
+    for (char tile : rack)
+        ++counts[tile_index(tile)];
+    for (auto point : anchor_squares) {
+        int row = point.first, anchor = point.second;
+        std::function<void(int, int, std::string, int)> extend;
+        extend = [&](int node, int column, std::string word, int start) {
+            bool empty = column == 15 || board[row][column] == '.';
+            if (empty && column > anchor && trie.nodes[node].terminal)
+                out.push_back({row, start, 0, word});
+            if (column == 15)
+                return;
+            if (!empty) {
+                char written = board[row][column];
+                int child = trie.nodes[node].children[uppercase(std::string(1, written))[0] - 'A'];
+                if (child >= 0)
+                    extend(child, column + 1, word + written, start);
+                return;
+            }
+            auto found = checks.find({row, column});
+            for (int letter = 0; letter < 26; ++letter) {
+                int child = trie.nodes[node].children[letter];
+                if (child < 0 ||
+                    (found != checks.end() && !(found->second & (std::uint32_t(1) << letter))))
+                    continue;
+                for (int blank = 0; blank < 2; ++blank) {
+                    int tile = blank ? 26 : letter;
+                    if (counts[tile]) {
+                        --counts[tile];
+                        extend(child, column + 1, word + char((blank ? 'a' : 'A') + letter), start);
+                        ++counts[tile];
+                    }
+                }
+            }
+        };
+        std::function<void(int, std::string, int)> left_part = [&](int node, std::string prefix,
+                                                                   int remaining) {
+            extend(node, anchor, prefix, anchor - int(prefix.size()));
+            if (!remaining)
+                return;
+            for (int letter = 0; letter < 26; ++letter) {
+                int child = trie.nodes[node].children[letter];
+                if (child < 0)
+                    continue;
+                for (int blank = 0; blank < 2; ++blank) {
+                    int tile = blank ? 26 : letter;
+                    if (counts[tile]) {
+                        --counts[tile];
+                        left_part(child, prefix + char((blank ? 'a' : 'A') + letter),
+                                  remaining - 1);
+                        ++counts[tile];
+                    }
+                }
+            }
+        };
+        if (anchor > 0 && board[row][anchor - 1] != '.') {
+            int first = anchor - 1;
+            while (first > 0 && board[row][first - 1] != '.')
+                --first;
+            std::string prefix;
+            for (int column = first; column < anchor; ++column)
+                prefix += board[row][column];
+            int node = trie.prefix(uppercase(prefix));
+            if (node >= 0)
+                extend(node, anchor, prefix, first);
+        } else {
+            int first = anchor - 1;
+            while (first >= 0 && board[row][first] == '.' && !anchor_squares.count({row, first}))
+                --first;
+            left_part(0, "", anchor - first - 1);
+        }
+    }
+    return out;
+}
+std::vector<Move> generate(const Board &board, const std::string &rack, const Trie &trie) {
+    Squares original = anchors(board), swapped;
+    for (auto point : original)
+        swapped.insert({point.second, point.first});
+    auto across = across_moves(board, rack, trie, original, cross_checks(board, trie));
+    Board transposed = transpose(board);
+    auto down = across_moves(transposed, rack, trie, swapped, cross_checks(transposed, trie));
+    for (const Move &move : down)
+        across.push_back({move.column, move.row, 1, move.word});
+    std::map<std::vector<std::tuple<int, int, char>>, Move> distinct;
+    for (const Move &move : across) {
+        Placement tiles = placement(board, move);
+        if (tiles.size() == 1 && move.direction == 1) {
+            const Tile &tile = tiles[0];
+            if (run_at(apply_tiles(board, tiles), tile.row, tile.column, 0).word.size() >= 2)
+                continue;
+        }
+        std::vector<std::tuple<int, int, char>> key;
+        for (const Tile &tile : tiles)
+            key.push_back({tile.row, tile.column, tile.letter});
+        std::sort(key.begin(), key.end());
+        distinct[key] = move;
+    }
+    std::vector<Move> out;
+    for (const auto &entry : distinct)
+        out.push_back(entry.second);
+    return out;
+}
+Placement squares(const Move &move) {
+    Placement out;
+    for (int i = 0; i < int(move.word.size()); ++i)
+        out.push_back(
+            {move.row + move.direction * i, move.column + (1 - move.direction) * i, move.word[i]});
+    return out;
+}
+Placement placement(const Board &board, const Move &move) {
+    Placement out;
+    for (const Tile &tile : squares(move))
+        if (board[tile.row][tile.column] == '.')
+            out.push_back(tile);
+    return out;
+}
+Board apply_tiles(const Board &board, const Placement &tiles) {
+    Board out = board;
+    for (const Tile &tile : tiles)
+        out[tile.row][tile.column] = tile.letter;
+    return out;
+}
+std::vector<Move> cross_words(const Board &board, const Move &move) {
+    Placement tiles = placement(board, move);
+    Board after = apply_tiles(board, tiles);
+    std::vector<Move> out;
+    for (const Tile &tile : tiles) {
+        Move word = run_at(after, tile.row, tile.column, 1 - move.direction);
+        if (word.word.size() >= 2)
+            out.push_back(word);
+    }
+    return out;
+}
+int word_score(const Board &board, const Move &word, const Counts &values) {
+    int score = 0, multiplier = 1;
+    for (const Tile &tile : squares(word)) {
+        int value = upper(tile.letter) ? values[tile.letter - 'A'] : 0;
+        if (board[tile.row][tile.column] == '.') {
+            char premium = premiums[tile.row][tile.column];
+            value *= premium == '+' ? 2 : premium == '^' ? 3 : 1;
+            multiplier *= premium == '*' ? 2 : premium == '#' ? 3 : 1;
+        }
+        score += value;
+    }
+    return score * multiplier;
+}
+Scored score_move(const Board &board, const Move &move, const Counts &values) {
+    std::vector<Move> words{move};
+    auto crossed = cross_words(board, move);
+    words.insert(words.end(), crossed.begin(), crossed.end());
+    Scored out{0, placement(board, move), {}};
+    for (const Move &word : words) {
+        int score = word_score(board, word, values);
+        out.score += score;
+        out.words.push_back({word, score});
+    }
+    if (out.tiles.size() == rack_size)
+        out.score += bingo_bonus;
+    return out;
+}
+const std::array<std::string, 15> premiums = {
+    "#..+...#...+..#", ".*...^...^...*.", "..*...+.+...*..", "+..*...+...*..+", "....*.....*....",
+    ".^...^...^...^.", "..+...+.+...+..", "#..+...*...+..#", "..+...+.+...+..", ".^...^...^...^.",
+    "....*.....*....", "+..*...+...*..+", "..*...+.+...*..", ".*...^...^...*.", "#..+...#...+..#"};
+bool upper(char letter) { return letter >= 'A' && letter <= 'Z'; }
+bool lower(char letter) { return letter >= 'a' && letter <= 'z'; }
+std::string uppercase(std::string value) {
+    for (char &letter : value)
+        if (lower(letter))
+            letter = char(letter - 'a' + 'A');
+    return value;
+}
+int tile_index(char letter) { return upper(letter) ? letter - 'A' : 26; }
+bool inside(int row, int column) { return row >= 0 && row < 15 && column >= 0 && column < 15; }
+std::string square_name(int row, int column) {
+    return std::string(1, char('A' + column)) + std::to_string(row + 1);
+}
+std::string position(const Move &move) {
+    return move.direction ? std::string(1, char('A' + move.column)) + std::to_string(move.row + 1)
+                          : std::to_string(move.row + 1) + char('A' + move.column);
+}
+Board empty_board() {
+    Board out;
+    for (auto &row : out)
+        row.fill('.');
+    return out;
+}
+Board transpose(const Board &board) {
+    Board out;
+    for (int row = 0; row < 15; ++row)
+        for (int column = 0; column < 15; ++column)
+            out[row][column] = board[column][row];
+    return out;
+}
+Placement transpose_tiles(const Placement &tiles) {
+    Placement out;
+    for (const Tile &tile : tiles)
+        out.push_back({tile.column, tile.row, tile.letter});
+    return out;
+}
+Placement board_tiles(const Board &board) {
+    Placement out;
+    for (int row = 0; row < 15; ++row)
+        for (int column = 0; column < 15; ++column)
+            if (board[row][column] != '.')
+                out.push_back({row, column, board[row][column]});
+    return out;
+}
+std::vector<std::pair<int, int>> neighbors(int row, int column) {
+    std::vector<std::pair<int, int>> out;
+    for (auto delta : std::array<std::pair<int, int>, 4>{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}})
+        if (inside(row + delta.first, column + delta.second))
+            out.push_back({row + delta.first, column + delta.second});
+    return out;
+}
+Move run_at(const Board &board, int row, int column, int direction) {
+    int dr = direction, dc = 1 - direction;
+    while (inside(row - dr, column - dc) && board[row - dr][column - dc] != '.') {
+        row -= dr;
+        column -= dc;
+    }
+    Move out{row, column, direction, ""};
+    while (inside(row, column) && board[row][column] != '.') {
+        out.word += board[row][column];
+        row += dr;
+        column += dc;
+    }
+    return out;
+}
+static Names split(const std::string &text) {
+    Names out;
+    std::istringstream stream(text);
+    std::string word;
+    while (stream >> word)
+        out.push_back(word);
+    return out;
+}
+static std::string join(const Names &values, const std::string &separator = ",") {
+    std::string out;
+    for (int i = 0; i < int(values.size()); ++i) {
+        if (i)
+            out += separator;
+        out += values[i];
+    }
+    return out;
+}
+static bool valid_name(const std::string &value) {
+    if (value.empty() || value.size() > 20)
+        return false;
+    for (char letter : value)
+        if (!(lower(letter) || (letter >= '0' && letter <= '9') || letter == '_'))
+            return false;
+    return true;
+}
+static bool valid_number(const std::string &value, int minimum, int maximum) {
+    if (value.empty() || (value.size() > 1 && value[0] == '0'))
+        return false;
+    Integer number = 0;
+    for (char digit : value) {
+        if (digit < '0' || digit > '9')
+            return false;
+        number = number * 10 + (digit - '0');
+        if (number > maximum)
+            return false;
+    }
+    return number >= minimum;
+}
+static bool strategy(const std::string &value) {
+    return value == "score" || value == "tiles" || value == "equity";
+}
+static std::string collection(std::string value) {
+    std::sort(value.begin(), value.end());
+    return value.empty() ? "-" : value;
+}
+static std::string remove_tiles(const std::string &rack, const std::string &removed) {
+    std::array<int, 128> counts{};
+    for (char tile : rack)
+        ++counts[static_cast<unsigned char>(tile)];
+    for (char tile : removed)
+        --counts[static_cast<unsigned char>(tile)];
+    std::string out;
+    for (int tile = 0; tile < 128; ++tile)
+        if (counts[tile] > 0)
+            out.append(counts[tile], char(tile));
+    return out;
+}
+static std::string notation(const Evaluated &move) {
+    return position(move.move) + " " + move.move.word;
+}
+static auto standard_key(const Evaluated &move) {
+    return std::make_tuple(-move.score, move.move.row, move.move.column, move.move.direction,
+                           move.move.word);
+}
+static bool standard_before(const Evaluated &a, const Evaluated &b) {
+    return standard_key(a) < standard_key(b);
+}
+static bool strategy_before(const Evaluated &a, const Evaluated &b, const std::string &order) {
+    if (order == "tiles" && a.tiles.size() != b.tiles.size())
+        return a.tiles.size() > b.tiles.size();
+    if (order == "equity" && a.score + a.value != b.score + b.value)
+        return a.score + a.value > b.score + b.value;
+    return standard_before(a, b);
+}
+    std::string job_error(const Lines &job, const std::set<std::string> &seen) const {
+        Names header = split(job[0]);
+        const std::string &kind = header[0], &name = header[1];
+        if (!valid_name(name))
+            return "bad name";
+        if (seen.count(name))
+            return "duplicate name";
+        if (kind == "TOPN") {
+            if (!valid_number(header[2], 1, 99))
+                return "bad count";
+            if (!strategy(header[3]))
+                return "bad order";
+            std::string rack = split(job[1])[1];
+            if (!valid_rack(rack))
+                return "bad rack";
+            return board_error(initial_rows(job), rack);
+        }
+        if (kind == "VALIDATE")
+            return board_error(initial_rows(job), "");
+        if (!valid_number(header[2], 1, 2147483646))
+            return "bad seed";
+        if (job.size() - 1 < 2 || job.size() - 1 > 4)
+            return "bad player count " + std::to_string(job.size() - 1);
+        std::set<std::string> names;
+        for (int i = 1; i < int(job.size()); ++i) {
+            Names row = split(job[i]);
+            if (!valid_name(row[1]) || !strategy(row[2]) ||
+                (kind == "GAME" && !valid_number(row[3], 0, 99)))
+                return "bad player " + std::to_string(i);
+            if (!names.insert(row[1]).second)
+                return "duplicate player " + std::to_string(i);
+        }
+        return "";
+    }
+    int leave_value(const std::string &rack) const {
+        Counts tally{};
+        int total = 0, vowels = 0, consonants = 0, duplicates = 0;
+        for (char tile : rack) {
+            int index = tile_index(tile);
+            ++tally[index];
+            total += weights[index];
+            if (tile != '?') {
+                if (std::string("AEIOU").find(tile) != std::string::npos)
+                    ++vowels;
+                else
+                    ++consonants;
+            }
+        }
+        for (int tile = 0; tile < 26; ++tile)
+            duplicates += std::max(0, tally[tile] - 1);
+        return total - 4 * duplicates - 3 * std::max(0, std::abs(vowels - consonants) - 1);
+    }
+    Evaluated evaluate(const Board &board, const std::string &rack, const Move &move) const {
+        Scored scored = score_move(board, move, values);
+        std::string removed;
+        for (const Tile &tile : scored.tiles)
+            removed += upper(tile.letter) ? tile.letter : '?';
+        std::string leave = remove_tiles(rack, removed);
+        Names words;
+        for (const auto &word : scored.words)
+            words.push_back(word.first.word + ":" + std::to_string(word.second));
+        return {move,        scored.score, std::move(scored.tiles),
+                join(words), leave,        leave_value(leave)};
+    }
+    std::vector<Evaluated> legal_moves(const Board &board, const std::string &rack) const {
+        std::vector<Evaluated> out;
+        for (const Move &move : generate(board, rack, trie))
+            out.push_back(evaluate(board, rack, move));
+        std::sort(out.begin(), out.end(), standard_before);
+        return out;
+    }
+    const Evaluated &choose(const std::vector<Evaluated> &moves, const std::string &order) const {
+        return *std::min_element(
+            moves.begin(), moves.end(),
+            [&](const Evaluated &a, const Evaluated &b) { return strategy_before(a, b, order); });
+    }
+    Lines duplicate_game(const Lines &job) {
+        Names header = split(job[0]);
+        Minstd random{std::stoll(header[2])};
+        std::string bag = make_bag(counts, random), rack = draw(bag, 7);
+        Board board = empty_board();
+        std::vector<Names> players;
+        std::vector<int> totals(job.size() - 1);
+        Lines out;
+        line(out, "DUPLICATE ", header[1], " seed=", header[2], " players=", job.size() - 1);
+        for (int i = 1; i < int(job.size()); ++i) {
+            Names row = split(job[i]);
+            players.push_back({row[1], row[2]});
+            line(out, "player ", i, " ", row[1], " strategy=", row[2]);
+        }
+        int round = 0, master_total = 0;
+        bool went_out = false;
+        for (;;) {
+            auto legal = legal_moves(board, rack);
+            if (legal.empty())
+                break;
+            ++round;
+            const Evaluated &master = legal[0];
+            Names picks;
+            for (int i = 0; i < int(players.size()); ++i) {
+                int score = choose(legal, players[i][1]).score;
+                totals[i] += score;
+                picks.push_back(std::to_string(score));
+            }
+            master_total += master.score;
+            line(out, "round ", round, " rack=", collection(rack), " moves=", legal.size(),
+                 " master ", notation(master), " score=", master.score, " picks=", join(picks));
+            board = apply_tiles(board, master.tiles);
+            rack = master.leave + draw(bag, 7 - int(master.leave.size()));
+            if (rack.empty()) {
+                went_out = true;
+                break;
+            }
+        }
+        if (went_out)
+            line(out, "end reason=out rounds=", round);
+        else
+            line(out, "end reason=stuck rounds=", round, " rack=", collection(rack));
+        line(out, "master total=", master_total);
+        Names winners;
+        int maximum = *std::max_element(totals.begin(), totals.end());
+        for (int i = 0; i < int(players.size()); ++i) {
+            line(out, "final ", players[i][0], " total=", totals[i],
+                 " percent=", master_total >= 1 ? 100 * totals[i] / master_total : 0);
+            if (totals[i] == maximum)
+                winners.push_back(players[i][0]);
+        }
+        line(out, "winner ", join(winners));
+        append_board(out, board);
+        game_totals.rounds += round;
+        return out;
+    }
+    void read_inputs() {
+        std::ifstream tiles("input/tiles.txt");
+        std::string text;
+        while (std::getline(tiles, text))
+            if (!text.empty() && text[0] != '#') {
+                std::istringstream row(text);
+                char tile;
+                int value, count, weight;
+                row >> tile >> value >> count >> weight;
+                int index = tile_index(tile);
+                values[index] = value;
+                counts[index] = count;
+                weights[index] = weight;
+            }
+        std::ifstream dictionary("input/dictionary.txt");
+        int candidates = 0, skipped = 0, duplicates = 0;
+        std::array<int, 16> lengths{};
+        while (std::getline(dictionary, text)) {
+            if (text.empty() || text[0] == '#')
+                continue;
+            ++candidates;
+            if (text.size() < 2 || text.size() > 15 ||
+                std::any_of(text.begin(), text.end(), [](char letter) { return !upper(letter); }))
+                ++skipped;
+            else if (trie.add(text))
+                ++lengths[text.size()];
+            else
+                ++duplicates;
+        }
+        line(dictionary_lines, "DICTIONARY lines=", candidates, " words=", trie.words,
+             " skipped=", skipped, " duplicates=", duplicates, " nodes=", trie.nodes.size());
+        std::ostringstream length_line;
+        length_line << "lengths";
+        for (int length = 2; length <= 15; ++length)
+            if (lengths[length])
+                length_line << ' ' << length << '=' << lengths[length];
+        dictionary_lines.push_back(length_line.str());
+        std::ifstream tasks("input/jobs.txt");
+        Lines current;
+        while (std::getline(tasks, text)) {
+            if (current.empty()) {
+                if (!text.empty() && text[0] != '#')
+                    current.push_back(text);
+            } else if (text == "END") {
+                jobs.push_back(current);
+                current.clear();
+            } else
+                current.push_back(text);
+        }
+    }
+    void run() {
+        read_inputs();
+        std::vector<Lines> move_blocks{dictionary_lines}, validation_blocks, game_blocks;
+        std::set<std::string> seen;
+        for (const Lines &job : jobs) {
+            Names header = split(job[0]);
+            const std::string &kind = header[0], &name = header[1];
+            std::vector<Lines> *destination;
+            if (kind == "TOPN") {
+                destination = &move_blocks;
+                ++topn_totals.jobs;
+            } else if (kind == "VALIDATE") {
+                destination = &validation_blocks;
+                ++validation_totals.jobs;
+            } else {
+                destination = &game_blocks;
+                if (kind == "GAME")
+                    ++game_totals.games;
+                else
+                    ++game_totals.duplicates;
+            }
+            std::string reason = job_error(job, seen);
+            seen.insert(name);
+            if (!reason.empty()) {
+                destination->push_back({kind + " " + name, "error " + reason});
+                if (kind == "TOPN")
+                    ++topn_totals.errors;
+                else if (kind == "VALIDATE")
+                    ++validation_totals.errors;
+                else
+                    ++game_totals.errors;
+            } else if (kind == "TOPN")
+                destination->push_back(topn(job));
+            else if (kind == "VALIDATE")
+                destination->push_back(validate(job));
+            else if (kind == "GAME")
+                destination->push_back(ordinary_game(job));
+            else
+                destination->push_back(duplicate_game(job));
+        }
+        Lines summary;
+        line(summary, "SUMMARY jobs=", topn_totals.jobs, " errors=", topn_totals.errors,
+             " moves=", topn_totals.moves, " bingos=", topn_totals.bingos);
+        move_blocks.push_back(summary);
+        summary.clear();
+        line(summary, "SUMMARY jobs=", validation_totals.jobs, " errors=", validation_totals.errors,
+             " moves=", validation_totals.moves, " valid=", validation_totals.valid,
+             " invalid=", validation_totals.invalid, " loss=", validation_totals.loss);
+        validation_blocks.push_back(summary);
+        summary.clear();
+        line(summary, "SUMMARY games=", game_totals.games, " duplicates=", game_totals.duplicates,
+             " errors=", game_totals.errors, " turns=", game_totals.turns,
+             " rounds=", game_totals.rounds, " plays=", game_totals.plays,
+             " exchanges=", game_totals.exchanges, " passes=", game_totals.passes,
+             " bingos=", game_totals.bingos);
+        game_blocks.push_back(summary);
+        std::filesystem::create_directories("output");
+        write_blocks("moves.txt", move_blocks);
+        write_blocks("validation.txt", validation_blocks);
+        write_blocks("game.txt", game_blocks);
+    }
+int main() { Scrabble().run(); }
+using Board = std::array<std::array<char, 15>, 15>;
+using Counts = std::array<int, 27>;
+using Squares = std::set<std::pair<int, int>>;
+using Checks = std::map<std::pair<int, int>, std::uint32_t>;
+constexpr int board_size = 15, rack_size = 7, bingo_bonus = 50;
+constexpr const char *letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                     *tile_order = "ABCDEFGHIJKLMNOPQRSTUVWXYZ?";
+Lines display(const Board &board);
+struct TrieNode {
+    std::array<int, 26> children;
+    bool terminal = false;
+    TrieNode() { children.fill(-1); }
+};
+struct Trie {
+    std::vector<TrieNode> nodes{TrieNode{}};
+    int words = 0;
+    bool add(const std::string &word);
+    int prefix(const std::string &word) const;
+    bool contains(const std::string &word) const;
+    Names anagrams(const std::string &rack) const;
+};
+struct Minstd {
+    Integer state;
+    Integer next() {
+        state = 48271 * state % 2147483647;
+        return state;
+    }
+};

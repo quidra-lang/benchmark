@@ -1,0 +1,130 @@
+    private function startThrow(object $p, string $target): void
+    {
+        $p->moving = true;
+        $p->target = $target;
+        $p->completion = $this->time + $this->throwTime;
+        $this->log("MOVE {$p->name} $target until {$p->completion}");
+    }
+    private function addRequest(string $name, string $requester): void
+    {
+        $q = (object) [
+            'number' => ++$this->requestCount,
+            'route' => $name,
+            'time' => $this->time,
+            'reason' => null,
+        ];
+        $this->log("REQUEST q{$q->number} $name $requester");
+        ++$this->routes[$name]->requests;
+        $this->queue[] = $q;
+    }
+    private function cancel(string $name): void
+    {
+        $removed = array_filter($this->queue, fn($q) => $q->route === $name);
+        if ($removed) {
+            foreach ($removed as $q) {
+                $this->log("DROP q{$q->number} $name");
+                ++$this->dropped;
+            }
+            $this->queue = array_values(array_filter($this->queue, fn($q) => $q->route !== $name));
+            return;
+        }
+        $r = $this->routes[$name];
+        if ($r->state === 'LOCKED') {
+            ++$r->cancels;
+            $g = $this->layout->signals[$r->start];
+            if ($g->aspect !== 'RED' && $this->occupied($g->section)) {
+                $r->state = 'APPROACH';
+                $r->releaseTime = $this->time + $r->approachTime;
+                $this->log("CANCEL $name approach until {$r->releaseTime}");
+            } else {
+                $this->interlocking->release($r);
+                $this->log("CANCEL $name released");
+            }
+        } else
+            $this->log("CANCEL $name " . ($r->state === null ? 'none' : 'refused'));
+    }
+    private function requestReason(object $r): ?string
+    {
+        if ($r->state !== null)
+            return 'busy';
+        foreach ($r->conflicts as $name)
+            if (in_array($this->routes[$name]->state, ['LOCKED', 'APPROACH'], true))
+                return 'conflict ' . $name;
+        foreach ($r->sections as $name) {
+            $s = $this->layout->sections[$name];
+            if ($this->occupied($name))
+                return 'occupied ' . $name;
+            if ($s->routeLock !== null || $this->oppositeLock(array_keys($s->overlapLocks), $r))
+                return 'locked ' . $name;
+        }
+        foreach ($r->overlap as $name) {
+            $s = $this->layout->sections[$name];
+            if ($this->occupied($name))
+                return 'occupied ' . $name;
+            $locks = array_keys($s->overlapLocks);
+            if ($s->routeLock !== null)
+                $locks[] = $s->routeLock;
+            if ($this->oppositeLock($locks, $r))
+                return 'locked ' . $name;
+        }
+        foreach ($r->requirements as [$name, $target]) {
+            $p = $this->layout->points[$name];
+            if (array_any($p->locks, fn($lock) => $lock[1] !== $target))
+                return "point $name locked";
+            if (!$p->moving && $p->position === $target || $p->moving && $p->target === $target)
+                continue;
+            if ($p->failed)
+                return "point $name failed";
+            if ($p->moving)
+                return "point $name moving";
+            if ($this->occupied($p->common))
+                return "point $name occupied";
+        }
+        return null;
+    }
+    private function judgeRequests(): void
+    {
+        $waiting = [];
+        foreach ($this->queue as $q) {
+            $r = $this->routes[$q->route];
+            $reason = $this->requestReason($r);
+            if ($reason !== null) {
+                if ($reason !== $q->reason) {
+                    $this->log("WAIT q{$q->number} {$r->name} $reason");
+                    $q->reason = $reason;
+                }
+                $waiting[] = $q;
+                continue;
+            }
+            $this->interlocking->lock($r);
+            $wait = $this->time - $q->time;
+            $this->log("GRANT q{$q->number} {$r->name} wait $wait");
+            ++$r->grants;
+            $r->wait += $wait;
+            $r->maxwait = max($r->maxwait, $wait);
+            foreach ($r->requirements as [$name, $target]) {
+                $p = $this->layout->points[$name];
+                if (!$p->moving && $p->position !== $target)
+                    $this->startThrow($p, $target);
+            }
+        }
+        $this->queue = $waiting;
+    }
+            foreach ($this->planned[$this->time] ?? [] as [$train, $route])
+                $this->addRequest($route, $train);
+            $this->executeEvents();
+            $this->judgeRequests();
+    public function lock(object $route): void
+    {
+        $route->state = 'LOCKED';
+        $route->releaseTime = null;
+        $route->passed = [];
+        $route->overlapLocked = true;
+        $route->overlapCounter = 0;
+        foreach ($route->sections as $name)
+            $this->layout->sections[$name]->routeLock = $route->name;
+        foreach ($route->overlap as $name)
+            $this->layout->sections[$name]->overlapLocks[$route->name] = true;
+        foreach ($route->requirements as [$name, $position])
+            $this->layout->points[$name]->locks[$route->name . ':' . $position] = [$route->name, $position];
+    }

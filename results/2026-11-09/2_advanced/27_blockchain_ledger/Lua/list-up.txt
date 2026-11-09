@@ -1,0 +1,583 @@
+local function copy(values)
+    local result = {}
+    for key, value in pairs(values) do
+        result[key] = value
+    end
+    return result
+end
+local function keys(values)
+    local result = {}
+    for key in pairs(values) do
+        result[#result + 1] = key
+    end
+    table.sort(result)
+    return result
+end
+local function remove(values, target)
+    for i, value in ipairs(values) do
+        if value == target then
+            table.remove(values, i)
+            return
+        end
+    end
+end
+local function output_total(outputs, address)
+    local total = 0
+    for _, output in ipairs(outputs) do
+        if not address or output.address == address then
+            total = total + output.amount
+        end
+    end
+    return total
+end
+function Node:refresh()
+    self.main_chain, self.confirmed = chain.chain_to(self.tip), {}
+    for _, record in ipairs(self.main_chain) do
+        for _, tx in ipairs(record.block.transactions) do
+            self.confirmed[tx.txid] = record.height
+        end
+    end
+end
+function Node:log(...)
+    local parts = {self.now, ...}
+    for i, value in ipairs(parts) do
+        parts[i] = tostring(value)
+    end
+    self.log_lines[#self.log_lines + 1] = table.concat(parts, " ")
+end
+function Node:next_height()
+    return self.tip.height + 1
+end
+function Node:mature(coin)
+    return transactions.is_mature(coin, self:next_height(), self.params.MATURITY[1])
+end
+function Node:locked()
+    local locked = {}
+    for _, entry in ipairs(self.mempool) do
+        for _, reference in ipairs(entry.transaction.inputs) do
+            locked[reference] = true
+        end
+    end
+    return locked
+end
+function Node:priority()
+    local order = {table.unpack(self.mempool)}
+    table.sort(order, function(a, b)
+        local left, right = a.fee * b.transaction.size, b.fee * a.transaction.size
+        return left > right or left == right and a.transaction.txid < b.transaction.txid
+    end)
+    return order
+end
+function Node:find(txid)
+    for _, entry in ipairs(self.mempool) do
+        if entry.transaction.txid == txid then
+            return entry
+        end
+    end
+end
+function Node:acceptance(tx)
+    if tx:is_coinbase() then
+        return "coinbase"
+    end
+    if self.confirmed[tx.txid] or self:find(tx.txid) then
+        return "duplicate"
+    end
+    local reason, fee = transactions.check_transaction(tx, self.tip.utxo, {}, self:next_height(), self.owners, self.params.MATURITY[1])
+    if reason then
+        return reason
+    end
+    if fee * 1000 < self.params.MINFEERATE[1] * tx.size then
+        return "low-fee"
+    end
+    local inputs, conflicts, total = {}, {}, 0
+    for _, reference in ipairs(tx.inputs) do
+        inputs[reference] = true
+    end
+    for _, entry in ipairs(self.mempool) do
+        for _, reference in ipairs(entry.transaction.inputs) do
+            if inputs[reference] then
+                conflicts[#conflicts + 1], total = entry, total + entry.fee
+                break
+            end
+        end
+    end
+    if #conflicts > 0 then
+        if fee <= total then
+            return "conflict"
+        end
+        for _, entry in ipairs(conflicts) do
+            if fee * entry.transaction.size <= entry.fee * tx.size then
+                return "conflict"
+            end
+        end
+    end
+    return nil, fee, conflicts
+end
+function Node:record_drop(txid, reason)
+    self.drop_record[txid] = reason
+    self:log("DROP", short(txid), reason)
+end
+function Node:drop(entry, reason)
+    remove(self.mempool, entry)
+    self:record_drop(entry.transaction.txid, reason)
+end
+function Node:register(tx, fee, conflicts, arrival)
+    for _, entry in ipairs(conflicts) do
+        self:drop(entry, "replaced")
+    end
+    self.mempool[#self.mempool + 1] = {transaction = tx, fee = fee, arrival = arrival}
+    if #self.mempool > self.params.MEMPOOL[1] then
+        local order = self:priority()
+        self:drop(order[#order], "mempool-full")
+    end
+end
+function Node:rebuild(returned)
+    local previous = self.mempool
+    self.mempool = {}
+    local candidates = {}
+    for _, tx in ipairs(returned) do
+        candidates[#candidates + 1] = {transaction = tx, arrival = self.now, returned = true}
+    end
+    for _, entry in ipairs(previous) do
+        candidates[#candidates + 1] = entry
+    end
+    for _, entry in ipairs(candidates) do
+        local tx = entry.transaction
+        if not self.confirmed[tx.txid] then
+            local reason, fee, conflicts = self:acceptance(tx)
+            if reason then
+                self:record_drop(tx.txid, reason)
+            else
+                if entry.returned then
+                    self:log("RETURN", short(tx.txid))
+                end
+                self:register(tx, fee, conflicts, entry.arrival)
+            end
+        end
+    end
+end
+function Node:switch_tip(target)
+    local old, fork = self.tip, chain.fork_point(self.tip, target)
+    local disconnected, connected = old.height - fork.height, target.height - fork.height
+    if disconnected > self.params.MAXREORG[1] then
+        self:log("REFUSE", target.height, short(target.hash), "work", target.cumulative_work, "fork", fork.height, "depth", disconnected)
+        return
+    end
+    local returned = {}
+    for i = fork.height + 2, #self.main_chain do
+        for j = 2, #self.main_chain[i].block.transactions do
+            returned[#returned + 1] = self.main_chain[i].block.transactions[j]
+        end
+    end
+    self.tip = target
+    self:refresh()
+    if disconnected == 0 then
+        self:log("TIP", target.height, short(target.hash), "work", target.cumulative_work)
+    else
+        self:log("REORG", target.height, short(target.hash), "work", target.cumulative_work, "fork", fork.height, "disconnected", disconnected, "connected", connected)
+        self.reorganizations[#self.reorganizations + 1] = {time = self.now, fork = fork.height, disconnected = disconnected, connected = connected, old = old.hash, new = target.hash}
+    end
+    self:rebuild(returned)
+end
+function Node:validate(block, parent)
+    if block.height ~= parent.height + 1 then
+        return "bad-height"
+    end
+    if block.difficulty ~= self:difficulty(parent) then
+        return "bad-difficulty"
+    end
+    if block.timestamp <= chain.median_time(parent) then
+        return "time-too-old"
+    end
+    if block.timestamp > self.now + self.params.DRIFT[1] then
+        return "time-too-new"
+    end
+    local utxo, spent, fees, total = copy(parent.utxo), {}, {}, 0
+    for i = 2, #block.transactions do
+        local tx = block.transactions[i]
+        local reason, fee = transactions.check_transaction(tx, utxo, spent, block.height, self.owners, self.params.MATURITY[1])
+        if reason then
+            return reason .. " tx " .. i
+        end
+        for _, reference in ipairs(tx.inputs) do
+            spent[reference] = true
+        end
+        transactions.apply_transaction(utxo, tx, block.height)
+        fees[#fees + 1], total = fee, total + fee
+    end
+    local coinbase = block.transactions[1]
+    for _, output in ipairs(coinbase.outputs) do
+        if not self.owners[output.address] or output.amount == 0 then
+            return "bad-output tx 1"
+        end
+    end
+    if coinbase:output_total() > self:reward(block.height) + total then
+        return "bad-coinbase"
+    end
+    transactions.apply_transaction(utxo, coinbase, block.height)
+    return nil, utxo, fees
+end
+function Node:connect(kind, block, peer)
+    local parent = self.records[block.previous]
+    local reason, utxo, fees = self:validate(block, parent)
+    if reason then
+        self:reject_block(kind, block, peer, reason)
+        return
+    end
+    local record = chain.new(block, parent, utxo, fees, peer.name)
+    self.records[record.hash], peer.accepted_blocks = record, peer.accepted_blocks + 1
+    self:log(kind, peer.name, block.height, short(block.hash), "accepted", "work", record.cumulative_work)
+    if record.cumulative_work > self.tip.cumulative_work then
+        self:switch_tip(record)
+    end
+end
+function Node:resolve(start)
+    local queue, head = {start}, 1
+    while head <= #queue do
+        local parent_hash = queue[head]
+        head = head + 1
+        local children = {}
+        for _, orphan in ipairs(self.orphans) do
+            if orphan.block.previous == parent_hash then
+                children[#children + 1] = orphan
+            end
+        end
+        for _, orphan in ipairs(children) do
+            remove(self.orphans, orphan)
+            if self.rejected[parent_hash] then
+                self:reject_block("UNORPHAN", orphan.block, orphan.peer, "bad-parent")
+            else
+                self:connect("UNORPHAN", orphan.block, orphan.peer)
+            end
+            queue[#queue + 1] = orphan.block.hash
+        end
+    end
+end
+function Node:receive_block(peer, block)
+    local duplicate = self.records[block.hash] or self.rejected[block.hash]
+    for _, orphan in ipairs(self.orphans) do
+        if orphan.block.hash == block.hash then
+            duplicate = true
+        end
+    end
+    if duplicate then
+        self:log("BLOCK", peer.name, block.height, short(block.hash), "rejected", "duplicate")
+        peer.rejected_blocks = peer.rejected_blocks + 1
+        self:tally("block", "duplicate")
+        return
+    end
+    local reason = blocks.context_free_error(block, self.params.MAXBLOCK[1])
+    if not reason and self.rejected[block.previous] then
+        reason = "bad-parent"
+    end
+    if reason then
+        self:reject_block("BLOCK", block, peer, reason)
+        self:resolve(block.hash)
+        return
+    end
+    if not self.records[block.previous] then
+        self.orphans[#self.orphans + 1], peer.orphaned_blocks = {block = block, peer = peer}, peer.orphaned_blocks + 1
+        self:log("BLOCK", peer.name, block.height, short(block.hash), "orphan", "parent", short(block.previous))
+        if #self.orphans > self.params.ORPHANS[1] then
+            self:log("EVICT", short(table.remove(self.orphans, 1).block.hash), "orphan-limit")
+        end
+        return
+    end
+    self:connect("BLOCK", block, peer)
+    self:resolve(block.hash)
+end
+function Node:process(fields, texts)
+    self.now = tonumber(fields[1])
+    local previous = {table.unpack(self.mempool)}
+    for _, entry in ipairs(previous) do
+        if self.now - entry.arrival >= self.params.EXPIRY[1] then
+            self:drop(entry, "expired")
+        end
+    end
+    local kind = fields[2]
+    else
+        local peer = self:peer(fields[3])
+        if peer.score >= self.params.BAN[1] then
+            peer.ignored = peer.ignored + 1
+            self:log("IGNORE", peer.name, kind)
+        elseif kind == "TX" then
+            self:receive_transaction(peer, transactions.parse_transaction(fields[4]))
+        else
+            self:receive_block(peer, blocks.parse_block_event(fields, texts))
+        end
+    end
+end
+local function chain_lines(node)
+    local tip, lines, main = node.tip, {}, {}
+    lines[#lines + 1] = string.format("TIP %d %s work %d stored %d orphans %d", tip.height, tip.hash, tip.cumulative_work, #keys(node.records), #node.orphans)
+    for _, record in ipairs(node.main_chain) do
+        local block = record.block
+        main[record.hash] = true
+        local name = record.height == 0 and "-" or node.owners[miner(record)].name
+        lines[#lines + 1] = string.format("BLOCK %d %s prev %s time %d bits %d nonce %d txs %d size %d fees %d miner %s source %s work %d", block.height, block.hash, short(block.previous), block.timestamp, block.difficulty, block.nonce, #block.transactions, block:size(), record.fees, name, record.source, record.cumulative_work)
+    end
+    local stale = {}
+    for _, record in pairs(node.records) do
+        if not main[record.hash] then
+            stale[#stale + 1] = record
+        end
+    end
+    table.sort(stale, function(a, b)
+        return a.height < b.height or a.height == b.height and a.hash < b.hash
+    end)
+    for _, record in ipairs(stale) do
+        lines[#lines + 1] = string.format("STALE %d %s prev %s source %s work %d", record.height, record.hash, short(record.block.previous), record.source, record.cumulative_work)
+    end
+    for _, entry in ipairs(node.reorganizations) do
+        lines[#lines + 1] = string.format("REORG %d fork %d disconnected %d connected %d old %s new %s", entry.time, entry.fork, entry.disconnected, entry.connected, short(entry.old), short(entry.new))
+    end
+    for rank, entry in ipairs(node:priority()) do
+        lines[#lines + 1] = string.format("MEMPOOL %d %s fee %d size %d time %d", rank, entry.transaction.txid, entry.fee, entry.transaction.size, entry.arrival)
+    end
+    return lines
+end
+local function balance_lines(node)
+    local lines, locked = {"wallet,address,balance,immature,locked,incoming,utxos"}, node:locked()
+    for _, wallet in ipairs(node.wallets) do
+        local balance, immature, held, count, incoming = 0, 0, 0, 0, 0
+        for reference, coin in pairs(node.tip.utxo) do
+            if coin.address == wallet.address then
+                balance, count = balance + coin.amount, count + 1
+                if not node:mature(coin) then
+                    immature = immature + coin.amount
+                end
+                if locked[reference] then
+                    held = held + coin.amount
+                end
+            end
+        end
+        for _, entry in ipairs(node.mempool) do
+            incoming = incoming + output_total(entry.transaction.outputs, wallet.address)
+        end
+        lines[#lines + 1] = string.format("%s,%s,%d,%d,%d,%d,%d", wallet.name, wallet.address, balance, immature, held, incoming, count)
+    end
+    return lines
+end
+local function utxo_lines(node)
+    local lines, hashes, locked, references, total = {}, {}, node:locked(), keys(node.tip.utxo), 0
+    table.sort(references, function(a, b)
+        local aid, ai = a:match("^(%w+):(%d+)$")
+        local bid, bi = b:match("^(%w+):(%d+)$")
+        return aid < bid or aid == bid and tonumber(ai) < tonumber(bi)
+    end)
+    for _, reference in ipairs(references) do
+        local coin = node.tip.utxo[reference]
+        local category = coin.height == 0 and "genesis" or coin.coinbase and "coinbase" or "payment"
+        local state = not node:mature(coin) and "immature" or locked[reference] and "locked" or "free"
+        lines[#lines + 1] = string.format("%s %s %d height %d %s %s", reference, node.owners[coin.address].name, coin.amount, coin.height, category, state)
+        hashes[#hashes + 1], total = hashing.digest(lines[#lines]), total + coin.amount
+    end
+    lines[#lines + 1], lines[#lines + 2] = "TOTAL " .. #references .. " " .. total, "ROOT " .. hashing.merkle_root(hashes)
+    return lines
+end
+local function history_lines(node)
+    local lines, confirmed = {}, {}
+    for _, record in ipairs(node.main_chain) do
+        for _, tx in ipairs(record.block.transactions) do
+            confirmed[tx.txid] = tx
+        end
+    end
+    for _, wallet in ipairs(node.wallets) do
+        lines[#lines + 1] = "WALLET " .. wallet.name .. " " .. wallet.address
+        local count, spent_total, received_total, balance, pending = 0, 0, 0, 0, 0
+        for _, record in ipairs(node.main_chain) do
+            for _, tx in ipairs(record.block.transactions) do
+                local spent, received, involved = 0, 0, false
+                for _, reference in ipairs(tx.inputs) do
+                    local id, index = reference:match("^(%w+):(%d+)$")
+                    local output = confirmed[id].outputs[tonumber(index) + 1]
+                    if output.address == wallet.address then
+                        spent, involved = spent + output.amount, true
+                    end
+                end
+                for _, output in ipairs(tx.outputs) do
+                    if output.address == wallet.address then
+                        received, involved = received + output.amount, true
+                    end
+                end
+                if involved then
+                    count, spent_total, received_total, balance = count + 1, spent_total + spent, received_total + received, balance + received - spent
+                    local category = tx:is_coinbase() and (record.height == 0 and "genesis" or "coinbase") or "payment"
+                    lines[#lines + 1] = string.format("%d %s %s spent %d received %d net %+d balance %d", record.height, short(tx.txid), category, spent, received, received - spent, balance)
+                end
+            end
+        end
+        for _, entry in ipairs(node:priority()) do
+            local spent, received = 0, output_total(entry.transaction.outputs, wallet.address)
+            for _, reference in ipairs(entry.transaction.inputs) do
+                local coin = node.tip.utxo[reference]
+                if coin.address == wallet.address then
+                    spent = spent + coin.amount
+                end
+            end
+            if spent ~= 0 or received ~= 0 then
+                pending = pending + 1
+                lines[#lines + 1] = string.format("pending %s spent %d received %d net %+d", short(entry.transaction.txid), spent, received, received - spent)
+            end
+        end
+        lines[#lines + 1] = string.format("END %s txs %d spent %d received %d balance %d pending %d", wallet.name, count, spent_total, received_total, balance, pending)
+    end
+    return lines
+end
+local events, position = read_lines("input/events.txt"), 1
+while position <= #events do
+    local fields, texts = words(events[position]), {}
+    local count = fields[2] == "BLOCK" and tonumber(fields[10]) or 0
+    for i = 1, count do
+        texts[i] = events[position + i]
+    end
+    node:process(fields, texts)
+    position = position + count + 1
+end
+write_lines("log.txt", node.log_lines)
+write_lines("chain.txt", chain_lines(node))
+write_lines("balances.csv", balance_lines(node))
+write_lines("utxo.txt", utxo_lines(node))
+write_lines("history.txt", history_lines(node))
+function M.new(block, parent, utxo, fees, source)
+    local total = 0
+    for _, fee in ipairs(fees) do
+        total = total + fee
+    end
+    local work = 1
+    if parent then
+        local added = 1
+        for _ = 1, block.difficulty do
+            added = added * 16
+        end
+        work = parent.cumulative_work + added
+    end
+    return {block = block, parent = parent, utxo = utxo, transaction_fees = fees, fees = total, source = source, height = block.height, hash = block.hash, cumulative_work = work}
+end
+function M.ancestor(record, height)
+    while record.height > height do
+        record = record.parent
+    end
+    return record
+end
+function M.chain_to(record)
+    local reverse, records = {}, {}
+    while record do
+        reverse[#reverse + 1], record = record, record.parent
+    end
+    for i = #reverse, 1, -1 do
+        records[#records + 1] = reverse[i]
+    end
+    return records
+end
+function M.fork_point(first, second)
+    local height = math.min(first.height, second.height)
+    first, second = M.ancestor(first, height), M.ancestor(second, height)
+    while first ~= second do
+        first, second = first.parent, second.parent
+    end
+    return first
+end
+function M.header_text(height, previous, merkle, timestamp, difficulty, nonce)
+    return table.concat({height, previous, merkle, timestamp, difficulty, nonce}, "|")
+end
+function M.new(height, previous, merkle, timestamp, difficulty, nonce, txs)
+    return setmetatable({height = height, previous = previous, merkle = merkle, timestamp = timestamp, difficulty = difficulty, nonce = nonce, transactions = txs, hash = hashing.digest(M.header_text(height, previous, merkle, timestamp, difficulty, nonce))}, Block)
+end
+function Block:size()
+    local total = 0
+    for i = 2, #self.transactions do
+        total = total + self.transactions[i].size
+    end
+    return total
+end
+function Block:txids()
+    local ids = {}
+    for i, tx in ipairs(self.transactions) do
+        ids[i] = tx.txid
+    end
+    return ids
+end
+function M.meets_difficulty(hash, difficulty)
+    return hash:sub(1, difficulty) == string.rep("0", difficulty)
+end
+function M.parse_block_event(fields, texts)
+    local txs = {}
+    for i, text in ipairs(texts) do
+        txs[i] = transactions.parse_transaction(text)
+    end
+    return M.new(tonumber(fields[4]), fields[5], fields[6], tonumber(fields[7]), tonumber(fields[8]), tonumber(fields[9]), txs)
+end
+function M.context_free_error(block, maximum)
+    if not M.meets_difficulty(block.hash, block.difficulty) then
+        return "bad-pow"
+    end
+    if hashing.merkle_root(block:txids()) ~= block.merkle then
+        return "bad-merkle"
+    end
+    local first = block.transactions[1]
+    if not first:is_coinbase() or first.coinbase_height ~= block.height then
+        return "bad-structure"
+    end
+    for i = 2, #block.transactions do
+        if block.transactions[i]:is_coinbase() then
+            return "bad-structure"
+        end
+    end
+    if block:size() > maximum then
+        return "too-large"
+    end
+end
+function Transaction:is_coinbase()
+    return self.coinbase_height ~= nil
+end
+function Transaction:body()
+    return self.text:match("^(.-);sig=")
+end
+function Transaction:output_total()
+    local total = 0
+    for _, output in ipairs(self.outputs) do
+        total = total + output.amount
+    end
+    return total
+end
+function M.is_mature(coin, height, maturity)
+    return not coin.coinbase or coin.height == 0 or height >= coin.height + maturity
+end
+function M.check_transaction(tx, utxo, spent, height, owners, maturity)
+    for _, output in ipairs(tx.outputs) do
+        if not owners[output.address] or output.amount == 0 then
+            return "bad-output", 0
+        end
+    end
+    local seen, total, body = {}, 0, tx:body()
+    for i, reference in ipairs(tx.inputs) do
+        if spent[reference] or seen[reference] then
+            return "double-spend", 0
+        end
+        local coin = utxo[reference]
+        if not coin then
+            return "missing-input", 0
+        end
+        if not M.is_mature(coin, height, maturity) then
+            return "immature", 0
+        end
+        if tx.signatures[i] ~= wallets.sign(owners[coin.address].secret, i - 1, body) then
+            return "bad-sig", 0
+        end
+        seen[reference], total = true, total + coin.amount
+    end
+    local amount = tx:output_total()
+    if total < amount then
+        return "overspend", 0
+    end
+    return nil, total - amount
+end
+function M.apply_transaction(utxo, tx, height)
+    for _, reference in ipairs(tx.inputs) do
+        utxo[reference] = nil
+    end
+    for i, output in ipairs(tx.outputs) do
+        utxo[tx.txid .. ":" .. (i - 1)] = {address = output.address, amount = output.amount, height = height, coinbase = tx:is_coinbase()}
+    end
+end

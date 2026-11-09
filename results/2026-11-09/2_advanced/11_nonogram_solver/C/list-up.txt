@@ -1,0 +1,92 @@
+typedef enum { UNKNOWN,FILLED,EMPTY } Cell;
+typedef struct { int width,height; Cell cells[30][30]; } Grid;
+bool is_clue_line(const char *text) { if(!*text) return false; for(;*text;text++) if(*text!=' ' && (*text<'0' || *text>'9')) return false; return true; }
+bool parse_clue(const char *text,Clue *clue) {
+ clue->count=0; if(strcmp(text,"0")==0) return true; if(!*text) return false;
+ const char *begin=text;
+ for(const char *p=text;;p++) if(*p==' ' || *p==0) { ptrdiff_t length=p-begin; if(length<1 || length>2 || *begin=='0') return false; int value=0; for(const char *q=begin;q<p;q++) { if(*q<'0' || *q>'9') return false; value=value*10+*q-'0'; } clue->values[clue->count++]=value; if(!*p) break; begin=p+1; }
+ return true;
+}
+int clue_span(const Clue *clue) { int span=clue->count-1; for(int i=0;i<clue->count;i++) span+=clue->values[i]; return span; }
+Cell char_state(char character) { return character=='#'?FILLED:character=='.'?EMPTY:UNKNOWN; }
+typedef enum { LOGIC_CONTRADICTION,LOGIC_STUCK,LOGIC_SOLVED } LogicResult;
+typedef enum { CONTRADICTION,NONE,UNIQUE,MULTIPLE } Status;
+typedef enum { NO_DIFFICULTY,EASY,MEDIUM,HARD } Difficulty;
+static const char *const status_names[]={"contradiction","none","unique","multiple"};
+static const char *const difficulty_names[]={"-","easy","medium","hard"};
+static Blocks read_blocks(const char *path) {
+ FILE *file=fopen(path,"r"); if(!file) abort(); Blocks blocks={0}; Lines block={0}; char text[102];
+ while(fgets(text,sizeof(text),file)) { size_t length=strlen(text); if(length && text[length-1]=='\n') text[--length]=0;
+  if(block.count==0) { if(length && text[0]!='#') add_text(&block,text); } else if(strcmp(text,"END")==0) { APPEND(blocks.data,blocks.count,blocks.capacity,block); block=(Lines){0}; } else add_text(&block,text);
+ }
+ fclose(file); return blocks;
+}
+static bool valid_name(const char *name) { size_t n=strlen(name); if(n<1 || n>20) return false; for(size_t i=0;i<n;i++) if(!((name[i]>='a' && name[i]<='z') || (name[i]>='0' && name[i]<='9') || name[i]=='_')) return false; return true; }
+static Puzzle *parse_puzzle(const Lines *block) {
+ Puzzle *p=calloc(1,sizeof(*p)); if(!p) abort(); strcpy(p->name,block->data[0]+7); sscanf(block->data[1],"SIZE %d %d",&p->model.width,&p->model.height); size_t at=3; p->raw_rows=&block->data[at]; while(strcmp(block->data[at],"COLUMNS")!=0) { p->row_count++; at++; } at++; p->raw_columns=&block->data[at];
+ while(at<block->count && is_clue_line(block->data[at])) { p->column_count++; at++; }
+ p->givens=resize(NULL,block->count*sizeof(*p->givens));
+ while(at<block->count && strncmp(block->data[at],"GIVEN ",6)==0) { int r,c; char value; sscanf(block->data[at],"GIVEN %d %d %c",&r,&c,&value); p->givens[p->given_count++]=(Given){r-1,c-1,char_state(value)}; at++; }
+ if(at<block->count) { p->has_answer=true; p->answer_lines=&block->data[at+1]; p->answer_count=(int)(block->count-at-1); } p->answer_result="-"; return p;
+}
+static void error_text(Puzzle *p,const char *format,...) { va_list args; va_start(args,format); vsnprintf(p->error,sizeof(p->error),format,args); va_end(args); }
+static void validate(Puzzle *p,Puzzle *const *earlier,size_t earlier_count) {
+ Model *m=&p->model; if(!valid_name(p->name)) { error_text(p,"bad name"); return; } for(size_t i=0;i<earlier_count;i++) if(strcmp(p->name,earlier[i]->name)==0) { error_text(p,"duplicate name"); return; }
+ if(m->width<1 || m->width>30 || m->height<1 || m->height>30) { error_text(p,"bad size"); return; }
+ if(p->row_count!=m->height) { error_text(p,"row count %d expected %d",p->row_count,m->height); return; } if(p->column_count!=m->width) { error_text(p,"column count %d expected %d",p->column_count,m->width); return; }
+ int totals[2]={0};
+ for(int kind=0;kind<2;kind++) { int count=kind?m->width:m->height,length=kind?m->height:m->width; const char *label=kind?"column":"row"; char **texts=kind?p->raw_columns:p->raw_rows; Clue *clues=kind?m->columns:m->rows;
+  for(int i=0;i<count;i++) { if(!parse_clue(texts[i],&clues[i])) { error_text(p,"bad clue %s %d",label,i+1); return; } if(clue_span(&clues[i])>length) { error_text(p,"%s %d too long",label,i+1); return; } for(int k=0;k<clues[i].count;k++) totals[kind]+=clues[i].values[k]; }
+ }
+ if(totals[0]!=totals[1]) { error_text(p,"total mismatch rows=%d columns=%d",totals[0],totals[1]); return; }
+ bool occupied[30][30]={{false}};
+ for(int k=0;k<p->given_count;k++) { Given g=p->givens[k]; if(g.row<0 || g.row>=m->height || g.column<0 || g.column>=m->width || g.state==UNKNOWN) { error_text(p,"bad given %d",k+1); return; } if(occupied[g.row][g.column]) { error_text(p,"duplicate given %d",k+1); return; } occupied[g.row][g.column]=true; }
+static Logical logical(const Model *model,const Given *givens,int count,bool precise) {
+ Logical l={.grid={.width=model->width,.height=model->height}}; for(int k=0;k<count;k++) l.grid.cells[givens[k].row][givens[k].column]=givens[k].state; bool rows[30]={false},columns[30]={false}; for(int r=0;r<model->height;r++) rows[r]=true; for(int c=0;c<model->width;c++) columns[c]=true;
+ l.propagation=propagate(model,&l.grid,precise,rows,columns); l.result=l.propagation.conflict>=0?LOGIC_CONTRADICTION:determined(&l.grid)==model->width*model->height?LOGIC_SOLVED:LOGIC_STUCK; return l;
+}
+static Analysis *analyze(const Model *model,const Given *givens,int count) {
+ Analysis *a=calloc(1,sizeof(*a)); if(!a) abort(); a->simple=logical(model,givens,count,false); a->logic=logical(model,givens,count,true); a->line_solves=(int)a->logic.propagation.count;
+ if(a->logic.result==LOGIC_CONTRADICTION) a->status=CONTRADICTION;
+ else if(a->logic.result==LOGIC_SOLVED) { a->status=UNIQUE; a->difficulty=a->simple.result==LOGIC_SOLVED?EASY:MEDIUM; a->solution_count=1; a->solutions[0]=a->logic.grid; }
+ else { a->searched=true; search_run(model,&a->search,&a->logic.grid,1); a->solution_count=a->search.solution_count; for(int i=0;i<a->solution_count;i++) a->solutions[i]=a->search.solutions[i]; a->status=a->solution_count==0?NONE:a->solution_count==1?UNIQUE:MULTIPLE; if(a->status==UNIQUE) a->difficulty=HARD; a->line_solves+=a->search.line_solves; a->guesses=a->search.guess_count; a->max_depth=a->search.max_depth; }
+ return a;
+}
+static void puzzle_paragraph(FILE *file,Puzzle *p) {
+ fprintf(file,"PUZZLE %s\n",p->name); if(*p->error) { fprintf(file,"error %s\n",p->error); return; } const Model *m=&p->model; const Analysis *a=p->analysis;
+ fprintf(file,"size=%dx%d givens=%d status=%s difficulty=%s\n",m->width,m->height,p->given_count,status_names[a->status],difficulty_names[a->difficulty]); fputs("clues ",file); clue_stats(file,m); fputc('\n',file);
+ fprintf(file,"simple known=%d line_solves=%zu result=",determined(&a->simple.grid),a->simple.propagation.count); write_logic_result(file,&a->simple); fputc('\n',file); fprintf(file,"logic known=%d line_solves=%zu result=",determined(&a->logic.grid),a->logic.propagation.count); write_logic_result(file,&a->logic); fputc('\n',file);
+ if(a->searched) { const Search *s=&a->search; fprintf(file,"search guesses=%d max_depth=%d backtracks=%d solutions=%d line_solves=%d\n",s->guess_count,s->max_depth,s->backtracks,s->solution_count,s->line_solves); for(int k=0;k<s->guess_count;k++) { Guess g=s->guesses[k]; fprintf(file,"guess %d depth=%d cell=%d,%d value=%c solves=%d known=%d result=",g.number,g.depth,g.row+1,g.column+1,state_char(g.value),g.solves,g.known); if(g.result==GUESS_OPEN) fputs("open\n",file); else if(g.result==GUESS_CONTRADICTION) fprintf(file,"contradiction at=%s\n",line_label(g.conflict_row,g.conflict_index)); else fprintf(file,"solution%d\n",g.result==GUESS_SOLUTION1?1:2); } }
+ if(a->status==MULTIPLE) { Point cells[900]; int count=differing(&a->solutions[0],&a->solutions[1],cells); fprintf(file,"differ count=%d cells=",count); for(int k=0;k<count;k++) fprintf(file,"%s%d,%d",k?" ":"",cells[k].row+1,cells[k].column+1); fputc('\n',file); }
+ const char *names[4]; const Grid *grids[4]; int count=0;
+ if(a->status==CONTRADICTION) { names[count]="partial"; grids[count++]=&a->logic.grid; } else { if(a->simple.result==LOGIC_STUCK) { names[count]="simple"; grids[count++]=&a->simple.grid; } if(a->logic.result==LOGIC_STUCK) { names[count]="logic"; grids[count++]=&a->logic.grid; } if(a->status==MULTIPLE) { names[count]="first"; grids[count++]=&a->solutions[0]; names[count]="second"; grids[count++]=&a->solutions[1]; } } if(count) grid_display(file,names,grids,count);
+ if(a->status==UNIQUE) { fputs("sheet\n",file); answer_sheet(file,m,&a->solutions[0]); fputs("picture ",file); features(file,&a->solutions[0]); fputc('\n',file); }
+static void process_puzzles(const Blocks *blocks,Puzzle **puzzles,FILE *solutions,FILE *stats) {
+ fputs("puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer\n",stats); int invalid=0,statuses[4]={0},difficulties[4]={0},line_solves=0,guesses=0; Puzzle *ranking[40]; size_t rank_count=0;
+ for(size_t k=0;k<blocks->count;k++) { Puzzle *p=parse_puzzle(&blocks->data[k]); validate(p,puzzles,k); puzzles[k]=p;
+  if(*p->error) invalid++; else { p->analysis=analyze(&p->model,p->givens,p->given_count); Analysis *a=p->analysis; statuses[a->status]++; difficulties[a->difficulty]++; line_solves+=a->line_solves; guesses+=a->guesses; if(a->status==UNIQUE) ranking[rank_count++]=p; }
+  if(k) fputc('\n',solutions); puzzle_paragraph(solutions,p);
+  if(*p->error) { fprintf(stats,"%s,invalid",p->name); for(int i=0;i<11;i++) fputs(",-",stats); fputc('\n',stats); }
+  else { Analysis *a=p->analysis; fprintf(stats,"%s,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s\n",p->name,status_names[a->status],difficulty_names[a->difficulty],p->model.width,p->model.height,p->given_count,determined(&a->simple.grid),determined(&a->logic.grid),a->line_solves,a->guesses,a->max_depth,a->solution_count,p->answer_result); }
+ mkdir("output",0777); Blocks blocks=read_blocks("input/puzzles.txt"); Puzzle *puzzles[40]; FILE *solutions=output_file("output/solutions.txt"),*stats=output_file("output/stats.csv"); process_puzzles(&blocks,puzzles,solutions,stats); fclose(solutions); fclose(stats);
+int line_cells(const Grid *grid,bool row,int index,Cell *cells) { int length=row?grid->width:grid->height; for(int i=0;i<length;i++) cells[i]=row?grid->cells[index][i]:grid->cells[i][index]; return length; }
+int determined(const Grid *grid) { int n=0; for(int r=0;r<grid->height;r++) for(int c=0;c<grid->width;c++) n+=grid->cells[r][c]!=UNKNOWN; return n; }
+Propagation propagate(const Model *model,Grid *grid,bool precise,bool *row_marks,bool *column_marks) {
+ Propagation result={.conflict=-1};
+ for(;;) { bool row=true; int index=-1; for(int r=0;r<model->height;r++) if(row_marks[r]) { index=r; break; } if(index<0) { row=false; for(int c=0;c<model->width;c++) if(column_marks[c]) { index=c; break; } } if(index<0) return result;
+  const Clue *clue; if(row) { row_marks[index]=false; clue=&model->rows[index]; } else { column_marks[index]=false; clue=&model->columns[index]; } Cell cells[30],solved[30]; int length=line_cells(grid,row,index,cells); Step step={.row=row,.index=index}; bool consistent=solve_line(cells,length,clue,precise,solved);
+  if(!consistent) step.contradiction=true; else for(int i=0;i<length;i++) if(cells[i]==UNKNOWN && solved[i]!=UNKNOWN) { step.gain++; if(row) { grid->cells[index][i]=solved[i]; column_marks[i]=true; } else { grid->cells[i][index]=solved[i]; row_marks[i]=true; } }
+  if(result.count==result.capacity) { result.capacity=result.capacity?result.capacity*2:16; result.steps=resize(result.steps,result.capacity*sizeof(*result.steps)); } result.steps[result.count++]=step;
+  if(!consistent) { result.conflict=(int)result.count-1; return result; }
+ }
+}
+bool search_run(const Model *model,Search *search,const Grid *grid,int depth) {
+ int row,column; guess_cell(grid,&row,&column);
+ for(Cell value=FILLED;value<=EMPTY;value++) { Grid child=*grid; child.cells[row][column]=value; bool rows[30]={false},columns[30]={false}; rows[row]=true; columns[column]=true; Propagation p=propagate(model,&child,true,rows,columns); Guess guess={.number=search->guess_count+1,.depth=depth,.row=row,.column=column,.value=value,.solves=(int)p.count,.known=determined(&child),.result=GUESS_OPEN};
+  if(p.conflict>=0) { Step step=p.steps[p.conflict]; guess.result=GUESS_CONTRADICTION; guess.conflict_row=step.row; guess.conflict_index=step.index; search->backtracks++; }
+  else if(guess.known==model->width*model->height) { search->solutions[search->solution_count++]=child; guess.result=search->solution_count==1?GUESS_SOLUTION1:GUESS_SOLUTION2; }
+  search->guesses[search->guess_count++]=guess; search->max_depth=maximum(search->max_depth,depth); search->line_solves+=(int)p.count; free(p.steps);
+  if(guess.result==GUESS_OPEN) { if(search_run(model,search,&child,depth+1)) return true; } else if(search->solution_count==2) return true;
+ }
+ return false;
+}

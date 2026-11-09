@@ -1,0 +1,307 @@
+func (s *Server) send(c *Client, text string) {
+	s.sent = append(s.sent, fmt.Sprintf("%d %s %s", s.time, c.id, text))
+	c.sent++
+}
+func (s *Server) disconnect(c *Client, reason, kind string) {
+	if kind != "closed" {
+		s.errors++
+		s.send(c, fmt.Sprintf("ERROR :Closing Link: %s[%s] (%s)",
+			c.addressee(), c.host, reason))
+	}
+	if c.registered {
+		s.peers(c, ":"+c.prefix()+" QUIT :"+reason)
+	}
+	for _, ch := range append([]*Channel(nil), c.channels...) {
+		s.remove(c, ch)
+	}
+	s.discarded += len(c.queue)
+	c.queue = nil
+	c.alive = false
+	delete(s.byID,
+		c.id)
+	for i, v := range s.clients {
+		if v == c {
+			s.clients = append(s.clients[:i], s.clients[i+1:]...)
+			break
+		}
+	}
+	s.gone = append(s.gone,
+		fmt.Sprintf("GONE %d %s %s %s", s.time, c.id, c.addressee(), reason))
+	s.disconnects[kind]++
+}
+func (s *Server) process(c *Client, raw string) {
+	s.processed++
+	cmd, a := parse(raw)
+	if cmd == "" {
+		s.empty++
+		return
+	}
+	s.commands[cmd]++
+	if !c.registered && cmd != "NICK" && cmd != "USER" && cmd != "PING" && cmd != "PONG" && cmd != "QUIT" {
+		s.errorReply(c,
+			451, "")
+		return
+	}
+	switch cmd {
+	case "PONG":
+		return
+	default:
+		s.numeric(c, 421, "%s :Unknown command", cmd)
+	}
+}
+func (s *Server) arrive(e Traffic) {
+	if strings.HasPrefix(e.body, "CONNECT ") {
+		s.connectLines++
+		c := newClient(e.id,
+			e.body[len("CONNECT "):], s.time, s.setting("BUCKET"))
+		s.clients = append(s.clients, c)
+		s.byID[c.id] = c
+		if len(s.clients) > s.peakConnections {
+			s.peakConnections = len(s.clients)
+			s.peakConnectionsAt = s.time
+		}
+		return
+	}
+	if e.body == "DISCONNECT" {
+		s.disconnectLines++
+		if c := s.byID[e.id]; c != nil {
+			s.disconnect(c,
+				"Remote host closed the connection", "closed")
+		}
+		return
+	}
+	s.messageLines++
+	c := s.byID[e.id]
+	if c == nil {
+		s.dropped++
+		return
+	}
+	c.received++
+	c.lastReceived = s.time
+	c.pinging = false
+	if len(c.queue) == 0 && c.tokens > 0 {
+		c.use(s.time,
+			s.setting("BUCKET"), s.setting("REFILL"))
+		s.process(c, e.body)
+	} else if len(c.queue) >= s.setting("QUEUE") {
+		s.discarded++
+		s.disconnect(c,
+			"Excess Flood", "flood")
+	} else {
+		c.queue = append(c.queue, e.body)
+		s.queued++
+	}
+}
+func (s *Server) run() {
+	at := 0
+	for t := 0; t <= s.end; t++ {
+		s.time = t
+		for _, c := range append([]*Client(nil), s.clients...) {
+			c.refillTokens(t,
+				s.setting("BUCKET"), s.setting("REFILL"))
+			for c.alive && len(c.queue) > 0 && c.tokens > 0 {
+				c.use(t, s.setting("BUCKET"),
+					s.setting("REFILL"))
+				raw := c.queue[0]
+				c.queue = c.queue[1:]
+				s.process(c, raw)
+			}
+		}
+		for at < len(s.traffic) && s.traffic[at].time == t {
+			s.arrive(s.traffic[at])
+			at++
+		}
+		for _, c := range append([]*Client(nil), s.clients...) {
+			if c.pinging {
+				if t-c.pingAt >= s.setting("TIMEOUT") {
+					s.disconnect(c,
+						fmt.Sprintf("Ping timeout: %d seconds", t-c.lastReceived), "timeout")
+				}
+			} else if t-c.lastReceived >= s.setting("PINGFREQ") {
+				s.send(c,
+					"PING :"+s.config["NAME"])
+				s.pings++
+				c.pinging = true
+				c.pingAt = t
+			}
+		}
+	}
+}
+func (s *Server) clientLines() []string {
+	var out []string
+	registered, invisible, away := 0, 0, 0
+	for _, c := range s.clients {
+		user,
+			signon := c.user, "-"
+		if user == "" {
+			user = "*"
+		}
+		if c.registered {
+			signon = strconv.Itoa(c.signon)
+			registered++
+		}
+		if c.invisible {
+			invisible++
+		}
+		joined := channelNames(c,
+			",")
+		if joined == "" {
+			joined = "none"
+		}
+		var inviteNames []string
+		for _, ch := range c.invites {
+			inviteNames = append(inviteNames,
+				ch.name)
+		}
+		invites := strings.Join(inviteNames, ",")
+		if invites == "" {
+			invites = "none"
+		}
+		out = append(out,
+			fmt.Sprintf("CLIENT %s %s %s %s %s connected %d signon %s received %d sent %d tokens %d queue %d channels %s invites %s",
+				c.id, c.addressee(), user, c.host, c.mode(), c.connected, signon, c.received, c.sent, c.tokens, len(c.queue),
+				joined, invites))
+		if c.away != "" {
+			away++
+			out = append(out, "AWAY "+c.id+" "+c.away)
+		}
+	}
+	out = append(out,
+		fmt.Sprintf("TOTAL clients %d registered %d invisible %d away %d", len(s.clients), registered, invisible,
+			away))
+	return out
+}
+func (s *Server) statLines() []string {
+	pending := 0
+	for _, c := range s.clients {
+		pending += len(c.queue)
+	}
+	numCount := 0
+	var numericKeys []int
+	for n, count := range s.numerics {
+		numCount += count
+		numericKeys = append(numericKeys, n)
+	}
+	out := []string{fmt.Sprintf("END %d",
+		s.end), fmt.Sprintf("LINES total %d connect %d disconnect %d messages %d", len(s.traffic), s.connectLines,
+		s.disconnectLines, s.messageLines), fmt.Sprintf("MESSAGES dropped %d queued %d processed %d discarded %d pending %d empty %d",
+		s.dropped, s.queued, s.processed, s.discarded, pending, s.empty), fmt.Sprintf("SENT lines %d numerics %d pings %d errors %d",
+		len(s.sent), numCount, s.pings, s.errors)}
+	var commands []string
+	for cmd := range s.commands {
+		commands = append(commands,
+			cmd)
+	}
+	sort.Strings(commands)
+	for _, cmd := range commands {
+		out = append(out, fmt.Sprintf("COMMAND %s %d",
+			cmd, s.commands[cmd]))
+	}
+	sort.Ints(numericKeys)
+	for _, n := range numericKeys {
+		out = append(out, fmt.Sprintf("NUMERIC %03d %d",
+			n, s.numerics[n]))
+	}
+	out = append(out, fmt.Sprintf("PEAK connections %d at %d", s.peakConnections, s.peakConnectionsAt),
+		fmt.Sprintf("PEAK registered %d at %d", s.peakRegistered, s.peakRegisteredAt), fmt.Sprintf("DISCONNECTS quit %d closed %d flood %d timeout %d",
+			s.disconnects["quit"], s.disconnects["closed"], s.disconnects["flood"], s.disconnects["timeout"]))
+	return append(out,
+		s.gone...)
+}
+func main() {
+	s := &Server{config: map[string]string{}, byID: map[string]*Client{}, commands: map[string]int{},
+		numerics: map[int]int{}, disconnects: map[string]int{}}
+	for _, line := range readLines("input/server.txt") {
+		a := strings.SplitN(line,
+			" ", 2)
+		if a[0] == "MOTD" {
+			s.motd = append(s.motd, a[1])
+		} else {
+			s.config[a[0]] = a[1]
+		}
+	}
+	for _, line := range readLines("input/traffic.txt") {
+		a := strings.SplitN(line,
+			" ", 3)
+		t := number(a[0])
+		s.traffic = append(s.traffic, Traffic{t, a[1], a[2]})
+		s.end = t
+	}
+	s.run()
+	if e := os.MkdirAll("output",
+		0755); e != nil {
+		panic(e)
+	}
+	reports := map[string][]string{"sent.txt": s.sent, "channels.txt": s.channelLines(),
+		"clients.txt": s.clientLines(), "stats.txt": s.statLines()}
+	for name, lines := range reports {
+		text := ""
+		if len(lines) > 0 {
+			text = strings.Join(lines,
+				"\n") + "\n"
+		}
+		if e := os.WriteFile("output/"+name, []byte(text), 0644); e != nil {
+			panic(e)
+		}
+	}
+}
+func (c *Client) use(t, bucket, interval int) {
+	if c.tokens == bucket {
+		c.refill = t + interval
+	}
+	c.tokens--
+}
+func (c *Client) refillTokens(t, bucket, interval int) {
+	if c.refill == t {
+		c.tokens++
+		if c.tokens < bucket {
+			c.refill = t + interval
+		} else {
+			c.refill = -1
+		}
+	}
+}
+func parse(raw string) (string, []string) {
+	i := 0
+	if strings.HasPrefix(raw, ":") {
+		k := strings.IndexByte(raw,
+			' ')
+		if k < 0 {
+			return "", nil
+		}
+		i = k
+	}
+	for i < len(raw) && raw[i] == ' ' {
+		i++
+	}
+	start := i
+	for i < len(raw) && raw[i] != ' ' {
+		i++
+	}
+	command := strings.ToUpper(raw[start:i])
+	var args []string
+	for i < len(raw) {
+		for i < len(raw) && raw[i] == ' ' {
+			i++
+		}
+		if i == len(raw) {
+			break
+		}
+		if raw[i] == ':' {
+			args = append(args,
+				raw[i+1:])
+			break
+		}
+		if len(args) == 14 {
+			args = append(args, raw[i:])
+			break
+		}
+		start = i
+		for i < len(raw) && raw[i] != ' ' {
+			i++
+		}
+		args = append(args,
+			raw[start:i])
+	}
+	return command, args
+}

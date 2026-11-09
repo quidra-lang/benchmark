@@ -1,0 +1,5 @@
+The current source already converts the quantity text "10" to exact integer 10 with atoi into an int before multiplying by numeric unit price. Conversion is a runtime parsing operation; the resulting declared/inferred integer type then prevents quantity remaining a string in arithmetic. Date, region and product fields stay textual. The named sales amount is quantity*price (2000 for notebook) and feeds total/region/date aggregates, while product aggregation receives quantity 10. Keep conversion at this local ingestion point; no ranking or output changes are needed.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

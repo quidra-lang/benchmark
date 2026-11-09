@@ -1,0 +1,126 @@
+pub fn discrete(rows: &[Row], maximum: usize, shrinkage: f64, initial: Option<Vec<f64>>) -> Model {
+    let search = Search::new(rows);
+    let mut weights = initial.unwrap_or_else(|| vec![1.0 / rows.len() as f64; rows.len()]);
+    let mut model = Model { rounds: Vec::new(), stop: "completed".into(), cuts: Vec::new() };
+    let mut bound = 1.0;
+    for _ in 0..maximum {
+        let (mut stump, error, polarity) = stumps::discrete(rows, &weights, &search);
+        if error >= 0.5 {
+            model.stop = "weak".into();
+            break;
+        }
+        let alpha = if error <= 1e-10 { 1.0 } else { shrinkage * (0.5 * ((1.0 - error) / error).ln()) };
+        stump.values[0] = -polarity as f64 * alpha;
+        stump.values[1] = polarity as f64 * alpha;
+        for i in 0..rows.len() {
+            let decision = if rows[i].values[stump.feature] > stump.thresholds[0] { polarity } else { -polarity };
+            weights[i] *= if decision == rows[i].label { (-alpha).exp() } else { alpha.exp() };
+        }
+        let z: f64 = weights.iter().sum();
+        for w in &mut weights { *w /= z; }
+        model.rounds.push(Round { stump, polarity, error, alpha, z, bound, weights: before, loss: 0.0 });
+        if error <= 1e-10 {
+            model.stop = "perfect".into();
+            break;
+        }
+    }
+    model
+}
+    pub fn new(rows: &[Row]) -> Self {
+        let d = rows[0].values.len();
+        let mut orders = Vec::new();
+        let mut thresholds = Vec::new();
+        for j in 0..d {
+            let mut order: Vec<usize> = (0..rows.len()).collect();
+            order.sort_by(|&a, &b| rows[a].values[j].partial_cmp(&rows[b].values[j]).unwrap().then(a.cmp(&b)));
+            let mut distinct: Vec<f64> = order.iter().map(|&i| rows[i].values[j]).collect();
+            distinct.dedup();
+            let mut candidates = vec![distinct[0] - 1.0];
+            candidates.extend(distinct.windows(2).map(|w| (w[0] + w[1]) / 2.0));
+            orders.push(order);
+            thresholds.push(candidates);
+        }
+        Self { orders, thresholds }
+    }
+pub fn discrete(rows: &[Row], weights: &[f64], search: &Search) -> (Stump, f64, i32) {
+    let positive: Vec<f64> = rows.iter().zip(weights).map(|(r, &w)| if r.label == 1 { w } else { 0.0 }).collect();
+    let negative: Vec<f64> = rows.iter().zip(weights).map(|(r, &w)| if r.label == -1 { w } else { 0.0 }).collect();
+    let wp: f64 = positive.iter().sum();
+    let wn: f64 = negative.iter().sum();
+    let mut candidates = Vec::new();
+    let mut errors = Vec::new();
+    for j in 0..search.orders.len() {
+        let lp = search.prefix(rows, j, &positive);
+        let ln = search.prefix(rows, j, &negative);
+        for h in 0..search.thresholds[j].len() {
+            for s in [1, -1] {
+                candidates.push((j, h, s));
+                errors.push(if s == 1 { lp[h] + (wn - ln[h]) } else { ln[h] + (wp - lp[h]) });
+            }
+        }
+    }
+    let best = choose(&errors);
+    let (j, h, s) = candidates[best];
+    (Stump { feature: j, thresholds: vec![search.thresholds[j][h]], values: vec![-s as f64, s as f64] }, errors[best], s)
+}
+pub fn prediction(score: f64) -> i32 { if score > 0.0 { 1 } else { -1 } }
+fn score(rounds: &[Round], x: &[f64]) -> f64 {
+    rounds.iter().map(|r| r.stump.output(x)).sum()
+}
+
+fn scores(rounds: &[Round], rows: &[Row]) -> Vec<f64> {
+    rows.iter().map(|r| score(rounds, &r.values)).collect()
+}
+fn minimum(values: &[usize]) -> usize {
+    let mut winner = 0;
+    for i in 1..values.len() {
+        if values[i] < values[winner] { winner = i; }
+    }
+    winner
+}
+fn cross_validation(rows: &[Row], params: &Params) -> CrossValidation {
+    let mut models = Vec::new();
+    let mut total = vec![0; params.rounds];
+    let mut fold_errors = Vec::new();
+    for fold in 0..params.folds {
+        let validation: Vec<usize> = (0..rows.len()).filter(|&i| i % params.folds == fold).collect();
+        let n = rows.len() - validation.len();
+        let weights: Vec<f64> = (0..rows.len()).map(|i| if i % params.folds == fold { 0.0 } else { 1.0 / n as f64 }).collect();
+        let model = adaboost::discrete(rows, params.rounds, 1.0, Some(weights));
+        let values: Vec<usize> = (1..=params.rounds).map(|t| {
+            let prefix = &model.rounds[..t.min(model.rounds.len())];
+            validation.iter().filter(|&&i| prediction(score(prefix, &rows[i].values)) != rows[i].label).count()
+        }).collect();
+        for t in 0..params.rounds { total[t] += values[t]; }
+        fold_errors.push(values);
+        models.push(model);
+    }
+    let selected = minimum(&total) + 1;
+    let scores = rows.iter().enumerate().map(|(i, r)| {
+        let model = &models[i % params.folds];
+        score(&model.rounds[..selected.min(model.rounds.len())], &r.values)
+    }).collect();
+    CrossValidation { models, errors: total, fold_errors, selected, scores }
+}
+    let cv = cross_validation(train_rows, params);
+    let models: Vec<Model> = params.variants.iter().map(|v| train(train_rows, v, params)).collect();
+    let final_rounds: Vec<&[Round]> = models.iter().zip(&params.variants).map(|(model, variant)| {
+        let count = if variant == "discrete" { cv.selected.min(model.rounds.len()) } else { model.rounds.len() };
+        &model.rounds[..count]
+    }).collect();
+    let train_scores: Vec<Vec<f64>> = final_rounds.iter().map(|r| scores(r, train_rows)).collect();
+    let test_scores: Vec<Vec<f64>> = final_rounds.iter().map(|r| scores(r, test)).collect();
+    for (v, variant) in params.variants.iter().enumerate() {
+        if v > 0 { ensembles.push(String::new()); margin_lines.push(String::new()); shapes.push(String::new()); }
+        ensembles.extend(ensemble(variant, &models[v], names, train_rows, params, &cv));
+        let (mut train_counts, mut test_counts) = (Vec::new(), Vec::new());
+        for t in 1..=models[v].rounds.len() {
+            let rounds = &models[v].rounds[..t];
+            let a = scores(rounds, train_rows);
+            let b = scores(rounds, test);
+            let (ea, eb) = (errors(train_rows, &a), errors(test, &b));
+            train_counts.push(ea);
+    for (v, variant) in params.variants.iter().enumerate() {
+        summary.push(metrics("train", variant, final_rounds[v].len(), train_rows, &train_scores[v]));
+        summary.push(metrics("test", variant, final_rounds[v].len(), test, &test_scores[v]));
+    }

@@ -1,0 +1,231 @@
+local directionNames = {"north", "south", "east", "west", "up", "down"}
+local directions = {}
+for index, name in ipairs(directionNames) do directions[name], directions[name:sub(1, 1)] = index, index end
+local aliases = {
+    use = "use apply", light = "light ignite", extinguish = "extinguish douse snuff", wait = "wait z", score = "score", save = "save",
+local verbs = {}
+for verb, names in pairs(aliases) do for word in names:gmatch("[^ ]+") do verbs[word] = verb end end
+local noObjects = {look = true, inventory = true, wait = true, score = true, save = true, restore = true, verbose = true, brief = true}
+local actions = {go = true, take = true, drop = true, put = true, open = true, close = true, unlock = true, lock = true,
+    use = true, light = true, extinguish = true, wait = true}
+local function fail(reason)
+    error({command_error = true, lines = type(reason) == "table" and reason or {reason}}, 0)
+local function words(line)
+    local result = {}
+    for word in line:gmatch("[^ ]+") do result[#result + 1] = word end
+    return result
+local function normalized(line)
+    line = line:gsub("[A-Z]", function(letter) return string.char(letter:byte() + 32) end)
+    local result = {}
+    for word in line:gmatch("[^ ]+") do
+        if word ~= "the" and word ~= "a" and word ~= "an" then result[#result + 1] = word end
+    return result
+local function slice(values, first, last)
+    local result = {}
+    for i = first, last or #values do result[#result + 1] = values[i] end
+    return result
+local function append(result, values) for _, value in ipairs(values) do result[#result + 1] = value end end
+local function asciiLess(a, b)
+    for i = 1, math.min(#a, #b) do if a:byte(i) ~= b:byte(i) then return a:byte(i) < b:byte(i) end end
+    return #a < #b
+local function place(kind, id) return {kind = kind, id = id, key = kind .. ":" .. (id or "")} end
+local function newState()
+    return {room = "", places = {}, containers = {}, fuel = {}, lit = {}, exits = {}, flags = {}, visited = {},
+        bonus = 0, moves = 0, darkness = 0, ended = "none"}
+local Adventure = {}
+Adventure.__index = Adventure
+function Adventure.new(definitions)
+    local self = setmetatable({rooms = {}, items = {}, ids = {}, rules = {}, enterRules = {}, vocabulary = {},
+        state = newState(), verbose = false}, Adventure)
+    for _, line in ipairs(definitions) do self:define(line) end
+    for id, item in pairs(self.items) do
+        self.ids[#self.ids + 1] = id
+        for word in pairs(item.nouns) do self.vocabulary[word] = true end
+        for word in pairs(item.nameWords) do self.vocabulary[word] = true end
+    table.sort(self.ids, asciiLess)
+    return self
+function Adventure:define(line)
+    local w = words(line)
+    local kind, id = w[1], w[2]
+    local function text(first) return table.concat(w, " ", first) end
+    if kind == "ROOM" then
+        local dark = w[3] == "DARK"
+        self.rooms[id] = {name = text(dark and 4 or 3), dark = dark, description = {}}
+    elseif kind == "ITEM" then
+        local item = {name = "", weight = tonumber(w[4], 10), points = 0, light = false, fixed = false,
+            nouns = {[id] = true}, nameWords = {}, details = {}}
+        if w[3] == "PLAYER" then self.state.places[id] = place("player")
+        elseif w[3] == "NOWHERE" then self.state.places[id] = place("nowhere")
+        else self.state.places[id] = place("room", w[3]) end
+        self.state.containers[id], self.state.fuel[id], self.state.lit[id] = "open", 0, false
+        local index = 5
+        if w[index] == "TREASURE" then item.points = tonumber(w[index + 1], 10); index = index + 2 end
+        if w[index] == "LIGHT" then item.light = true; self.state.fuel[id] = tonumber(w[index + 1], 10); index = index + 2 end
+        item.name = text(index)
+        for i = index, #w do item.nameWords[w[i]] = true end
+        self.items[id] = item
+    elseif kind == "RULE" or kind == "ENTER" then
+        local index = kind == "RULE" and 4 or 3
+        local flag, whenOn = nil, true
+        if w[index] == "IF" or w[index] == "UNLESS" then
+            whenOn, flag = w[index] == "IF", w[index + 1]; index = index + 2
+        local effect = {kind = w[index]}
+        index = index + 1
+        if effect.kind == "MESSAGE" then effect.text = text(index)
+        elseif effect.kind == "ADD" then effect.item, effect.place = w[index], place("room", w[index + 1])
+        local rule = {first = id, second = kind == "RULE" and w[3] or nil, flag = flag, whenOn = whenOn, effect = effect}
+        local target = kind == "RULE" and self.rules or self.enterRules
+        target[#target + 1] = rule
+    elseif kind == "TROPHY" then self.trophy = id
+    elseif kind == "START" then self.state.room = id
+function Adventure:children()
+    local result = {}
+    for _, id in ipairs(self.ids) do
+        local key = self.state.places[id].key
+        if not result[key] then result[key] = {} end
+        result[key][#result[key] + 1] = id
+    return result
+function Adventure:isOpen(id) return self.items[id].capacity ~= nil and self.state.containers[id] == "open" end
+function Adventure:reachable(root)
+    local children, result = self:children(), {}
+    local function visit(target)
+        for _, id in ipairs(children[target.key] or {}) do
+            result[id] = true
+            if self:isOpen(id) then visit(place("inside", id)) end
+    visit(root)
+    return result
+function Adventure:carried() return self:reachable(place("player")) end
+function Adventure:isCarried(id) return self:carried()[id] == true end
+function Adventure:roomItems() return self:reachable(place("room", self.state.room)) end
+function Adventure:nearby()
+    local result = self:carried()
+    for id in pairs(self:roomItems()) do result[id] = true end
+    return result
+function Adventure:isLit()
+    if not self.rooms[self.state.room].dark then return true end
+    for id in pairs(self:nearby()) do if self.state.lit[id] then return true end end
+    return false
+function Adventure:visible() return self:isLit() and self:nearby() or self:carried() end
+function Adventure:score()
+    local stored, treasures, points = 0, 0, 0
+    for _, id in ipairs(self.ids) do
+        local item = self.items[id]
+        if item.points > 0 then
+            treasures = treasures + 1
+            local target = self.state.places[id]
+            while target.kind == "inside" do target = self.state.places[target.id] end
+            if target.kind == "room" and target.id == self.trophy then stored = stored + 1; points = points + item.points end
+    return {stored = stored, treasures = treasures, points = points, total = points + self.state.bonus}
+function Adventure:resolve(phrase)
+    local visible = self:visible()
+    for _, word in ipairs(phrase) do if not self.vocabulary[word] then fail('I don\'t know the word "' .. word .. '".') end end
+    local matches = {}
+    for _, id in ipairs(self.ids) do
+        local item, matchesWords = self.items[id], true
+        if visible[id] and item.nouns[phrase[#phrase]] then
+            for i = 1, #phrase - 1 do if not item.nameWords[phrase[i]] then matchesWords = false; break end end
+            if matchesWords then matches[#matches + 1] = id end
+    if #matches == 0 then fail("You can't see any such thing.") end
+    if #matches > 1 then
+        local names = {}
+        for _, id in ipairs(matches) do names[#names + 1] = self.items[id].name end
+        fail("Which do you mean: " .. table.concat(names, ", ") .. "?")
+    self.pronoun = matches[1]
+    return matches[1]
+function Adventure:runRules(rules, first, second)
+    local lines, executed = {}, 0
+    for _, rule in ipairs(rules) do
+        if rule.first == first and rule.second == second and (rule.flag == nil or (self.state.flags[rule.flag] == true) == rule.whenOn) then
+            executed = executed + 1
+            local effect = rule.effect
+            if effect.kind == "MESSAGE" then lines[#lines + 1] = effect.text
+            elseif effect.kind == "REMOVE" or effect.kind == "ADD" then self.state.places[effect.item] = effect.place
+    return lines, executed
+function Adventure:execute(verb, first, second)
+    if verb == "look" then return self:describe()
+    elseif verb == "score" then
+        local score = self:score()
+        return {"You have scored " .. score.total .. " points (treasure " .. score.points .. ", bonus " .. self.state.bonus .. ") in " .. self.state.moves .. " moves.",
+            "Treasures stored: " .. score.stored .. " of " .. score.treasures .. "."}
+    elseif verb == "use" then
+        local id = self:resolve(first)
+        local target = self:resolve(second)
+        if not self:isCarried(id) then fail("You aren't carrying the " .. self.items[id].name .. ".") end
+        local lines, executed = self:runRules(self.rules, id, target)
+        if executed == 0 then fail("Nothing happens.") end
+        return #lines > 0 and lines or {"Done."}
+function Adventure:endTurn(baseline)
+    self.state.moves = self.state.moves + 1
+    local nearby, lines = self:nearby(), {}
+    for _, id in ipairs(self.ids) do
+        if self.state.lit[id] then
+            self.state.fuel[id] = self.state.fuel[id] - 1
+            if self.state.fuel[id] == 0 then
+                self.state.lit[id] = false
+                if nearby[id] then lines[#lines + 1] = "The " .. self.items[id].name .. " goes out." end
+    local lit = self:isLit()
+    if baseline and not lit then lines[#lines + 1] = "It is now pitch dark."
+    elseif not baseline and lit then append(lines, self:describe()) end
+    self.state.darkness = lit and 0 or self.state.darkness + 1
+    if self.state.darkness == 2 then lines[#lines + 1] = "You hear something moving in the dark." end
+    if self.state.darkness == 3 then self.state.ended = "dead" end
+    local score = self:score()
+    if self.state.ended == "none" and score.treasures > 0 and score.stored == score.treasures then self.state.ended = "won" end
+    if self.state.ended ~= "none" then
+        lines[#lines + 1] = self.state.ended == "dead" and "*** You have died ***" or "*** You have won ***"
+        lines[#lines + 1] = "You scored " .. score.total .. " points in " .. self.state.moves .. " moves."
+    return lines
+function Adventure:interpret(line)
+    local w = normalized(line)
+    if #w == 0 then fail("I beg your pardon?") end
+    if directions[w[1]] then table.insert(w, 1, "go") end
+    local verb = verbs[w[1]]
+    if not verb then fail('I don\'t know the verb "' .. w[1] .. '".') end
+    if self.state.ended ~= "none" and verb ~= "restore" then fail("The game is over.") end
+    local rest = slice(w, 2)
+    local first, second = rest, nil
+    if noObjects[verb] then
+        if #rest > 0 then fail("I don't understand that.") end
+    else
+        if #rest == 0 then fail(verb == "go" and "Which way do you want to go?" or "What do you want to " .. verb .. "?") end
+        if verb == "go" then
+        else
+            local prepositions
+            if verb == "put" then prepositions = {["in"] = true, into = true}
+            elseif verb == "use" then prepositions = {on = true, with = true}
+            if prepositions then
+                local index
+                for i, word in ipairs(rest) do if prepositions[word] then index = i; break end end
+                if index then
+                    if index == 1 or index == #rest then fail("I don't understand that.") end
+                    first, second = slice(rest, 1, index - 1), slice(rest, index + 1)
+                elseif verb == "put" or verb == "use" then fail("I don't understand that.") end
+    local baseline, lines = self:isLit(), nil
+    if verb == "go" then
+    else lines = self:execute(verb, first, second) end
+    if actions[verb] then append(lines, self:endTurn(baseline)) end
+    return lines
+function Adventure:command(line)
+    local ok, result = pcall(function()
+        return self:interpret(line)
+    end)
+    if ok then return result end
+    if type(result) == "table" and result.command_error then return result.lines end
+    error(result, 0)
+function Adventure:finalScore() return "Final score: " .. self:score().total .. " points in " .. self.state.moves .. " moves." end
+local function readLine()
+    local line = io.read("l")
+    if line then return (line:gsub("\r$", "")) end
+local function writeLines(lines) for _, line in ipairs(lines) do io.write(line, "\n") end end
+local definitions = {}
+while true do
+    local line = readLine()
+    if not line or line == "BEGIN" then break end
+    definitions[#definitions + 1] = line
+local adventure = Adventure.new(definitions)
+while true do
+    local line = readLine()
+    if not line then break end
+    if line == "QUIT" then io.write(adventure:finalScore(), "\n"); break end
+    io.write("> ", line, "\n")
+    writeLines(adventure:command(line))

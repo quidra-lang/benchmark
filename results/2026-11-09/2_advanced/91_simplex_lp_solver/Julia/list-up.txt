@@ -1,0 +1,324 @@
+include("branch_bound.jl")
+dot_exact(left,right) = sum((a*b for (a,b) in zip(left,right));init=ZERO)
+function coefficients(terms,variables)
+    values = Dict(name=>ZERO for name in variables)
+    for (name,coefficient) in terms
+        values[name] += coefficient
+    end
+    [values[name] for name in variables]
+function content_check(parsed)
+    parsed.error === nothing || return parsed
+    variables = String[]
+    expressions = [[parsed.objective];[row.terms for row in parsed.constraints]]
+    for terms in expressions, (name,coefficient) in terms
+        name in variables || push!(variables,name)
+    end
+    model = (name=parsed.name,error=nothing,direction=parsed.direction,variables=variables,constraints=parsed.constraints,
+        costs=coefficients(parsed.objective,variables),matrix=[coefficients(row.terms,variables) for row in parsed.constraints],
+        rhs=[row.rhs for row in parsed.constraints],comparisons=[row.comparison for row in parsed.constraints],
+        lower=Union{Nothing,Fraction}[ZERO for _ in variables],upper=Union{Nothing,Fraction}[nothing for _ in variables],integer=falses(length(variables)))
+mutable struct VariableMapping
+    kind::String
+    offset::Fraction
+    columns::Vector{Int}
+    directions::Vector{Int}
+    upper_row::Union{Nothing,Int}
+end
+function standard_form(model,lower,upper)
+    column_names,owners,directions,mappings = String[],Int[],Int[],VariableMapping[]
+    for (j,name) in enumerate(model.variables)
+        first_column = length(column_names)+1
+        if lower[j] !== nothing
+            kind,offset = "shift",lower[j]
+            columns,signs,names = [first_column],[1],[name]
+        end
+        append!(column_names,names)
+        append!(owners,fill(j,length(columns)))
+        append!(directions,signs)
+        push!(mappings,VariableMapping(kind,offset,columns,signs,nothing))
+    end
+    offsets = [mapping.offset for mapping in mappings]
+    row_names = [row.name for row in model.constraints]
+    matrix = [[directions[k]*row[j] for (k,j) in enumerate(owners)] for row in model.matrix]
+    rhs = [value-dot_exact(row,offsets) for (row,value) in zip(model.matrix,model.rhs)]
+    comparisons = copy(model.comparisons)
+    for (j,mapping) in enumerate(mappings)
+        (mapping.kind != "shift" || upper[j] === nothing) && continue
+    end
+    signs = ones(Int,length(row_names))
+    for i in eachindex(row_names)
+        if rhs[i] < 0
+    end
+    slack = zeros(Int,length(row_names))
+    artificial = Set{Int}()
+    initial = zeros(Int,length(row_names))
+    for (i,comparison) in enumerate(comparisons)
+        comparison == "=" && continue
+    end
+    for (i,comparison) in enumerate(comparisons)
+        comparison == "<=" && continue
+        column = length(column_names)+1
+        push!(artificial,column)
+        initial[i] = column
+        push!(column_names,"a:" * row_names[i])
+        for (t,row) in enumerate(matrix)
+            push!(row,Fraction(t == i ? 1 : 0))
+        end
+    end
+    direction = model.direction == "minimize" ? 1 : -1
+    phase2 = [direction*directions[k]*model.costs[j] for (k,j) in enumerate(owners)]
+    append!(phase2,fill(ZERO,length(column_names)-length(phase2)))
+    phase1 = [Fraction(k in artificial ? 1 : 0) for k in eachindex(column_names)]
+    (;column_names,row_names,mappings,matrix,rhs,signs,slack,artificial,initial,phase1,phase2,constant=dot_exact(model.costs,offsets),direction)
+end
+function tableau_solution(form,tableau)
+    values = fill(ZERO,length(form.column_names))
+    for (basic,rhs) in zip(tableau.basic,tableau.rhs)
+        values[basic] = rhs
+    end
+    [mapping.offset+sum((direction*values[column] for (column,direction) in zip(mapping.columns,mapping.directions));init=ZERO) for mapping in form.mappings]
+end
+function solve_lp(model,lower,upper,number,level)
+    form = standard_form(model,lower,upper)
+    tableau = new_tableau(form)
+    lines = String[]
+    emit(required,text) = level >= required && push!(lines,text)
+    end
+    phase2_value(value) = form.constant+form.direction*value
+    emit(0,"SOLVE node $number rows $(length(form.row_names)) columns $(length(form.column_names)) artificials $(length(form.artificial))")
+    foreach(line -> emit(1,line),mapping_lines(model,form,lower,upper))
+    phase1_count,phase2_count,drives,redundant = 0,0,0,0
+    infeasibility,status,unbounded = ZERO,"OPTIMAL",nothing
+    if !isempty(form.artificial)
+        emit(1,"PHASE 1")
+        phase = run_phase!(tableau,form.phase1,eachindex(form.column_names),identity)
+        phase1_count = phase.iterations
+        foreach(line -> emit(1,line),phase.lines)
+        infeasibility = phase_value(tableau,form.phase1)
+        emit(1,"PHASE 1 END objective $(fraction_text(infeasibility)) iterations $phase1_count")
+        if infeasibility > 0
+            status = "INFEASIBLE"
+        else
+            for row in eachindex(tableau.basic)
+                basic = tableau.basic[row]
+                basic in form.artificial || continue
+                entering = findfirst(k -> !(k in form.artificial) && tableau.values[row][k] != 0,eachindex(form.column_names))
+                if entering === nothing
+                    redundant += 1
+                    emit(1,"REDUNDANT row $(form.row_names[row])")
+                else
+                    leaving = form.column_names[basic]
+                    pivot!(tableau,row,entering)
+                    drives += 1
+                    emit(1,"DRIVE row $(form.row_names[row]) enter $(form.column_names[entering]) leave $leaving")
+                end
+            end
+        end
+    end
+    if status != "INFEASIBLE"
+        emit(1,"PHASE 2")
+        candidates = [k for k in eachindex(form.column_names) if !(k in form.artificial)]
+        phase = run_phase!(tableau,form.phase2,candidates,phase2_value)
+        phase2_count = phase.iterations
+        foreach(line -> emit(1,line),phase.lines)
+        unbounded = phase.unbounded
+        if unbounded !== nothing
+            status = "UNBOUNDED"
+            emit(1,"UNBOUNDED enter $(form.column_names[unbounded])")
+        end
+        value = phase2_value(phase_value(tableau,form.phase2))
+        emit(1,"PHASE 2 END objective $(fraction_text(value)) iterations $phase2_count")
+    end
+    objective = status == "OPTIMAL" ? phase2_value(phase_value(tableau,form.phase2)) : nothing
+    emit(0,"RESULT $status objective $(shown(objective)) phase1 $phase1_count phase2 $phase2_count drives $drives redundant $redundant")
+    (;status,objective,solution=tableau_solution(form,tableau),form,tableau,unbounded,infeasibility,phase1=phase1_count,phase2=phase2_count,drives,redundant,pivots=phase1_count+phase2_count+drives,lines)
+end
+function solve_model(model,level,limit)
+    solve(lower,upper,number) = solve_lp(model,lower,upper,number,level)
+    any(model.integer) && return branch_search(model,limit,solve)
+    result = solve(model.lower,model.upper,1)
+    (;status=result.status,objective=result.objective,solution=result.status == "OPTIMAL" ? result.solution : nothing,solves=[result],root=result,nodes=1,lines=String[])
+end
+function solution_lines(model,result)
+    root = result.root
+    integer_count = count(model.integer)
+    lines = ["MODEL $(model.name) $(model.direction) variables $(length(model.variables)) constraints $(length(model.constraints)) integers $integer_count",statistics_line(model),"STATUS $(result.status)"]
+    result.solution === nothing || push!(lines,"OBJECTIVE $(fraction_text(result.objective)) approx $(approximate(result.objective))")
+    values = result.status == "UNBOUNDED" ? root.solution : result.solution
+    if values !== nothing
+        for (name,value) in zip(model.variables,values)
+            push!(lines,"VALUE $name $(fraction_text(value))")
+        end
+    end
+    push!(lines,"PIVOTS $(sum(lp.pivots for lp in result.solves))")
+    lines
+function main()
+    settings = read_settings()
+    iterations,solutions,sensitivity,tree = String[],String[],String[],String[]
+    summary = ["model,status,objective,approx,relaxation,nodes,pivots"]
+    statuses = Dict(status=>0 for status in ("OPTIMAL","INFEASIBLE","UNBOUNDED","NODE_LIMIT","ERROR"))
+    solves,phase1,phase2,drives,analyzed,integer_models,integer_nodes,limited_models = 0,0,0,0,0,0,0,0
+    for parsed in read_models()
+        model = content_check(parsed)
+        if model.error !== nothing
+        level,limit = get(settings.logs,model.name,settings.level),get(settings.limits,model.name,settings.limit)
+        result = solve_model(model,level,limit)
+        statuses[result.status] += 1
+        push!(iterations,"MODEL $(model.name) level $level")
+        for lp in result.solves
+            append!(iterations,lp.lines)
+            solves += 1
+            phase1 += lp.phase1
+            phase2 += lp.phase2
+            drives += lp.drives
+        end
+        append!(solutions,solution_lines(model,result))
+        objective = shown(result.objective)
+        approx = result.objective === nothing ? "-" : approximate(result.objective)
+        relaxation = shown(result.root.objective)
+        pivots = sum(lp.pivots for lp in result.solves)
+        push!(summary,"$(model.name),$(result.status),$objective,$approx,$relaxation,$(length(result.solves)),$pivots")
+    end
+    models = sum(values(statuses))
+    pivots = phase1+phase2+drives
+    push!(iterations,"TOTAL solves $solves phase1 $phase1 phase2 $phase2 drives $drives pivots $pivots")
+    mkpath("output")
+    for (name,lines) in [("iterations.txt",iterations),("solutions.txt",solutions),("sensitivity.txt",sensitivity),("bnb_tree.txt",tree),("summary.csv",summary)]
+        write(joinpath("output",name),join(lines,"\n") * "\n")
+    end
+end
+main()
+function parse_expression(words)
+    terms = Tuple{String,Fraction}[]
+    index,sign = 1,1
+    if !isempty(words) && words[1] == "-"
+        index,sign = 2,-1
+    end
+    while index <= length(words)
+        coefficient = read_number(words[index])
+        if coefficient !== nothing
+            index < length(words) && lp_name(words[index+1]) || return nothing
+            name = words[index+1]
+            index += 2
+        elseif lp_name(words[index])
+            coefficient,name = Fraction(1),words[index]
+            index += 1
+        else
+            return nothing
+        end
+        push!(terms,(name,sign*coefficient))
+        index > length(words) && return terms
+        words[index] in ("+","-") || return nothing
+        sign = words[index] == "+" ? 1 : -1
+        index += 1
+    end
+    nothing
+end
+function named_expression(words)
+    length(words) >= 2 && endswith(words[1],":") || return nothing
+    name = words[1][1:end-1]
+    terms = parse_expression(words[2:end])
+    lp_name(name) && terms !== nothing ? (name,terms) : nothing
+end
+function parse_constraint(words,line)
+    length(words) >= 4 && words[end-1] in ("<=",">=","=") || return nothing
+    rhs = read_number(words[end];signed=true)
+    named = named_expression(words[1:end-2])
+    rhs === nothing || named === nothing ? nothing : LPConstraint(line,named[1],named[2],words[end-1],rhs)
+end
+function parse_block(name,body,end_line)
+    parsed = ParsedLP(name,nothing,"",Tuple{String,Fraction}[],LPConstraint[],LPBound[],Tuple{Int,Vector{String}}[],Tuple{Int,Vector{String}}[])
+    state = "A"
+    for (line,text) in body
+        words = String.(split(text,' '))
+        accepted = false
+        if state == "A" && text in ("maximize","minimize")
+            parsed.direction = text
+            state,accepted = "B",true
+        elseif state == "B"
+            named = named_expression(words)
+            if named !== nothing
+                parsed.objective = named[2]
+                state,accepted = "C",true
+            end
+        elseif state == "C" && text == "subject to"
+            state,accepted = "D",true
+        elseif state in ("D","E")
+            if state == "E" && text in ("bounds","integer","binary")
+                state,accepted = Dict("bounds"=>"F","integer"=>"G","binary"=>"H")[text],true
+            else
+                item = parse_constraint(words,line)
+                if item !== nothing
+                    push!(parsed.constraints,item)
+                    state,accepted = "E",true
+                end
+            end
+        end
+    end
+    state in ("A","B","C","D") && (parsed.error = (end_line,"syntax error"))
+    parsed
+end
+function read_models()
+    models = ParsedLP[]
+    name = nothing
+    body = Tuple{Int,String}[]
+    for (line,text) in enumerate(readlines("input/models.lp"))
+        (isempty(text) || startswith(text,"#")) && continue
+        if name === nothing
+            name = split(text,' ')[2]
+            empty!(body)
+        elseif text == "end"
+            push!(models,parse_block(name,body,line))
+            name = nothing
+        else
+            push!(body,(line,text))
+        end
+    end
+    models
+end
+function run_phase!(tableau,costs,candidates,objective)
+    iterations,lines = 0,String[]
+    candidates = sort(collect(candidates))
+    while true
+        reduced = reduced_costs(tableau,costs)
+        entering = findfirst(column -> reduced[column] < 0,candidates)
+        entering === nothing && return (;iterations,unbounded=nothing,lines)
+        column = candidates[entering]
+        ratios = [(tableau.rhs[row]/values[column],tableau.basic[row],row) for (row,values) in enumerate(tableau.values) if values[column] > 0]
+        isempty(ratios) && return (;iterations,unbounded=column,lines)
+        ratio,leaving,row = minimum(ratios)
+        before = reduced[column]
+        pivot!(tableau,row,column)
+        iterations += 1
+        value = objective(phase_value(tableau,costs))
+        push!(lines,"PIVOT $iterations enter $(tableau.column_names[column]) reduced $(fraction_text(before)) leave $(tableau.column_names[leaving]) row $(tableau.row_names[row]) ratio $(fraction_text(ratio)) objective $(fraction_text(value))")
+    end
+end
+mutable struct Tableau
+    row_names::Vector{String}
+    column_names::Vector{String}
+    values::Vector{Vector{Fraction}}
+    rhs::Vector{Fraction}
+    basic::Vector{Int}
+end
+function new_tableau(form)
+    Tableau(form.row_names,form.column_names,deepcopy(form.matrix),copy(form.rhs),copy(form.initial))
+end
+function pivot!(tableau,row,column)
+    divisor = tableau.values[row][column]
+    tableau.values[row] ./= divisor
+    tableau.rhs[row] /= divisor
+    for other in eachindex(tableau.values)
+        other == row && continue
+        factor = tableau.values[other][column]
+        tableau.values[other] .-= factor .* tableau.values[row]
+        tableau.rhs[other] -= factor*tableau.rhs[row]
+    end
+    tableau.basic[row] = column
+end
+function reduced_costs(tableau,costs)
+    [costs[column]-sum((costs[basic]*row[column] for (basic,row) in zip(tableau.basic,tableau.values));init=ZERO) for column in eachindex(costs)]
+end
+phase_value(tableau,costs) = sum((costs[basic]*rhs for (basic,rhs) in zip(tableau.basic,tableau.rhs));init=ZERO)
+const Fraction = Rational{Int64}
+const ZERO = Fraction(0)

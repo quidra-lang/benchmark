@@ -1,0 +1,165 @@
+data class Cue(val index: Long, val start: Long, val end: Long, val text: List<String>) {
+    val dialogue get() = text.any { it.startsWith("- ") }
+data class Item(val text: String, val kind: Int, val digit: Int = 0)
+class Problem(message: String) : RuntimeException(message)
+class Editor {
+    private var cues = mutableListOf<Cue>()
+    private val schemas = mapOf("LIST" to "", "VALIDATE" to "", "SEARCH" to "X", "AT" to "T",
+        "GAPS" to "g", "STATS" to "", "PRINT" to "", "TOVTT" to "", "TOASS" to "", "FRAMES" to "F",
+        "MERGE" to "g", "SPLIT" to "w", "INSERT" to "PTTX", "DELETE" to "P", "TEXT" to "PX",
+    private fun bad(): Nothing = throw Problem("bad arguments")
+    private fun number(s: String): Long {
+        if (!Regex("[0-9]{1,9}").matches(s)) bad()
+        return s.toLong()
+    private fun time(s: String): Long {
+        if (!Regex("[0-9]{2}:[0-5][0-9]:[0-5][0-9],[0-9]{3}").matches(s)) bad()
+        return s.substring(0,2).toLong()*3600000+s.substring(3,5).toLong()*60000+
+            s.substring(6,8).toLong()*1000+s.substring(9).toLong()
+    private fun pad(n: Long, width: Int) = n.toString().padStart(width,'0')
+    private fun srt(t: Long) = "${pad(t/3600000,2)}:${pad(t/60000%60,2)}:${pad(t/1000%60,2)},${pad(t%1000,3)}"
+    private fun words(lines: List<String>) = lines.joinToString(" ").split(' ').filter { it.isNotEmpty() }
+    private fun wrap(lines: List<String>, width: Long): List<String> {
+        val result = mutableListOf<String>()
+        for (word in words(lines)) {
+            if (result.isEmpty() || result.last().length+1+word.length > width) {
+                result.add(word)
+            } else {
+                result[result.lastIndex] += " $word"
+            }
+        }
+        return result
+    private val markupTokens = Regex("""</?[ibu]>|</font>|<font(?=[ >])[^>]*>|\{\\an[1-9]\}|.""")
+    private fun markup(line: String): List<Item> = markupTokens.findAll(line).map { match ->
+        val text = match.value
+        val kind = when {
+            text.startsWith("{\\an") -> 3
+            text.startsWith("<font") || text == "</font>" -> 2
+            text.length > 1 -> 1
+            else -> 0
+        }
+        Item(text,kind,if (kind == 3) text[4]-'0' else 0)
+    }.toList()
+    fun load(blocks: List<List<String>>): List<String> {
+        val output = mutableListOf<String>()
+        var badCount = 0
+        for ((i,block) in blocks.withIndex()) {
+            var reason = ""
+            var start = 0L
+            var end = 0L
+            if (!Regex("[0-9]{1,6}").matches(block[0])) {
+                reason = "index"
+            } else {
+                try {
+                    if (block.size < 2 || block[1].length != 29 || block[1].substring(12,17) != " --> ") bad()
+                    start = time(block[1].substring(0,12))
+                    end = time(block[1].substring(17))
+                } catch (problem: Problem) {
+                    reason = "time"
+                }
+                if (reason.isEmpty() && block.size < 3) reason = "no text"
+            }
+            if (reason.isNotEmpty()) {
+                output.add("BAD CUE ${i+1}: $reason")
+                badCount++
+            } else {
+                cues.add(Cue(block[0].toLong(),start,end,block.drop(2)))
+            }
+        }
+        output.add("LOAD cues=${cues.size} bad=$badCount")
+        return output
+    fun execute(line: String): List<String> {
+        val command = line.substringBefore(' ')
+        var schema = schemas[command] ?: throw Problem("unknown command")
+        val tokens = if (schema.endsWith('X')) line.split(' ',limit = schema.length+1) else line.split(' ')
+        if (tokens.size != schema.length+1) bad()
+        val args = tokens.drop(1)
+        val values = LongArray(args.size)
+        for ((i,arg) in args.withIndex()) {
+            when (val type = schema[i]) {
+                else -> {
+                    val negative = type == 'I' && arg.startsWith('-')
+                    values[i] = number(if (negative) arg.drop(1) else arg)*(if (negative) -1 else 1)
+                    val v = values[i]
+                    if (type == 'P' && v < 1 || type == 'r' && v !in 1..100000 || type == 'g' && v > 60000 ||
+                        type == 'e' && v !in 1..60000 || type == 'w' && v !in 10..80) bad()
+                }
+            }
+        }
+        val output = mutableListOf<String>()
+        val n = cues.size
+        val v = values.firstOrNull() ?: 0L
+        when (command) {
+            "PRINT", "TOVTT", "TOASS" -> {
+                for (c in cues) {
+                    var code = 0
+                    val lines = c.text.map { t ->
+                        val converted = buildString {
+                            for (item in markup(t)) {
+                                if (code == 0 && item.kind == 3) code = item.digit
+                                when {
+                                    command == "PRINT" -> append(item.text)
+                                }
+                            }
+                        }
+                        if (command == "TOVTT") converted.trim(' ') else converted
+                    }.filter { command != "TOVTT" || it.isNotEmpty() }
+                    if (command == "TOASS") output.add("Dialogue: 0,${ass(c.start)},${ass(c.end)},Default,,0,0,0,,${lines.joinToString("\\N")}")
+                    else if (lines.isNotEmpty()) {
+                        var settings = ""
+                        output.add(c.index.toString())
+                        val times = "${srt(c.start)} --> ${srt(c.end)}"
+                        output.add((if (command == "TOVTT") times.replace(',','.') else times)+settings)
+                        output.addAll(lines)
+                        output.add("")
+                    }
+                }
+            }
+            "MERGE" -> {
+                val result = mutableListOf<Cue>()
+                var merged = 0
+                for (b in cues) {
+                    val a = result.lastOrNull()
+                    if (a != null && b.start-a.end < v && !a.dialogue && !b.dialogue) {
+                        val wrapped = wrap(a.text+b.text,42)
+                        if (wrapped.size <= 2) {
+                            result[result.lastIndex] = a.copy(end = maxOf(a.end,b.end),text = wrapped)
+                            merged++
+                            continue
+                        }
+                    }
+                    result.add(b)
+                }
+                cues = result
+                output.add("MERGE merged=$merged cues=${cues.size}")
+            }
+        }
+        return output
+fun main() {
+    val input = System.`in`.bufferedReader()
+    val output = System.out.bufferedWriter()
+    val blocks = mutableListOf<List<String>>()
+    var block = mutableListOf<String>()
+    while (true) {
+        val line = input.readLine()
+        if (line == "###") break
+        if (line.isEmpty()) {
+            if (block.isNotEmpty()) blocks.add(block)
+            block = mutableListOf()
+        } else block.add(line)
+    }
+    if (block.isNotEmpty()) blocks.add(block)
+    val editor = Editor()
+    fun emit(lines: List<String>) {
+        for (line in lines) {
+            output.write(line)
+            output.newLine()
+        }
+    emit(editor.load(blocks))
+    repeat(input.readLine().toInt()) {
+        try {
+            emit(editor.execute(input.readLine()))
+        } catch (problem: Problem) {
+            emit(listOf("ERROR ${problem.message}"))
+        }
+    }
+    output.flush()

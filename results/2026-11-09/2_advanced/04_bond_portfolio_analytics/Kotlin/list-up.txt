@@ -1,0 +1,346 @@
+data class CivilDate(val year: Int, val month: Int, val day: Int)
+
+fun isLeap(year: Int) = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+fun yearLength(year: Int) = if (isLeap(year)) 366 else 365
+fun monthLength(year: Int, month: Int) = if (month == 2 && isLeap(year)) 29 else listOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month - 1]
+fun splitDate(text: String) = CivilDate(text.substring(0, 4).toInt(), text.substring(5, 7).toInt(), text.substring(8, 10).toInt())
+fun validDate(text: String): Boolean {
+    val date = splitDate(text)
+    return date.year in 2001..2099 && date.month in 1..12 && date.day in 1..monthLength(date.year, date.month)
+}
+fun dayNumber(year: Int, month: Int, day: Int): Int {
+    var result = day - 1
+    for (earlier in 2000 until year) result += yearLength(earlier)
+    for (earlier in 1 until month) result += monthLength(year, earlier)
+    return result
+}
+fun parseDate(text: String): Int { val date = splitDate(text); return dayNumber(date.year, date.month, date.day) }
+fun civilDate(number: Int): CivilDate {
+    var remaining = number
+    var year = 2000
+    while (remaining >= yearLength(year)) { remaining -= yearLength(year); year++ }
+    var month = 1
+    while (remaining >= monthLength(year, month)) { remaining -= monthLength(year, month); month++ }
+    return CivilDate(year, month, remaining + 1)
+}
+fun dateText(number: Int): String {
+    val date = civilDate(number)
+    return "${date.year.toString().padStart(4, '0')}-${date.month.toString().padStart(2, '0')}-${date.day.toString().padStart(2, '0')}"
+}
+class BusinessCalendar(val holidays: Set<Int>) {
+    fun business(day: Int) = (day + 5) % 7 < 5 && day !in holidays
+    fun following(day: Int): Int { var result = day; while (!business(result)) result++; return result }
+    fun preceding(day: Int): Int { var result = day; while (!business(result)) result--; return result }
+    fun adjust(day: Int, rule: String): Int = when (rule) {
+        "FOLLOWING" -> following(day)
+        "PRECEDING" -> preceding(day)
+        "MODIFIED_FOLLOWING" -> following(day).let { if (civilDate(it).month != civilDate(day).month) preceding(day) else it }
+        else -> day
+    }
+    fun move(day: Int, count: Int, direction: Int = 1): Int {
+        var remaining = count
+        var result = day
+        while (remaining > 0) { result += direction; if (business(result)) remaining-- }
+        return result
+    }
+}
+data class Fraction(val numerator: Long, val denominator: Long) {
+    fun value() = numerator.toDouble() / denominator.toDouble()
+}
+
+fun yearFraction(convention: String, start: Int, end: Int): Fraction {
+    val first = civilDate(start)
+    val last = civilDate(end)
+    if (convention == "30/360" || convention == "30E/360") {
+        var d1 = first.day
+        var d2 = last.day
+        if (convention == "30E/360") { if (d1 == 31) d1 = 30; if (d2 == 31) d2 = 30 }
+        else {
+            val february = first.month == 2 && d1 == monthLength(first.year, first.month)
+            if (february && last.month == 2 && d2 == monthLength(last.year, last.month)) d2 = 30
+            if (february) d1 = 30
+            if (d2 == 31 && d1 >= 30) d2 = 30
+            if (d1 == 31) d1 = 30
+        }
+        return Fraction((360 * (last.year - first.year) + 30 * (last.month - first.month) + d2 - d1).toLong(), 360)
+    }
+}
+fun bisection(low: Double, high: Double, target: Double, function: (Double) -> Double): Double {
+    var lo = low
+    var hi = high
+    repeat(80) {
+        val middle = (lo + hi) / 2.0
+        if (function(middle) > target) lo = middle else hi = middle
+    }
+    return (lo + hi) / 2.0
+}
+
+data class RiskMeasures(val macaulay: Double, val modified: Double, val convexity: Double, val dv01: Double)
+
+class YieldPricer(val flows: List<Long>, val fraction: Double, val frequency: Int, val outstanding: Long) {
+    fun presentValues(rate: Double): List<Double> {
+        val first = 1.0 + fraction * rate / frequency.toDouble()
+        val growth = 1.0 + rate / frequency.toDouble()
+        var factor = 1.0
+        return flows.map { flow -> val value = flow.toDouble() / (first * factor); factor *= growth; value }
+    }
+    fun dirty(rate: Double): Double { var total = 0.0; for (value in presentValues(rate)) total += value; return total * 100.0 / outstanding.toDouble() }
+    fun solve(target: Double) = bisection(0.0, 1.0, target, ::dirty)
+    fun inRange(target: Double) = dirty(0.0) > target && target > dirty(1.0)
+    fun risk(rate: Double): RiskMeasures {
+        val growth = 1.0 + rate / frequency.toDouble()
+        var total = 0.0
+        var weighted = 0.0
+        var curvature = 0.0
+        for ((index, value) in presentValues(rate).withIndex()) {
+            val years = (index.toDouble() + fraction) / frequency.toDouble()
+            total += value
+            weighted += years * value
+            curvature += years * (years + 1.0 / frequency.toDouble()) * value
+        }
+        val macaulay = weighted / total
+        return RiskMeasures(macaulay, macaulay / growth, curvature / (total * growth * growth), (dirty(rate - 0.0001) - dirty(rate + 0.0001)) / 2.0)
+    }
+}
+fun couponSchedule(issue: Int, maturity: Int, frequency: Int, endOfMonth: Boolean = false, longStub: Boolean = false): List<Int> {
+    val date = civilDate(maturity)
+    val eom = endOfMonth && date.day == monthLength(date.year, date.month)
+    val dates = mutableListOf<Int>()
+    var boundary = maturity
+    while (boundary > issue) {
+        dates += boundary
+        val index = date.year * 12 + date.month - 1 - 12 / frequency * dates.size
+        val year = index / 12
+        val month = index % 12 + 1
+        boundary = dayNumber(year, month, if (eom) monthLength(year, month) else minOf(date.day, monthLength(year, month)))
+    }
+    if (longStub && boundary != issue && dates.size >= 2) dates.removeAt(dates.lastIndex)
+    dates += issue
+    return dates.reversed()
+}
+data class CurveFlow(val days: Int, val amount: Double)
+data class Pillar(val maturity: Int, val coupon: Int, val frequency: Int)
+
+class ZeroCurve(val days: List<Int>, val rates: List<Double>) {
+    fun zeroRate(day: Int): Double {
+        if (day <= days.first()) return rates.first()
+        if (day >= days.last()) return rates.last()
+        val index = days.indexOfFirst { it >= day }
+        if (days[index] == day) return rates[index]
+        val weight = (day - days[index - 1]).toDouble() / (days[index] - days[index - 1]).toDouble()
+        return rates[index - 1] + (rates[index] - rates[index - 1]) * weight
+    }
+    fun discount(day: Int, spread: Double = 0.0): Double {
+        val rate = zeroRate(day) + spread
+        var growth = 1.0
+        repeat(day / 365) { growth *= 1.0 + rate }
+        return 1.0 / (growth * (1.0 + rate * (day % 365).toDouble() / 365.0))
+    }
+    fun presentValue(flows: List<CurveFlow>, spread: Double = 0.0): Double { var total = 0.0; for (flow in flows) total += flow.amount * discount(flow.days, spread); return total }
+    fun zSpread(flows: List<CurveFlow>, target: Double) = bisection(-0.5, 0.5, target) { presentValue(flows, it) }
+fun bootstrap(settlement: Int, pillars: List<Pillar>): ZeroCurve {
+    val days = mutableListOf<Int>()
+    val rates = mutableListOf<Double>()
+    for (pillar in pillars) {
+        val dates = couponSchedule(settlement, pillar.maturity, pillar.frequency)
+        val flows = (1 until dates.size).map { index ->
+            val fraction = yearFraction("30/360", dates[index - 1], dates[index])
+            CurveFlow(dates[index] - settlement, pillar.coupon.toDouble() * fraction.numerator.toDouble() / (10000.0 * fraction.denominator.toDouble()) + if (index == dates.lastIndex) 1.0 else 0.0)
+        }
+        days += pillar.maturity - settlement
+        rates += bisection(0.0, 1.0, 1.0) { ZeroCurve(days, rates + it).presentValue(flows) }
+    }
+    return ZeroCurve(days, rates)
+}
+val frequencies = setOf(1, 2, 4, 12)
+val dayCounts = setOf("30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT")
+val businessRules = setOf("FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED")
+
+fun roundRatio(numerator: Long, denominator: Long) = (2 * numerator + denominator) / (2 * denominator)
+fun priceValue(text: String) = text.replace(".", "").toLong()
+fun decimal(value: Double, digits: Int): String {
+    var scale = 1L
+    repeat(digits) { scale *= 10 }
+    val magnitude = ((if (value < 0.0) -value else value) * scale.toDouble() + 0.5).toLong()
+    return (if (value < 0.0 && magnitude != 0L) "-" else "") + "${magnitude / scale}.${(magnitude % scale).toString().padStart(digits, '0')}"
+}
+fun percent(value: Double) = decimal(value * 100.0, 4)
+class InputProblem(message: String) : Exception(message)
+data class ScheduleOption(val date: String, val value: Long)
+data class Call(val date: Int, val price: Long)
+data class Fixing(val date: Int, val rate: Int)
+data class Scenario(val name: String, val shifts: List<Int>)
+data class Limit(val kind: String, val arguments: List<String>)
+data class BondOptions(var eom: Boolean = false, var longStub: Boolean = false, var lag: Int = 0, var cap: Int = 1200, var floor: Int = 0, val sinks: MutableList<ScheduleOption> = mutableListOf(), val calls: MutableList<ScheduleOption> = mutableListOf())
+data class Payment(val period: Int, val start: Int, val end: Int, val payment: Int, val fraction: Fraction, val rate: Int, val outstanding: Long, val coupon: Long, val principal: Long) { val cashFlow get() = coupon + principal }
+data class Bond(val code: String, val type: String, val issue: Int, val maturity: Int, val frequency: Int, val daycount: String, val face: Long, val calls: List<Call>, val periods: List<Payment>)
+fun parseOptions(type: String, text: String): BondOptions {
+    val result = BondOptions()
+    val allowed = setOf("EOM", "LONG") + when (type) { "FIXED" -> setOf("CALL"); "AMORT" -> setOf("SINK"); "FRN" -> setOf("LAG", "CAP", "FLOOR"); else -> emptySet() }
+    val seen = mutableSetOf<String>()
+    if (text != "-") for (item in text.split(';')) {
+        val key = item.substringBefore('=')
+        if (key !in allowed || key in seen && key != "SINK" && key != "CALL") throw InputProblem("invalid option")
+        seen += key
+        val value = item.substringAfter('=', "")
+        when (key) {
+            "EOM" -> result.eom = true
+            "LONG" -> result.longStub = true
+            "LAG" -> result.lag = value.toInt()
+            "CAP" -> result.cap = value.toInt()
+            "FLOOR" -> result.floor = value.toInt()
+            "SINK", "CALL" -> {
+                val parts = value.split(':')
+                val entry = ScheduleOption(parts[0], if (key == "CALL") priceValue(parts[1]) else parts[1].toLong())
+                if (key == "SINK") result.sinks += entry else result.calls += entry
+            }
+        }
+    }
+    if (type == "FRN" && ("LAG" !in seen || result.lag !in 1..5 || result.cap > 1200 || result.floor > result.cap)) throw InputProblem("invalid option")
+    return result
+}
+fun buildBond(fields: List<String>, calendar: BusinessCalendar, fixings: List<Fixing>): Bond {
+    val code = fields[0]
+    val type = fields[1]
+    if (type !in bondTypes) throw InputProblem("unknown type")
+    if (!validDate(fields[2]) || !validDate(fields[3])) throw InputProblem("invalid date")
+    val issue = parseDate(fields[2])
+    val maturity = parseDate(fields[3])
+    if (maturity <= issue) throw InputProblem("maturity not after issue")
+    val coupon = fields[4].toInt()
+    val frequency = fields[5].toInt()
+    if (frequency !in frequencies) throw InputProblem("invalid frequency")
+    val daycount = fields[6]
+    if (daycount !in dayCounts) throw InputProblem("unknown day count")
+    val bdc = fields[7]
+    if (bdc !in businessRules) throw InputProblem("unknown business day rule")
+    val face = fields[8].toLong()
+    if (face % 100000L != 0L || face > 10000000L) throw InputProblem("invalid face")
+    if (coupon > 1200 || type == "ZERO" && coupon != 0) throw InputProblem("invalid coupon")
+    val options = parseOptions(type, fields[9])
+    val dates = couponSchedule(issue, maturity, frequency, options.eom, options.longStub)
+    val intermediate = dates.drop(1).dropLast(1).toSet()
+    val sinks = mutableMapOf<Int, Long>()
+    var previous = -1
+    var total = 0L
+    for (entry in options.sinks) {
+        if (!validDate(entry.date)) throw InputProblem("invalid sinking fund")
+        val date = parseDate(entry.date)
+        if (date !in intermediate || date <= previous || entry.value == 0L) throw InputProblem("invalid sinking fund")
+        previous = date
+        total += entry.value
+        sinks[date] = entry.value
+    }
+    if (type == "AMORT" && (total == 0L || total >= face)) throw InputProblem("invalid sinking fund")
+    val calls = mutableListOf<Call>()
+    previous = -1
+    for (entry in options.calls) {
+        if (!validDate(entry.date)) throw InputProblem("invalid call schedule")
+        val date = parseDate(entry.date)
+        if (date !in intermediate || date <= previous || entry.value !in 100000L..110000L) throw InputProblem("invalid call schedule")
+        previous = date
+        calls += Call(date, entry.value)
+    }
+    val periods = mutableListOf<Payment>()
+    var outstanding = face
+    for (index in 1 until dates.size) {
+        val start = dates[index - 1]
+        val end = dates[index]
+        val fraction = yearFraction(daycount, start, end)
+        var rate = if (type == "ZERO") 0 else coupon
+        if (type == "FRN") {
+            val fixingDay = calendar.move(calendar.adjust(start, bdc), options.lag, -1)
+            rate += fixingRate(fixings, fixingDay) ?: throw InputProblem("missing fixing")
+            rate = minOf(maxOf(rate, options.floor), options.cap)
+        }
+        val principal = if (index == dates.lastIndex) outstanding else sinks[end] ?: 0L
+        val interest = roundRatio(outstanding * rate.toLong() * fraction.numerator, 10000L * fraction.denominator)
+        periods += Payment(index, start, end, calendar.adjust(end, bdc), fraction, rate, outstanding, interest, principal)
+        outstanding -= principal
+    }
+    return Bond(code, type, issue, maturity, frequency, daycount, face, calls, periods)
+}
+class Analytics(val bond: Bond, val price: Long, val settlement: Int, curve: ZeroCurve) {
+    val current = bond.periods.indexOfFirst { it.end > settlement }
+    val remaining = bond.periods.drop(current)
+    val outstanding = remaining[0].outstanding
+    val accruedFraction = yearFraction(bond.daycount, remaining[0].start, settlement)
+    val accrued = remaining[0].rate.toDouble() * accruedFraction.numerator.toDouble() / (100.0 * accruedFraction.denominator.toDouble())
+    val accruedAmount = roundRatio(outstanding * remaining[0].rate.toLong() * accruedFraction.numerator, 10000L * accruedFraction.denominator)
+    val cleanAmount = roundRatio(outstanding * price, 100000L)
+    val unitValue = cleanAmount + accruedAmount
+    val target = price.toDouble() / 1000.0 + accrued
+    val fraction = bond.frequency.toDouble() * yearFraction(bond.daycount, settlement, remaining[0].end).value()
+    val pricer = YieldPricer(remaining.map { it.cashFlow }, fraction, bond.frequency, outstanding)
+    init { if (!pricer.inRange(target)) throw InputProblem("yield out of range") }
+    val ytm = pricer.solve(target)
+    val risk = pricer.risk(ytm)
+    var ytw = ytm
+    var workout = bond.maturity
+    init {
+        for (call in bond.calls) if (call.date > settlement) {
+            val periods = remaining.takeWhile { it.end <= call.date }
+            val cashFlows = periods.map { it.coupon }.toMutableList()
+            cashFlows[cashFlows.lastIndex] += roundRatio(periods.last().outstanding * call.price, 100000L)
+            val callYield = YieldPricer(cashFlows, fraction, bond.frequency, outstanding).solve(target)
+            if (callYield < ytw) { ytw = callYield; workout = call.date }
+        }
+    }
+    val cashPeriods = remaining.filter { it.cashFlow > 0L }
+    val flows = cashPeriods.map { CurveFlow(it.payment - settlement, it.cashFlow.toDouble()) }
+    val nextPayment = cashPeriods[0].payment
+    val wal: Double = run { var total = 0.0; for (period in cashPeriods) total += period.principal.toDouble() * (period.payment - settlement).toDouble(); total / (365.0 * outstanding.toDouble()) }
+    val curveClean = curve.presentValue(flows) * 100.0 / outstanding.toDouble() - accrued
+    val zspread = curve.zSpread(flows, unitValue.toDouble())
+}
+fun csvRows(name: String) = File("input/$name").readLines().drop(1).mapIndexed { index, line -> index + 2 to line.split(',') }
+fun writeLines(name: String, lines: List<String>) { File("output/$name").writeText(if (lines.isEmpty()) "" else lines.joinToString("\n", postfix = "\n")) }
+fun main() {
+    val parameters = File("input/params.txt").readLines().map { it.split(' ') }
+    val valuation = parseDate(parameters.first { it[0] == "valuation_date" }[1])
+    val calendar = BusinessCalendar(File("input/calendar.txt").readLines().map(::parseDate).toSet())
+    val settlement = calendar.move(valuation, parameters.first { it[0] == "settlement_days" }[1].toInt())
+    val fixings = csvRows("fixings.csv").map { (_, fields) -> Fixing(parseDate(fields[0]), fields[1].toInt()) }
+    val errors = mutableListOf<String>()
+    fun error(file: String, line: Int, key: String, reason: String) { errors += "$file:$line: $key: $reason" }
+    val pillars = mutableListOf<Pillar>()
+    val seenPillars = mutableSetOf<String>()
+    for ((line, fields) in csvRows("curve_quotes.csv")) {
+        val reason = when {
+            !seenPillars.add(fields[0]) -> "duplicate pillar"
+            !validDate(fields[0]) -> "invalid date"
+            parseDate(fields[0]) <= settlement -> "pillar not after settlement"
+            fields[2].toInt() !in frequencies -> "invalid frequency"
+            else -> null
+        }
+        if (reason != null) error("curve_quotes.csv", line, fields[0], reason)
+        else pillars += Pillar(parseDate(fields[0]), fields[1].toInt(), fields[2].toInt())
+    }
+    pillars.sortBy { it.maturity }
+    val curve = bootstrap(settlement, pillars)
+    val bonds = sortedMapOf<String, Bond>()
+    val seenBonds = mutableSetOf<String>()
+    for ((line, fields) in csvRows("bonds.csv")) {
+        if (!seenBonds.add(fields[0])) { error("bonds.csv", line, fields[0], "duplicate id"); continue }
+        try { bonds[fields[0]] = buildBond(fields, calendar, fixings) }
+        catch (problem: InputProblem) { error("bonds.csv", line, fields[0], problem.message!!) }
+    }
+    val priced = sortedMapOf<String, Analytics>()
+    val seenPrices = mutableSetOf<String>()
+    for ((line, fields) in csvRows("prices.csv")) {
+        val duplicate = !seenPrices.add(fields[0])
+        val bond = bonds[fields[0]]
+        val reason = when { bond == null -> "unknown bond"; duplicate -> "duplicate price"; !(bond.issue <= settlement && settlement < bond.maturity) -> "not outstanding"; else -> null }
+        if (reason != null) { error("prices.csv", line, fields[0], reason); continue }
+        try { priced[fields[0]] = Analytics(bond!!, priceValue(fields[1]), settlement, curve) }
+        catch (problem: InputProblem) { error("prices.csv", line, fields[0], problem.message!!) }
+    }
+    val cashflowLines = mutableListOf("bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal")
+    for (bond in bonds.values) for (period in bond.periods) if (period.cashFlow > 0L) cashflowLines += "${bond.code},${period.period},${dateText(period.start)},${dateText(period.end)},${dateText(period.payment)},${decimal(period.fraction.value(), 6)},${period.rate},${period.outstanding},${period.coupon},${period.principal}"
+    val analyticsLines = mutableListOf("bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread")
+    for (a in priced.values) analyticsLines += listOf(a.bond.code, decimal(a.price.toDouble() / 1000.0, 6), decimal(a.accrued, 6), decimal(a.target, 6), percent(a.ytm), percent(a.ytw), dateText(a.workout), dateText(a.nextPayment), decimal(a.wal, 4), decimal(a.risk.macaulay, 4), decimal(a.risk.modified, 4), decimal(a.risk.convexity, 4), decimal(a.risk.dv01, 6), decimal(a.curveClean, 6), percent(a.zspread)).joinToString(",")
+    File("output").mkdirs()
+    writeLines("errors.txt", errors)
+    writeLines("cashflows.csv", cashflowLines)
+    writeLines("analytics.csv", analyticsLines)
+}

@@ -1,0 +1,175 @@
+int compare_text(string first, string second)
+    int[] left_codes := first.codepoints()
+    int[] right_codes := second.codepoints()
+    count := if #left_codes < #right_codes then #left_codes else #right_codes
+    for: i < count
+        if left_codes[i] != right_codes[i]
+            return if left_codes[i] < right_codes[i] then -1 else 1
+    return if #left_codes < #right_codes then -1 elif #left_codes > #right_codes then 1 else 0
+bool includes<T>(T[] values, T target)
+    for value := values[]
+        if value == target
+            return true
+    return false
+class Value(kind := 0, number := 0, text := "")
+    string written()
+        return if kind == 0 then "NULL" elif kind == 1 then string(number) else text
+
+    int truth()
+        return if kind == 0 then -1 elif number == 0 then 0 else 1
+
+int compare(Value left, Value right)
+    if left.kind == 0 or right.kind == 0
+        return if left.kind == right.kind then 0 elif left.kind == 0 then -1 else 1
+    if left.kind == 1
+        return if left.number < right.number then -1 elif left.number > right.number then 1 else 0
+    return compare_text(left.text, right.text)
+class Expression(string operation, int[] children := [], literal := Value(), table_name := "", column_name := "", written := "", is_distinct := false, resolved := -1)
+class Column(string name, int type_id, not_null := false, primary_count := 0)
+class Table(string name, Column[] columns, Value[][] rows := [])
+class Statement()
+    command := ""
+    table_name := ""
+    Column[] columns := []
+    string[] targets := []
+    int[] assignments := []
+    where_id := -1
+        elif .accept("UPDATE")
+            statement.command = "UPDATE"
+            statement.table_name = try .name()
+            try .expect("SET")
+            while true
+                string target := try .name()
+                try .expect("=")
+                int item := try .expression()
+                statement.targets = statement.targets.append(target)
+                statement.assignments = statement.assignments.append(item)
+                if not .accept(",")
+                    break
+            if .accept("WHERE")
+                statement.where_id = try .expression()
+class ScopeColumn(string table_name, Column column)
+
+bool compatible(int first, int second)
+    return first == 0 or second == 0 or first == second
+
+class Evaluator(Expression[] nodes)
+    int | error .resolve(int expression_id, ScopeColumn[] scope)
+        node := nodes[expression_id]
+        table_found := node.table_name == ""
+        found := -1
+        for: i < #scope
+            entry := scope[i]
+            if node.table_name != "" and entry.table_name != node.table_name
+                continue
+            table_found = true
+            if entry.column.name == node.column_name
+                if found >= 0
+                    return error("ambiguous column " + node.column_name)
+                found = int(i)
+        if not table_found
+            return error("unknown table " + node.table_name)
+        if found < 0
+            return error("unknown column " + node.written)
+        nodes[expression_id].resolved = found
+        return found
+
+    int | error .check(int expression_id, ScopeColumn[] scope, bool aggregates, bool grouping, int[] group_columns, inside := false)
+        node := nodes[expression_id]
+        operation := node.operation
+        if operation == "literal"
+            return node.literal.kind
+        if operation == "column"
+            int column_id := try .resolve(expression_id, scope)
+            if grouping and not inside and not includes(group_columns, column_id)
+                return error("column " + node.written + " is not grouped")
+            return scope[column_id].column.type_id
+        if operation == "aggregate"
+            if not aggregates or inside
+                return error("misuse of aggregate " + node.written)
+    void | error .condition(int expression_id, string clause, ScopeColumn[] scope, bool aggregates, bool grouping, int[] group_columns)
+        if expression_id < 0
+            return
+        int type_id := try .check(expression_id, scope, aggregates, grouping, group_columns)
+        if not compatible(type_id, 1)
+            return error("type mismatch for " + clause)
+        return void
+    Value evaluate(int expression_id, Value[] row, Value[][] group)
+        node := nodes[expression_id]
+        operation := node.operation
+        if operation == "literal"
+            return node.literal
+        if operation == "column"
+            return row[node.resolved]
+    bool matches(int expression_id, Value[] row, Value[][] group)
+        return expression_id < 0 or evaluate(expression_id, row, group).truth() == 1
+class Database()
+    Table[] tables := []
+
+    int table_index(string name)
+        for: i < #tables
+            if tables[i].name == name
+                return int(i)
+        return -1
+
+    int | error require_table(string name)
+        int found := table_index(name)
+        if found < 0
+            return error("unknown table " + name)
+        return found
+
+    int[] | error target_columns(Table table, string[] targets)
+        int[] result := []
+        for target := targets[]
+            found := -1
+            for: i < #table.columns
+                if table.columns[i].name == target
+                    found = int(i)
+            if found < 0
+                return error("unknown column " + target)
+            if includes(result, found)
+                return error("duplicate column " + target)
+            result = result.append(found)
+        return result
+    void | error constraints(Table table, int[] checked_rows)
+        primary := -1
+        for: i < #table.columns
+            if table.columns[i].primary_count > 0
+                primary = int(i)
+        for row_id := checked_rows[]
+            row := table.rows[row_id]
+            for: i < #table.columns
+                if table.columns[i].not_null and row[i].kind == 0
+                    return error("NULL value in column " + table.columns[i].name)
+            if primary >= 0
+                for: other < #table.rows
+                    if int(other) != row_id and compare(table.rows[other][primary], row[primary]) == 0
+                        return error("duplicate primary key " + row[primary].written())
+        return void
+        int table_id := try require_table(statement.table_name)
+        modified := tables[table_id]
+        scope := [for column := modified.columns[] then ScopeColumn(modified.name, column)]
+        int[] targets := []
+        if command == "INSERT" or command == "UPDATE"
+            targets = try target_columns(modified, statement.targets)
+        int[] changed := []
+        else
+            if command == "UPDATE"
+                for: i < #statement.assignments
+                    type_id := try .evaluator.check(statement.assignments[i], scope, false, false, [])
+                    target := modified.columns[targets[i]]
+                    if not compatible(type_id, target.type_id)
+                        return error("type mismatch for column " + target.name)
+            try .evaluator.condition(statement.where_id, "WHERE", scope, false, false, [])
+            for: i < #modified.rows
+                original := modified.rows[i]
+                if evaluator.matches(statement.where_id, original, [])
+                    changed = changed.append(int(i))
+                    if command == "UPDATE"
+                        for: j < #targets
+                            modified.rows[i][targets[j]] = evaluator.evaluate(statement.assignments[j], original, [])
+        if command != "DELETE"
+            try constraints(modified, changed)
+        tables[table_id] = modified
+        action := if command == "INSERT" then "inserted" elif command == "UPDATE" then "updated" else "deleted"
+        return ["{#changed} " + (if #changed == 1 then "row " else "rows ") + action + "."]

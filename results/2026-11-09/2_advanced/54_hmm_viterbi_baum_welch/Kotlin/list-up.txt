@@ -1,0 +1,246 @@
+    class Model(val name: String,val states: CharArray,val symbols: CharArray,val missing: Char,pi: DoubleArray,a: Array<DoubleArray>,b: Array<DoubleArray>) {
+        val pi=normalize(pi);
+        val a=Array(a.size) {
+            normalize(a[it])
+        };
+        val b=Array(b.size) {
+            normalize(b[it])
+        }
+    }
+    data class Data(val model: Model,val sequences: List<String>,val labeled: List<String>,val params: Map<String,List<String>>)
+    fun normalize(values: DoubleArray): DoubleArray {
+        var sum=0.0;
+        for(value in values)sum+=value;
+        return DoubleArray(values.size) {
+            values[it]/sum
+        }
+    }
+    fun lines(name: String)=File("input/$name").readLines(Charsets.US_ASCII)
+    fun numbers(words: List<String>,start: Int)=words.drop(start).map(String::toDouble).toDoubleArray()
+    fun letters(line: String)=line.split(' ').drop(1).map {
+        it[0]
+    }.toCharArray()
+    fun read(): Data {
+        val input=lines("model.txt");
+        val states=letters(input[0]);
+        val symbols=letters(input[1]);
+        val missing=input[2].split(' ')[1][0];
+        val k=states.size;
+        val pi=numbers(input[3].split(' '),1);
+        val a=Array(k) {
+            numbers(input[4+it].split(' '),2)
+        };
+        val b=Array(k) {
+            numbers(input[4+k+it].split(' '),2)
+        };
+        val params=lines("params.txt").associate {
+            val words=it.split(' ');
+            words[0] to words.drop(1)
+        };
+        return Data(Model("INITIAL",states,symbols,missing,pi,a,b),lines("sequences.txt"),lines("labeled.txt"),params)
+    }
+    data class Forward(val values: Array<DoubleArray>,val scales: DoubleArray,val emissions: Array<DoubleArray>,val loglik: Double)
+    data class Fb(val forward: Array<DoubleArray>,val backward: Array<DoubleArray>,val scales: DoubleArray,
+        val emissions: Array<DoubleArray>,val gamma: Array<DoubleArray>,val loglik: Double)
+    data class Path(val states: IntArray,val logprob: Double)
+    data class Decoding(val viterbi: Path,val posterior: IntArray,val confidence: DoubleArray,val fb: Fb)
+    fun maximum(values: DoubleArray): Int {
+        var best=0;
+        for(i in 1 until values.size)if(values[i]>values[best])best=i;
+        return best
+    }
+    fun emission(model: ModelIo.Model,observed: Int,state: Int)=if(observed<0)1.0 else model.b[state][observed]
+    fun forward(model: ModelIo.Model,observations: IntArray): Forward {
+        val t=observations.size;
+        val k=model.states.size;
+        val values=Array(t) {
+            DoubleArray(k)
+        };
+        val emissions=Array(t) {
+            DoubleArray(k)
+        };
+        val scales=DoubleArray(t);
+        var loglik=0.0;
+        for(p in 0 until t) {
+            for(j in 0 until k) {
+                emissions[p][j]=emission(model,observations[p],j);
+                var value=0.0;
+                if(p==0)value=model.pi[j] else for(i in 0 until k)value+=values[p-1][i]*model.a[i][j];
+                values[p][j]=value*emissions[p][j];
+                scales[p]+=values[p][j]
+            };
+            for(j in 0 until k)values[p][j]/=scales[p];
+            loglik+=ln(scales[p])
+        };
+        return Forward(values,scales,emissions,loglik)
+    }
+    fun backward(model: ModelIo.Model,observations: IntArray): Fb {
+        val f=forward(model,observations);
+        val t=observations.size;
+        val k=model.states.size;
+        val g=Array(t) {
+            DoubleArray(k)
+        };
+        val gamma=Array(t) {
+            DoubleArray(k)
+        };
+        g[t-1].fill(1.0);
+        for(p in t-2 downTo 0)for(i in 0 until k) {
+            var sum=0.0;
+            for(j in 0 until k)sum+=model.a[i][j]*f.emissions[p+1][j]*g[p+1][j];
+            g[p][i]=sum/f.scales[p+1]
+        };
+        for(p in 0 until t)for(i in 0 until k)gamma[p][i]=f.values[p][i]*g[p][i];
+        return Fb(f.values,g,f.scales,f.emissions,gamma,f.loglik)
+    }
+    fun viterbi(model: ModelIo.Model,observations: IntArray): Path {
+        val t=observations.size;
+        val k=model.states.size;
+        val logA=Array(k) {
+            i->DoubleArray(k) {
+                j->ln(model.a[i][j])
+            }
+        };
+        var scores=DoubleArray(k) {
+            j->ln(model.pi[j])+if(observations[0]<0)0.0 else ln(model.b[j][observations[0]])
+        };
+        val previous=Array(t) {
+            IntArray(k)
+        };
+        for(p in 1 until t) {
+            val next=DoubleArray(k);
+            for(j in 0 until k) {
+                val candidates=DoubleArray(k) {
+                    i->scores[i]+logA[i][j]
+                };
+                val best=maximum(candidates);
+                previous[p][j]=best;
+                next[j]=candidates[best]+if(observations[p]<0)0.0 else ln(model.b[j][observations[p]])
+            };
+            scores=next
+        };
+        val path=IntArray(t);
+        path[t-1]=maximum(scores);
+        val logprob=scores[path[t-1]];
+        for(p in t-1 downTo 1)path[p-1]=previous[p][path[p]];
+        return Path(path,logprob)
+    }
+    fun decode(model: ModelIo.Model,observations: IntArray): Decoding {
+        val fb=backward(model,observations);
+        val path=viterbi(model,observations);
+        val posterior=IntArray(observations.size) {
+            maximum(fb.gamma[it])
+        };
+        val confidence=DoubleArray(observations.size) {
+            fb.gamma[it][posterior[it]]
+        };
+        return Decoding(path,posterior,confidence,fb)
+    }
+    fun accumulate(matrix: Array<IntArray>,truth: IntArray,prediction: IntArray) {
+        for(i in truth.indices)matrix[truth[i]][prediction[i]]++
+    }
+    fun correct(a: IntArray,b: IntArray)=a.indices.count {
+        a[it]==b[it]
+    }
+    fun observations(text: String)=IntArray(text.length) {
+        initial.symbols.indexOf(text[it])
+    }
+        seen.clear();
+        for(i in input.labeled.indices step 2) {
+            val words=input.labeled[i].split(' ');
+            val name=words[0];
+            val role=words[1];
+            val observed=words[2].uppercase();
+            val labels=input.labeled[i+1];
+            var error=if(!seen.add(name))"duplicate name" else observationError(observed);
+            if(error==null)for(t in labels.indices)if(labels[t] !in initial.states) {
+                error="invalid label ${labels[t]} at position ${t+1}";
+                break
+            };
+            if(error==null&&observed.length!=labels.length)error="length mismatch ${observed.length} ${labels.length}";
+            if(error==null)error=lengthError(observed);
+            if(error!=null) {
+                labeledRejected++;
+                rejections+="REJECT labeled.txt line ${i+1} $name $error"
+            } else {
+                val truth=IntArray(labels.length) {
+                    initial.states.indexOf(labels[it])
+                };
+                val record=Sequence(name,role,observations(observed),truth);
+                if(role=="TRAIN")train+=record else test+=record
+            }
+        }
+    }
+    fun decode(records: List<Sequence>)=Array(4) {
+        m->Array(records.size) {
+            i->Inference.decode(models[m],records[i].observations)
+        }
+    }
+    fun path(decoding: Inference.Decoding,decoder: Int)=if(decoder==0)decoding.viterbi.states else decoding.posterior
+    fun states(path: IntArray)=path.joinToString("") {
+        initial.states[it].toString()
+    }
+    fun evaluationReport(): List<String> {
+        val out=mutableListOf<String>();
+        val k=initial.states.size;
+        for(m in 0..3)for(decoder in 0..1) {
+            block(out,"EVALUATION ${models[m].name} ${if(decoder==0)"VITERBI" else "POSTERIOR"}");
+            val matrix=Array(k) {
+                IntArray(k)
+            };
+            val regions=IntArray(4);
+            val boundaries=IntArray(4);
+            val bins=IntArray(10);
+            val binCorrect=IntArray(10);
+            val recordCorrect=IntArray(test.size);
+            for(r in test.indices) {
+                val record=test[r];
+                val decoding=testDecoded[m][r];
+                val prediction=path(decoding,decoder);
+                recordCorrect[r]=Evaluation.correct(record.truth,prediction);
+                testCorrect[m][decoder]+=recordCorrect[r];
+                Evaluation.accumulate(matrix,record.truth,prediction);
+                val rc=Evaluation.regions(segments(prediction),truthRegions(record.truth));
+                val bc=Evaluation.boundaryMatches(prediction,record.truth,integer("boundary_tolerance"));
+                for(j in 0..3) {
+                    regions[j]+=rc[j];
+                    boundaries[j]+=bc[j]
+                };
+                if(decoder==1)for(t in prediction.indices) {
+                    val bin=minOf(9,floor(10*decoding.confidence[t]).toInt());
+                    bins[bin]++;
+                    if(prediction[t]==record.truth[t])binCorrect[bin]++
+                }
+            };
+            out.addAll(Evaluation.matrix(initial.states,matrix));
+            out.addAll(Evaluation.metrics(initial.states,matrix));
+            out+="REGIONS ${initial.states[segmentState]} predicted ${regions[0]} true ${regions[1]} precision ${Evaluation.fraction(regions[2],regions[0])} recall ${Evaluation.fraction(regions[3],regions[1])}";
+            out+="BOUNDARIES predicted ${boundaries[0]} true ${boundaries[1]} precision ${Evaluation.fraction(boundaries[2],boundaries[0])} recall ${Evaluation.fraction(boundaries[3],boundaries[1])}";
+            if(decoder==1)for(bin in 0..9)if(bins[bin]>0)out+="CALIBRATION 0.$bin-${if(bin==9)"1.0" else "0.${bin+1}"} positions ${bins[bin]} correct ${binCorrect[bin]} accuracy ${Evaluation.fraction(binCorrect[bin],bins[bin])}";
+            for(r in test.indices)out+="RECORD ${test[r].name} length ${test[r].observations.size} correct ${recordCorrect[r]}"
+        };
+    fun annotate() {
+        segmentLines+="sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island";
+        val random=Sampler.Random(integer("posterior_seed").toLong());
+        val posteriorCount=integer("posterior_samples");
+        val model=models[1];
+        for(r in sequences.indices) {
+            val record=sequences[r];
+            val decoding=unlabeledDecoded[1][r];
+            decodingLines+="VITERBI ${states(decoding.viterbi.states)}";
+            decodingLines+="POSTERIOR ${states(decoding.posterior)}";
+        val data=ModelIo.read();
+        initial=data.model;
+        params=data.params;
+        models=Array(4) {
+            initial
+        };
+        segmentState=initial.states.indexOf(word("segment_state")[0]);
+        validate(data);
+        unlabeledDecoded=decode(sequences);
+        testDecoded=decode(test);
+        trainDecoded=decode(train);
+        val evaluation=evaluationReport();
+        annotate();
+        ModelIo.write("decodings.txt",decodingLines);
+        ModelIo.write("evaluation.txt",evaluation);

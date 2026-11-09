@@ -1,0 +1,21 @@
+# Task B — signal events and next-period estimation
+
+The answer requirements are identical across languages: map I/MR ending sample positions to subgroup numbers; establish sorting and duplicate-number handling; explain the rolling last-end gap test rather than a total-span cap; establish inclusive event membership/number for an unsignalled interior subgroup; show which complete subgroup interval contributes to event summaries while signal records remain the actual signals; trace exclusion from next-period points, including retained phase-one points and I/MR sample expansion.
+
+## Source evidence and guarantees
+
+signal_group maps I/MR sample ends using subgroup_size. uniq.sort deduplicates/order IDs, and groups[-1][-1] is the latest signalled endpoint; appending to the last points array permits a long chain rather than a total-span cap. Event start/finish are points.first/last, original signals are selected by between?, and selected subgroup/sample slices cover the full inclusive interval for summaries. The event-number array is filled for every number in start..finish, independently from signal_counts used by the output. propose_limits rejects truthy event entries from phase2, adds full sample_numbers ranges for I_MR to retained family indexes, and invokes calculate_limits. Ruby arrays/hashes use reference objects, so the visible appends/update operations persist.
+
+Writing n for the source subgroup size, I/MR map the signal's ending sample e to floor((e−1)/n)+1; other monitored charts already use subgroup endpoints. For example n=5,e=6 maps to subgroup2, including an MR whose preceding sample belongs to subgroup1. Duplicate subgroup numbers do not create distinct event intervals, although distinct original signals can still be counted as signals. With gap2 and phase-two signalled groups3,6,6,9, the rolling gaps are6−3−1=2 and9−6−1=2: one event spans3..9 even though its total span exceeds2. Groups4,5,7,8 have no own signal but lie inside that event. They receive its number, contribute their measurements to interval-based summaries, and cannot be added as event-free phase-two data for the next-period estimates. This does not manufacture signal records for those interior groups. The next-period input combines the retained phase-one data with event-free phase-two groups; I/MR expand the latter to every sample in each accepted subgroup.
+
+## Necessity and minimization
+
+- `main.rb`: 21, 22, 23, 24, 25, 176, 177, 178, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 224, 225, 226, 227, 228, 229, 230, 231, 233, 235, 236, 238, 239, 240, 242, 243, 244, 246, 247, 248, 249, 250, 251, 252, 253, 398
+
+The selected endpoint mapping, deduplication/order, last-end update, inclusive membership, interval aggregation and proposal input selection each establish a different required boundary. A point-membership check alone would not prove summary or estimation behavior, so those consumers remain. Entire monitoring/rule algorithms, control-limit formulas, formatting, event-type tie resolution and unrelated attribute/capability calculations were considered and excluded: the question concerns data membership and propagation, rather than their numeric formulas. Language/library container ordering and slicing guarantees are used directly; custom interval/membership helpers are retained where needed. Full source lines and original per-file order are preserved, with no invented context or separators.
+
+The excerpt contains 938 tokens with `metric/tokenizer.py`. A fresh excerpt-only review checked every requirement, especially an interior unsignalled subgroup, deduplicated grouping versus real signals, the rolling gap and the next-period filter. No Task B modification was implemented and execution correctness was not claimed.
+
+## Task A source conformity review
+
+Remove Ruby magic comment to meet no-source-comments rule; explicit freeze operations remain. No literal-freeze introspection or required literal-string identity was found; intended file outputs are unchanged by source review. Source line counts were preserved for excerpt provenance. The current excerpt contains 938 tokens; edited Task A sources were remeasured. These are source-review corrections, not a claim of compilation or execution verification.

@@ -1,0 +1,509 @@
+BALANCES_HEADER = "wallet,address,balance,immature,locked,incoming,utxos"
+        self.max_reorg = int(values["MAXREORG"][0])
+class MempoolEntry:
+    def __init__(self, transaction, fee, arrival):
+        self.transaction = transaction
+        self.fee = fee
+        self.arrival = arrival
+def compare_priority(first, second):
+    left = first.fee * second.transaction.size
+    right = second.fee * first.transaction.size
+    if left != right:
+        return -1 if left > right else 1
+    if first.transaction.txid != second.transaction.txid:
+        return -1 if first.transaction.txid < second.transaction.txid else 1
+    return 0
+    def refresh_main_chain(self):
+        self.main_chain = chain_to(self.tip)
+        self.confirmed = {}
+        for record in self.main_chain:
+            for transaction in record.block.transactions:
+                self.confirmed[transaction.txid] = record.height
+    def log(self, *parts):
+        self.log_lines.append(" ".join(str(part) for part in (self.now, *parts)))
+    def next_height(self):
+        return self.tip.height + 1
+    def block_reward(self, height):
+        return reward(height, self.params.initial_reward, self.params.halving_interval)
+    def next_difficulty(self, parent):
+        return required_difficulty(
+            parent, self.params.initial_difficulty,
+            self.params.retarget_interval, self.params.target_spacing,
+        )
+    def is_mature(self, coin):
+        return coin.is_mature(self.next_height(), self.params.maturity)
+    def locked_references(self):
+        return {reference for entry in self.mempool for reference in entry.transaction.inputs}
+    def priority_order(self):
+        return sorted(self.mempool, key=cmp_to_key(compare_priority))
+    def find_entry(self, txid):
+        for entry in self.mempool:
+            if entry.transaction.txid == txid:
+                return entry
+        return None
+    def acceptance(self, transaction):
+        if transaction.is_coinbase():
+            return Acceptance("coinbase")
+        if transaction.txid in self.confirmed or self.find_entry(transaction.txid) is not None:
+            return Acceptance("duplicate")
+        reason, fee = check_transaction(
+            transaction, self.tip.utxo, set(), self.next_height(),
+            self.owners, self.params.maturity,
+        )
+        if reason is not None:
+            return Acceptance(reason)
+        size = transaction.size
+        if fee * 1000 < self.params.min_fee_rate * size:
+            return Acceptance("low-fee")
+        inputs = set(transaction.inputs)
+        conflicts = [
+            entry for entry in self.mempool
+            if any(reference in inputs for reference in entry.transaction.inputs)
+        ]
+        if conflicts:
+            pays_more = fee > sum(entry.fee for entry in conflicts)
+            higher_rate = all(fee * entry.transaction.size > entry.fee * size for entry in conflicts)
+            if not (pays_more and higher_rate):
+                return Acceptance("conflict")
+        return Acceptance(None, fee, conflicts)
+    def record_drop(self, txid, reason):
+        self.drop_record[txid] = reason
+        self.log("DROP", short(txid), reason)
+    def drop(self, entry, reason):
+        if entry in self.mempool:
+            self.mempool.remove(entry)
+        self.record_drop(entry.transaction.txid, reason)
+    def register(self, transaction, result, arrival):
+        for entry in result.conflicts:
+            self.drop(entry, "replaced")
+        self.mempool.append(MempoolEntry(transaction, result.fee, arrival))
+        if len(self.mempool) > self.params.mempool_limit:
+            self.drop(self.priority_order()[-1], "mempool-full")
+    def rebuild_mempool(self, returned):
+        previous = self.mempool
+        self.mempool = []
+        candidates = [(transaction, self.now, True) for transaction in returned]
+        candidates += [(entry.transaction, entry.arrival, False) for entry in previous]
+        for transaction, arrival, is_returned in candidates:
+            if transaction.txid in self.confirmed:
+                continue
+            result = self.acceptance(transaction)
+            if result.reason is not None:
+                self.record_drop(transaction.txid, result.reason)
+                continue
+            if is_returned:
+                self.log("RETURN", short(transaction.txid))
+            self.register(transaction, result, arrival)
+    def switch_tip(self, target):
+        old_tip = self.tip
+        fork = fork_point(old_tip, target)
+        disconnected = old_tip.height - fork.height
+        connected = target.height - fork.height
+        if disconnected > self.params.max_reorg:
+            self.log(
+                "REFUSE", target.height, short(target.hash), "work", target.cumulative_work,
+                "fork", fork.height, "depth", disconnected,
+            )
+            return
+        returned = []
+        for record in self.main_chain[fork.height + 1:]:
+            returned.extend(record.block.transactions[1:])
+        self.tip = target
+        self.refresh_main_chain()
+        if disconnected == 0:
+            self.log("TIP", target.height, short(target.hash), "work", target.cumulative_work)
+        else:
+            self.log(
+                "REORG", target.height, short(target.hash), "work", target.cumulative_work,
+                "fork", fork.height, "disconnected", disconnected, "connected", connected,
+            )
+            self.reorganizations.append(Reorganization(
+                self.now, fork.height, disconnected, connected, old_tip.hash, target.hash,
+            ))
+        self.rebuild_mempool(returned)
+    def expire(self):
+        for entry in list(self.mempool):
+            if self.now - entry.arrival >= self.params.expiry:
+                self.drop(entry, "expired")
+    def process(self, fields, texts):
+        self.now = int(fields[0])
+        self.expire()
+        kind = fields[1]
+        else:
+            peer = self.peer(fields[2])
+            if peer.score >= self.params.ban_score:
+                peer.ignored += 1
+                self.log("IGNORE", peer.name, kind)
+            elif kind == "TX":
+                self.receive_transaction(peer, parse_transaction(fields[3]))
+            else:
+                self.receive_block(peer, parse_block_event(fields, texts))
+    def receive_block(self, peer, block):
+        if block.hash in self.records or self.is_orphan(block.hash) or block.hash in self.rejected:
+            self.log("BLOCK", peer.name, block.height, short(block.hash), "rejected", "duplicate")
+            peer.rejected_blocks += 1
+            self.tally("block", "duplicate")
+            return
+        reason = context_free_error(block, self.params.max_block_size)
+        if reason is None and block.previous in self.rejected:
+            reason = "bad-parent"
+        if reason is not None:
+            self.reject_block("BLOCK", block, peer, reason)
+            self.resolve_orphans(block.hash)
+            return
+        if block.previous not in self.records:
+            self.orphans.append(Orphan(block, peer))
+            peer.orphaned_blocks += 1
+            self.log(
+                "BLOCK", peer.name, block.height, short(block.hash),
+                "orphan", "parent", short(block.previous),
+            )
+            if len(self.orphans) > self.params.orphan_limit:
+                evicted = self.orphans.pop(0)
+                self.log("EVICT", short(evicted.block.hash), "orphan-limit")
+            return
+        self.connect_block("BLOCK", block, peer)
+        self.resolve_orphans(block.hash)
+    def validate_block(self, block, parent):
+        if block.height != parent.height + 1:
+            return "bad-height", None, None
+        if block.difficulty != self.next_difficulty(parent):
+            return "bad-difficulty", None, None
+        if block.timestamp <= median_time(parent):
+            return "time-too-old", None, None
+        if block.timestamp > self.now + self.params.drift:
+            return "time-too-new", None, None
+        utxo = dict(parent.utxo)
+        spent = set()
+        fees = []
+        for position, transaction in enumerate(block.transactions[1:], 2):
+            reason, fee = check_transaction(
+                transaction, utxo, spent, block.height, self.owners, self.params.maturity
+            )
+            if reason is not None:
+                return f"{reason} tx {position}", None, None
+            spent.update(transaction.inputs)
+            apply_transaction(utxo, transaction, block.height)
+            fees.append(fee)
+        coinbase = block.transactions[0]
+        for address, amount in coinbase.outputs:
+            if address not in self.owners or amount == 0:
+                return "bad-output tx 1", None, None
+        if coinbase.output_total() > self.block_reward(block.height) + sum(fees):
+            return "bad-coinbase", None, None
+        apply_transaction(utxo, coinbase, block.height)
+        return None, utxo, fees
+    def connect_block(self, kind, block, peer):
+        parent = self.records[block.previous]
+        reason, utxo, fees = self.validate_block(block, parent)
+        if reason is not None:
+            self.reject_block(kind, block, peer, reason)
+            return
+        record = BlockRecord(block, parent, utxo, fees, peer.name)
+        self.records[record.hash] = record
+        peer.accepted_blocks += 1
+        self.log(
+            kind, peer.name, block.height, short(block.hash),
+            "accepted", "work", record.cumulative_work,
+        )
+        if record.cumulative_work > self.tip.cumulative_work:
+            self.switch_tip(record)
+    def resolve_orphans(self, start):
+        queue = deque([start])
+        while queue:
+            parent_hash = queue.popleft()
+            children = [orphan for orphan in self.orphans if orphan.block.previous == parent_hash]
+            for orphan in children:
+                self.orphans.remove(orphan)
+                if parent_hash in self.rejected:
+                    self.reject_block("UNORPHAN", orphan.block, orphan.peer, "bad-parent")
+                else:
+                    self.connect_block("UNORPHAN", orphan.block, orphan.peer)
+                queue.append(orphan.block.hash)
+def block_lines(node, record):
+    block = record.block
+    miner = "-" if record.height == 0 else node.owners[miner_address(record)].name
+    lines = [
+        f"BLOCK {block.height} {block.hash} prev {short(block.previous)} time {block.timestamp} "
+        f"bits {block.difficulty} nonce {block.nonce} txs {len(block.transactions)} "
+        f"size {block.size()} fees {record.fees} miner {miner} source {record.source} "
+        f"work {record.cumulative_work}"
+    ]
+    for position, transaction in enumerate(block.transactions, 1):
+        if transaction.is_coinbase():
+            category = "genesis" if block.height == 0 else "coinbase"
+            lines.append(
+                f"TX {position} {transaction.txid} {category} out {len(transaction.outputs)} "
+                f"amount {transaction.output_total()}"
+            )
+        else:
+            lines.append(
+                f"TX {position} {transaction.txid} payment in {len(transaction.inputs)} "
+                f"out {len(transaction.outputs)} size {transaction.size} "
+                f"fee {record.transaction_fees[position - 2]}"
+            )
+    return lines
+def chain_lines(node):
+    tip = node.tip
+    lines = [
+        f"TIP {tip.height} {tip.hash} work {tip.cumulative_work} "
+        f"stored {len(node.records)} orphans {len(node.orphans)}"
+    ]
+    for record in node.main_chain:
+        lines.extend(block_lines(node, record))
+    main_hashes = {record.hash for record in node.main_chain}
+    stale = [record for record in node.records.values() if record.hash not in main_hashes]
+    stale.sort(key=lambda record: (record.height, record.hash))
+    for record in stale:
+        lines.append(
+            f"STALE {record.height} {record.hash} prev {short(record.block.previous)} "
+            f"source {record.source} work {record.cumulative_work}"
+        )
+    for entry in node.reorganizations:
+        lines.append(
+            f"REORG {entry.time} fork {entry.fork_height} disconnected {entry.disconnected} "
+            f"connected {entry.connected} old {short(entry.old_hash)} new {short(entry.new_hash)}"
+        )
+    for rank, entry in enumerate(node.priority_order(), 1):
+        transaction = entry.transaction
+        lines.append(
+            f"MEMPOOL {rank} {transaction.txid} fee {entry.fee} size {transaction.size} "
+            f"time {entry.arrival}"
+        )
+    return lines
+def balance_lines(node):
+    locked = node.locked_references()
+    lines = [BALANCES_HEADER]
+    for wallet in node.wallets:
+        coins = [
+            (reference, coin) for reference, coin in node.tip.utxo.items()
+            if coin.address == wallet.address
+        ]
+        balance = sum(coin.amount for _, coin in coins)
+        immature = sum(coin.amount for _, coin in coins if not node.is_mature(coin))
+        locked_amount = sum(coin.amount for reference, coin in coins if reference in locked)
+        incoming = sum(
+            amount for entry in node.mempool
+            for address, amount in entry.transaction.outputs if address == wallet.address
+        )
+        lines.append(
+            f"{wallet.name},{wallet.address},{balance},{immature},{locked_amount},"
+            f"{incoming},{len(coins)}"
+        )
+    return lines
+def coin_category(coin):
+    if coin.height == 0:
+        return "genesis"
+    return "coinbase" if coin.coinbase else "payment"
+def coin_state(node, reference, coin, locked):
+    if not node.is_mature(coin):
+        return "immature"
+    return "locked" if reference in locked else "free"
+def utxo_lines(node):
+    locked = node.locked_references()
+    utxo = node.tip.utxo
+    lines = []
+    for reference in sorted(utxo):
+        coin = utxo[reference]
+        txid, index = reference
+        lines.append(
+            f"{txid}:{index} {node.owners[coin.address].name} {coin.amount} "
+            f"height {coin.height} {coin_category(coin)} {coin_state(node, reference, coin, locked)}"
+        )
+    total = sum(coin.amount for coin in utxo.values())
+    root = merkle_root([digest(line) for line in lines])
+    return lines + [f"TOTAL {len(utxo)} {total}", f"ROOT {root}"]
+def transaction_category(transaction, height):
+    if not transaction.is_coinbase():
+        return "payment"
+    return "genesis" if height == 0 else "coinbase"
+def wallet_history(node, wallet, confirmed):
+    lines = [f"WALLET {wallet.name} {wallet.address}"]
+    count = 0
+    spent_total = 0
+    received_total = 0
+    balance = 0
+    for record in node.main_chain:
+        for transaction in record.block.transactions:
+            spent = 0
+            involved = False
+            for txid, index in transaction.inputs:
+                address, amount = confirmed[txid].outputs[index]
+                if address == wallet.address:
+                    spent += amount
+                    involved = True
+            received = 0
+            for address, amount in transaction.outputs:
+                if address == wallet.address:
+                    received += amount
+                    involved = True
+            if not involved:
+                continue
+            count += 1
+            spent_total += spent
+            received_total += received
+            balance += received - spent
+            lines.append(
+                f"{record.height} {short(transaction.txid)} "
+                f"{transaction_category(transaction, record.height)} spent {spent} "
+                f"received {received} net {signed(received - spent)} balance {balance}"
+            )
+    pending = 0
+    for entry in node.priority_order():
+        transaction = entry.transaction
+        spent = sum(
+            node.tip.utxo[reference].amount for reference in transaction.inputs
+            if node.tip.utxo[reference].address == wallet.address
+        )
+        received = sum(
+            amount for address, amount in transaction.outputs if address == wallet.address
+        )
+        if spent != 0 or received != 0:
+            pending += 1
+            lines.append(
+                f"pending {short(transaction.txid)} spent {spent} received {received} "
+                f"net {signed(received - spent)}"
+            )
+    lines.append(
+        f"END {wallet.name} txs {count} spent {spent_total} received {received_total} "
+        f"balance {balance} pending {pending}"
+    )
+    return lines
+def history_lines(node):
+    confirmed = {}
+    for record in node.main_chain:
+        for transaction in record.block.transactions:
+            confirmed[transaction.txid] = transaction
+    lines = []
+    for wallet in node.wallets:
+        lines.extend(wallet_history(node, wallet, confirmed))
+    return lines
+def read_events(path):
+    lines = read_lines(path)
+    events = []
+    position = 0
+    while position < len(lines):
+        fields = lines[position].split()
+        count = int(fields[9]) if fields[1] == "BLOCK" else 0
+        events.append((fields, lines[position + 1:position + 1 + count]))
+        position += 1 + count
+    return events
+    for fields, texts in read_events(os.path.join(INPUT_DIR, "events.txt")):
+        node.process(fields, texts)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    write_lines("log.txt", node.log_lines)
+    write_lines("chain.txt", chain_lines(node))
+    write_lines("balances.csv", balance_lines(node))
+    write_lines("utxo.txt", utxo_lines(node))
+    write_lines("history.txt", history_lines(node))
+class BlockRecord:
+    def __init__(self, block, parent, utxo, transaction_fees, source):
+        self.block = block
+        self.parent = parent
+        self.utxo = utxo
+        self.transaction_fees = transaction_fees
+        self.fees = sum(transaction_fees)
+        self.source = source
+        self.height = block.height
+        self.hash = block.hash
+        if parent is None:
+            self.cumulative_work = 1
+        else:
+            self.cumulative_work = parent.cumulative_work + 16 ** block.difficulty
+def ancestor(record, height):
+    while record.height > height:
+        record = record.parent
+    return record
+def chain_to(record):
+    records = []
+    while record is not None:
+        records.append(record)
+        record = record.parent
+    records.reverse()
+    return records
+def fork_point(first, second):
+    height = min(first.height, second.height)
+    first = ancestor(first, height)
+    second = ancestor(second, height)
+    while first is not second:
+        first = first.parent
+        second = second.parent
+    return first
+class Block:
+    def __init__(self, height, previous, merkle, timestamp, difficulty, nonce, transactions):
+        self.height = height
+        self.previous = previous
+        self.merkle = merkle
+        self.timestamp = timestamp
+        self.difficulty = difficulty
+        self.nonce = nonce
+        self.transactions = transactions
+        self.hash = digest(header_text(height, previous, merkle, timestamp, difficulty, nonce))
+    def size(self):
+        return sum(transaction.size for transaction in self.transactions[1:])
+    def txids(self):
+        return [transaction.txid for transaction in self.transactions]
+def header_text(height, previous, merkle, timestamp, difficulty, nonce):
+    return f"{height}|{previous}|{merkle}|{timestamp}|{difficulty}|{nonce}"
+def meets_difficulty(block_hash, difficulty):
+    return block_hash.startswith("0" * difficulty)
+def parse_block_event(fields, texts):
+    height, previous, merkle, timestamp, difficulty, nonce = fields[3:9]
+    transactions = [parse_transaction(text) for text in texts]
+    return Block(
+        int(height), previous, merkle, int(timestamp), int(difficulty), int(nonce), transactions
+    )
+def context_free_error(block, max_size):
+    if not meets_difficulty(block.hash, block.difficulty):
+        return "bad-pow"
+    if merkle_root(block.txids()) != block.merkle:
+        return "bad-merkle"
+    first = block.transactions[0]
+    if not first.is_coinbase() or first.coinbase_height != block.height:
+        return "bad-structure"
+    if any(transaction.is_coinbase() for transaction in block.transactions[1:]):
+        return "bad-structure"
+    if block.size() > max_size:
+        return "too-large"
+    return None
+    def is_coinbase(self):
+        return self.coinbase_height is not None
+    def body(self):
+        return self.text[:self.text.index(";sig=")]
+    def output_total(self):
+        return sum(amount for _, amount in self.outputs)
+class Coin:
+    def __init__(self, address, amount, height, coinbase):
+        self.address = address
+        self.amount = amount
+        self.height = height
+        self.coinbase = coinbase
+    def is_mature(self, height, maturity):
+        return not self.coinbase or self.height == 0 or height >= self.height + maturity
+def check_transaction(transaction, utxo, spent, height, owners, maturity):
+    for address, amount in transaction.outputs:
+        if address not in owners or amount == 0:
+            return "bad-output", 0
+    body = transaction.body()
+    seen = set()
+    total = 0
+    for index, reference in enumerate(transaction.inputs):
+        if reference in spent or reference in seen:
+            return "double-spend", 0
+        if reference not in utxo:
+            return "missing-input", 0
+        coin = utxo[reference]
+        if not coin.is_mature(height, maturity):
+            return "immature", 0
+        if transaction.signatures[index] != sign(owners[coin.address].secret, index, body):
+            return "bad-sig", 0
+        seen.add(reference)
+        total += coin.amount
+    if total < transaction.output_total():
+        return "overspend", 0
+    return None, total - transaction.output_total()
+def apply_transaction(utxo, transaction, height):
+    for reference in transaction.inputs:
+        del utxo[reference]
+    for index, (address, amount) in enumerate(transaction.outputs):
+        utxo[(transaction.txid, index)] = Coin(address, amount, height, transaction.is_coinbase())

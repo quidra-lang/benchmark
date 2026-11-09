@@ -1,0 +1,15 @@
+function main()
+    text = "The cat sat on the mat. The dog sat on the rug, and the cat watched the dog. A bird sang on the fence, and the Dog barked at the bird. The cat slept in the sun, the bird flew away, and the dog sat by the door."
+    frequencies = Dict{String,Int}()
+    for match in eachmatch(r"[a-z]+", lowercase(text))
+        word = String(match.match)
+        frequencies[word] = get(frequencies, word, 0)+1
+    end
+    ordered = sort(collect(keys(frequencies)); by = word -> (-frequencies[word], word))
+    for word in ordered[1:5]
+        println(word, ": ", frequencies[word])
+    end
+    println("distinct words: ", length(frequencies))
+end
+
+main()

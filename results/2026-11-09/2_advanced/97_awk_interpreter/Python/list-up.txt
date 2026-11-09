@@ -1,0 +1,648 @@
+Token = namedtuple("Token", "kind spelling value position")
+KEYWORDS = frozenset("BEGIN END function if else while for do break continue next exit return delete in getline print printf".split())
+BUILTINS = frozenset("length substr index split sprintf toupper tolower close int".split())
+PAIRS = frozenset(("+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=", "!=", "++", "--", "&&", "||", ">>"))
+SYMBOLS = frozenset("+-*/%^!><?:=()[]{},;$")
+ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", '"': '"', "/": "/"}
+def tokenize(source):
+    tokens = []
+    index, line, column = 0, 1, 1
+    while index < len(source):
+        character = source[index]
+        start = line, column
+        if character == " ":
+            index += 1
+            column += 1
+            continue
+        if character == "\n":
+            tokens.append(Token("newline", "\n", None, start))
+            index += 1
+            line += 1
+            column = 1
+            continue
+        end = index + 1
+        value = None
+        if digit(character):
+            while end < len(source) and digit(source[end]):
+                end += 1
+            kind, value = "number", int(source[index:end])
+        elif letter(character):
+            while end < len(source) and (letter(source[end]) or digit(source[end])):
+                end += 1
+            word = source[index:end]
+            if word in KEYWORDS:
+                kind = "keyword"
+            elif word in BUILTINS:
+                kind = "builtin"
+            else:
+                kind = "function_name" if end < len(source) and source[end] == "(" else "name"
+        elif character == '"':
+            pieces = []
+            while end < len(source) and source[end] != '"':
+                if source[end] == "\n":
+                    raise SyntaxIssue(start)
+                if source[end] == "\\":
+                else:
+                    pieces.append(source[end])
+                    end += 1
+            if end == len(source):
+                raise SyntaxIssue(start)
+            end += 1
+            kind, value = "string", "".join(pieces)
+        elif character in SYMBOLS:
+            kind = "symbol"
+        else:
+            raise SyntaxIssue(start)
+        tokens.append(Token(kind, source[index:end], value, start))
+        column += end - index
+        index = end
+    tokens.append(Token("end", "", None, (source.count("\n") + 1, 1)))
+    return tokens
+ASSIGNMENTS = frozenset(("=", "+=", "-=", "*=", "/=", "%=", "^="))
+COMPARISONS = frozenset(("<", "<=", "==", "!=", ">=", ">"))
+LVALUE_KINDS = frozenset(("name", "array", "field"))
+STATEMENTS = frozenset(("if", "while", "do", "for", "for_in", "print", "printf", "delete",
+                        "next", "break", "continue", "exit", "return", "expression_statement"))
+class Node:
+    def __init__(self, kind, position, children=(), **fields):
+        self.kind, self.position = kind, position
+        self.children = [child for child in children if child is not None]
+        self.__dict__.update(fields)
+class Parser:
+    def __init__(self, tokens):
+        self.tokens, self.position = tokens, 0
+        self.function = False
+        self.phase = None
+        self.loop_depth = 0
+
+    def peek(self):
+        return self.tokens[self.position]
+
+    def take(self):
+        token = self.peek()
+        self.position += 1
+    def accept(self, spelling):
+        return self.take() if self.peek().spelling == spelling else None
+
+    def expect(self, spelling):
+        if self.peek().spelling != spelling:
+            self.fail()
+        return self.take()
+    def name(self):
+        if self.peek().kind != "name":
+            self.fail()
+        token = self.take()
+        return Node("name", token.position, name=token.spelling)
+
+    def newlines(self):
+        while self.accept("\n"):
+            pass
+    def parse(self):
+        items = []
+        while self.peek().kind != "end":
+            if self.peek().spelling in ("\n", ";"):
+                self.take()
+                continue
+            start = self.peek()
+            patterns = []
+            if start.spelling in ("BEGIN", "END"):
+                flavor = self.take().spelling
+            elif start.spelling == "{":
+                flavor = "all"
+            self.phase = flavor
+            if flavor in ("BEGIN", "END", "all") or self.peek().spelling == "{":
+                action = self.block()
+            else:
+                if self.peek().spelling not in ("\n", ";") and self.peek().kind != "end":
+                    self.fail()
+                action = None
+            self.phase = None
+            items.append(Node("rule", start.position, [*patterns, action], flavor=flavor,
+                              patterns=patterns, action=action))
+        return items
+    def block(self):
+        opening = self.expect("{")
+        statements = []
+        while self.peek().spelling != "}":
+            if self.peek().spelling in ("\n", ";"):
+                self.take()
+            else:
+                statements.append(self.statement())
+        self.expect("}")
+        return Node("block", opening.position, statements, statements=statements)
+    def terminator(self):
+        if self.peek().spelling in (";", "\n"):
+            self.take()
+        elif self.peek().spelling != "}":
+            self.fail()
+
+    def statement(self):
+        token = self.peek()
+        spelling = token.spelling
+        if spelling == "{":
+            return self.block()
+        if self.accept(";"):
+            return Node("empty", token.position)
+        if spelling in ("print", "printf"):
+            self.take()
+            result = self.output_statement(token)
+        else:
+            expression = self.expression()
+            result = Node("expression_statement", token.position, [expression], expression=expression)
+        self.terminator()
+        return result
+    def parenthesized_output(self):
+        if self.peek().spelling != "(":
+            return False
+    def output_statement(self, token):
+        arguments = []
+        if self.parenthesized_output():
+            self.expect("(")
+            arguments = self.expression_list()
+            self.expect(")")
+        elif self.peek().spelling not in (";", "\n", "}", ">", ">>"):
+            arguments = self.expression_list(greater=False)
+        redirect = self.take() if self.peek().spelling in (">", ">>") else None
+        filename = self.concatenation() if redirect is not None else None
+        return Node(token.spelling, token.position, [*arguments, filename], arguments=arguments,
+                    redirect=redirect.spelling if redirect else None,
+                    redirect_position=redirect.position if redirect else None, filename=filename)
+
+    def expression_list(self, greater=True):
+        result = [self.expression(greater)]
+        while self.accept(","):
+            self.newlines()
+            result.append(self.expression(greater))
+        return result
+
+    def expression(self, greater=True):
+        left = self.conditional(greater)
+        if left.kind in LVALUE_KINDS and self.peek().spelling in ASSIGNMENTS:
+            operator = self.take()
+            right = self.expression(greater)
+            return Node("assignment", operator.position, [left, right], operator=operator.spelling,
+                        location=left, value=right)
+        return left
+    def conditional(self, greater):
+        condition = self.logical(0, greater)
+        operator = self.accept("?")
+        if operator is None:
+            return condition
+    def logical(self, level, greater):
+        if level == 2:
+            return self.membership(greater)
+        operator_name = "||" if level == 0 else "&&"
+        left = self.logical(level + 1, greater)
+        return left
+    def membership(self, greater):
+        left = self.comparison(greater)
+        return left
+    def comparison(self, greater):
+        left = self.concatenation()
+        while self.peek().spelling in COMPARISONS and (greater or self.peek().spelling != ">"):
+        return left
+    def concatenation(self):
+        left = self.additive()
+        while self.peek().kind in ("number", "string", "name", "function_name", "builtin") or self.peek().spelling in ("$", "(", "++", "--"):
+            position = self.peek().position
+        return left
+    def additive(self):
+        left = self.multiplicative()
+        while self.peek().spelling in ("+", "-"):
+        return left
+    def multiplicative(self):
+        left = self.unary()
+        while self.peek().spelling in ("*", "/", "%"):
+        return left
+    def unary(self):
+        if self.peek().spelling in ("!", "-", "+"):
+            operator = self.take()
+        left = self.postfix()
+        if self.peek().spelling == "^":
+            operator = self.take()
+            left = self.binary(operator, left, self.unary())
+        return left
+    def postfix(self):
+        if self.peek().spelling in ("++", "--"):
+            return self.prefix()
+        left = self.atom()
+        if left.kind in LVALUE_KINDS and self.peek().spelling in ("++", "--"):
+            operator = self.take()
+        return left
+    def lvalue(self):
+        if self.peek().kind == "name":
+            node = self.name()
+            return node
+        dollar = self.accept("$")
+        if dollar is not None:
+            index = self.prefix() if self.peek().spelling in ("++", "--") else self.atom()
+            return Node("field", dollar.position, [index], index=index)
+        self.fail()
+    def atom(self):
+        token = self.peek()
+        if token.kind in ("number", "string"):
+            self.take()
+            return Node(token.kind, token.position, value=token.value)
+        if token.kind == "name" or token.spelling == "$":
+            return self.lvalue()
+Value = namedtuple("Value", "kind text numeric")
+UNINITIALIZED = Value("uninitialized", None, 0)
+WHITESPACE = " \t\n"
+
+
+def number(value):
+    return Value("number", None, value)
+
+
+def string(value):
+    return Value("string", value, None)
+def input_value(text):
+    trimmed = text.strip(WHITESPACE)
+    digits = trimmed[1:] if trimmed.startswith(("+", "-")) else trimmed
+    if digits and all("0" <= character <= "9" for character in digits):
+        return Value("strnum", text, numeric_prefix(trimmed))
+    return string(text)
+
+
+def to_number(value):
+    return numeric_prefix(value.text) if value.kind == "string" else value.numeric
+
+
+def to_string(value):
+    if value.kind == "number":
+        return str(value.numeric)
+    if value.kind == "uninitialized":
+        return ""
+    return value.text
+def split_pieces(text, separator):
+    if not text:
+        return []
+    if separator == "":
+        return list(text)
+    if separator != " ":
+        return text.split(separator)
+class Record:
+    def __init__(self, special):
+        self.special = special
+        self.zero = string("")
+        self.fields = []
+
+    def set(self, text):
+        self.zero = input_value(text)
+        separator = to_string(self.special("FS"))
+        self.fields = [input_value(piece) for piece in split_pieces(text, separator)]
+
+    def read(self, index):
+        if index == 0:
+            return self.zero
+        return self.fields[index - 1] if index <= len(self.fields) else UNINITIALIZED
+
+    def rebuild(self):
+        separator = to_string(self.special("OFS"))
+        self.zero = input_value(separator.join(to_string(value) for value in self.fields))
+
+    def write(self, index, value):
+        if index == 0:
+            self.set(to_string(value))
+            return
+        if index > len(self.fields):
+            self.fields.extend(string("") for _ in range(index - len(self.fields)))
+        self.fields[index - 1] = value
+        self.rebuild()
+
+    def resize(self, size):
+        if size < len(self.fields):
+            del self.fields[size:]
+        else:
+            self.fields.extend(string("") for _ in range(size - len(self.fields)))
+        self.rebuild()
+def quoted(text):
+    parts = ['"']
+    escapes = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\t": "\\t"}
+    for character in text:
+        if character in escapes:
+            parts.append(escapes[character])
+        elif 32 <= ord(character) <= 126:
+            parts.append(character)
+        else:
+            parts.append("\\" + format(ord(character), "03o"))
+    parts.append('"')
+    return "".join(parts)
+
+
+def describe(value):
+    if value.kind == "number":
+        return str(value.numeric)
+    if value.kind == "uninitialized":
+        return "(uninitialized)"
+    return quoted(value.text) + (" (strnum)" if value.kind == "strnum" else "")
+class Operand:
+    def __init__(self, kind, name, value=None):
+        self.kind, self.name, self.value = kind, name, value
+        self.records = 0
+
+
+def parse_arguments(text):
+    options, operands = [], []
+    for line in text.splitlines():
+        if line.startswith("-F "):
+            options.append(("FS", line[3:]))
+        elif line.startswith("-v "):
+            name, value = line[3:].split("=", 1)
+            options.append((name, value))
+        elif "=" in line and valid_name(line.split("=", 1)[0]):
+            name, value = line.split("=", 1)
+            operands.append(Operand("assignment", name, value))
+        else:
+            operands.append(Operand("file", line))
+    return options, operands
+
+
+def read_records(name):
+    return Path("input", name).read_text(encoding="ascii").splitlines()
+class Output:
+    def __init__(self):
+        self.parts = []
+        self.open = False
+        self.writes = 0
+
+    def append(self, text):
+        self.parts.append(text)
+        self.writes += 1
+
+    def content(self):
+        return "".join(self.parts)
+class Streams:
+    def __init__(self):
+        self.stdout = Output()
+        self.outputs = {}
+        self.inputs = {}
+
+    def write(self, text, name=None, mode=None, position=None):
+        if name is None:
+            self.stdout.append(text)
+            return
+    def save(self):
+        output = Path("output")
+        output.mkdir(exist_ok=True)
+        (output / "stdout.txt").write_text(self.stdout.content(), encoding="ascii", newline="\n")
+        for name, stream in self.outputs.items():
+            (output / name).write_text(stream.content(), encoding="ascii", newline="\n")
+SPECIAL_NAMES = frozenset(("FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"))
+class Analysis:
+    def __init__(self, items):
+        self.items = items
+        self.functions = [item for item in items if item.kind == "function"]
+        self.rules = [item for item in items if item.kind == "rule"]
+        self.function_table = {}
+        self.global_names = set(SPECIAL_NAMES)
+        self.bindings = {(None, name) for name in SPECIAL_NAMES}
+        self.array_names = set()
+        self.statement_lines = set()
+        self.nodes = []
+        self.errors = []
+    def resolve(self, node, function):
+        local = function is not None and node.name in function.parameter_names
+        binding = (function if local else None, node.name)
+        node.binding = binding
+        self.bindings.add(binding)
+        if not local:
+            self.global_names.add(node.name)
+        if node.name in self.function_table:
+            self.error(node.position, 2, f"function {node.name} used as variable")
+
+    def collect(self):
+        for item in self.items:
+            function = item if item.kind == "function" else None
+            pending = [item]
+            while pending:
+                node = pending.pop()
+                self.nodes.append(node)
+                if node.kind in STATEMENTS:
+                    self.statement_lines.add(node.position[0])
+                if node.kind in ("name", "array", "parameter"):
+                    self.resolve(node, function)
+                elif node.kind == "call":
+                pending.extend(reversed(node.children))
+    def prepare(self):
+        self.declarations()
+        self.collect()
+        if self.errors:
+            position, priority, message = min(self.errors)
+            raise StaticIssue(position, message)
+        self.arrays()
+        return self
+class Engine:
+    def __init__(self, analysis, options, operands):
+        self.analysis, self.options, self.operands = analysis, options, operands
+        self.global_names = set(analysis.global_names)
+        self.globals = {name: {} if (None, name) in analysis.array_names else UNINITIALIZED
+                        for name in self.global_names}
+        self.globals.update(FILENAME=string(""), FNR=number(0), FS=string(" "), NF=number(0),
+                            NR=number(0), OFS=string(" "), ORS=string("\n"), SUBSEP=string(chr(28)))
+        self.locals = []
+        self.record = Record(lambda name: self.globals[name])
+        self.streams = Streams()
+        self.lines = {line: 0 for line in analysis.statement_lines}
+        self.phase = "BEGIN"
+        self.exit_status = 0
+        self.error = None
+        self.operand_position = 0
+        self.current_operand = None
+        self.input_lines = []
+        self.input_position = 0
+        for rule in analysis.rules:
+            rule.count = 0
+            rule.inside = False
+    def variable(self, binding):
+        scope, name = binding
+        if scope is not None:
+            return self.locals[-1][name]
+        if name == "NF":
+            return number(len(self.record.fields))
+        return self.globals[name]
+
+    def global_value(self, name):
+        return self.variable((None, name))
+
+    def assign_global_input(self, name, text):
+        self.global_names.add(name)
+        self.globals[name] = input_value(text)
+    def location(self, node):
+        if node.kind == "name":
+            return "variable", node.binding
+        if node.kind == "array":
+        index = to_number(self.evaluate(node.index))
+        if index < 0:
+            raise RuntimeIssue(node.position, "negative field index")
+        return "field", index
+
+    def read(self, location):
+        kind = location[0]
+        if kind == "variable":
+            return self.variable(location[1])
+        if kind == "field":
+            return self.record.read(location[1])
+    def store(self, location, value, position):
+        kind = location[0]
+        if kind == "field":
+            self.record.write(location[1], value)
+        else:
+            scope, name = location[1]
+            if scope is not None:
+                self.locals[-1][name] = value
+            elif name == "NF":
+                size = to_number(value)
+                if size < 0:
+                    raise RuntimeIssue(position, "negative NF")
+                self.record.resize(size)
+            else:
+                self.globals[name] = value
+    def evaluate(self, node):
+        kind = node.kind
+        if kind == "number":
+            return number(node.value)
+        if kind == "string":
+            return string(node.value)
+        if kind in ("name", "array", "field"):
+            return self.read(self.location(node))
+        if kind == "paren":
+            return self.evaluate(node.expression)
+        if kind == "assignment":
+            location = self.location(node.location)
+            value = self.evaluate(node.value)
+            if node.operator != "=":
+                value = arithmetic(node.operator[:-1], self.read(location), value, node.position)
+            self.store(location, value, node.position)
+            return self.read(location)
+    def output(self, node):
+        arguments = [self.evaluate(argument) for argument in node.arguments]
+        if node.kind == "print":
+            if not arguments:
+                arguments = [self.record.zero]
+            separator = to_string(self.global_value("OFS"))
+            text = separator.join(to_string(value) for value in arguments)
+            text += to_string(self.global_value("ORS"))
+        filename = to_string(self.evaluate(node.filename)) if node.filename is not None else None
+        self.streams.write(text, filename, node.redirect, node.redirect_position)
+    def statement(self, node):
+        kind = node.kind
+        if kind == "block":
+            for child in node.statements:
+                self.statement(child)
+            return
+        if kind == "empty":
+            return
+        self.lines[node.position[0]] += 1
+        if kind == "expression_statement":
+            self.evaluate(node.expression)
+        elif kind in ("print", "printf"):
+            self.output(node)
+    def next_record(self):
+        while True:
+            if self.input_position < len(self.input_lines):
+                line = self.input_lines[self.input_position]
+                self.input_position += 1
+                self.current_operand.records += 1
+                self.globals["NR"] = number(to_number(self.global_value("NR")) + 1)
+                self.globals["FNR"] = number(to_number(self.global_value("FNR")) + 1)
+                return line
+            if self.operand_position == len(self.operands):
+                return None
+            operand = self.operands[self.operand_position]
+            self.operand_position += 1
+            if operand.kind == "assignment":
+                self.assign_global_input(operand.name, operand.value)
+            else:
+                self.current_operand = operand
+                self.input_lines = read_records(operand.name)
+                self.input_position = 0
+                self.globals["FILENAME"] = string(operand.name)
+                self.globals["FNR"] = number(0)
+
+    def run_actions(self, phase):
+        self.phase = phase
+        for rule in self.analysis.rules:
+            if rule.flavor == phase:
+                rule.count += 1
+                self.statement(rule.action)
+
+    def matches(self, rule):
+        if rule.flavor == "all":
+            return True
+    def run_records(self):
+        if not any(rule.flavor != "BEGIN" for rule in self.analysis.rules):
+            return
+        self.phase = "records"
+        rules = [rule for rule in self.analysis.rules if rule.flavor not in ("BEGIN", "END")]
+        while True:
+            line = self.next_record()
+            if line is None:
+                return
+            self.record.set(line)
+            try:
+                for rule in rules:
+                    if self.matches(rule):
+                        rule.count += 1
+                        if rule.action is None:
+                            text = to_string(self.record.zero) + to_string(self.global_value("ORS"))
+                            self.streams.write(text)
+                        else:
+                            self.statement(rule.action)
+    def execute(self):
+        try:
+            for name, text in self.options:
+                self.assign_global_input(name, text)
+            try:
+                self.run_actions("BEGIN")
+                self.run_records()
+            except Transfer as transfer:
+                if transfer.kind != "exit":
+                    raise
+            try:
+                self.run_actions("END")
+            except Transfer as transfer:
+                if transfer.kind != "exit":
+                    raise
+        except RuntimeIssue as error:
+            self.error = error
+    def statistics(self):
+        if self.error is None:
+            status = f"status: exit {self.exit_status}"
+        else:
+            line, column = self.error.position
+            status = f"status: runtime error at {line}:{column}: {self.error.message}"
+        lines = [status, "[inputs]"]
+        for operand in self.operands:
+            if operand.kind == "file":
+                lines.append(f"{operand.name} records={operand.records}")
+        lines.append("[rules]")
+        for rule in self.analysis.rules:
+            line, column = rule.position
+            lines.append(f"{line}:{column} {rule.flavor} count={rule.count}")
+        lines.append("[outputs]")
+        stdout = self.streams.stdout
+        lines.append(f"stdout.txt writes={stdout.writes} bytes={len(stdout.content())}")
+        lines.append("[lines]")
+        for line in sorted(self.lines):
+            lines.append(f"{line} count={self.lines[line]}")
+        lines.append("[globals]")
+        for name in sorted(self.global_names):
+            value = self.global_value(name)
+            text = f"array ({len(value)})" if (None, name) in self.analysis.array_names else describe(value)
+            lines.append(f"{name} = {text}")
+        return lines
+def main():
+    sys.setrecursionlimit(100000)
+    options, operands = parse_arguments(Path("input/args.txt").read_text(encoding="ascii"))
+    source = Path("input/program.awk").read_text(encoding="ascii")
+    try:
+        items = Parser(tokenize(source)).parse()
+        analysis = Analysis(items).prepare()
+    else:
+        engine = Engine(analysis, options, operands)
+        engine.execute()
+        statistics = engine.statistics()
+        streams = engine.streams
+    streams.save()
+    Path("output/stats.txt").write_text("\n".join(statistics) + "\n", encoding="ascii", newline="\n")

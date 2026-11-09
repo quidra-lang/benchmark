@@ -1,0 +1,371 @@
+LOT_RULES <- c("LFL", "FOQ", "POQ", "MIN")
+lot_values <- function(rule, text) {
+  values <- as.numeric(strsplit(text, "/", fixed = TRUE)[[1L]])
+  fits <- if (rule == "LFL") length(values) == 1L && values[1L] == 0 else if (rule == "MIN") {
+    length(values) == 2L && all(values >= 1)
+  } else length(values) == 1L && values[1L] >= 1
+  if (fits) values else NULL
+}
+lot_label <- function(item) {
+  if (item$rule == "LFL") return("LFL")
+  paste(item$rule, paste(integer_text(item$lot), collapse = if (item$rule == "MIN") "/" else ""))
+}
+read_items <- function(errors) {
+  items <- list()
+  for (row in read_rows("items.csv")) {
+    fields <- row$fields
+    id <- fields[1L]
+    rule <- fields[3L]
+    reason <- if (id %in% names(items)) paste("duplicate item", id) else if (!rule %in% LOT_RULES) paste("unknown lot rule", rule) else NULL
+    lot <- if (is.null(reason)) lot_values(rule, fields[4L]) else NULL
+    if (is.null(reason) && is.null(lot)) reason <- paste("bad lot parameter", fields[4L], "for", rule)
+    if (!is.null(reason)) {
+      record_error(errors, "items.csv", row$line, reason)
+      next
+    }
+    items[[id]] <- list(id = id, lead_time = as.integer(fields[2L]), rule = rule, lot = lot,
+                        safety_stock = as.numeric(fields[5L]), on_hand = as.numeric(fields[6L]),
+                        material = as.numeric(fields[7L]), labor = as.numeric(fields[8L]), description = fields[9L])
+  }
+  items
+}
+need <- function(row, quantity) integer_divide(quantity * row$qty_per * (100 + row$scrap) + 99, 100)
+read_bom <- function(items, errors) {
+  bom <- list(children = setNames(rep(list(list()), length(items)), names(items)),
+              parents = setNames(rep(list(list()), length(items)), names(items)))
+  for (input in read_rows("bom.csv")) {
+    fields <- input$fields
+    parent <- fields[1L]
+    child <- fields[2L]
+    quantity <- as.numeric(fields[3L])
+    scrap <- as.numeric(fields[4L])
+    reason <- if (!parent %in% names(items)) paste("unknown item", parent) else if (!child %in% names(items)) paste("unknown item", child) else if (quantity < 1) {
+      paste("bad quantity", integer_text(quantity))
+    } else if (scrap > 50) paste("bad scrap", integer_text(scrap)) else if (parent == child) paste("cycle", parent, "->", parent) else if (any(vapply(bom$children[[parent]], function(row) row$child == child, logical(1L)))) {
+      paste("duplicate", parent, "->", child)
+    } else NULL
+    if (is.null(reason)) {
+      path <- find_path(bom, child, parent)
+      if (!is.null(path)) reason <- paste("cycle", parent, "->", paste(path, collapse = " -> "))
+    }
+    if (!is.null(reason)) {
+      record_error(errors, "bom.csv", input$line, reason)
+      next
+    }
+    row <- list(parent = parent, child = child, qty_per = quantity, scrap = scrap)
+    children <- c(bom$children[[parent]], list(row))
+    bom$children[[parent]] <- children[order(vapply(children, function(row) row$child, character(1L)), method = "radix")]
+    parents <- c(bom$parents[[child]], list(row))
+    bom$parents[[child]] <- parents[order(vapply(parents, function(row) row$parent, character(1L)), method = "radix")]
+  }
+  bom
+}
+low_level_codes <- function(bom, items) {
+  codes <- integer()
+  code <- function(id) {
+    if (id %in% names(codes)) return(codes[[id]])
+    value <- 0L
+    for (row in bom$parents[[id]]) value <- max(value, code(row$parent) + 1L)
+    codes[id] <<- value
+    value
+  }
+  for (id in names(items)) code(id)
+  codes
+}
+read_workcenters <- function(errors) {
+  centers <- list()
+  for (row in read_rows("workcenters.csv")) {
+    fields <- row$fields
+    id <- fields[1L]
+    efficiency <- as.numeric(fields[3L])
+    reason <- if (id %in% names(centers)) paste("duplicate center", id) else if (efficiency < 50 || efficiency > 150) paste("bad efficiency", integer_text(efficiency)) else NULL
+    if (!is.null(reason)) {
+      record_error(errors, "workcenters.csv", row$line, reason)
+      next
+    }
+    minutes <- as.numeric(fields[2L])
+    centers[[id]] <- list(id = id, minutes = minutes, efficiency = efficiency,
+                          available = integer_divide(minutes * efficiency, 100), description = fields[4L])
+  }
+  centers
+}
+read_routings <- function(items, centers, bom, errors) {
+  routings <- setNames(rep(list(list()), length(items)), names(items))
+  for (row in read_rows("routings.csv")) {
+    fields <- row$fields
+    id <- fields[1L]
+    number <- as.integer(fields[2L])
+    center <- fields[3L]
+    run <- as.numeric(fields[5L])
+    reason <- if (!id %in% names(items)) paste("unknown item", id) else if (!center %in% names(centers)) paste("unknown center", center) else if (!length(bom$children[[id]])) {
+      paste("purchased item", id)
+    } else if (run < 1) paste("bad run time", integer_text(run)) else if (any(vapply(routings[[id]], function(operation) operation$number == number, logical(1L)))) paste("duplicate", id, "operation", number) else NULL
+    if (!is.null(reason)) {
+      record_error(errors, "routings.csv", row$line, reason)
+      next
+    }
+    routings[[id]] <- c(routings[[id]], list(list(item = id, number = number, center = center,
+                                                setup = as.numeric(fields[4L]), run = run)))
+  }
+  lapply(routings, function(operations) operations[order(vapply(operations, function(operation) operation$number, integer(1L)))])
+}
+operation_week <- function(receipt, lead_time, index, count) max(receipt - lead_time + as.integer(integer_divide(index * lead_time, count)), 1L)
+operation_minutes <- function(operation, quantity) operation$setup + quantity * operation$run
+lot_size <- function(item, week, projected, receipts, gross, horizon) {
+  net <- item$safety_stock - projected
+  if (item$rule == "LFL") return(net)
+integer_divide <- function(a, b) {
+  quotient <- floor(a / b)
+  while (quotient * b > a) quotient <- quotient - 1
+  while ((quotient + 1) * b <= a) quotient <- quotient + 1
+  quotient
+}
+integer_text <- function(value) sprintf("%.0f", value)
+text_line <- function(...) {
+  paste(vapply(list(...), function(value) if (is.numeric(value)) integer_text(value) else value, character(1L)), collapse = " ")
+}
+read_rows <- function(name) {
+  lines <- readLines(file.path("input", name), warn = FALSE)
+  lapply(seq_len(length(lines) - 1L), function(index) list(line = index + 1L, fields = strsplit(lines[index + 1L], ",", fixed = TRUE)[[1L]]))
+}
+read_params <- function() {
+  result <- list()
+  for (line in readLines("input/params.txt", warn = FALSE)) {
+    words <- strsplit(line, " ", fixed = TRUE)[[1L]]
+    if (words[1L] == "horizon") result$horizon <- as.integer(words[2L])
+    else if (words[1L] == "peg") result$peg_items <- words[-1L]
+    else result$tree_quantity <- as.numeric(words[2L])
+  }
+  result
+}
+schedule_error <- function(id, week, quantity, items, horizon) {
+  if (!id %in% names(items)) return(paste("unknown item", id))
+  if (week < 1L || week > horizon) return(paste("week", week, "outside horizon"))
+  if (quantity < 1) return(paste("bad quantity", integer_text(quantity)))
+  NULL
+}
+read_schedule <- function(file, items, horizon, errors, unique_weeks) {
+  valid <- list()
+  seen <- character()
+  for (row in read_rows(file)) {
+    fields <- row$fields
+    id <- fields[1L]
+    week <- as.integer(fields[2L])
+    quantity <- as.numeric(fields[3L])
+    key <- paste(id, week, sep = "/")
+    reason <- schedule_error(id, week, quantity, items, horizon)
+    if (is.null(reason) && unique_weeks && key %in% seen) reason <- paste("duplicate", id, "week", week)
+    if (!is.null(reason)) record_error(errors, file, row$line, reason)
+    else {
+      valid[[length(valid) + 1L]] <- list(item = id, week = week, quantity = quantity, line = row$line)
+      seen <- c(seen, key)
+    }
+  }
+  valid
+}
+read_inquiries <- function(items, horizon, errors) {
+  valid <- list()
+  seen <- character()
+  for (row in read_rows("orders.csv")) {
+    fields <- row$fields
+    id <- fields[1L]
+    item <- fields[2L]
+    quantity <- as.numeric(fields[3L])
+    week <- as.integer(fields[4L])
+    reason <- if (id %in% seen) paste("duplicate order", id) else schedule_error(item, week, quantity, items, horizon)
+    if (!is.null(reason)) record_error(errors, "orders.csv", row$line, reason)
+    else {
+      valid[[length(valid) + 1L]] <- list(id = id, item = item, quantity = quantity, week = week, line = row$line)
+      seen <- c(seen, id)
+    }
+  }
+  valid
+}
+new_demand <- function(item, kind, week, quantity, order_id = "", line = 0L, parent = "", parent_number = 0L) {
+  list(item = item, kind = kind, week = week, quantity = quantity, order_id = order_id, line = line, parent = parent, parent_number = parent_number)
+}
+read_data <- function() {
+  data <- read_params()
+  errors <- new.env(parent = emptyenv())
+  errors$lines <- character()
+  data$items <- read_items(errors)
+  data$bom <- read_bom(data$items, errors)
+  data$centers <- read_workcenters(errors)
+  data$routings <- read_routings(data$items, data$centers, data$bom, errors)
+  mps <- read_schedule("mps.csv", data$items, data$horizon, errors, TRUE)
+  receipts <- read_schedule("receipts.csv", data$items, data$horizon, errors, FALSE)
+  data$inquiries <- read_inquiries(data$items, data$horizon, errors)
+  data$errors <- errors$lines
+  data$mps_demands <- lapply(mps, function(row) new_demand(row$item, "MPS", row$week, row$quantity))
+  data$codes <- low_level_codes(data$bom, data$items)
+  data$cumulative <- cumulative_lead_times(data$bom, data$items)
+  ids <- sort(names(data$items), method = "radix")
+  data$planning_order <- ids[order(data$codes[ids], seq_along(ids), method = "radix")]
+  data$center_order <- sort(names(data$centers), method = "radix")
+  data$weeks <- seq_len(data$horizon)
+  data$receipts <- setNames(rep(list(list()), length(ids)), ids)
+  data$scheduled <- setNames(rep(list(numeric(data$horizon)), length(ids)), ids)
+  if (length(receipts)) receipts <- receipts[order(vapply(receipts, function(row) row$week, integer(1L)), vapply(receipts, function(row) row$line, integer(1L)))]
+  for (row in receipts) {
+    data$receipts[[row$item]] <- c(data$receipts[[row$item]], list(row))
+    data$scheduled[[row$item]][row$week] <- data$scheduled[[row$item]][row$week] + row$quantity
+  }
+  data
+}
+run_mrp <- function(data, order_demands) {
+  plans <- lapply(data$items, function(item) list(item = item, receipts = data$scheduled[[item$id]], demands = list(), gross = numeric(data$horizon),
+                                               on_hand = numeric(data$horizon), net = numeric(data$horizon), planned_receipts = numeric(data$horizon),
+                                               planned_releases = numeric(data$horizon), orders = list()))
+  for (demand in c(data$mps_demands, order_demands)) plans[[demand$item]]$demands <- c(plans[[demand$item]]$demands, list(demand))
+  for (id in data$planning_order) {
+    plan <- plans[[id]]
+    item <- plan$item
+    for (demand in plan$demands) plan$gross[demand$week] <- plan$gross[demand$week] + demand$quantity
+    projected <- item$on_hand
+    for (week in data$weeks) {
+      available <- projected + plan$receipts[week] - plan$gross[week]
+      projected <- available
+      if (available < item$safety_stock) {
+        quantity <- lot_size(item, week, available, plan$receipts, plan$gross, data$horizon)
+        release <- week - item$lead_time
+        order <- list(item = id, number = length(plan$orders) + 1L, receipt = week, quantity = quantity, original_release = release, release = max(1L, release))
+        plan$orders[[length(plan$orders) + 1L]] <- order
+        plan$net[week] <- item$safety_stock - available
+        plan$planned_receipts[week] <- quantity
+        plan$planned_releases[order$release] <- plan$planned_releases[order$release] + quantity
+        projected <- available + quantity
+      }
+      plan$on_hand[week] <- projected
+    }
+    plans[[id]] <- plan
+    for (order in plan$orders) for (row in data$bom$children[[id]]) {
+      demand <- new_demand(row$child, "DEPENDENT", order$release, need(row, order$quantity), parent = id, parent_number = order$number)
+      plans[[row$child]]$demands <- c(plans[[row$child]]$demands, list(demand))
+    }
+  }
+  loads <- setNames(rep(list(numeric(data$horizon)), length(data$centers)), names(data$centers))
+  for (id in data$planning_order) {
+    operations <- data$routings[[id]]
+    for (order in plans[[id]]$orders) for (index in seq_along(operations)) {
+      operation <- operations[[index]]
+      week <- operation_week(order$receipt, data$items[[id]]$lead_time, index - 1L, length(operations))
+      loads[[operation$center]][week] <- loads[[operation$center]][week] + operation_minutes(operation, order$quantity)
+    }
+  }
+  overloads <- lapply(names(loads), function(center) pmax(0, loads[[center]] - data$centers[[center]]$available))
+  names(overloads) <- names(loads)
+  list(items = plans, loads = loads, overloads = overloads)
+}
+past_due_quantity <- function(plan) sum(vapply(plan$orders, function(order) if (order$original_release < 1L) order$quantity else 0, numeric(1L)))
+material_reason <- function(data, current, trial) {
+  for (id in data$planning_order) if (past_due_quantity(trial$items[[id]]) > past_due_quantity(current$items[[id]])) return(id)
+  NULL
+}
+capacity_reason <- function(data, current, trial) {
+  for (id in data$center_order) for (week in data$weeks) if (trial$overloads[[id]][week] > current$overloads[[id]][week]) return(paste(id, "week", week))
+  NULL
+}
+promise_inquiries <- function(data, base) {
+  current <- base
+  promised <- promises <- list()
+  for (inquiry in data$inquiries) {
+    promise <- list(inquiry = inquiry, week = 0L, material_week = 0L, reason = "")
+    for (week in seq.int(inquiry$week, data$horizon)) {
+      demand <- new_demand(inquiry$item, "ORDER", week, inquiry$quantity, inquiry$id, inquiry$line)
+      trial <- run_mrp(data, c(promised, list(demand)))
+      reason <- material_reason(data, current, trial)
+      if (is.null(reason)) {
+        if (!promise$material_week) promise$material_week <- week
+        reason <- capacity_reason(data, current, trial)
+      }
+      if (is.null(reason)) {
+        promise$week <- week
+        promised <- c(promised, list(demand))
+        current <- trial
+        break
+      }
+      if (week == inquiry$week) promise$reason <- reason
+    }
+    promises[[length(promises) + 1L]] <- promise
+  }
+  list(promises = promises, final = current)
+}
+grid_lines <- function(data, plan) {
+  lines <- character()
+  for (id in data$planning_order) {
+    item_plan <- plan$items[[id]]
+    item <- item_plan$item
+    lines <- c(lines, text_line("ITEM", id, "LLC", data$codes[[id]], "LT", item$lead_time, "LOT", lot_label(item), "SS", item$safety_stock, "OH", item$on_hand, item$description),
+                table_row("WEEK", data$weeks, 6L), table_row("GROSS", item_plan$gross, 6L), table_row("RECEIPTS", item_plan$receipts, 6L),
+                table_row("ON_HAND", item_plan$on_hand, 6L), table_row("NET", item_plan$net, 6L), table_row("PLAN_RCPT", item_plan$planned_receipts, 6L), table_row("PLAN_REL", item_plan$planned_releases, 6L),
+                text_line("TOTAL gross", sum(item_plan$gross), "receipts", sum(item_plan$receipts), "planned", sum(item_plan$planned_receipts), "orders", length(item_plan$orders), "ending", item_plan$on_hand[data$horizon]))
+  }
+  lines
+}
+capacity_lines <- function(data, plan) {
+  lines <- character()
+  totals <- numeric()
+  for (id in data$center_order) {
+    center <- data$centers[[id]]
+    loads <- plan$loads[[id]]
+    overloads <- plan$overloads[[id]]
+    leveled <- level_loads(loads, center$available)
+    total <- sum(loads)
+    totals[id] <- total
+    available <- center$available * data$horizon
+    peak <- if (total > 0) which.max(loads) else 0L
+    lines <- c(lines, text_line("CENTER", id, "minutes", center$minutes, "efficiency", center$efficiency, "available", center$available, center$description),
+                table_row("WEEK", data$weeks, 7L), table_row("LOAD", loads, 7L), table_row("UTIL", percent(loads, center$available), 7L),
+                table_row("OVER", overloads, 7L), table_row("LEVELED", leveled, 7L),
+                text_line("TOTAL load", total, "available", available, "utilization", percent(total, available), "overloaded", sum(overloads > 0),
+                          "peak", peak, "backlog", max(0, leveled[1L] - center$available)))
+  }
+  lines
+}
+promise_lines <- function(data, promises, base, final) {
+  lines <- character()
+  counts <- c(on_time = 0L, late = 0L, rejected = 0L)
+  for (promise in promises) {
+    inquiry <- promise$inquiry
+    status <- if (!promise$week) "rejected" else if (promise$week == inquiry$week) "on_time" else "late"
+    counts[status] <- counts[status] + 1L
+    head <- text_line("ORDER", inquiry$id, inquiry$item, "quantity", inquiry$quantity, "requested", inquiry$week)
+    material <- if (promise$material_week) integer_text(promise$material_week) else "none"
+    if (status == "rejected") {
+      lines <- c(lines, text_line(head, "rejected material", material, "reason", promise$reason))
+      next
+    }
+    if (status == "on_time") lines <- c(lines, text_line(head, "promised", promise$week))
+    else lines <- c(lines, text_line(head, "promised", promise$week, "late", promise$week - inquiry$week, "material", material, "reason", promise$reason))
+    for (id in data$planning_order) {
+      item_plan <- final$items[[id]]
+      for (index in item_plan$order_supply_indices) {
+        supply <- item_plan$supplies[[index]]
+        if (!any(vapply(supply$roots, function(root) root$kind == "ORDER" && root$order_id == inquiry$id, logical(1L)))) next
+        order <- supply$order
+        lines <- c(lines, paste0("  ", text_line("SUPPLY", id, "order", order$number, "receipt", order$receipt, "release", order$release, "quantity", order$quantity)))
+      }
+    }
+  }
+  for (id in data$planning_order) {
+    before <- base$items[[id]]
+    after <- final$items[[id]]
+    changed <- which(before$planned_receipts != after$planned_receipts)
+    if (length(changed)) lines <- c(lines, text_line("CHANGE", id, "from", changed[1L], "planned", sum(before$planned_receipts), "->", sum(after$planned_receipts), "orders", length(before$orders), "->", length(after$orders)))
+  }
+  c(lines, text_line("SUMMARY orders", length(promises), "on_time", counts[["on_time"]], "late", counts[["late"]], "rejected", counts[["rejected"]]))
+}
+  data <- read_data()
+  base <- run_mrp(data, list())
+  result <- promise_inquiries(data, base)
+  final <- peg_plan(data, result$final)
+  write_report("mrp_grid.txt", grid_lines(data, final))
+  write_report("capacity.txt", capacity_lines(data, final))
+  write_report("promises.txt", promise_lines(data, result$promises, base, final))
+table_row <- function(label, values, width) {
+  paste0(sprintf("%-10s", label), paste(sprintf(paste0("%", width, ".0f"), values), collapse = ""))
+}
+write_report <- function(name, lines) {
+  dir.create("output", showWarnings = FALSE)
+  writeLines(lines, file.path("output", name), useBytes = TRUE)
+}

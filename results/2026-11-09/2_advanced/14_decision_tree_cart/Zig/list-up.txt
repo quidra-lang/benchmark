@@ -1,0 +1,343 @@
+pub fn eq(first: []const u8, second: []const u8) bool { return std.mem.eql(u8, first, second); }
+pub fn number(word: []const u8) i64 { return std.fmt.parseInt(i64, word, 10) catch unreachable; }
+pub fn n(value: anytype) i64 { return @intCast(value); }
+pub fn split(source: []const u8, separator: u8) Strings {
+    var parts: std.ArrayList([]const u8) = .empty;
+    var iterator = std.mem.splitScalar(u8, source, separator);
+    while (iterator.next()) |part| append([]const u8, &parts, part);
+    return parts.items;
+}
+pub fn lines(source: []const u8) Strings { const parts = split(source, '\n'); return parts[0 .. parts.len - 1]; }
+pub const Attribute = struct { name: []const u8, integer: bool, values: Strings };
+pub const Row = struct { id: []const u8, values: [12]i64 = [_]i64{-1} ** 12, label: usize };
+pub const Rows = struct {
+    values: [500]*const Row = undefined,
+    len: usize = 0,
+    pub fn add(self: *Rows, row: *const Row) void { self.values[self.len] = row; self.len += 1; }
+    pub fn slice(self: *const Rows) []const *const Row { return self.values[0..self.len]; }
+};
+pub const Settings = struct {
+    max_depth: usize, min_split: usize, min_leaf: usize, max_surrogates: usize, folds: usize, curve: []usize,
+    bag_trees: usize, bag_seed: i64, repeats: usize, permutation_seed: i64,
+};
+pub const Dataset = struct { attributes: []Attribute, target: []const u8, classes: Strings, train: []Row, validation: []Row, test: []Row, settings: Settings };
+fn position(names: Strings, name: []const u8) usize {
+    for (names, 0..) |candidate, i| { if (eq(candidate, name)) return i; }
+    unreachable;
+}
+fn readRows(source: []const u8, attributes: []const Attribute, classes: Strings) []Row {
+    var rows: std.ArrayList(Row) = .empty;
+    for (lines(source)[1..]) |line| {
+        const fields = split(line, ',');
+        var row: Row = .{ .id = fields[0], .label = position(classes, fields[fields.len - 1]) };
+        for (attributes, 0..) |attribute, i| {
+            const field = fields[i + 1];
+            row.values[i] = if (eq(field, "?")) -1 else if (attribute.integer) number(field) else n(position(attribute.values, field));
+        }
+        append(Row, &rows, row);
+    }
+    return rows.items;
+}
+pub fn rowSequence(rows: []const Row) Rows {
+    var result: Rows = .{};
+    for (rows) |*row| result.add(row);
+    return result;
+}
+pub fn load(io: std.Io) !Dataset {
+    const directory = std.Io.Dir.cwd();
+    const schema = lines(try directory.readFileAlloc(io, "input/schema.txt", allocator, .unlimited));
+    var attributes: std.ArrayList(Attribute) = .empty;
+    for (schema[0 .. schema.len - 1]) |line| {
+        const fields = split(line, ' ');
+        append(Attribute, &attributes, .{ .name = fields[1], .integer = eq(fields[2], "INT"), .values = fields[3..] });
+    }
+    const class_fields = split(schema[schema.len - 1], ' ');
+    const parameters = lines(try directory.readFileAlloc(io, "input/params.txt", allocator, .unlimited));
+    var settings: [10]Strings = undefined;
+    for (parameters, &settings) |line, *fields| fields.* = split(line, ' ')[1..];
+    const curve = alloc(usize, settings[5].len);
+    for (settings[5], curve) |word, *value| value.* = integer(word);
+    var data: Dataset = .{
+        .attributes = attributes.items, .target = class_fields[1], .classes = class_fields[2..], .train = undefined, .validation = undefined, .test = undefined,
+        .settings = .{ .max_depth = integer(settings[0][0]), .min_split = integer(settings[1][0]), .min_leaf = integer(settings[2][0]), .max_surrogates = integer(settings[3][0]), .folds = integer(settings[4][0]), .curve = curve, .bag_trees = integer(settings[6][0]), .bag_seed = number(settings[7][0]), .repeats = integer(settings[8][0]), .permutation_seed = number(settings[9][0]) },
+    };
+    data.train = readRows(try directory.readFileAlloc(io, "input/train.csv", allocator, .unlimited), data.attributes, data.classes);
+    data.validation = readRows(try directory.readFileAlloc(io, "input/validation.csv", allocator, .unlimited), data.attributes, data.classes);
+    data.test = readRows(try directory.readFileAlloc(io, "input/test.csv", allocator, .unlimited), data.attributes, data.classes);
+    return data;
+}
+pub const Fraction = struct { numerator: i64, denominator: i64 };
+pub const Statistics = struct { counts: [6]i64 = [_]i64{0} ** 6, size: i64, squares: i64 = 0, errors: i64 = 0, prediction: usize = 0 };
+pub fn majority(counts: []const i64) usize {
+    var selected: usize = 0;
+    for (counts, 0..) |count, i| { if (count > counts[selected]) selected = i; }
+    return selected;
+}
+pub fn statistics(rows: D.Rows, classes: usize) Statistics {
+    var result: Statistics = .{ .size = D.n(rows.len) };
+    for (rows.slice()) |row| result.counts[row.label] += 1;
+    for (result.counts[0..classes]) |count| result.squares += count * count;
+    result.prediction = majority(result.counts[0..classes]);
+    result.errors = result.size - result.counts[result.prediction];
+    return result;
+}
+pub fn compare(first: Fraction, second: Fraction) i8 {
+    const a = first.numerator * second.denominator;
+    const b = second.numerator * first.denominator;
+    return if (a < b) -1 else if (a > b) 1 else 0;
+}
+pub fn evaluationValue(left: Statistics, right: Statistics) Fraction { return .{ .numerator = left.squares * right.size + right.squares * left.size, .denominator = left.size * right.size }; }
+pub fn improves(value: Fraction, parent: Statistics) bool { return value.numerator * parent.size > parent.squares * value.denominator; }
+pub const Split = struct { attribute: usize, point: i64 };
+pub const Surrogate = struct { split: Split, forward: bool, score: i64 };
+pub const Candidate = struct { split: Split, left: D.Rows = .{}, right: D.Rows = .{}, value: I.Fraction = .{ .numerator = 0, .denominator = 1 } };
+pub const Node = struct {
+    number: usize, depth: usize, stats: I.Statistics,
+    split: ?Split = null, default_left: bool = true,
+    surrogates: [11]Surrogate = undefined, surrogate_count: usize = 0,
+    left: ?*Node = null, right: ?*Node = null,
+};
+pub const Splits = struct { values: [500]Split = undefined, len: usize = 0 };
+pub fn goesLeft(data: *const D.Dataset, split: Split, row: *const D.Row) bool {
+    const value = row.values[split.attribute];
+    return if (data.attributes[split.attribute].integer) 2 * value <= split.point else value == split.point;
+}
+pub fn candidates(data: *const D.Dataset, rows: D.Rows, attribute: usize) Splits {
+    var values: [500]i64 = undefined;
+    for (rows.slice(), 0..) |row, i| values[i] = row.values[attribute];
+    std.mem.sort(i64, values[0..rows.len], {}, std.sort.asc(i64));
+    var count: usize = 0;
+    for (0..rows.len) |i| {
+        if (i > 0 and values[i] == values[i - 1]) continue;
+        values[count] = values[i];
+        count += 1;
+    }
+    var result: Splits = .{};
+    if (count < 2) return result;
+    result.len = if (data.attributes[attribute].integer) count - 1 else count;
+    for (0..result.len) |i| result.values[i] = .{ .attribute = attribute, .point = if (data.attributes[attribute].integer) values[i] + values[i + 1] else values[i] };
+    return result;
+}
+pub const Builder = struct {
+    data: *const D.Dataset,
+    pub fn bestForAttribute(self: *const Builder, rows: D.Rows, attribute: usize) ?Candidate {
+        var best: ?Candidate = null;
+        const found = candidates(self.data, rows, attribute);
+        for (found.values[0..found.len]) |split| {
+            var candidate: Candidate = .{ .split = split };
+            for (rows.slice()) |row| { if (goesLeft(self.data, split, row)) candidate.left.add(row) else candidate.right.add(row); }
+            if (candidate.left.len < self.data.settings.min_leaf or candidate.right.len < self.data.settings.min_leaf) continue;
+            candidate.value = I.evaluationValue(I.statistics(candidate.left, self.data.classes.len), I.statistics(candidate.right, self.data.classes.len));
+            if (best == null or I.compare(candidate.value, best.?.value) > 0) best = candidate;
+        }
+        return best;
+    }
+    fn findSurrogates(self: *const Builder, rows: D.Rows, primary: Candidate, node: *Node) void {
+        var retained: [12]Surrogate = undefined;
+        var count: usize = 0;
+        for (0..self.data.attributes.len) |attribute| {
+            if (attribute == primary.split.attribute) continue;
+            var best: ?Surrogate = null;
+            const found = candidates(self.data, rows, attribute);
+            for (found.values[0..found.len]) |split| {
+                var agreement: i64 = 0;
+                for (rows.slice()) |row| { if (goesLeft(self.data, split, row) == goesLeft(self.data, primary.split, row)) agreement += 1; }
+                const reverse = D.n(rows.len) - agreement;
+                const current: Surrogate = .{ .split = split, .forward = agreement >= reverse, .score = @max(agreement, reverse) };
+                if (best == null or current.score > best.?.score) best = current;
+            }
+            if (best) |chosen| {
+                if (chosen.score <= D.n(@max(primary.left.len, primary.right.len))) continue;
+                var i = count;
+                count += 1;
+                while (i > 0 and retained[i - 1].score < chosen.score) : (i -= 1) retained[i] = retained[i - 1];
+                retained[i] = chosen;
+            }
+        }
+        node.surrogate_count = @min(count, self.data.settings.max_surrogates);
+        @memcpy(node.surrogates[0..node.surrogate_count], retained[0..node.surrogate_count]);
+    }
+    pub fn grow(self: *const Builder, rows: D.Rows, number: usize, depth: usize) *Node {
+        const node = D.create(Node, .{ .number = number, .depth = depth, .stats = I.statistics(rows, self.data.classes.len) });
+        if (node.stats.errors == 0 or depth == self.data.settings.max_depth or rows.len < self.data.settings.min_split) return node;
+        var best: ?Candidate = null;
+        for (0..self.data.attributes.len) |attribute| {
+            if (self.bestForAttribute(rows, attribute)) |candidate| { if (best == null or I.compare(candidate.value, best.?.value) > 0) best = candidate; }
+        }
+        const chosen = best orelse return node;
+        if (!I.improves(chosen.value, node.stats)) return node;
+        node.split = chosen.split;
+        node.default_left = chosen.left.len >= chosen.right.len;
+        self.findSurrogates(rows, chosen, node);
+        node.left = self.grow(chosen.left, 2 * number, depth + 1);
+        node.right = self.grow(chosen.right, 2 * number + 1, depth + 1);
+        return node;
+    }
+};
+pub const Method = enum { primary, surrogate, fallback };
+pub const Step = struct { node: *const B.Node, left: bool, method: Method };
+pub const Route = struct { leaf: *const B.Node = undefined, path: [11]*const B.Node = undefined, steps: [10]Step = undefined, len: usize = 0 };
+pub const Tree = struct {
+    root: *const B.Node, cuts: [2048]bool = [_]bool{false} ** 2048,
+    pub fn isLeaf(self: *const Tree, node: *const B.Node) bool { return node.split == null or self.cuts[node.number]; }
+    pub fn route(self: *const Tree, data: *const D.Dataset, row: *const D.Row) Route {
+        var result: Route = .{};
+        var node = self.root;
+        while (true) {
+            result.path[result.len] = node;
+            if (self.isLeaf(node)) { result.leaf = node; return result; }
+            var left = node.default_left;
+            var method: Method = .fallback;
+            const primary = node.split.?;
+            if (row.values[primary.attribute] >= 0) {
+                left = B.goesLeft(data, primary, row);
+                method = .primary;
+            } else {
+                for (node.surrogates[0..node.surrogate_count]) |surrogate| {
+                    if (row.values[surrogate.split.attribute] < 0) continue;
+                    left = B.goesLeft(data, surrogate.split, row) == surrogate.forward;
+                    method = .surrogate;
+                    break;
+                }
+            }
+            result.steps[result.len] = .{ .node = node, .left = left, .method = method };
+            result.len += 1;
+            node = if (left) node.left.? else node.right.?;
+        }
+    }
+    pub fn predict(self: *const Tree, data: *const D.Dataset, row: *const D.Row) usize { return self.route(data, row).leaf.stats.prediction; }
+    pub fn correct(self: *const Tree, data: *const D.Dataset, rows: D.Rows) i64 {
+        var result: i64 = 0;
+        for (rows.slice()) |row| { if (self.predict(data, row) == row.label) result += 1; }
+        return result;
+    }
+pub fn classification(data: *const D.Dataset, title: []const u8, rows: D.Rows, predictions: []const usize) D.Lines {
+    var matrix = [_][6]i64{[_]i64{0} ** 6} ** 6;
+    var correct: i64 = 0;
+    for (rows.slice(), 0..) |row, i| {
+        matrix[row.label][predictions[i]] += 1;
+        if (row.label == predictions[i]) correct += 1;
+    }
+    var result: D.Lines = .{};
+    result.add("confusion {s} correct {d}/{d} accuracy {s}", .{ title, correct, rows.len, fraction(.{ .numerator = correct, .denominator = D.n(rows.len) }, 4) });
+    var header: D.Text = .{};
+    header.write("actual\\predicted");
+    for (data.classes) |class| header.add(" {s}", .{class});
+    result.write(header.value());
+    for (data.classes, 0..) |class, k| result.add("{s} {s}", .{ class, countsText(matrix[k][0..data.classes.len]) });
+    var macro: f64 = 0;
+    var available: usize = 0;
+    for (data.classes, 0..) |class, k| {
+        var predicted: i64 = 0;
+        var support: i64 = 0;
+        for (0..data.classes.len) |j| { predicted += matrix[j][k]; support += matrix[k][j]; }
+        const hits = matrix[k][k];
+        result.add("class {s} precision {s} recall {s} f1 {s} support {d}", .{ class, fraction(.{ .numerator = hits, .denominator = predicted }, 4), fraction(.{ .numerator = hits, .denominator = support }, 4), fraction(.{ .numerator = 2 * hits, .denominator = predicted + support }, 4), support });
+        if (predicted + support > 0) { macro += D.real(2 * hits) / D.real(predicted + support); available += 1; }
+    }
+    result.add("macro_f1 {s}", .{if (available > 0) realText(macro / D.real(available), 4) else "-"});
+    return result;
+}
+fn decide(node: *const B.Node, visits: []const i64, errors: []const i64, result: *Result) i64 {
+    const leaf_error = errors[node.number];
+    if (node.split == null) return leaf_error;
+    const left = decide(node.left.?, visits, errors, result);
+    const right = decide(node.right.?, visits, errors, result);
+    const subtree = left + right;
+    const pruned = leaf_error <= subtree;
+    result.decisions[result.count] = .{ .node = node, .rows = visits[node.number], .leaf_error = leaf_error, .subtree_error = subtree, .pruned = pruned };
+    result.count += 1;
+    if (pruned) result.tree.cuts[node.number] = true;
+    return if (pruned) leaf_error else subtree;
+}
+pub fn reducedError(data: *const D.Dataset, root: *const B.Node, rows: D.Rows) Result {
+    var result: Result = .{ .tree = .{ .root = root } };
+    const grown: E.Tree = .{ .root = root };
+    var visits = [_]i64{0} ** 2048;
+    var errors = [_]i64{0} ** 2048;
+    for (rows.slice()) |row| {
+        const route = grown.route(data, row);
+        for (route.path[0 .. route.len + 1]) |node| { visits[node.number] += 1; if (row.label != node.stats.prediction) errors[node.number] += 1; }
+    }
+    _ = decide(root, &visits, &errors, &result);
+    return result;
+}
+    fn init(data: *const D.Dataset) Analysis {
+        const train = D.rowSequence(data.train);
+        const validation = D.rowSequence(data.validation);
+        const builder: B.Builder = .{ .data = data };
+        const root = builder.grow(train, 1, 0);
+        const pruning = P.reducedError(data, root, validation);
+        var result: Analysis = .{
+            .data = data, .train = train, .validation = validation, .test = D.rowSequence(data.test), .builder = builder, .root = root,
+            .grown = .{ .root = root }, .pruned = pruning.tree, .decision_count = pruning.count,
+        };
+        @memcpy(result.decisions[0..pruning.count], pruning.decisions[0..pruning.count]);
+        for (result.test.slice(), 0..) |row, i| {
+            result.grown_routes[i] = result.grown.route(data, row);
+            result.pruned_routes[i] = result.pruned.route(data, row);
+        }
+        result.modelPredictions(.grown, &result.grown);
+        result.modelPredictions(.pruned, &result.pruned);
+        return result;
+    }
+    fn accuracy(self: *const Analysis, tree: *const E.Tree, rows: D.Rows) []const u8 { return E.ratio(tree.correct(self.data, rows), D.n(rows.len)); }
+    fn modelPredictions(self: *Analysis, model: Model, tree: *const E.Tree) void {
+        for (self.test.slice(), 0..) |row, i| self.predictions[@intFromEnum(model)][i] = tree.predict(self.data, row);
+    }
+    fn predictionLines(self: *const Analysis) D.Lines {
+        var result: D.Lines = .{};
+        result.write("id,predicted,actual,grown,leaf,path,missing");
+        for (self.test.slice(), 0..) |row, i| {
+            const route = self.pruned_routes[i];
+            var path: D.Text = .{};
+            var missing: usize = 0;
+            for (route.path[0 .. route.len + 1], 0..) |node, j| path.add("{s}{d}", .{ if (j > 0) "-" else "", node.number });
+            for (route.steps[0..route.len]) |step| { if (step.method != .primary) missing += 1; }
+            result.add("{s},{s},{s},{s},{d},{s},{d}", .{ row.id, self.data.classes[route.leaf.stats.prediction], self.data.classes[row.label], self.data.classes[self.grown_routes[i].leaf.stats.prediction], route.leaf.number, path.value(), missing });
+        }
+        return result;
+    }
+    fn routingLines(self: *const Analysis) D.Lines {
+        var tallies = [_][3]i64{[_]i64{0} ** 3} ** 2048;
+        for (self.pruned_routes[0..self.test.len]) |route| {
+            for (route.steps[0..route.len]) |step| tallies[step.node.number][@intFromEnum(step.method)] += 1;
+        }
+        var result: D.Lines = .{};
+        result.write("routing pruned test");
+        const nodes = self.pruned.preorder(null);
+        for (nodes.slice()) |node| {
+            if (self.pruned.isLeaf(node)) continue;
+            const tally = tallies[node.number];
+            result.add("node {d} rows {d} primary {d} surrogate {d} default {d}", .{ node.number, tally[0] + tally[1] + tally[2], tally[0], tally[1], tally[2] });
+        }
+        for (0..2) |incomplete| {
+            var rows: D.Rows = .{};
+            for (self.test.slice()) |row| {
+                var missing = false;
+                for (row.values[0..self.data.attributes.len]) |value| { if (value < 0) missing = true; }
+                if (missing == (incomplete == 1)) rows.add(row);
+            }
+            result.add("{s} rows {d} correct {s}", .{ if (incomplete == 1) "incomplete" else "complete", rows.len, self.accuracy(&self.pruned, rows) });
+        }
+        return result;
+    }
+        try writeSections(io, "predictions.csv", &.{self.predictionLines()});
+        try writeSections(io, "evaluation.txt", &.{
+            self.dataLines(), self.summaryLines(),
+            E.classification(self.data, "grown test", self.test, self.predictions[@intFromEnum(Model.grown)][0..self.test.len]),
+            E.classification(self.data, "pruned test", self.test, self.predictions[@intFromEnum(Model.pruned)][0..self.test.len]),
+            self.routingLines(), self.cross_lines, self.depth_lines, self.complexity_lines, self.bag_lines, self.mcnemarLines(), self.aucLines(), self.learningLines(),
+        });
+fn writeSections(io: std.Io, name: []const u8, sections: []const D.Lines) !void {
+    var text: D.Text = .{};
+    for (sections, 0..) |section, i| {
+        if (i > 0) text.write("\n");
+        for (section.data.items) |line| text.add("{s}\n", .{line});
+    }
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = D.fmt("output/{s}", .{name}), .data = text.value() });
+}
+    const data = try D.load(init.io);
+    const analysis = try D.allocator.create(Analysis);
+    analysis.* = Analysis.init(&data);
+    try analysis.writeFiles(init.io);

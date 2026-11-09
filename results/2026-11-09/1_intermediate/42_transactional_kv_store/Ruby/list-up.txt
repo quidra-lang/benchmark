@@ -1,0 +1,144 @@
+TextValue = Data.define(:text) do
+  def initialize(text:) = super(text: text.dup.freeze)
+  def kind = :string
+  def empty? = false
+Entry = Data.define(:value, :expiry)
+def quoted(text)
+  text.nil? ? '(nil)' : '"' + text.gsub(/["\\]/) { |c| '\\' + c } + '"'
+end
+def integer_reply(value) = "(integer) #{value}"
+def split_line(line)
+  words = []
+  position = 0
+  while position < line.length
+    if line[position] == ' '
+      position += 1
+      next
+    end
+    if line[position] != '"'
+      start = position
+      position += 1 while position < line.length && line[position] != ' '
+      words << line[start...position].freeze
+      next
+    end
+  end
+  words
+def parse_integer(text)
+  text.match?(/\A(?:0|-?[1-9][0-9]{0,8})\z/) ? text.to_i(10) : nil
+end
+def number(text, message = NOT_INTEGER)
+  parse_integer(text) || raise(CommandError, message)
+end
+CommandSpec = Data.define(:group, :minimum, :maximum, :parity) do
+  def accepts?(count)
+    count >= minimum && (maximum.nil? || count <= maximum) && (parity.nil? || count % 2 == parity)
+  end
+end
+COMMANDS = {}.tap do |commands|
+  register = lambda do |group, names, minimum, maximum = minimum, parity = nil|
+    names.split.each { |name| commands[name] = CommandSpec.new(group, minimum, maximum, parity) }
+  end
+  register.call(:text_command, 'SET', 2, nil)
+  register.call(:text_command, 'GET INCR DECR STRLEN', 1)
+  register.call(:key_command, 'TYPE KEYS TTL PERSIST TICK', 1)
+  register.call(:control_command, 'BEGIN COMMIT ROLLBACK', 0)
+  register.call(:control_command, 'SNAPSHOT RESTORE', 1)
+end.freeze
+
+class Store
+  def initialize
+    @database = {}
+    @stack = []
+    @snapshots = {}
+    @time = 0
+  def execute(words)
+    command = words.first.upcase
+    spec = COMMANDS[command]
+    raise CommandError, "ERR unknown command '#{words.first}'" unless spec
+    args = words.drop(1)
+    raise CommandError, "ERR wrong number of arguments for '#{command.downcase}' command" unless spec.accepts?(args.length)
+    send(spec.group, command, args)
+  def read(key, type, empty)
+    entry = @database[key]
+    return empty unless entry
+    raise CommandError, WRONG_TYPE unless entry.value.is_a?(type)
+    entry.value
+  end
+  def text(key) = read(key, TextValue, TextValue.new('')).text
+  def replace(key, value, expiry = nil)
+    if value.empty? then @database.delete(key)
+    else @database[key] = Entry.new(value, expiry)
+    end
+  end
+  def update(key, value) = replace(key, value, @database[key]&.expiry)
+  def purge
+    before = @database.length
+    @database.delete_if { |_, entry| !entry.expiry.nil? && entry.expiry <= @time }
+    before - @database.length
+  def text_command(command, a)
+    key = a.first
+    case command
+    when 'SET'
+      options = Set.new
+      seconds_text = nil
+      i = 2
+      while i < a.length
+        option = a[i].upcase
+        i += 1
+        raise CommandError, 'ERR syntax error' unless %w[NX XX EX KEEPTTL GET].include?(option) && options.add?(option)
+        if option == 'EX'
+          raise CommandError, 'ERR syntax error' if i == a.length
+          seconds_text = a[i]
+          i += 1
+        end
+      end
+      expiry = nil
+      unless seconds_text.nil?
+        seconds = number(seconds_text)
+        raise CommandError, "ERR invalid expire time in 'set' command" unless seconds.positive?
+        expiry = @time + seconds
+      end
+      blocked = (options.include?('NX') && old) || (options.include?('XX') && !old)
+      unless blocked
+        expiry = old.expiry if options.include?('KEEPTTL') && old
+        replace(key, TextValue.new(a[1]), expiry)
+      end
+      options.include?('GET') ? quoted(old_text) : blocked ? '(nil)' : 'OK'
+    else
+      value = text(key)
+      quoted(@database.key?(key) ? value : nil)
+    end
+  def key_command(command, a)
+    case command
+    when 'TICK'
+      ticks = number(a.first)
+      raise CommandError, POSITIVE unless ticks.positive?
+      @time += ticks
+      return integer_reply(purge)
+    end
+  def control_command(command, a)
+    case command
+    when 'BEGIN' then @stack << @database.dup
+    when 'COMMIT', 'ROLLBACK'
+      raise CommandError, 'ERR no transaction' if @stack.empty?
+      saved = @stack.pop
+      if command == 'ROLLBACK'
+        @database = saved
+        purge
+      end
+    when 'SNAPSHOT' then @snapshots[a.first] = @database.dup
+    when 'RESTORE'
+      saved = @snapshots[a.first]
+      raise CommandError, 'ERR no such snapshot' unless saved
+      @database = saved.dup
+      purge
+    end
+    'OK'
+store = Store.new
+STDIN.gets.to_i(10).times do
+  words = split_line(STDIN.gets.chomp)
+  begin
+    result = words.nil? ? 'Invalid argument(s)' : store.execute(words)
+  end
+  STDOUT.puts(result)
+end

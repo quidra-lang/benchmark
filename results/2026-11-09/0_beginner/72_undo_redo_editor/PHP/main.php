@@ -1,0 +1,34 @@
+<?php
+
+$commands = [
+    'undo', 'type hello world', 'delete 5', 'type there', 'undo', 'undo', 'redo', 'type friend',
+    'redo', 'delete 20', 'undo', 'redo', 'redo', 'type see you',
+];
+$buffer = '';
+$undo = $redo = [];
+foreach ($commands as $command) {
+    if ($command === 'undo') {
+        if (!$undo) {
+            echo "undo => nothing to undo\n";
+            continue;
+        }
+        $redo[] = $buffer;
+        $buffer = array_pop($undo);
+    } elseif ($command === 'redo') {
+        if (!$redo) {
+            echo "redo => nothing to redo\n";
+            continue;
+        }
+        $undo[] = $buffer;
+        $buffer = array_pop($redo);
+    } else {
+        $undo[] = $buffer;
+        $redo = [];
+        if (str_starts_with($command, 'type ')) {
+            $buffer .= substr($command, 5);
+        } else {
+            $buffer = substr($buffer, 0, max(0, strlen($buffer) - (int) substr($command, 7)));
+        }
+    }
+    printf("%s => \"%s\"\n", $command, $buffer);
+}

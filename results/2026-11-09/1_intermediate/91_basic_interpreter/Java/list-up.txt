@@ -1,0 +1,382 @@
+    static void syntax() {
+        throw new SyntaxFault();
+    }
+    static void fault(String reason) {
+        throw new BasicFault(reason);
+    }
+    static final Map<String, List<String>> signatures =
+        Map.ofEntries(Map.entry("ABS", List.of("I")), Map.entry("SGN", List.of("I")),
+                      Map.entry("RND", List.of("I")), Map.entry("LEN", List.of("S")),
+    static final List<List<String>> operators =
+        List.of(List.of("OR"), List.of("AND"), List.of(), List.of("=", "<>", "<", ">", "<=", ">="),
+                List.of("+", "-"), List.of("*", "/", "MOD"), List.of(), List.of("^"));
+    static String nameType(String name) {
+        return name.endsWith("$") ? "S" : "I";
+    }
+    static String valueType(Object value) {
+        return value instanceof String ? "S" : "I";
+    }
+    static int integer(Object o) {
+        return (int)o;
+    }
+    static List<Token> tokenize(String text) {
+        List<Token> tokens = new ArrayList<>();
+        for (int p = 0; p < text.length();) {
+            char c = text.charAt(p);
+            if (c == ' ') {
+                p++;
+                continue;
+            }
+            if (c == '"') {
+                int end = text.indexOf('"', p + 1);
+                if (end < 0)
+                    syntax();
+                tokens.add(new Token("S", text.substring(p, end + 1), text.substring(p + 1, end)));
+                p = end + 1;
+            } else if (digit(c)) {
+                int start = p;
+                while (p < text.length() && digit(text.charAt(p)))
+                    p++;
+                String word = text.substring(start, p);
+                int n;
+                try {
+                    n = Integer.parseInt(word);
+                } catch (NumberFormatException error) {
+                    syntax();
+                    throw error;
+                }
+                if (n > 32767)
+                    syntax();
+                tokens.add(new Token("I", word, n));
+            } else if (upper(c)) {
+                int start = p;
+                while (p < text.length() && (upper(text.charAt(p)) || digit(text.charAt(p))))
+                    p++;
+                if (p < text.length() && text.charAt(p) == '$')
+                    p++;
+                String word = text.substring(start, p);
+                tokens.add(new Token("W", word, word));
+            } else {
+                if ("+-*/^=<>() ,;:".indexOf(c) < 0)
+                    syntax();
+                String pair = p + 1 < text.length() ? text.substring(p, p + 2) : String.valueOf(c);
+                String word = List.of("<>", "<=", ">=").contains(pair) ? pair : String.valueOf(c);
+                tokens.add(new Token("P", word, word));
+                p += word.length();
+            }
+        }
+        tokens.add(new Token("E", "", ""));
+        return tokens;
+    }
+    static class Expr {
+        String kind;
+        final String type;
+        final Object value;
+        final List<Expr> args;
+        Expr(String kind, String type, Object value) {
+            this(kind, type, value, new ArrayList<>());
+        }
+        Expr(String kind, String type, Object value, List<Expr> args) {
+            this.kind = kind;
+            this.type = type;
+            this.value = value;
+            this.args = args;
+        }
+    }
+    record PrintItem(String kind, Expr expr) {}
+    static class Statement {
+        String kind;
+        int line;
+        Statement next;
+        List<PrintItem> items = new ArrayList<>();
+        Statement(String kind) {
+            this.kind = kind;
+        }
+    }
+    static class Parser {
+        final List<Token> tokens;
+        int pos;
+        Parser(List<Token> tokens) {
+            this.tokens = tokens;
+        }
+        Token current() {
+            return tokens.get(pos);
+        }
+        boolean at(String word) {
+            Token t = current();
+            return (t.kind().equals("P") || t.kind().equals("W")) && t.text().equals(word);
+        }
+        boolean take(String word) {
+            if (!at(word))
+                return false;
+            pos++;
+            return true;
+        }
+        void expect(String word) {
+            if (!take(word))
+                syntax();
+        }
+        Expr integer() {
+            return integer(0);
+        }
+        Expr integer(int level) {
+            Expr e = expression(level);
+            if (!e.type.equals("I"))
+                syntax();
+            return e;
+        }
+        Expr primary() {
+            Token token = current();
+            if (token.kind().equals("I") || token.kind().equals("S")) {
+                pos++;
+                return new Expr("constant", token.kind(), token.value());
+            }
+            if (take("(")) {
+                Expr e = expression();
+                expect(")");
+                return e;
+            }
+            if (token.kind().equals("W") && signatures.containsKey(token.text())) {
+                pos++;
+                expect("(");
+                List<Expr> args = new ArrayList<>();
+                args.add(expression());
+                while (take(","))
+                    args.add(expression());
+                expect(")");
+                StringBuilder types = new StringBuilder();
+                for (Expr e : args)
+                    types.append(e.type);
+                if (!signatures.get(token.text()).contains(types.toString()))
+                    syntax();
+                return new Expr("call", nameType(token.text()), token.text(), args);
+            }
+            syntax();
+            return null;
+        }
+        Expr expression() {
+            return expression(0);
+        }
+        Expr expression(int level) {
+            if (level == 2 && take("NOT"))
+                return new Expr("unary", "I", "NOT", List.of(integer(2)));
+            if (level == 6 && take("-"))
+                return new Expr("unary", "I", "-", List.of(integer(6)));
+            if (level == 8)
+                return primary();
+            Expr left = expression(level + 1);
+            while (operators.get(level).contains(current().text())) {
+                String op = current().text();
+                pos++;
+                Expr right = expression(level == 7 ? 6 : level + 1);
+                if (!left.type.equals(right.type) ||
+                    left.type.equals("S") && level != 3 && !op.equals("+"))
+                    syntax();
+                left = new Expr("binary", level == 3 ? "I" : left.type, op, List.of(left, right));
+                if (level == 7)
+                    break;
+            }
+            return left;
+        }
+        List<Statement> listing() {
+            return listing(false);
+        }
+        List<Statement> listing(boolean inside) {
+            List<Statement> body = new ArrayList<>();
+            body.add(statement(inside));
+            while (take(":"))
+                body.add(statement(inside));
+            return body;
+        }
+        Statement statement(boolean inside) {
+            String word = current().text();
+            if (inside && List.of("IF", "FOR", "NEXT", "WHILE", "WEND", "DATA").contains(word))
+                syntax();
+            Statement s = new Statement(word);
+            if (take("PRINT")) {
+                boolean lastValue = false;
+                while (!current().kind().equals("E") && !at(":") && !at("ELSE")) {
+                    if (take(";")) {
+                        s.items.add(new PrintItem(";", null));
+                        lastValue = false;
+                    } else if (take(",")) {
+                        s.items.add(new PrintItem(",", null));
+                        lastValue = false;
+                    } else {
+                        String kind = at("TAB") ? "TAB" : at("SPC") ? "SPC" : "value";
+                        if (kind.equals("value") && lastValue)
+                            syntax();
+                        Expr e;
+                        if (kind.equals("value"))
+                            e = expression();
+                        s.items.add(new PrintItem(kind, e));
+                        lastValue = kind.equals("value");
+                    }
+                }
+                return s;
+            }
+        List<Statement> parse() {
+            List<Statement> result = listing();
+            if (!current().kind().equals("E"))
+                syntax();
+            return result;
+        }
+        final List<String> output = new ArrayList<>();
+        int dataPos, inputPos, random = 1, handler, err, erl;
+        boolean handling;
+        Statement remembered;
+        StringBuilder buffer = new StringBuilder();
+        void endLine() {
+            String s = buffer.toString().replaceFirst(" +$", "");
+            output.add(s);
+            buffer.setLength(0);
+        }
+        void message(String s) {
+            if (buffer.length() > 0)
+                endLine();
+            output.add(s);
+        }
+        static int checked(long n) {
+            if (n < -32768 || n > 32767)
+                fault("OVERFLOW");
+            return (int)n;
+        }
+        Object evaluate(Expr e) {
+            Object op = e.value;
+            if (e.kind.equals("constant"))
+                return op;
+            if (e.kind.equals("unary")) {
+                int n = (int)evaluate(e.args.get(0));
+                return op.equals("NOT") ? ~n : checked(-(long)n);
+            }
+            List<Object> args = new ArrayList<>();
+            for (Expr child : e.args)
+                args.add(evaluate(child));
+            if (e.kind.equals("call"))
+                return call((String)op, args);
+            Object left = args.get(0), right = args.get(1);
+            int a = (int)left, b = (int)right;
+            switch ((String)op) {
+            case "/":
+                if (b == 0)
+                    fault("DIVISION BY ZERO");
+                return checked(a / b);
+            case "MOD":
+                if (b == 0)
+                    fault("DIVISION BY ZERO");
+                return a - b * (a / b);
+            case "AND":
+                return a & b;
+            case "OR":
+                return a | b;
+            }
+            fault("ILLEGAL FUNCTION CALL");
+            return 0;
+        }
+        Object call(String name, List<Object> args) {
+            Object a = args.get(0), b = args.size() > 1 ? args.get(1) : null,
+                   c = args.size() > 2 ? args.get(2) : null;
+            switch (name) {
+            case "RND":
+                int n = (int)a;
+                if (n < 1)
+                    fault("ILLEGAL FUNCTION CALL");
+                random = (int)(48271L * random % 2147483647L);
+                return random % n + 1;
+        Statement execute(Statement s) {
+            Statement following = s.next;
+            switch (s.kind) {
+            case "PRINT": {
+                for (PrintItem item : s.items) {
+                    if (item.kind().equals(",")) {
+                        buffer.append(" ".repeat(10 - buffer.length() % 10));
+                    } else if (!item.kind().equals(";")) {
+                        Object value = evaluate(item.expr());
+                        if (item.kind().equals("value"))
+                            buffer.append(value);
+                    }
+                }
+                if (s.items.isEmpty() || !List.of(";", ",").contains(s.items.getLast().kind()))
+                    endLine();
+                break;
+            }
+            return following;
+        void connect(List<Statement> body, Statement after, int number) {
+            Statement following = after;
+            for (int i = body.size() - 1; i >= 0; i--) {
+                Statement s = body.get(i);
+                s.line = number;
+                s.next = following;
+                following = s;
+            }
+        }
+        List<String> finish() {
+            if (!buffer.isEmpty())
+                endLine();
+            output.add("READY");
+            return output;
+        }
+        List<String> run(Map<Integer, String> source) {
+            List<ProgramLine> parsed = new ArrayList<>();
+            List<Integer> numbers = new ArrayList<>(source.keySet());
+            numbers.sort(Comparator.naturalOrder());
+            for (int number : numbers) {
+                try {
+                    parsed.add(
+                        new ProgramLine(number, new Parser(tokenize(source.get(number))).parse()));
+                } catch (SyntaxFault failure) {
+                    message("ERROR IN LINE " + number + ": SYNTAX ERROR");
+                    return finish();
+                }
+            }
+            Statement after = null;
+            for (int i = parsed.size() - 1; i >= 0; i--) {
+                ProgramLine e = parsed.get(i);
+                connect(e.body(), after, e.number());
+                entries.put(e.number(), e.body().get(0));
+                after = e.body().get(0);
+            }
+            Statement position = after;
+            while (position != null) {
+                Statement s = position;
+                try {
+                    position = execute(s);
+                } catch (BasicFault failure) {
+                    if (handler != 0 && !handling) {
+                    } else {
+                        message("ERROR IN LINE " + s.line + ": " + failure.getMessage());
+                        position = null;
+                    }
+                }
+            }
+            return finish();
+        }
+    public static void main(String[] args) throws Exception {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        int count = Integer.parseInt(reader.readLine());
+        StringBuilder output = new StringBuilder();
+        for (int n = 0; n < count; n++) {
+            Map<Integer, String> source = new HashMap<>();
+            while (true) {
+                String line = reader.readLine();
+                if (line.equals("RUN"))
+                    break;
+                int at = line.indexOf(' ');
+                int number = Integer.parseInt(at < 0 ? line : line.substring(0, at));
+                if (at < 0)
+                    source.remove(number);
+                else
+                    source.put(number, line.substring(at + 1).replaceFirst("^ +", ""));
+            }
+            List<String> inputs = new ArrayList<>();
+            while (true) {
+                String line = reader.readLine();
+                if (line.equals("END"))
+                    break;
+                inputs.add(line);
+            }
+            for (String line : new Machine(inputs).run(source))
+                output.append(line).append('\n');
+        }
+        System.out.print(output);
+    }

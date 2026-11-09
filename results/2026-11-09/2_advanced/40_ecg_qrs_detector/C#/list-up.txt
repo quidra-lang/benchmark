@@ -1,0 +1,292 @@
+    public sealed class Annotation {
+        public int sample;
+        public string label;
+        public Program.Beat beat;
+        public Annotation(int sample, string label) {
+            this.sample = sample;
+            this.label = label;
+        }
+    }
+    public static long[] Ecg() {
+        List<string> lines = File.ReadAllLines(Path.Combine("input/ecg.csv"), Encoding.ASCII).ToList();
+        long[] result = new long[lines.Count - 1];
+        for (int i = 1; i < lines.Count; i++)
+            result[i - 1] = long.Parse(lines[i].Split(',')[1]);
+        return result;
+    }
+    public static List<Annotation> Annotations() {
+        List<string> lines =
+            File.ReadAllLines(Path.Combine("input/annotations.csv"), Encoding.ASCII).ToList();
+        List<Annotation> result = new();
+        for (int i = 1; i < lines.Count; i++) {
+            string[] w = lines[i].Split(',');
+            result.Add(new Annotation(int.Parse(w[0]), w[1]));
+        }
+        return result;
+    }
+    public static Dictionary<string, int> Parameters() {
+        Dictionary<string, int> result = new();
+        foreach (string line in File.ReadAllLines(Path.Combine("input/params.txt"), Encoding.ASCII)
+                     .ToList()) {
+            string[] w = line.Split(' ');
+            result[w[0]] = int.Parse(w[1]);
+        }
+        return result;
+    }
+    public sealed class Beat {
+        public int number, sample, width;
+        public long rr, offset;
+        public string label = "N", method;
+        public SignalIo.Annotation annotation;
+    }
+    public static List<Beat> Beats(Detection detection, Filters.Signals f, Dictionary<string, int> settings) {
+        List<Beat> result = new();
+        foreach (Detector.Peak p in detection.registered) {
+            Beat b = new Beat();
+            b.number = result.Count + 1;
+            b.sample = Math.Max(0, p.r - 21);
+            b.rr = result.Count == 0 ? 0 : 5L * (b.sample - result[^1].sample);
+            b.width = Detector.Width(f.band, p.r);
+            b.method = p.kind.Equals("qrs") ? "threshold" : "searchback";
+            if (b.number >= 10) {
+                long previous = 0;
+                for (int j = b.number - 9; j < b.number - 1; j++)
+                    previous += result[j].rr;
+                if (800 * b.rr < (long)settings["premature_percent"] * previous)
+                    b.label = b.width > settings["qrs_width_ms"] ? "V" : "A";
+            }
+            result.Add(b);
+        }
+        return result;
+    }
+    public static void Match(List<Beat> beats, List<SignalIo.Annotation> references, int tolerance) {
+        foreach (Beat b in beats) {
+            SignalIo.Annotation chosen = null;
+            int distance = int.MaxValue;
+            foreach (SignalIo.Annotation r in references)
+                if (r.beat == null) {
+                    int d = Math.Abs(r.sample - b.sample);
+                    if (d <= tolerance && d < distance) {
+                        distance = d;
+                        chosen = r;
+                    }
+                }
+            if (chosen != null) {
+                chosen.beat = b;
+                b.annotation = chosen;
+                b.offset = 5L * (b.sample - chosen.sample);
+            }
+        }
+    }
+    public record Row(int sample, int order, string text) {
+    }
+    public static List<string> Ordered(List<Row> rows) {
+        rows.Sort(Comparer<Row>.Create((a, b) => a.sample != b.sample ? a.sample.CompareTo(b.sample)
+                                                                      : a.order.CompareTo(b.order)));
+        List<string> result = new();
+        foreach (Row r in rows)
+            result.Add(r.text);
+        return result;
+    }
+    public static string Ref(Beat b) {
+        return b.annotation == null ? "-" : b.annotation.label;
+    }
+    public static void Lists(List<Beat> beats, List<SignalIo.Annotation> refs, List<Detector.Peak> peaks,
+                             long[] x, Filters.Signals f, Dictionary<string, int> settings) {
+        List<string> output =
+            new(["beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"]);
+        foreach (Beat b in beats)
+            output.Add(b.number + "," + b.sample + "," + (5 * b.sample) + "," +
+                       (b.number == 1 ? "-" : Convert.ToString(b.rr)) + "," +
+                       (b.number == 1 ? "-" : Report.Two(Report.Rdiv(6000000, b.rr))) + "," + b.width + "," +
+                       b.label + "," + b.method + "," +
+                       (b.annotation == null ? "-" : Convert.ToString(b.annotation.sample)) + "," + Ref(b));
+        SignalIo.Write("beats.csv", output);
+        List<Row> rows = new();
+        foreach (SignalIo.Annotation r in refs) {
+            Beat b = r.beat;
+            string text = b == null
+                              ? r.sample + "," + r.label + ",-,-,-,-,FN,-"
+                              : r.sample + "," + r.label + "," + b.number + "," + b.sample + "," + b.label +
+                                    "," + b.offset + ",TP," + (b.label.Equals(r.label) ? "yes" : "no");
+            rows.Add(new Row(r.sample, 0, text));
+        }
+        foreach (Beat b in beats)
+            if (b.annotation == null)
+                rows.Add(
+                    new Row(b.sample, 1, "-,-," + b.number + "," + b.sample + "," + b.label + ",-,FP,-"));
+        output = new(["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"]);
+        output.AddRange(Ordered(rows));
+        SignalIo.Write("matching.csv", output);
+    public sealed class Segment {
+        public int start, end, refs, tp, fp, fn, noise, beats;
+        public List<long> rr = new();
+    }
+    public static List<Segment> Segments(List<Beat> beats, List<SignalIo.Annotation> refs,
+                                         List<Detector.Peak> peaks, int n, int size) {
+        List<Segment> result = new();
+        for (int start = 0; start < n; start += size) {
+            Segment s = new Segment();
+            int end = Math.Min(n, start + size);
+            s.start = 5 * start;
+            s.end = 5 * end;
+            foreach (SignalIo.Annotation r in refs)
+                if (r.sample >= start && r.sample < end) {
+                    s.refs++;
+                    if (r.beat != null)
+                        s.tp++;
+                }
+            s.fn = s.refs - s.tp;
+            foreach (Beat b in beats)
+                if (b.sample >= start && b.sample < end) {
+                    s.beats++;
+                    if (b.annotation == null)
+                        s.fp++;
+                    if (b.number > 1)
+                        s.rr.Add(b.rr);
+                }
+            foreach (Detector.Peak p in peaks)
+                if (p.kind.Equals("noise") && p.time >= start && p.time < end)
+                    s.noise++;
+            result.Add(s);
+        }
+        return result;
+    }
+    public static void Performance(Detection d, List<Beat> beats, List<SignalIo.Annotation> refs,
+                                   List<Segment> segments, int n, Dictionary<string, int> settings) {
+        int[] rc = new int[3], bc = new int[3], miss = new int[3], extra = new int[3];
+        int[][] confusion = Enumerable.Range(0, 3)
+                                .Select(
+                                    _ => new int[3])
+                                .ToArray();
+        int tp = 0;
+        long offset = 0, absolute = 0, maxAbs = 0;
+        int[] method = new int[2], methodTp = new int[2];
+        Dictionary<string, int> pc = new();
+        foreach (SignalIo.Annotation r in refs) {
+            int i = LabelIndex(r.label);
+            rc[i]++;
+            if (r.beat == null)
+                miss[i]++;
+            else
+                confusion[i][LabelIndex(r.beat.label)]++;
+        }
+        foreach (Beat b in beats) {
+            int i = LabelIndex(b.label), m = b.method.Equals("threshold") ? 0 : 1;
+            bc[i]++;
+            method[m]++;
+            if (b.annotation == null)
+                extra[i]++;
+            else {
+                tp++;
+                methodTp[m]++;
+                offset += b.offset;
+                absolute += Math.Abs(b.offset);
+                maxAbs = Math.Max(maxAbs, Math.Abs(b.offset));
+            }
+        }
+        int fp = beats.Count - tp, fn = refs.Count - tp;
+            "MATCHING",
+            "tolerance_ms " + settings["match_ms"],
+            "references " + refs.Count + " N=" + rc[0] + " V=" + rc[1] + " A=" + rc[2],
+            "detections " + beats.Count + " N=" + bc[0] + " V=" + bc[1] + " A=" + bc[2],
+            "true_positives " + tp,
+            "false_positives " + fp,
+            "false_negatives " + fn,
+            "sensitivity " + Report.Ratio(tp, tp + fn),
+            "positive_predictivity " + Report.Ratio(tp, tp + fp),
+            "detection_error_rate " + Report.Ratio(fp + fn, refs.Count),
+            "by_method threshold=" + methodTp[0] + "/" + method[0] + " searchback=" + methodTp[1] + "/" +
+                method[1],
+            tp == 0 ? "offset_ms none"
+                    : "offset_ms mean=" + Report.Two(Report.Rdiv(100 * offset, tp)) +
+                          " mean_abs=" + Report.Two(Report.Rdiv(100 * absolute, tp)) + " max_abs=" + maxAbs,
+            "CONFUSION",
+            "ref  " + Report.Pad("N", 6) + Report.Pad("V", 6) + Report.Pad("A", 6) + "  miss"
+        ]);
+        for (int i = 0; i < 3; i++) {
+            string line = LABELS[i] + "    ";
+            for (int j = 0; j < 3; j++)
+                line += Report.Pad(Convert.ToString(confusion[i][j]), 6);
+            output.Add(line + Report.Pad(Convert.ToString(miss[i]), 6));
+        }
+        string extraLine = "extra";
+        foreach (int i in extra)
+            extraLine += Report.Pad(Convert.ToString(i), 6);
+        output.Add(extraLine);
+        output.AddRange(["veb_sensitivity " + Report.Ratio(confusion[1][1], rc[1]),
+                         "veb_positive_predictivity " + Report.Ratio(confusion[1][1], bc[1]),
+                         "sveb_sensitivity " + Report.Ratio(confusion[2][2], rc[2]),
+                         "sveb_positive_predictivity " + Report.Ratio(confusion[2][2], bc[2]),
+                         "SEGMENTS segment_ms=" + settings ["segment_ms"] + " segments=" + segments.Count]);
+        foreach (Segment s in segments)
+            output.Add(SegmentRange(s) + " refs=" + s.refs + " tp=" + s.tp + " fp=" + s.fp + " fn=" + s.fn +
+                       " noise_peaks=" + s.noise);
+        output.Add("ERRORS count=" + (fp + fn));
+        List<Row> errors = new();
+        foreach (Beat b in beats)
+            if (b.annotation == null)
+                errors.Add(new Row(b.sample, 0,
+                                   "false_positive beat=" + b.number + " sample=" + b.sample +
+                                       " time_ms=" + (5 * b.sample) + " label=" + b.label));
+        foreach (SignalIo.Annotation r in refs)
+            if (r.beat == null)
+                errors.Add(new Row(r.sample, 1,
+                                   "false_negative sample=" + r.sample + " time_ms=" + (5 * r.sample) +
+                                       " label=" + r.label));
+        output.AddRange(Ordered(errors));
+        SignalIo.Write("performance.txt", output);
+    public static void Rhythm(List<Beat> beats, List<SignalIo.Annotation> refs, long[] x,
+                              Dictionary<string, int> p) public {
+        int start = p["strip_start_ms"] / 5, length = p["strip_ms"] / 5, columns = length / 10,
+            rows = p["strip_rows"];
+        char[] detected = new char[columns], reference = new char[columns];
+        Array.Fill(detected, ' ');
+        Array.Fill(reference, ' ');
+        foreach (Beat b in beats)
+            if (b.sample >= start && b.sample < start + length)
+                detected[(b.sample - start) / 10] = b.label[0];
+        foreach (SignalIo.Annotation r in refs)
+            if (r.sample >= start && r.sample < start + length)
+                reference[(r.sample - start) / 10] = r.label[0];
+        output.Add(" beats |" + new string(detected) + "|");
+        output.Add("  refs |" + new string(reference) + "|");
+        SignalIo.Write("rhythm_strip.txt", output);
+    }
+        long[] x = SignalIo.Ecg();
+        List<SignalIo.Annotation> refs = SignalIo.Annotations();
+        Dictionary<string, int> p = SignalIo.Parameters();
+        Filters.Signals f = Filters.Apply(x);
+        List<Detector.Peak> peaks = Detector.Peaks(f);
+        Detection d = new Detection(peaks, f, p);
+        d.Run(x.Length);
+        List<Beat> beats = Beats(d, f, p);
+        Match(beats, refs, p["match_ms"] / 5);
+        List<Segment> segments = Segments(beats, refs, peaks, x.Length, p["segment_ms"] / 5);
+        Lists(beats, refs, peaks, x, f, p);
+        Performance(d, beats, refs, segments, x.Length, p);
+        Rhythm(beats, refs, x, p);
+    public static long Div(long a, long b) {
+        return a >= 0 ? a / b : -((-a + b - 1) / b);
+    }
+    public static long Rdiv(long a, long b) {
+        return Div(2 * a + b, 2 * b);
+    }
+    public static string Two(long h) {
+        long a = Math.Abs(h);
+        string tail = Convert.ToString(a % 100);
+        return (h < 0 ? "-" : "") + (a / 100) + "." + "0".Repeat(2 - tail.Length) + tail;
+    }
+    public static string Fraction(long a, long b) {
+        long x = a, y = b;
+        while (y != 0) {
+            long remainder = x % y;
+            x = y;
+            y = remainder;
+        }
+        return (a / x) + "/" + (b / x);
+    }
+    public static string Ratio(long a, long b) {
+        return a + "/" + b +
+               (b == 0 ? " none" : " reduced=" + Fraction(a, b) + " percent=" + Two(Rdiv(10000 * a, b)));
+    }

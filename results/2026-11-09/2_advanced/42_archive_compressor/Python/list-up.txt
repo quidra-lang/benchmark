@@ -1,0 +1,287 @@
+METHODS = ("STORE", "LZW", "LZ77", "LZH", "ARITH")
+STATUSES = ("ok", "repaired", "checksum", "error", "unsupported",
+            "truncated", "bad_header")
+NAME_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789._-")
+MODULUS = 65521
+
+
+@dataclass(frozen=True)
+class Parameters:
+    offset_bits: int
+    length_bits: int
+    max_code_length: int
+@dataclass
+class Encoding:
+    name: str
+    data: bytes
+    payloads: list[bytes]
+    best: int
+    @property
+    def payload(self):
+        return self.payloads[self.best]
+class ParsedArchive:
+    size: int
+    offset_bits: int = 0
+    length_bits: int = 0
+    declared: int = 0
+    entries: list[Entry] = field(default_factory=list)
+    error: str | None = None
+    stopped: bool = False
+    trailing: int = 0
+
+    @property
+    def intact(self):
+        return [entry for entry in self.entries
+                if entry.status in ("ok", "repaired")]
+def read_inputs(directory):
+    lines = (directory / "manifest.txt").read_bytes().decode("ascii").splitlines()
+    values = [int(line.split(" ")[1]) for line in lines[:3]]
+    parameters = Parameters(*values)
+    hexadecimal = b"".join((directory / "archive.hex").read_bytes().splitlines())
+    archive = bytes.fromhex(hexadecimal.decode("ascii"))
+    return parameters, files, archive
+def adler32(data):
+    first = 1
+    second = 0
+    for value in data:
+        first = (first + value) % MODULUS
+        second = (second + first) % MODULUS
+    return second * 65536 + first
+
+
+def repair_one_byte(data, stored, computed):
+    delta_a = ((stored % 65536) - (computed % 65536)) % MODULUS
+    delta_b = ((stored // 65536) - (computed // 65536)) % MODULUS
+    if 1 <= delta_a <= 255:
+        delta = delta_a
+    elif MODULUS - 255 <= delta_a < MODULUS:
+        delta = delta_a - MODULUS
+    else:
+        return None
+    inverse = pow(delta % MODULUS, MODULUS - 2, MODULUS)
+    distance_from_end = delta_b * inverse % MODULUS
+    if not 1 <= distance_from_end <= len(data):
+        return None
+    position = len(data) - distance_from_end
+    before = data[position]
+    after = before + delta
+    if not 0 <= after <= 255:
+        return None
+    repaired = bytearray(data)
+    repaired[position] = after
+    repaired = bytes(repaired)
+    if adler32(repaired) != stored:
+        return None
+    return repaired, (position, before, after)
+
+
+def decode_store(payload, original_size):
+    if len(payload) < original_size:
+        raise DecodeError("end_of_data", len(payload))
+    return payload[:original_size]
+def encode_lzh(tokens, parameters):
+    literal_lengths, literal_halvings = huffman.limited_lengths(
+        literal_frequencies, parameters.max_code_length)
+    distance_lengths, distance_halvings = huffman.limited_lengths(
+        distance_frequencies, parameters.max_code_length)
+def decode_payload(method, payload, original_size, offset_bits, length_bits):
+    if method == 0:
+        return decode_store(payload, original_size)
+    if method == 1:
+        return lzw.decode(payload, original_size)
+    if method == 2:
+        return decode_lz77(payload, original_size, offset_bits, length_bits)
+    if method == 3:
+        return decode_lzh(payload, original_size, offset_bits, length_bits)
+    if method == 4:
+        return arith_coder.decode(payload, original_size)
+    raise ValueError("unsupported method cannot be decoded")
+
+
+def encode_file(name, data, parameters):
+    tokens = lz77.tokenize(data, parameters.offset_bits, parameters.length_bits)
+    lzw_payload, lzw_stats = lzw.encode(data)
+    lz77_payload = encode_lz77(tokens, parameters.offset_bits, parameters.length_bits)
+    lzh_payload, lzh_stats = encode_lzh(tokens, parameters)
+    arith_payload, arith_stats = arith_coder.encode(data)
+    payloads = [data, lzw_payload, lz77_payload, lzh_payload, arith_payload]
+    best = min(range(len(METHODS)), key=lambda method: len(payloads[method]))
+    return Encoding(name, data, payloads, best, lzw_stats, lz77_stats,
+                    lzh_stats, arith_stats)
+
+
+def build_archive(encodings, parameters):
+    archive = bytearray(b"TXAR")
+    archive.extend((parameters.offset_bits, parameters.length_bits))
+    archive.extend(len(encodings).to_bytes(2, "big"))
+    for encoding in encodings:
+        name = encoding.name.encode("ascii")
+        header = bytearray((len(name),))
+        header.extend(name)
+        header.append(encoding.best)
+        header.extend(len(encoding.data).to_bytes(4, "big"))
+        header.extend(len(encoding.payload).to_bytes(4, "big"))
+        header.extend(adler32(encoding.data).to_bytes(4, "big"))
+        header.append(sum(header) % 256)
+        archive.extend(header)
+        archive.extend(encoding.payload)
+    return bytes(archive)
+def read_entry_header(archive, number, position):
+    name_length = archive[position]
+    name_bytes = archive[position + 1:position + 1 + name_length]
+    cursor = position + 1 + name_length
+    start = position + 15 + name_length
+    original = int.from_bytes(archive[cursor + 1:cursor + 5], "big")
+    compressed = int.from_bytes(archive[cursor + 5:cursor + 9], "big")
+    checksum = int.from_bytes(archive[cursor + 9:cursor + 13], "big")
+    valid_name = 1 <= name_length <= 32 and all(byte in NAME_BYTES
+                                              for byte in name_bytes)
+    valid_check = sum(archive[position:start - 1]) % 256 == archive[start - 1]
+    valid = valid_name and valid_check
+    return Entry(number, position, valid_header=valid,
+                 name=name_bytes.decode("ascii") if valid else "",
+                 method=archive[cursor], original=original,
+                 compressed=compressed, checksum=checksum,
+                 start=start, end=start + compressed)
+
+
+def examine_payload(entry, archive, offset_bits, length_bits):
+    try:
+        entry.data = decode_payload(entry.method, archive[entry.start:entry.end],
+                                    entry.original, offset_bits, length_bits)
+    except DecodeError as error:
+        entry.status = "error"
+        entry.error = error
+        return
+    entry.computed = adler32(entry.data)
+    if entry.computed == entry.checksum:
+        entry.status = "ok"
+        return
+    repair = repair_one_byte(entry.data, entry.checksum, entry.computed)
+    if repair is None:
+        entry.status = "checksum"
+    else:
+        entry.data, entry.repair = repair
+        entry.status = "repaired"
+
+
+def parse_archive(archive):
+    result = ParsedArchive(len(archive))
+    if len(archive) < 8 or archive[:4] != b"TXAR":
+        result.error = "bad_magic"
+        return result
+    result.offset_bits = archive[4]
+    result.length_bits = archive[5]
+    if not (6 <= result.offset_bits <= 12 and 2 <= result.length_bits <= 5):
+        result.error = "bad_params"
+        return result
+    result.declared = int.from_bytes(archive[6:8], "big")
+    position = 8
+    for number in range(1, result.declared + 1):
+        if position >= len(archive) or position + 15 + archive[position] > len(archive):
+            result.entries.append(Entry(number, position, status="truncated"))
+            result.stopped = True
+            break
+        entry = read_entry_header(archive, number, position)
+        result.entries.append(entry)
+        if not entry.valid_header:
+            entry.status = "bad_header"
+            position = entry.end
+            if position > len(archive):
+                result.stopped = True
+                break
+            continue
+        if entry.end > len(archive):
+            entry.status = "truncated"
+            result.stopped = True
+            break
+        if entry.method >= len(METHODS):
+            entry.status = "unsupported"
+        else:
+            examine_payload(entry, archive, result.offset_bits, result.length_bits)
+        position = entry.end
+    if not result.stopped:
+        result.trailing = len(archive) - position
+    return result
+def verify_archive(archive, originals):
+    parsed = parse_archive(archive)
+    verified = sum(entry.status == "ok" and entry.data == original
+                   for entry, original in zip(parsed.entries, originals))
+    return len(parsed.entries), verified
+def entry_test_line(entry, archive_size):
+    prefix = f"entry {entry.number} offset {entry.offset}"
+    if not entry.valid_header:
+        status = "bad_header" if entry.status == "bad_header" else "truncated header"
+        return f"{prefix} status {status}"
+    line = (f"{prefix} name {entry.name} method {method_name(entry.method)} "
+            f"status {entry.status}")
+    if entry.status == "repaired":
+        position, before, after = entry.repair
+        line += f" byte {position} from {before} to {after}"
+    elif entry.status == "checksum":
+        line += f" stored {entry.checksum:08x} computed {entry.computed:08x}"
+    elif entry.status == "error":
+        line += f" {entry.error.kind} at {entry.error.position}"
+    elif entry.status == "truncated":
+        line += f" payload have {archive_size - entry.start} need {entry.compressed}"
+    return line
+
+
+def test_report(parsed, salvaged, salvage_archive, verified):
+    if parsed.error:
+        lines = [f"archive error {parsed.error}"]
+    else:
+        lines = [entry_test_line(entry, parsed.size) for entry in parsed.entries]
+        counts = {status: 0 for status in STATUSES}
+        for entry in parsed.entries:
+            counts[entry.status] += 1
+        summary = f"summary entries {parsed.declared} checked {len(parsed.entries)}"
+        summary += " " + " ".join(f"{status} {counts[status]}" for status in STATUSES)
+        summary += (f" missing {parsed.declared - len(parsed.entries)} "
+                    f"trailing {parsed.trailing}")
+        lines.append(summary)
+    for entry, encoding in zip(parsed.intact, salvaged):
+        lines.append(f"salvage {entry.name} method {METHODS[encoding.best]} "
+                     f"compressed {len(encoding.payload)} "
+                     f"was {method_name(entry.method)} {entry.compressed}")
+    total_original = sum(len(encoding.data) for encoding in salvaged)
+    lines.append(f"salvaged entries {len(salvaged)} bytes {len(salvage_archive)} "
+                 f"original {total_original} verified {verified}")
+    return lines
+
+
+def text_lines(data):
+    return data.split(b"\n")[:-1]
+
+
+def extraction_report(entries):
+    lines = []
+    for entry in entries:
+        contents = text_lines(entry.data)
+        words = sum(bool(word) for line in contents for word in line.split(b" "))
+        longest = max(map(len, contents), default=0)
+        lines.append(f"file {entry.name} bytes {len(entry.data)} "
+                     f"lines {len(contents)} words {words} longest {longest}")
+        lines.extend(line.decode("ascii") for line in contents)
+    return lines
+def salvage_archive(parsed, parameters):
+    if parsed.error:
+        salvage_parameters = parameters
+    else:
+        salvage_parameters = Parameters(parsed.offset_bits, parsed.length_bits,
+                                        parameters.max_code_length)
+    encodings = [encode_file(entry.name, entry.data, salvage_parameters)
+                 for entry in parsed.intact]
+    archive = build_archive(encodings, salvage_parameters)
+    _, verified = verify_archive(archive, [encoding.data for encoding in encodings])
+    return archive, encodings, verified
+def write_hex(path, archive):
+    write_lines(path, (archive[position:position + 32].hex()
+                       for position in range(0, len(archive), 32)))
+    parameters, files, supplied_archive = read_inputs(Path("input"))
+    parsed = parse_archive(supplied_archive)
+    salvaged, salvage_encodings, salvage_verified = salvage_archive(parsed, parameters)
+    write_lines(output / "test_report.txt",
+                test_report(parsed, salvage_encodings, salvaged, salvage_verified))
+    write_lines(output / "extracted.txt", extraction_report(parsed.intact))
+    write_hex(output / "salvaged.hex", salvaged)

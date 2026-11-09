@@ -1,0 +1,331 @@
+UNKNOWN = 0
+FILLED = 1
+EMPTY = 2
+DIGITS = "0123456789"
+CLUE_LINE_CHARACTERS = DIGITS + " "
+MAX_TOKEN_LENGTH = 2
+def is_clue_line(text):
+    return text != "" and all(character in CLUE_LINE_CHARACTERS for character in text)
+def valid_token(token):
+    return (
+        1 <= len(token) <= MAX_TOKEN_LENGTH
+        and all(character in DIGITS for character in token)
+        and token[0] != "0"
+    )
+def parse_clue(text):
+    if text == "0":
+        return []
+    tokens = text.split(" ")
+    if not all(valid_token(token) for token in tokens):
+        return None
+    return [int(token) for token in tokens]
+def span(clue):
+    return sum(clue) + len(clue) - 1
+def fits(clue, length):
+    return span(clue) <= length
+STATES = {"?": UNKNOWN, "#": FILLED, ".": EMPTY}
+def char_state(character):
+    return STATES[character]
+PUZZLE_PATH = "input/puzzles.txt"
+SOLUTIONS_PATH = "output/solutions.txt"
+STATS_PATH = "output/stats.csv"
+NAME_PATTERN = re.compile(r"[a-z0-9_]{1,20}")
+MAX_SIDE = 30
+GIVEN_VALUES = ("#", ".")
+STATUS_BY_SOLUTIONS = ("none", "unique", "multiple")
+def read_blocks(path):
+    with open(path) as handle:
+        lines = handle.read().splitlines()
+    blocks = []
+    block = None
+    for line in lines:
+        if block is None:
+            if line != "" and not line.startswith("#"):
+                block = [line]
+        elif line == "END":
+            blocks.append(block)
+            block = None
+        else:
+            block.append(line)
+    return blocks
+def valid_name(name):
+    return NAME_PATTERN.fullmatch(name) is not None
+    def __init__(self, lines):
+        self.name = lines[0][len("PUZZLE "):]
+        size = lines[1].split(" ")
+        self.width = int(size[1])
+        self.height = int(size[2])
+        columns_at = lines.index("COLUMNS")
+        self.row_lines = lines[3:columns_at]
+        self.column_lines = []
+        self.given_lines = []
+        position = columns_at + 1
+        while position < len(lines) and is_clue_line(lines[position]):
+            self.column_lines.append(lines[position])
+            position += 1
+        while position < len(lines) and lines[position].startswith("GIVEN "):
+            _, row, column, value = lines[position].split(" ")
+            self.given_lines.append((int(row), int(column), value))
+            position += 1
+        self.answer_lines = lines[position + 1:] if position < len(lines) else None
+        self.row_clues = []
+        self.column_clues = []
+        self.givens = []
+        self.answer = None
+        self.error = None
+    def check_clues(self, texts, kind, length):
+        clues = []
+        for number, text in enumerate(texts, 1):
+            clue = parse_clue(text)
+            if clue is None:
+                return None, f"bad clue {kind} {number}"
+            if not fits(clue, length):
+                return None, f"{kind} {number} too long"
+            clues.append(clue)
+        return clues, None
+    def check_givens(self):
+        taken = set()
+        for number, (row, column, value) in enumerate(self.given_lines, 1):
+            inside = 1 <= row <= self.height and 1 <= column <= self.width
+            if not inside or value not in GIVEN_VALUES:
+                return f"bad given {number}"
+            if (row, column) in taken:
+                return f"duplicate given {number}"
+            taken.add((row, column))
+            self.givens.append((row - 1, column - 1, char_state(value)))
+        return None
+    def validate(self, earlier_names):
+        if not valid_name(self.name):
+            return "bad name"
+        if self.name in earlier_names:
+            return "duplicate name"
+        if not (1 <= self.width <= MAX_SIDE and 1 <= self.height <= MAX_SIDE):
+            return "bad size"
+        if len(self.row_lines) != self.height:
+            return f"row count {len(self.row_lines)} expected {self.height}"
+        if len(self.column_lines) != self.width:
+            return f"column count {len(self.column_lines)} expected {self.width}"
+        self.row_clues, error = self.check_clues(self.row_lines, "row", self.width)
+        if error is not None:
+            return error
+        self.column_clues, error = self.check_clues(self.column_lines, "column", self.height)
+        if error is not None:
+            return error
+        row_total = sum(sum(clue) for clue in self.row_clues)
+        column_total = sum(sum(clue) for clue in self.column_clues)
+        if row_total != column_total:
+            return f"total mismatch rows={row_total} columns={column_total}"
+        error = self.check_givens()
+        if error is not None:
+            return error
+        return None
+def start_grid(height, width, givens):
+    grid = [[UNKNOWN] * width for _ in range(height)]
+    for row, column, state in givens:
+        grid[row][column] = state
+    return grid
+def logical_solve(row_clues, column_clues, givens, precise):
+    height = len(row_clues)
+    width = len(column_clues)
+    grid = start_grid(height, width, givens)
+    propagation = propagate(
+        grid, row_clues, column_clues, precise, [True] * height, [True] * width
+    )
+    return grid, propagation
+def solving_result(grid, propagation):
+    if propagation.conflict is not None:
+        return "contradiction at=" + propagation.conflict.label()
+    if determined_count(grid) == len(grid) * len(grid[0]):
+        return "solved"
+    return "stuck"
+class Analysis:
+    def __init__(self, row_clues, column_clues, givens):
+        self.simple_grid, self.simple = logical_solve(row_clues, column_clues, givens, False)
+        self.logic_grid, self.logic = logical_solve(row_clues, column_clues, givens, True)
+        self.simple_result = solving_result(self.simple_grid, self.simple)
+        self.logic_result = solving_result(self.logic_grid, self.logic)
+        self.search = None
+        self.solutions = []
+        self.difficulty = "-"
+        if self.logic.conflict is not None:
+            self.status = "contradiction"
+        elif self.logic_result == "solved":
+            self.status = "unique"
+            self.solutions = [self.logic_grid]
+            self.difficulty = "easy" if self.simple_result == "solved" else "medium"
+        else:
+            self.search = Search(row_clues, column_clues)
+            self.search.run(self.logic_grid, 1)
+            self.solutions = self.search.solutions
+            self.status = STATUS_BY_SOLUTIONS[len(self.solutions)]
+            if self.status == "unique":
+                self.difficulty = "hard"
+        self.line_solves = self.logic.line_solves()
+        self.guesses = 0
+        self.max_depth = 0
+        if self.search is not None:
+            self.line_solves += self.search.line_solves()
+            self.guesses = self.search.guess_count()
+            self.max_depth = self.search.max_depth()
+def search_lines(search):
+    lines = [
+        f"search guesses={search.guess_count()} max_depth={search.max_depth()} "
+        f"backtracks={search.backtracks} solutions={len(search.solutions)} "
+        f"line_solves={search.line_solves()}"
+    ]
+    for guess in search.guesses:
+        lines.append(
+            f"guess {guess.number} depth={guess.depth} cell={cell_text(guess.row, guess.column)} "
+            f"value={state_char(guess.value)} solves={guess.solves} known={guess.known} "
+            f"result={guess.result}"
+        )
+    return lines
+        self.analysis = Analysis(block.row_clues, block.column_clues, block.givens)
+        block = self.block
+        analysis = self.analysis
+        lines = [
+            "PUZZLE " + block.name,
+            f"size={block.width}x{block.height} givens={len(block.givens)} "
+            f"status={analysis.status} difficulty={analysis.difficulty}",
+            "clues " + clue_statistics(block.row_clues, block.column_clues),
+            f"simple known={determined_count(analysis.simple_grid)} "
+            f"line_solves={analysis.simple.line_solves()} result={analysis.simple_result}",
+            f"logic known={determined_count(analysis.logic_grid)} "
+            f"line_solves={analysis.logic.line_solves()} result={analysis.logic_result}",
+        if analysis.search is not None:
+            lines.extend(search_lines(analysis.search))
+        if analysis.status == "multiple":
+            lines.append(differ_line(analysis.solutions))
+        lines.extend(display_lines(analysis))
+        if analysis.status == "unique":
+            solution = analysis.solutions[0]
+            lines.append("sheet")
+            lines.extend(answer_sheet(block.row_clues, block.column_clues, solution))
+            lines.append("picture " + features_text(solution))
+    def stats_row(self):
+        block = self.block
+        analysis = self.analysis
+        fields = [
+            block.name, analysis.status, analysis.difficulty, block.width, block.height,
+            len(block.givens), determined_count(analysis.simple_grid),
+            determined_count(analysis.logic_grid), analysis.line_solves, analysis.guesses,
+            analysis.max_depth, len(analysis.solutions),
+            "-" if self.grading is None else self.grading.result,
+        ]
+        return ",".join(str(field) for field in fields)
+def process_puzzles(blocks):
+    names = set()
+    reports = []
+    paragraphs = []
+    stats = [STATS_HEADER]
+    for block in blocks:
+        block.error = block.validate(names)
+        names.add(block.name)
+        if block.error is not None:
+            paragraphs.append(["PUZZLE " + block.name, "error " + block.error])
+            stats.append(invalid_stats_row(block))
+            continue
+        report = PuzzleReport(block)
+        reports.append(report)
+        paragraphs.append(report.paragraph())
+        stats.append(report.stats_row())
+    write_lines(SOLUTIONS_PATH, join_paragraphs(paragraphs))
+    write_lines(STATS_PATH, stats)
+    blocks = [PuzzleBlock(lines) for lines in read_blocks(PUZZLE_PATH)]
+    reports = process_puzzles(blocks)
+    def __init__(self):
+        self.steps = []
+        self.conflict = None
+    def line_solves(self):
+        return len(self.steps)
+def line_cells(grid, is_row, index):
+    if is_row:
+        return list(grid[index])
+    return [row[index] for row in grid]
+def determined_count(grid):
+    return sum(1 for row in grid for state in row if state != UNKNOWN)
+def next_line(row_marks, column_marks):
+    if True in row_marks:
+        return True, row_marks.index(True)
+    if True in column_marks:
+        return False, column_marks.index(True)
+    return None
+def propagate(grid, row_clues, column_clues, precise, row_marks, column_marks):
+    propagation = Propagation()
+    while True:
+        chosen = next_line(row_marks, column_marks)
+        if chosen is None:
+            return propagation
+        is_row, index = chosen
+        if is_row:
+            row_marks[index] = False
+            clue = row_clues[index]
+        else:
+            column_marks[index] = False
+            clue = column_clues[index]
+        cells = line_cells(grid, is_row, index)
+        solved = solve_line(cells, clue, precise)
+        if solved is None:
+            step = Step(is_row, index, 0, True)
+            propagation.steps.append(step)
+            propagation.conflict = step
+            return propagation
+        gain = 0
+        for position, state in enumerate(solved):
+            if cells[position] != UNKNOWN or state == UNKNOWN:
+                continue
+            gain += 1
+            if is_row:
+                grid[index][position] = state
+                column_marks[position] = True
+            else:
+                grid[position][index] = state
+                row_marks[position] = True
+        propagation.steps.append(Step(is_row, index, gain, False))
+SOLUTION_LIMIT = 2
+GUESS_VALUES = (FILLED, EMPTY)
+    def __init__(self, row_clues, column_clues):
+        self.row_clues = row_clues
+        self.column_clues = column_clues
+        self.guesses = []
+        self.solutions = []
+        self.backtracks = 0
+    def guess_count(self):
+        return len(self.guesses)
+    def max_depth(self):
+        return max(guess.depth for guess in self.guesses)
+    def line_solves(self):
+        return sum(guess.solves for guess in self.guesses)
+    def run(self, grid, depth):
+        height = len(self.row_clues)
+        width = len(self.column_clues)
+        row, column = guess_cell(grid)
+        for value in GUESS_VALUES:
+            child = [list(states) for states in grid]
+            child[row][column] = value
+            row_marks = [False] * height
+            column_marks = [False] * width
+            row_marks[row] = True
+            column_marks[column] = True
+            propagation = propagate(
+                child, self.row_clues, self.column_clues, True, row_marks, column_marks
+            )
+            known = determined_count(child)
+            number = len(self.guesses) + 1
+            if propagation.conflict is not None:
+                result = "contradiction at=" + propagation.conflict.label()
+                self.backtracks += 1
+            elif known == height * width:
+                self.solutions.append(child)
+                result = f"solution{len(self.solutions)}"
+            else:
+                result = "open"
+            self.guesses.append(
+                Guess(number, depth, row, column, value, propagation.line_solves(), known, result)
+            )
+            if result == "open":
+                if self.run(child, depth + 1):
+                    return True
+            elif len(self.solutions) == SOLUTION_LIMIT:
+                return True
+        return False

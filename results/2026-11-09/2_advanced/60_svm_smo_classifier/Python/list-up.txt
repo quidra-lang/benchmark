@@ -1,0 +1,246 @@
+Example = namedtuple("Example", "id point label")
+def read_binary(path):
+    examples = []
+    with open(path, encoding="ascii", newline="") as source:
+        rows = csv.reader(source)
+        next(rows)
+        for identifier, x1, x2, label in rows:
+            examples.append(Example(identifier, (float(x1), float(x2)), int(label)))
+    return examples
+def read_settings(path):
+    settings = SimpleNamespace(kernels=[])
+    with open(path, encoding="ascii") as source:
+        for line in source:
+            keyword, *values = line.split()
+            match keyword:
+                case "C_GRID":
+                    settings.c_grid = [float(value) for value in values]
+                case "KERNEL":
+                    settings.kernels.append(Kernel(*values))
+                case "TOLERANCE":
+                    settings.tolerance = float(values[0])
+                case "EPS":
+                    settings.eps = float(values[0])
+                case "MAX_PASSES":
+                    settings.max_passes = int(values[0])
+                case "FOLDS":
+                    settings.folds = int(values[0])
+    return settings
+def read_inputs():
+    training = read_binary("input/train.csv")
+    testing = read_binary("input/test.csv")
+    multi_training, multi_testing = read_multiclass("input/multiclass.csv")
+    settings = read_settings("input/params.txt")
+    return training, testing, multi_training, multi_testing, settings
+class Kernel:
+    def __init__(self, name, kind, *arguments):
+        self.name = name
+        self.kind = kind
+        if kind == "poly":
+            self.degree = int(arguments[0])
+            self.gamma = float(arguments[1])
+            self.coef0 = float(arguments[2])
+        elif kind == "rbf":
+            self.gamma = float(arguments[0])
+
+    def value(self, first, second):
+        if self.kind == "rbf":
+            e1 = first[0] - second[0]
+            e2 = first[1] - second[1]
+            return exp(-self.gamma * (e1 * e1 + e2 * e2))
+        dot = first[0] * second[0] + first[1] * second[1]
+        if self.kind == "linear":
+            return dot
+        factor = self.gamma * dot + self.coef0
+        value = 1.0
+        for _ in range(self.degree):
+            value *= factor
+        return value
+    def matrix(self, points):
+        return [[self.value(first, second) for second in points] for first in points]
+
+
+def submatrix(matrix, indices):
+    return [[matrix[i][j] for j in indices] for i in indices]
+def sign(value):
+    return 1 if value > 0 else -1
+
+
+def folds(size, count):
+    result = []
+    for fold in range(count):
+        training = [i for i in range(size) if i % count != fold]
+        testing = [i for i in range(size) if i % count == fold]
+        result.append((training, testing))
+    return result
+    def decision(self, point):
+        total = 0.0
+        for index, alpha in enumerate(self.alpha):
+            if alpha > 0:
+                total += alpha * self.labels[index] * self.kernel.value(self.points[index], point)
+        return total - self.b
+def train(points, labels, kernel, matrix, coefficient, settings):
+    return Model(points, labels, kernel, matrix, coefficient, settings).fit()
+def support_counts(model):
+    total = sum(alpha > 0 for alpha in model.alpha)
+    bound = sum(alpha > 0 and alpha == model.C for alpha in model.alpha)
+    return total, bound, total - bound
+def cross_validate(training, settings):
+    points = [example.point for example in training]
+    labels = [example.label for example in training]
+    partitions = folds(len(training), settings.folds)
+    matrices = []
+    combinations = []
+    best = []
+    for kernel_index, kernel in enumerate(settings.kernels):
+        matrix = kernel.matrix(points)
+        matrices.append(matrix)
+        candidates = []
+        for coefficient in settings.c_grid:
+            decisions = [0.0] * len(training)
+            fold_results = []
+            total_correct = total_support = total_passes = total_steps = 0
+            for train_indices, test_indices in partitions:
+                fold_points = [points[i] for i in train_indices]
+                fold_labels = [labels[i] for i in train_indices]
+                fold_matrix = submatrix(matrix, train_indices)
+                model = train(fold_points, fold_labels, kernel, fold_matrix, coefficient, settings)
+                correct = 0
+                for index in test_indices:
+                    value = model.decision(points[index])
+                    decisions[index] = value
+                    if sign(value) == labels[index]:
+                        correct += 1
+                support = support_counts(model)[0]
+                fold_results.append({
+                    "train": len(train_indices), "test": len(test_indices),
+                    "correct": correct, "support": support, "model": model,
+                })
+                total_correct += correct
+                total_support += support
+                total_passes += model.passes
+                total_steps += model.steps
+            result = {
+                "kernel": kernel, "kernel_index": kernel_index, "C": coefficient,
+                "values": decisions, "folds": fold_results, "correct": total_correct,
+                "support": total_support, "passes": total_passes, "steps": total_steps,
+            }
+            candidates.append(result)
+            combinations.append(result)
+        best.append(min(candidates, key=lambda result: (-result["correct"], result["C"])))
+    def ranking_key(result):
+        return -result["correct"], result["C"], result["kernel_index"]
+
+    selected = min(best, key=ranking_key)
+    ranking = sorted(combinations, key=ranking_key)
+    return matrices, combinations, best, selected, ranking
+
+
+def cross_validation_lines(size, fold_count, best, selected, ranking):
+    lines = [f"cross_validation folds {fold_count} examples {size}"]
+    for result in best:
+        lines.append(
+            f"best {result['kernel'].name} C {fixed(result['C'])} "
+            f"correct {result['correct']}/{size} accuracy {ratio(result['correct'], size)}"
+        )
+    name = selected["kernel"].name
+    lines.extend([f"selected {name} C {fixed(selected['C'])}", "ranking"])
+    for rank, result in enumerate(ranking, 1):
+        lines.append(
+            f"{rank} {result['kernel'].name} C {fixed(result['C'])} "
+            f"correct {result['correct']}/{size}"
+        )
+    lines.append(f"cv_detail {name} C {fixed(selected['C'])}")
+    for fold_number, result in enumerate(selected["folds"], 1):
+        lines.append(
+            f"fold {fold_number} train {result['train']} test {result['test']} "
+            f"correct {result['correct']} support_vectors {result['support']} "
+            f"{run_info(result['model'])}"
+        )
+    return lines
+def evaluate_final(model, training, testing, tolerance):
+    n, m = len(training), len(testing)
+    train_values = model.training_decisions()
+    test_values = [model.decision(example.point) for example in testing]
+    test_labels = [example.label for example in testing]
+    lines = [
+        f"model {model.kernel.name}",
+        f"kernel {model.kernel.description()}",
+        f"C {fixed(model.C)}",
+            )
+    return {
+        "model": model, "train_values": train_values, "test_values": test_values,
+        "weights": (w1, w2), "lines": lines,
+    }
+def calibrate(training, testing, selected, test_values, iterations):
+    positive_count = sum(example.label == 1 for example in training)
+    negative_count = len(training) - positive_count
+    targets = [
+        (positive_count + 1) / (positive_count + 2) if example.label == 1
+        else 1 / (negative_count + 2)
+        for example in training
+    ]
+    values = selected["values"]
+    probabilities = [probability(value, coefficient, intercept) for value in test_values]
+def cv_grid_lines(combinations, fold_count, size):
+    header = ["kernel", "C"] + [f"fold{index}" for index in range(1, fold_count + 1)]
+    header.extend(["correct", "accuracy", "support_vectors", "passes", "steps"])
+    lines = [",".join(header)]
+    for result in combinations:
+        row = [result["kernel"].name, fixed(result["C"])]
+        row.extend(str(fold["correct"]) for fold in result["folds"])
+        row.extend([
+            str(result["correct"]), ratio(result["correct"], size),
+            str(result["support"]), str(result["passes"]), str(result["steps"]),
+        ])
+        lines.append(",".join(row))
+    return lines
+
+
+def prediction_lines(testing, final_results, selected, pegasos_values, probabilities):
+    header = ["id", "label"] + [result["model"].kernel.name for result in final_results]
+    header.extend(["pegasos", "predicted", "probability"])
+    lines = [",".join(header)]
+    selected_values = final_results[selected["kernel_index"]]["test_values"]
+    for index, example in enumerate(testing):
+        row = [example.id, str(example.label)]
+        row.extend(fixed(result["test_values"][index]) for result in final_results)
+        row.extend([
+            fixed(pegasos_values[index]), str(sign(selected_values[index])),
+            fixed(probabilities[index]),
+        ])
+        lines.append(",".join(row))
+    return lines
+
+
+def main():
+    training, testing, multi_training, multi_testing, settings = read_inputs()
+    matrices, combinations, best, selected, ranking = cross_validate(training, settings)
+    points = [example.point for example in training]
+    labels = [example.label for example in training]
+    final_results = []
+    for index, result in enumerate(best):
+        model = train(points, labels, result["kernel"], matrices[index], result["C"], settings)
+        final_results.append(evaluate_final(model, training, testing, settings.tolerance))
+    selected_result = final_results[selected["kernel_index"]]
+    selected_matrix = matrices[selected["kernel_index"]]
+    sections = [cross_validation_lines(len(training), settings.folds, best, selected, ranking)]
+    sections.extend(result["lines"] for result in final_results)
+    sections.append(training_log(selected_result["model"]))
+    sections.append(c_path(training, testing, selected, selected_matrix, settings))
+    sections.append(learning_curve(training, testing, selected, selected_matrix, settings))
+    coefficient, intercept, probabilities, calibration_lines = calibrate(
+        training, testing, selected, selected_result["test_values"], settings.newton_iterations
+    )
+    sections.append(calibration_lines)
+    model_lines = []
+    for section in sections:
+        if model_lines:
+            model_lines.append("")
+        model_lines.extend(section)
+    write_lines("output/model.txt", model_lines)
+    write_lines("output/cv_grid.csv", cv_grid_lines(combinations, settings.folds, len(training)))
+    write_lines(
+        "output/predictions.csv",
+        prediction_lines(testing, final_results, selected, pegasos_values, probabilities),
+    )

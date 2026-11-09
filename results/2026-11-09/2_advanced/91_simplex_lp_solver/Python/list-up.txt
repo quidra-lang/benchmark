@@ -1,0 +1,390 @@
+def coefficients(terms, variables):
+    values = dict.fromkeys(variables, Fraction(0))
+    for name, coefficient in terms:
+        values[name] += coefficient
+    return [values[name] for name in variables]
+
+
+def dot(left, right):
+    return sum((a * b for a, b in zip(left, right)), Fraction(0))
+def content_check(parsed):
+    if parsed.error is not None:
+        return parsed
+    variables = []
+    expressions = [parsed.objective] + [row.terms for row in parsed.constraints]
+    for terms in expressions:
+        for name, coefficient in terms:
+            if name not in variables:
+                variables.append(name)
+    model = SimpleNamespace(
+        name=parsed.name, error=None, direction=parsed.direction,
+        variables=variables, constraints=parsed.constraints,
+        costs=coefficients(parsed.objective, variables),
+        matrix=[coefficients(row.terms, variables) for row in parsed.constraints],
+        rhs=[row.rhs for row in parsed.constraints],
+        comparisons=[row.comparison for row in parsed.constraints],
+        lower=[Fraction(0) for _ in variables], upper=[None for _ in variables],
+        integer=[False for _ in variables],
+def standard_form(model, lower, upper):
+    column_names = []
+    owners = []
+    directions = []
+    mappings = []
+    for j, name in enumerate(model.variables):
+        first = len(column_names)
+        if lower[j] is not None:
+            kind, offset = "shift", lower[j]
+            columns, signs, names = [first], [1], [name]
+        column_names.extend(names)
+        owners.extend([j] * len(columns))
+        directions.extend(signs)
+        mappings.append(SimpleNamespace(kind=kind, offset=offset, columns=columns,
+                                        directions=signs, upper_row=None))
+    offsets = [mapping.offset for mapping in mappings]
+    row_names = [row.name for row in model.constraints]
+    matrix = [[directions[k] * row[j] for k, j in enumerate(owners)]
+              for row in model.matrix]
+    rhs = [value - dot(row, offsets) for row, value in zip(model.matrix, model.rhs)]
+    comparisons = model.comparisons.copy()
+    for j, mapping in enumerate(mappings):
+        if mapping.kind != "shift" or upper[j] is None:
+            continue
+    signs = [1 for _ in row_names]
+    for i in range(len(row_names)):
+        if rhs[i] < 0:
+    slack = [None for _ in row_names]
+    artificial = set()
+    initial = [None for _ in row_names]
+    for i, comparison in enumerate(comparisons):
+        if comparison == "=":
+            continue
+    for i, comparison in enumerate(comparisons):
+        if comparison == "<=":
+            continue
+        column = len(column_names)
+        artificial.add(column)
+        initial[i] = column
+        column_names.append("a:" + row_names[i])
+        for t, row in enumerate(matrix):
+            row.append(Fraction(1 if t == i else 0))
+    direction = 1 if model.direction == "minimize" else -1
+    phase2 = [direction * directions[k] * model.costs[j] for k, j in enumerate(owners)]
+    phase2.extend(Fraction(0) for _ in range(len(column_names) - len(phase2)))
+    phase1 = [Fraction(1 if k in artificial else 0) for k in range(len(column_names))]
+    return SimpleNamespace(
+        column_names=column_names, row_names=row_names, mappings=mappings,
+        matrix=matrix, rhs=rhs, signs=signs, slack=slack, artificial=artificial,
+        initial=initial, phase1=phase1, phase2=phase2,
+        constant=dot(model.costs, offsets), direction=direction,
+    )
+def tableau_solution(form, tableau):
+    values = [Fraction(0) for _ in form.column_names]
+    for basic, rhs in zip(tableau.basic, tableau.rhs):
+        values[basic] = rhs
+    solution = []
+    for mapping in form.mappings:
+        value = mapping.offset
+        for column, direction in zip(mapping.columns, mapping.directions):
+            value += direction * values[column]
+        solution.append(value)
+    return solution
+def solve_lp(model, lower, upper, number, level):
+    form = standard_form(model, lower, upper)
+    tableau = Tableau(form.row_names, form.column_names, form.matrix, form.rhs, form.initial)
+    lines = []
+
+    def emit(required, text):
+        if level >= required:
+            lines.append(text)
+
+        if level >= 2:
+
+    def phase2_value(value):
+        return form.constant + form.direction * value
+
+    emit(0, f"SOLVE node {number} rows {len(form.row_names)} columns {len(form.column_names)} "
+            f"artificials {len(form.artificial)}")
+    for line in mapping_lines(model, form, lower, upper):
+        emit(1, line)
+    phase1_count = phase2_count = drives = redundant = 0
+    infeasibility = Fraction(0)
+    status = "OPTIMAL"
+    unbounded = None
+    if form.artificial:
+        emit(1, "PHASE 1")
+        phase = run_phase(tableau, form.phase1, range(len(form.column_names)), lambda value: value)
+        phase1_count = phase.iterations
+        for line in phase.lines:
+            emit(1, line)
+        infeasibility = tableau.phase_value(form.phase1)
+        emit(1, f"PHASE 1 END objective {infeasibility} iterations {phase1_count}")
+        if infeasibility > 0:
+            status = "INFEASIBLE"
+        else:
+            for row, basic in enumerate(tableau.basic):
+                if basic not in form.artificial:
+                    continue
+                entering = next((k for k, value in enumerate(tableau.values[row])
+                                 if k not in form.artificial and value != 0), None)
+                if entering is None:
+                    redundant += 1
+                    emit(1, f"REDUNDANT row {form.row_names[row]}")
+                else:
+                    leaving = form.column_names[basic]
+                    tableau.pivot(row, entering)
+                    drives += 1
+                    emit(1, f"DRIVE row {form.row_names[row]} enter {form.column_names[entering]} "
+                            f"leave {leaving}")
+    if status != "INFEASIBLE":
+        emit(1, "PHASE 2")
+        candidates = [k for k in range(len(form.column_names)) if k not in form.artificial]
+        phase = run_phase(tableau, form.phase2, candidates, phase2_value)
+        phase2_count = phase.iterations
+        for line in phase.lines:
+            emit(1, line)
+        unbounded = phase.unbounded
+        if unbounded is not None:
+            status = "UNBOUNDED"
+            emit(1, f"UNBOUNDED enter {form.column_names[unbounded]}")
+        value = phase2_value(tableau.phase_value(form.phase2))
+        emit(1, f"PHASE 2 END objective {value} iterations {phase2_count}")
+    objective = phase2_value(tableau.phase_value(form.phase2)) if status == "OPTIMAL" else None
+    shown = "-" if objective is None else str(objective)
+    emit(0, f"RESULT {status} objective {shown} phase1 {phase1_count} phase2 {phase2_count} "
+            f"drives {drives} redundant {redundant}")
+    return SimpleNamespace(
+        status=status, objective=objective, solution=tableau_solution(form, tableau),
+        form=form, tableau=tableau, unbounded=unbounded, infeasibility=infeasibility,
+        phase1=phase1_count, phase2=phase2_count, drives=drives, redundant=redundant,
+        pivots=phase1_count + phase2_count + drives, lines=lines,
+    )
+def solve_model(model, level, limit):
+    def solve(lower, upper, number):
+        return solve_lp(model, lower, upper, number, level)
+
+    if any(model.integer):
+    result = solve(model.lower, model.upper, 1)
+    solution = result.solution if result.status == "OPTIMAL" else None
+    return SimpleNamespace(status=result.status, objective=result.objective,
+                           solution=solution, solves=[result], root=result, nodes=1, lines=[])
+
+
+def solution_lines(model, result):
+    root = result.root
+    integer_count = sum(model.integer)
+    lines = [f"MODEL {model.name} {model.direction} variables {len(model.variables)} "
+             f"constraints {len(model.constraints)} integers {integer_count}"]
+    lines.append(statistics_line(model))
+    lines.append(f"STATUS {result.status}")
+    if result.solution is not None:
+        lines.append(f"OBJECTIVE {result.objective} approx {approximate(result.objective)}")
+    values = result.solution
+    if result.status == "UNBOUNDED":
+        values = root.solution
+    if values is not None:
+        for name, value in zip(model.variables, values):
+            lines.append(f"VALUE {name} {value}")
+    lines.append(f"PIVOTS {sum(lp.pivots for lp in result.solves)}")
+    return lines
+class Reports:
+    def __init__(self):
+        self.iterations = []
+        self.solutions = []
+        self.sensitivity = []
+        self.tree = []
+        self.summary = ["model,status,objective,approx,relaxation,nodes,pivots"]
+        self.statuses = dict.fromkeys(["OPTIMAL", "INFEASIBLE", "UNBOUNDED", "NODE_LIMIT", "ERROR"], 0)
+        self.solves = 0
+        self.phase1 = 0
+        self.phase2 = 0
+        self.drives = 0
+    def add_valid(self, model, result, level, limit):
+        self.statuses[result.status] += 1
+        self.iterations.append(f"MODEL {model.name} level {level}")
+        for lp in result.solves:
+            self.iterations.extend(lp.lines)
+            self.solves += 1
+            self.phase1 += lp.phase1
+            self.phase2 += lp.phase2
+            self.drives += lp.drives
+        self.solutions.extend(solution_lines(model, result))
+        objective = "-" if result.objective is None else str(result.objective)
+        approx = "-" if result.objective is None else approximate(result.objective)
+        relaxation = "-" if result.root.objective is None else str(result.root.objective)
+        pivots = sum(lp.pivots for lp in result.solves)
+        self.summary.append(f"{model.name},{result.status},{objective},{approx},{relaxation},"
+                            f"{len(result.solves)},{pivots}")
+
+    def finish(self):
+        models = sum(self.statuses.values())
+        pivots = self.phase1 + self.phase2 + self.drives
+        self.iterations.append(f"TOTAL solves {self.solves} phase1 {self.phase1} phase2 {self.phase2} "
+                               f"drives {self.drives} pivots {pivots}")
+        output = Path("output")
+        output.mkdir(exist_ok=True)
+        reports = [("iterations.txt", self.iterations), ("solutions.txt", self.solutions),
+                   ("sensitivity.txt", self.sensitivity), ("bnb_tree.txt", self.tree),
+                   ("summary.csv", self.summary)]
+        for name, lines in reports:
+            (output / name).write_bytes(("\n".join(lines) + "\n").encode("ascii"))
+def main():
+    settings = read_settings()
+    reports = Reports()
+    for parsed in read_models():
+        model = content_check(parsed)
+        if model.error is not None:
+        level = settings.logs.get(model.name, settings.level)
+        limit = settings.limits.get(model.name, settings.limit)
+        result = solve_model(model, level, limit)
+        reports.add_valid(model, result, level, limit)
+    reports.finish()
+def expression(words):
+    terms = []
+    position = 0
+    sign = 1
+    if words and words[0] == "-":
+        sign = -1
+        position = 1
+    while position < len(words):
+        coefficient = read_number(words[position])
+        if coefficient is not None:
+            if position + 1 == len(words) or not is_name(words[position + 1]):
+                return None
+            name = words[position + 1]
+            position += 2
+        elif is_name(words[position]):
+            coefficient = Fraction(1)
+            name = words[position]
+            position += 1
+        else:
+            return None
+        terms.append((name, sign * coefficient))
+        if position == len(words):
+            return terms
+        if words[position] not in {"+", "-"}:
+            return None
+        sign = 1 if words[position] == "+" else -1
+        position += 1
+    return None
+
+
+def named_expression(words):
+    if len(words) < 2 or not words[0].endswith(":"):
+        return None
+    name = words[0][:-1]
+    terms = expression(words[1:])
+    return (name, terms) if is_name(name) and terms is not None else None
+
+
+def constraint(words, line):
+    if len(words) < 4 or words[-2] not in {"<=", ">=", "="}:
+        return None
+    rhs = read_number(words[-1], True)
+    named = named_expression(words[:-2])
+    if rhs is None or named is None:
+        return None
+    return SimpleNamespace(line=line, name=named[0], terms=named[1],
+                           comparison=words[-2], rhs=rhs)
+def parse_block(name, body, end_line):
+    result = SimpleNamespace(name=name, error=None, direction=None, objective=None,
+                             constraints=[], bounds=[], integers=[], binaries=[])
+    state = "A"
+    for line, text in body:
+        words = text.split(" ")
+        accepted = False
+        if state == "A" and text in {"maximize", "minimize"}:
+            result.direction = text
+            state, accepted = "B", True
+        elif state == "B":
+            named = named_expression(words)
+            if named is not None:
+                result.objective = named[1]
+                state, accepted = "C", True
+        elif state == "C" and text == "subject to":
+            state, accepted = "D", True
+        elif state in {"D", "E"}:
+            if state == "E" and text in {"bounds", "integer", "binary"}:
+                state = {"bounds": "F", "integer": "G", "binary": "H"}[text]
+                accepted = True
+            else:
+                item = constraint(words, line)
+                if item is not None:
+                    result.constraints.append(item)
+                    state, accepted = "E", True
+        if not accepted:
+            result.error = (line, "syntax error")
+            return result
+    if state in {"A", "B", "C", "D"}:
+        result.error = (end_line, "syntax error")
+    return result
+
+
+def read_models():
+    records = Path("input/models.lp").read_bytes().decode("ascii").split("\n")
+    models = []
+    name = None
+    body = []
+    for line, text in enumerate(records, 1):
+        if not text or text.startswith("#"):
+            continue
+        if name is None:
+            name = text.split(" ")[1]
+            body = []
+        elif text == "end":
+            models.append(parse_block(name, body, line))
+            name = None
+        else:
+            body.append((line, text))
+    return models
+def run_phase(tableau, costs, candidates, objective):
+    iterations = 0
+    lines = []
+    candidates = sorted(candidates)
+    while True:
+        reduced = tableau.reduced(costs)
+        entering = next((column for column in candidates if reduced[column] < 0), None)
+        if entering is None:
+            return SimpleNamespace(iterations=iterations, unbounded=None, lines=lines)
+        ratios = [(tableau.rhs[row] / values[entering], tableau.basic[row], row)
+                  for row, values in enumerate(tableau.values) if values[entering] > 0]
+        if not ratios:
+            return SimpleNamespace(iterations=iterations, unbounded=entering, lines=lines)
+        ratio, leaving, row = min(ratios)
+        before = reduced[entering]
+        tableau.pivot(row, entering)
+        iterations += 1
+        value = objective(tableau.phase_value(costs))
+        lines.append(f"PIVOT {iterations} enter {tableau.column_names[entering]} reduced {before} "
+                     f"leave {tableau.column_names[leaving]} row {tableau.row_names[row]} "
+                     f"ratio {ratio} objective {value}")
+
+
+class Tableau:
+    def __init__(self, row_names, column_names, matrix, rhs, initial):
+        self.row_names = row_names
+        self.column_names = column_names
+        self.values = [row.copy() for row in matrix]
+        self.rhs = rhs.copy()
+        self.basic = initial.copy()
+
+    def pivot(self, row, column):
+        divisor = self.values[row][column]
+        self.values[row] = [value / divisor for value in self.values[row]]
+        self.rhs[row] /= divisor
+        for other in range(len(self.values)):
+            if other == row:
+                continue
+            factor = self.values[other][column]
+            self.values[other] = [value - factor * pivot_value
+                                  for value, pivot_value in zip(self.values[other], self.values[row])]
+            self.rhs[other] -= factor * self.rhs[row]
+        self.basic[row] = column
+
+    def reduced(self, costs):
+        return [cost - sum((costs[basic] * row[column]
+                            for basic, row in zip(self.basic, self.values)), Fraction(0))
+                for column, cost in enumerate(costs)]
+
+    def phase_value(self, costs):
+        return sum((costs[basic] * value for basic, value in zip(self.basic, self.rhs)), Fraction(0))
+from fractions import Fraction

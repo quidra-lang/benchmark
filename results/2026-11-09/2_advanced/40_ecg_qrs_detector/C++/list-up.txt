@@ -1,0 +1,278 @@
+using Integer = std::int64_t;
+struct Params {
+    Integer refractory_ms, twave_ms, searchback_percent, premature_percent, qrs_width_ms, match_ms, pause_ms,
+        brady_ms, tachy_ms, excerpt_ms, segment_ms, strip_start_ms, strip_ms, strip_rows, chart_rows,
+        poincare_size;
+};
+struct Annotation {
+    int sample;
+    char label;
+    int beat = -1;
+};
+struct Input {
+    Values ecg;
+    std::vector<Annotation> annotations;
+    Params params;
+};
+Input read_input() {
+    Input out;
+    std::ifstream ecg("input/ecg.csv");
+    std::string line;
+    std::getline(ecg, line);
+    while (std::getline(ecg, line))
+        out.ecg.push_back(std::stoll(line.substr(line.find(',') + 1)));
+    std::ifstream annotations("input/annotations.csv");
+    std::getline(annotations, line);
+    while (std::getline(annotations, line)) {
+        const std::size_t comma = line.find(',');
+        out.annotations.push_back({std::stoi(line.substr(0, comma)), line[comma + 1], -1});
+    }
+    std::ifstream params("input/params.txt");
+    Integer *fields[] = {
+        &out.params.refractory_ms,     &out.params.twave_ms,     &out.params.searchback_percent,
+        &out.params.premature_percent, &out.params.qrs_width_ms, &out.params.match_ms,
+        &out.params.pause_ms,          &out.params.brady_ms,     &out.params.tachy_ms,
+        &out.params.excerpt_ms,        &out.params.segment_ms,   &out.params.strip_start_ms,
+        &out.params.strip_ms,          &out.params.strip_rows,   &out.params.chart_rows,
+        &out.params.poincare_size};
+    std::string key;
+    for (Integer *field : fields)
+        params >> key >> *field;
+    return out;
+}
+struct Beat {
+    int peak = 0, sample = 0, reference = -1;
+    Integer rr = 0, width = 0;
+    char label = 'N';
+};
+static Detection detect(const Signals &signals, const Params &params) {
+    Detection out;
+    out.peaks = find_peaks(signals);
+    out.initial = out.levels = initial_levels(signals);
+    int last = -1;
+    for (std::size_t i = 0; i < out.beats.size(); ++i) {
+        Beat &beat = out.beats[i];
+        const Peak &peak = out.peaks[beat.peak];
+        beat.sample = std::max(0, peak.r - 21);
+        beat.width = qrs_width(signals, peak.r);
+        if (i)
+            beat.rr = 5 * (beat.sample - out.beats[i - 1].sample);
+        if (i >= 9) {
+            Integer preceding = 0;
+            for (std::size_t j = i - 8; j < i; ++j)
+                preceding += out.beats[j].rr;
+            if (800 * beat.rr < params.premature_percent * preceding)
+                beat.label = beat.width > params.qrs_width_ms ? 'V' : 'A';
+        }
+    }
+    return out;
+}
+static void match(std::vector<Beat> &beats, std::vector<Annotation> &annotations, Integer tolerance) {
+    for (std::size_t k = 0; k < beats.size(); ++k) {
+        int selected = -1;
+        Integer distance = 0;
+        for (std::size_t i = 0; i < annotations.size(); ++i) {
+            const Integer difference = std::abs(Integer(annotations[i].sample) - beats[k].sample);
+            if (annotations[i].beat < 0 && difference <= tolerance &&
+                (selected < 0 || difference < distance)) {
+                selected = i;
+                distance = difference;
+            }
+        }
+        if (selected >= 0) {
+            beats[k].reference = selected;
+            annotations[selected].beat = k;
+        }
+    }
+}
+static Lines rhythm(const Input &input, const Detection &detection) {
+    const Params &p = input.params;
+    const int first = p.strip_start_ms / 5, length = p.strip_ms / 5, columns = length / 10;
+    std::string beat_marks(columns, ' '), ref_marks(columns, ' ');
+    for (const Beat &beat : detection.beats)
+        if (beat.sample >= first && beat.sample < first + length)
+            beat_marks[(beat.sample - first) / 10] = beat.label;
+    for (const Annotation &annotation : input.annotations)
+        if (annotation.sample >= first && annotation.sample < first + length)
+            ref_marks[(annotation.sample - first) / 10] = annotation.label;
+    out.push_back(" beats |" + beat_marks + "|");
+    out.push_back("  refs |" + ref_marks + "|");
+    return out;
+static Lines performance(const Input &input, const Detection &detection) {
+    const auto &beats = detection.beats;
+    const auto &annotations = input.annotations;
+    std::array<int, 5> classes{};
+    std::array<int, 3> refs{}, labels{}, miss{}, extra{};
+    std::array<std::array<int, 3>, 3> confusion{};
+    std::array<int, 2> method_total{}, method_tp{};
+    int tp = 0, max_abs = 0;
+    Integer offset_sum = 0, absolute_sum = 0;
+    for (const Annotation &annotation : annotations) {
+        ++refs[label_index(annotation.label)];
+        if (annotation.beat < 0)
+            ++miss[label_index(annotation.label)];
+    }
+    for (const Beat &beat : beats) {
+        ++labels[label_index(beat.label)];
+        const int method = detection.peaks[beat.peak].kind == PeakClass::searchback ? 1 : 0;
+        ++method_total[method];
+        if (beat.reference >= 0) {
+            ++tp;
+            ++method_tp[method];
+            const Annotation &reference = annotations[beat.reference];
+            ++confusion[label_index(reference.label)][label_index(beat.label)];
+            const int offset = 5 * (beat.sample - reference.sample);
+            offset_sum += offset;
+            absolute_sum += std::abs(offset);
+            max_abs = std::max(max_abs, std::abs(offset));
+        } else
+            ++extra[label_index(beat.label)];
+    }
+    const int fp = int(beats.size()) - tp, fn = int(annotations.size()) - tp;
+                 "MATCHING",
+                 "tolerance_ms " + num(input.params.match_ms),
+                 "references " + num(annotations.size()) + " N=" + num(refs[0]) + " V=" + num(refs[1]) +
+                     " A=" + num(refs[2]),
+                 "detections " + num(beats.size()) + " N=" + num(labels[0]) + " V=" + num(labels[1]) +
+                     " A=" + num(labels[2]),
+                 "true_positives " + num(tp),
+                 "false_positives " + num(fp),
+                 "false_negatives " + num(fn),
+                 "sensitivity " + ratio(tp, tp + fn),
+                 "positive_predictivity " + ratio(tp, tp + fp),
+                 "detection_error_rate " + ratio(fp + fn, annotations.size()),
+                 "by_method threshold=" + num(method_tp[0]) + "/" + num(method_total[0]) +
+                     " searchback=" + num(method_tp[1]) + "/" + num(method_total[1]),
+                 tp ? "offset_ms mean=" + decimal2(rdiv(100 * offset_sum, tp)) +
+                          " mean_abs=" + decimal2(rdiv(100 * absolute_sum, tp)) + " max_abs=" + num(max_abs)
+                    : "offset_ms none",
+                 "CONFUSION",
+                 "ref  " + align("N", 6) + align("V", 6) + align("A", 6) + "  miss"};
+    for (int i = 0; i < 3; ++i)
+        out.push_back(std::string(1, "NVA"[i]) + "    " + align(num(confusion[i][0]), 6) +
+                      align(num(confusion[i][1]), 6) + align(num(confusion[i][2]), 6) +
+                      align(num(miss[i]), 6));
+    out.push_back("extra" + align(num(extra[0]), 6) + align(num(extra[1]), 6) + align(num(extra[2]), 6));
+    out.push_back("veb_sensitivity " + ratio(confusion[1][1], refs[1]));
+    out.push_back("veb_positive_predictivity " + ratio(confusion[1][1], labels[1]));
+    out.push_back("sveb_sensitivity " + ratio(confusion[2][2], refs[2]));
+    out.push_back("sveb_positive_predictivity " + ratio(confusion[2][2], labels[2]));
+    const int segment = int(std::min(input.params.segment_ms / 5, Integer(input.ecg.size()))),
+              segments = (int(input.ecg.size()) + segment - 1) / segment;
+    out.push_back("SEGMENTS segment_ms=" + num(input.params.segment_ms) + " segments=" + num(segments));
+    for (int g = 0; g < segments; ++g) {
+        const int start = g * segment, end = std::min((g + 1) * segment, int(input.ecg.size()));
+        int reference_count = 0, matched = 0, false_positive = 0, noise = 0;
+        for (const Annotation &annotation : annotations)
+            if (annotation.sample >= start && annotation.sample < end) {
+                ++reference_count;
+                matched += annotation.beat >= 0;
+            }
+        for (const Beat &beat : beats)
+            if (beat.sample >= start && beat.sample < end && beat.reference < 0)
+                ++false_positive;
+        for (const Peak &peak : detection.peaks)
+            if (peak.time >= start && peak.time < end && peak.kind == PeakClass::noise)
+                ++noise;
+        out.push_back(align(num(5 * start), 6) + "-" + align(num(5 * end), 6) +
+                      " refs=" + num(reference_count) + " tp=" + num(matched) + " fp=" + num(false_positive) +
+                      " fn=" + num(reference_count - matched) + " noise_peaks=" + num(noise));
+    }
+    out.push_back("ERRORS count=" + num(fp + fn));
+    struct Error {
+        int sample, priority;
+        std::string line;
+    };
+    std::vector<Error> errors;
+    for (std::size_t i = 0; i < beats.size(); ++i)
+        if (beats[i].reference < 0) {
+            const Beat &beat = beats[i];
+            errors.push_back({beat.sample, 0,
+                              "false_positive beat=" + num(i + 1) + " sample=" + num(beat.sample) +
+                                  " time_ms=" + num(5 * beat.sample) + " label=" + beat.label});
+        }
+    for (const Annotation &reference : annotations)
+        if (reference.beat < 0)
+            errors.push_back({reference.sample, 1,
+                              "false_negative sample=" + num(reference.sample) +
+                                  " time_ms=" + num(5 * reference.sample) + " label=" + reference.label});
+    std::sort(errors.begin(), errors.end(), [](const Error &a, const Error &b) {
+        return std::tie(a.sample, a.priority) < std::tie(b.sample, b.priority);
+    });
+    for (const Error &error : errors)
+        out.push_back(error.line);
+    return out;
+}
+    Input input = read_input();
+    const Signals signals = filter(input.ecg);
+    Detection detection = detect(signals, input.params);
+    match(detection.beats, input.annotations, input.params.match_ms / 5);
+    Lines beats = {"beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"};
+    for (std::size_t i = 0; i < detection.beats.size(); ++i) {
+        const Beat &beat = detection.beats[i];
+        beats.push_back(num(i + 1) + "," + num(beat.sample) + "," + num(5 * beat.sample) + "," +
+                        (i ? num(beat.rr) : "-") + "," + (i ? decimal2(rdiv(6000000, beat.rr)) : "-") + "," +
+                        num(beat.width) + "," + beat.label + "," +
+                        (detection.peaks[beat.peak].kind == PeakClass::qrs ? "threshold" : "searchback") +
+                        "," + (beat.reference < 0 ? "-" : num(input.annotations[beat.reference].sample)) +
+                        "," +
+                        (beat.reference < 0 ? "-" : std::string(1, input.annotations[beat.reference].label)));
+    }
+    struct MatchRow {
+        int sample, priority;
+        std::string line;
+    };
+    std::vector<MatchRow> matches;
+    for (const Annotation &reference : input.annotations) {
+        std::string row = num(reference.sample) + "," + reference.label + ",";
+        if (reference.beat < 0)
+            row += "-,-,-,-,FN,-";
+        else {
+            const Beat &beat = detection.beats[reference.beat];
+            row += num(reference.beat + 1) + "," + num(beat.sample) + "," + beat.label + "," +
+                   num(5 * (beat.sample - reference.sample)) + ",TP," +
+                   (beat.label == reference.label ? "yes" : "no");
+        }
+        matches.push_back({reference.sample, 0, row});
+    }
+    for (std::size_t i = 0; i < detection.beats.size(); ++i) {
+        const Beat &beat = detection.beats[i];
+        if (beat.reference < 0)
+            matches.push_back({beat.sample, 1,
+                               "-,-," + num(i + 1) + "," + num(beat.sample) + "," + beat.label + ",-,FP,-"});
+    }
+    std::sort(matches.begin(), matches.end(), [](const MatchRow &a, const MatchRow &b) {
+        return std::tie(a.sample, a.priority) < std::tie(b.sample, b.priority);
+    });
+    Lines matching = {"ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"};
+    for (const MatchRow &row : matches)
+        matching.push_back(row.line);
+    write_lines("matching.csv", matching);
+    write_lines("performance.txt", performance(input, detection));
+    write_lines("rhythm_strip.txt", rhythm(input, detection));
+Integer floor_div(Integer a, Integer b) {
+    Integer quotient = a / b;
+    if (a % b < 0)
+        --quotient;
+    return quotient;
+}
+Integer rdiv(Integer a, Integer b) {
+    return floor_div(2 * a + b, 2 * b);
+}
+std::string decimal2(Integer value) {
+    const Integer magnitude = std::abs(value);
+    std::ostringstream out;
+    if (value < 0)
+        out << '-';
+    out << magnitude / 100 << '.' << std::setw(2) << std::setfill('0') << magnitude % 100;
+    return out.str();
+}
+std::string reduced(Integer a, Integer b) {
+    const Integer divisor = std::gcd(a, b);
+    return std::to_string(a / divisor) + "/" + std::to_string(b / divisor);
+}
+std::string ratio(Integer a, Integer b) {
+    const std::string prefix = std::to_string(a) + "/" + std::to_string(b);
+    return b ? prefix + " reduced=" + reduced(a, b) + " percent=" + decimal2(rdiv(10000 * a, b))
+             : prefix + " none";
+}

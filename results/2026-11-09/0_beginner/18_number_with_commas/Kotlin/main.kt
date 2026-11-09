@@ -1,0 +1,9 @@
+import java.util.Locale
+
+fun main() {
+    for (n in longArrayOf(0, 7, 999, 1000, -456789, 3141592, 9876543210)) {
+        val negative = n < 0
+        val magnitude = kotlin.math.abs(n)
+        println((if (negative) "-" else "") + "%,d".format(Locale.US, magnitude))
+    }
+}

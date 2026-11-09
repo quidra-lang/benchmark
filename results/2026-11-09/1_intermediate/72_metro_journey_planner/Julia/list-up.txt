@@ -1,0 +1,251 @@
+struct CommandError <: Exception
+    message::String
+end
+fail(s) = throw(CommandError(s))
+check(b, s) = b ? nothing : fail(s)
+parsetime(s) = 60*parse(Int, s[1:2])+parse(Int, s[4:5])
+halfprice(n) = cld(n, 20)*10
+segmentkey(a, b) = minmax(a, b)
+mutable struct Station
+    id::String
+    zone::Int
+    name::String
+    transfer::Int
+    closed::Bool
+    walks::Dict{String,Int}
+end
+Station(id, zone, name) = Station(id, zone, name, 0, false, Dict{String,Int}())
+mutable struct TransitLine
+    id::String
+    first::Int
+    last::Int
+    headway::Int
+    stops::Vector{String}
+    offsets::Vector{Int}
+    delay::Int
+    suspended::Bool
+end
+trips(line) = div(line.last-line.first, line.headway)+1
+struct Direction
+    line::TransitLine
+    stops::Vector{String}
+    offsets::Vector{Int}
+end
+directions(line) = (
+    Direction(line, line.stops, line.offsets),
+    Direction(line, reverse(line.stops), last(line.offsets) .- reverse(line.offsets)),
+)
+traintime(d, q, j) = d.line.first+d.line.delay+q*d.line.headway+d.offsets[j]
+function firsttrain(d, j, ready)
+    q=max(0, cld(ready-traintime(d, 0, j), d.line.headway))
+    q<trips(d.line) ? q : -1
+end
+abstract type Leg end
+struct Ride <: Leg
+    line::String
+    terminal::String
+    board::String
+    start::Int
+    alight::String
+    finish::Int
+    stops::Int
+end
+struct Walk <: Leg
+    origin::String
+    start::Int
+    destination::String
+    finish::Int
+end
+ride(d, q, i, j) = Ride(
+    d.line.id,
+    last(d.stops),
+    d.stops[i],
+    traintime(d, q, i),
+    d.stops[j],
+    traintime(d, q, j),
+    j-i,
+)
+struct Label
+    time::Int
+    journey::Vector{Leg}
+end
+const Labels=Dict{String,Label}
+mutable struct Planner
+    stations::Dict{String,Station}
+    lines::Dict{String,TransitLine}
+    closed::Set{Tuple{String,String}}
+    tariff::Union{Nothing,Tuple{Int,Int,Vector{Int}}}
+end
+Planner() = Planner(
+    Dict{String,Station}(),
+    Dict{String,TransitLine}(),
+    Set{Tuple{String,String}}(),
+    nothing,
+)
+function station(p, name)
+    check(haskey(p.stations, name), "unknown station $name")
+    p.stations[name]
+end
+checkopen(p, name) = check(!p.stations[name].closed, "station $name is closed")
+function endpoints(p, origin, destination)
+    station(p, origin)
+    station(p, destination)
+    check(origin!=destination, "origin and destination are the same")
+    checkopen(p, origin)
+    checkopen(p, destination)
+end
+function toward(line, terminal)
+    check(
+        terminal in (first(line.stops), last(line.stops)),
+        "$terminal is not a terminal of line $(line.id)",
+    )
+    directions(line)[terminal==last(line.stops) ? 1 : 2]
+end
+orderedlines(p; active = false) =
+    [p.lines[id] for id in sort!(collect(keys(p.lines))) if !active || !p.lines[id].suspended]
+blocked(p, a, b) = segmentkey(a, b) in p.closed
+improves(labels, name, time) = !haskey(labels, name) || labels[name].time>time
+readytime(p, origin, name, time) = time+(origin==name ? 0 : p.stations[name].transfer)
+function walkfrom!(p, labels, name, time, journey)
+    changed=Set{String}()
+    for neighbor in sort!(collect(keys(p.stations[name].walks)))
+        arrival=time+p.stations[name].walks[neighbor]
+        if !p.stations[neighbor].closed && arrival<=1440 && improves(labels, neighbor, arrival)
+            labels[neighbor]=Label(arrival, [journey; Leg[Walk(name, time, neighbor, arrival)]])
+            push!(changed, neighbor)
+        end
+    end
+    changed
+end
+function ridefrom!(p, labels, d, name, ready, journey)
+    i=findfirst(==(name), d.stops)
+    (i===nothing || i==length(d.stops)) && return
+    q=firsttrain(d, i, ready)
+    q<0 && return
+    for j in (i+1):length(d.stops)
+        stop=d.stops[j]
+        blocked(p, d.stops[j-1], stop) && break
+        p.stations[stop].closed && continue
+        time=traintime(d, q, j)
+        improves(labels, stop, time) && (labels[stop]=Label(time, [journey; Leg[ride(d, q, i, j)]]))
+    end
+end
+function earliest(p, origin, departure)
+    lines=orderedlines(p; active = true)
+    labels=Labels(origin=>Label(departure, Leg[]))
+    settled=Set{String}()
+    while true
+        pending=[(value.time, name) for (name, value) in labels if !(name in settled)]
+        isempty(pending) && return labels
+        time, name=minimum(pending)
+        push!(settled, name)
+        journey=labels[name].journey
+        ready=readytime(p, origin, name, time)
+        for line in lines, d in directions(line)
+            ridefrom!(p, labels, d, name, ready, journey)
+        end
+        walkfrom!(p, labels, name, time, journey)
+    end
+end
+function fareitems(p, journey, child)
+    cap, window, prices=p.tariff
+    child && (cap=halfprice(cap))
+    previous=nothing
+    items=Tuple{Ride,Int,Int,Int}[]
+    for leg in journey
+        leg isa Ride || continue
+        d=toward(p.lines[leg.line], leg.terminal)
+        at=findfirst(==(leg.board), d.stops)
+        zones=length(Set(p.stations[name].zone for name in d.stops[at:(at+leg.stops)]))
+        price=prices[min(zones, length(prices))]
+        child && (price=halfprice(price))
+        discount=previous!==nothing && leg.start-previous.finish<=window ? min(cap, price) : 0
+        push!(items, (leg, zones, price, discount))
+        previous=leg
+    end
+    items
+end
+function execute!(p, line)
+    words=String.(split(line, ' '))
+    command=words[1]
+    a=words[2:end]
+    if command=="STATION"
+        id=a[1]
+        check(!haskey(p.stations, id), "station $id already exists")
+        p.stations[id]=Station(id, parse(Int, a[2]), a[3])
+    elseif command=="LINE"
+        id=a[1]
+        check(!haskey(p.lines, id), "line $id already exists")
+        stops=a[5:2:end]
+        for name in stops
+            station(p, name)
+        end
+        seen=Set{String}()
+        for name in stops
+            check(!(name in seen), "station $name appears twice on line $id")
+            push!(seen, name)
+        end
+        firsttime=parsetime(a[2])
+        lasttime=parsetime(a[3])
+        check(firsttime<=lasttime, "line $id first departure is after last departure")
+        offsets=[0; cumsum(parse.(Int, a[6:2:end]))]
+        check(lasttime+last(offsets)<=1440, "line $id runs past 24:00")
+        value=TransitLine(id, firsttime, lasttime, parse(Int, a[4]), stops, offsets, 0, false)
+        p.lines[id]=value
+    elseif command=="WALK"
+        firststation=station(p, a[1])
+        secondstation=station(p, a[2])
+        check(a[1]!=a[2], "walk from $(a[1]) to itself")
+        minutes=parse(Int, a[3])
+        firststation.walks[a[2]]=minutes
+        secondstation.walks[a[1]]=minutes
+    elseif command=="TARIFF"
+        tariffvalues=parse.(Int, a)
+        prices=tariffvalues[3:end]
+        check(
+            all(i->prices[i]<=prices[i+1], 1:(length(prices)-1)),
+            "tariff prices must not decrease",
+        )
+        p.tariff=(tariffvalues[1], tariffvalues[2], prices)
+    elseif command in ("ROUTE", "FEWEST", "PARETO", "FARE", "LASTTRAIN", "ARRIVEBY", "PROFILE")
+        origin=a[1]
+        destination=a[2]
+        endpoints(p, origin, destination)
+        if command=="FARE"
+            check(a[4] in ("ADULT", "CHILD"), "unknown fare class $(a[4])")
+            check(p.tariff!==nothing, "no tariff")
+        end
+        departure=parsetime(a[3])
+        heading="$command $origin $destination"
+        else
+            labels=earliest(p, origin, departure)
+            if !haskey(labels, destination)
+                println("$heading $(a[3])", command=="FARE" ? " $(a[4])" : "", " unreachable")
+                return
+            end
+            value=labels[destination]
+            else
+                items=fareitems(p, value.journey, a[4]=="CHILD")
+                total=sum(x->x[3]-x[4], items; init = 0)
+                println("$heading $(a[3]) $(a[4]) rides $(length(items)) total $total")
+                for (leg, zones, price, discount) in items
+                    println(
+                        "TICKET $(leg.line) $(leg.board) $(leg.alight) zones $zones price $price discount $discount pay $(price-discount)",
+                    )
+                end
+            end
+        end
+function main()
+    planner=Planner()
+    n=parse(Int, readline())
+    for _ in 1:n
+        line=readline()
+        try
+            execute!(planner, line)
+        catch e
+            e isa CommandError || rethrow()
+            println("ERROR $(e.message)")
+        end
+    end
+end
+main()

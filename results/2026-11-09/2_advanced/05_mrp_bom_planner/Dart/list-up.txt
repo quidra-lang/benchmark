@@ -1,0 +1,300 @@
+typedef Row = ({int line, List<String> fields});
+List<Row> readRows(String name) => File('input/$name').readAsLinesSync().skip(1).indexed.map((entry) => (line: entry.$1 + 2, fields: entry.$2.split(','))).toList();
+class Item {
+  final String id, rule, description;
+  final int lead, safety, onHand, material, labor;
+  final List<int> lot;
+  Item(List<String> fields, this.lot)
+      : id = fields[0], lead = int.parse(fields[1]), rule = fields[2], safety = int.parse(fields[4]),
+        onHand = int.parse(fields[5]), material = int.parse(fields[6]), labor = int.parse(fields[7]), description = fields[8];
+  String get lotLabel => rule == 'LFL' ? rule : '$rule ${lot.join(rule == 'MIN' ? '/' : '')}';
+}
+List<int>? lotValues(String rule, String text) {
+  final values = text.split('/').map(int.parse).toList();
+  final valid = rule == 'MIN' ? values.length == 2 && values.every((v) => v >= 1) : values.length == 1 && (rule == 'LFL' ? values[0] == 0 : values[0] >= 1);
+  return valid ? values : null;
+}
+Map<String, Item> readItems(List<String> errors) {
+  final items = <String, Item>{};
+  for (final row in readRows('items.csv')) {
+    final f = row.fields, id = f[0], rule = f[2], lot = f[3];
+    final values = lotValues(rule, lot);
+    final reason = items.containsKey(id) ? 'duplicate item $id' : !['LFL', 'FOQ', 'POQ', 'MIN'].contains(rule) ? 'unknown lot rule $rule' : values == null ? 'bad lot parameter $lot for $rule' : null;
+    if (reason != null) { errors.add('items.csv line ${row.line}: $reason'); } else { items[id] = Item(f, values!); }
+  }
+  return items;
+}
+class BomRow {
+  final String parent, child;
+  final int quantity, scrap;
+  BomRow(List<String> fields) : parent = fields[0], child = fields[1], quantity = int.parse(fields[2]), scrap = int.parse(fields[3]);
+}
+int need(BomRow row, int quantity) => (quantity * row.quantity * (100 + row.scrap) + 99) ~/ 100;
+class Bom {
+  final Map<String, List<BomRow>> children, parents;
+  Bom(Map<String, Item> items) : children = {for (final id in items.keys) id: []}, parents = {for (final id in items.keys) id: []};
+  bool manufactured(String id) => children[id]!.isNotEmpty;
+  int code(String id, Map<String, int> codes) {
+    if (codes.containsKey(id)) return codes[id]!;
+    var value = 0;
+    for (final row in parents[id]!) { value = max(value, code(row.parent, codes) + 1); }
+    return codes[id] = value;
+  }
+Bom readBom(Map<String, Item> items, List<String> errors) {
+  final bom = Bom(items);
+  for (final source in readRows('bom.csv')) {
+    final row = BomRow(source.fields), parent = row.parent, child = row.child;
+    String? reason;
+    if (!items.containsKey(parent)) { reason = 'unknown item $parent'; }
+    else if (!items.containsKey(child)) { reason = 'unknown item $child'; }
+    else if (row.quantity < 1) { reason = 'bad quantity ${row.quantity}'; }
+    else if (row.scrap > 50) { reason = 'bad scrap ${row.scrap}'; }
+    else if (parent == child) { reason = 'cycle $parent -> $parent'; }
+    else if (bom.children[parent]!.any((other) => other.child == child)) { reason = 'duplicate $parent -> $child'; }
+    else {
+      final path = bom.path(child, parent, {});
+      if (path != null) reason = 'cycle $parent -> ${path.join(' -> ')}';
+    }
+    if (reason != null) { errors.add('bom.csv line ${source.line}: $reason'); continue; }
+    bom.children[parent]!.add(row); bom.parents[child]!.add(row);
+    bom.children[parent]!.sort((a, b) => a.child.compareTo(b.child));
+    bom.parents[child]!.sort((a, b) => a.parent.compareTo(b.parent));
+  }
+  return bom;
+}
+class WorkCenter {
+  final String id, description;
+  final int minutes, efficiency, available;
+  WorkCenter(List<String> f) : id = f[0], minutes = int.parse(f[1]), efficiency = int.parse(f[2]), description = f[3], available = int.parse(f[1]) * int.parse(f[2]) ~/ 100;
+}
+class Operation {
+  final String item, center;
+  final int number, setup, run;
+  Operation(List<String> f) : item = f[0], number = int.parse(f[1]), center = f[2], setup = int.parse(f[3]), run = int.parse(f[4]);
+  int minutes(int quantity) => setup + quantity * run;
+}
+Map<String, WorkCenter> readCenters(List<String> errors) {
+  final centers = <String, WorkCenter>{};
+  for (final row in readRows('workcenters.csv')) {
+    final id = row.fields[0], efficiency = int.parse(row.fields[2]);
+    final reason = centers.containsKey(id) ? 'duplicate center $id' : efficiency < 50 || efficiency > 150 ? 'bad efficiency $efficiency' : null;
+    if (reason != null) { errors.add('workcenters.csv line ${row.line}: $reason'); } else { centers[id] = WorkCenter(row.fields); }
+  }
+  return centers;
+}
+Map<String, List<Operation>> readRoutings(Map<String, Item> items, Map<String, WorkCenter> centers, Bom bom, List<String> errors) {
+  final routings = <String, List<Operation>>{};
+  for (final row in readRows('routings.csv')) {
+    final op = Operation(row.fields), id = op.item, center = op.center;
+    String? reason;
+    if (!items.containsKey(id)) { reason = 'unknown item $id'; }
+    else if (!centers.containsKey(center)) { reason = 'unknown center $center'; }
+    else if (!bom.manufactured(id)) { reason = 'purchased item $id'; }
+    else if (op.run < 1) { reason = 'bad run time ${op.run}'; }
+    else if ((routings[id] ?? []).any((other) => other.number == op.number)) { reason = 'duplicate $id operation ${op.number}'; }
+    if (reason != null) { errors.add('routings.csv line ${row.line}: $reason'); } else { (routings[id] ??= []).add(op); }
+  }
+  for (final operations in routings.values) { operations.sort((a, b) => a.number.compareTo(b.number)); }
+  return routings;
+}
+int operationWeek(int receipt, int lead, int index, int count) => max(receipt - lead + index * lead ~/ count, 1);
+int lotSize(Item item, int week, int projected, List<int> receipts, List<int> gross, int horizon) {
+  final net = item.safety - projected;
+  if (item.rule == 'LFL') return net;
+List<String> sortedIds(Map<String, Object?> map) => map.keys.toList()..sort();
+int total(Iterable<int> values) => values.fold(0, (a, b) => a + b);
+class ScheduleRow {
+  final String item;
+  final int week, quantity, line;
+  ScheduleRow(List<String> f, this.line) : item = f[0], week = int.parse(f[1]), quantity = int.parse(f[2]);
+}
+class Inquiry {
+  final String id, item;
+  final int quantity, week, line;
+  Inquiry(List<String> f, this.line) : id = f[0], item = f[1], quantity = int.parse(f[2]), week = int.parse(f[3]);
+}
+class Demand {
+  final String item, kind, orderId, parent;
+  final int week, quantity, line, parentNumber;
+  Demand(this.item, this.kind, this.week, this.quantity, {this.orderId = '', this.line = 0, this.parent = '', this.parentNumber = 0});
+class PlannedOrder {
+  final String item;
+  final int number, receipt, quantity, originalRelease, release;
+  PlannedOrder(this.item, this.number, this.receipt, this.quantity, int lead) : originalRelease = receipt - lead, release = max(1, receipt - lead);
+}
+class ItemPlan {
+  final Item item;
+  final List<int> receipts, gross, onHand, net, plannedReceipts, plannedReleases;
+  final List<Demand> demands = [];
+  final List<PlannedOrder> orders = [];
+  List<Supply> supplies = [], orderSupplies = [];
+  ItemPlan(this.item, int horizon, this.receipts)
+      : gross = List.filled(horizon + 1, 0), onHand = List.filled(horizon + 1, 0), net = List.filled(horizon + 1, 0),
+        plannedReceipts = List.filled(horizon + 1, 0), plannedReleases = List.filled(horizon + 1, 0) { onHand[0] = item.onHand; }
+  int get pastDue => total(orders.where((o) => o.originalRelease < 1).map((o) => o.quantity));
+}
+class Plan {
+  final Map<String, ItemPlan> items;
+  final Map<String, List<int>> loads, overloads;
+  Plan(this.items, this.loads, Map<String, WorkCenter> centers) : overloads = {
+    for (final entry in loads.entries) entry.key: entry.value.map((load) => max(0, load - centers[entry.key]!.available)).toList()
+  };
+}
+class Promise {
+  final Inquiry inquiry;
+  int week = 0, materialWeek = 0;
+  String reason = '';
+  Promise(this.inquiry);
+  String get status => week == 0 ? 'rejected' : week == inquiry.week ? 'on_time' : 'late';
+String? scheduleError(String item, int week, int quantity, Map<String, Item> items, int horizon) {
+  if (!items.containsKey(item)) return 'unknown item $item';
+  if (week < 1 || week > horizon) return 'week $week outside horizon';
+  if (quantity < 1) return 'bad quantity $quantity';
+  return null;
+}
+List<ScheduleRow> readSchedule(String name, Map<String, Item> items, int horizon, List<String> errors, bool unique) {
+  final rows = <ScheduleRow>[], seen = <String>{};
+  for (final source in readRows(name)) {
+    final row = ScheduleRow(source.fields, source.line), key = '${source.fields[0]}\x00${source.fields[1]}';
+    var reason = scheduleError(row.item, row.week, row.quantity, items, horizon);
+    if (reason == null && unique && seen.contains(key)) reason = 'duplicate ${row.item} week ${row.week}';
+    if (reason != null) { errors.add('$name line ${row.line}: $reason'); } else { rows.add(row); seen.add(key); }
+  }
+  return rows;
+  PlanningData() {
+    for (final line in File('input/params.txt').readAsLinesSync()) {
+      final words = line.split(' ');
+      switch (words[0]) {
+        case 'horizon': horizon = int.parse(words[1]);
+        case 'peg': peg.addAll(words.skip(1));
+        case 'tree_quantity': treeQuantity = int.parse(words[1]);
+      }
+    }
+    items = readItems(errors); bom = readBom(items, errors); centers = readCenters(errors); routings = readRoutings(items, centers, bom, errors);
+    final mpsRows = readSchedule('mps.csv', items, horizon, errors, true);
+    final receiptRows = readSchedule('receipts.csv', items, horizon, errors, false), seen = <String>{};
+    for (final row in readRows('orders.csv')) {
+      final inquiry = Inquiry(row.fields, row.line);
+      final reason = seen.contains(inquiry.id) ? 'duplicate order ${inquiry.id}' : scheduleError(inquiry.item, inquiry.week, inquiry.quantity, items, horizon);
+      if (reason != null) { errors.add('orders.csv line ${row.line}: $reason'); } else { inquiries.add(inquiry); seen.add(inquiry.id); }
+    }
+    for (final row in mpsRows) { mps.add(Demand(row.item, 'MPS', row.week, row.quantity)); }
+    for (final id in items.keys) { bom.code(id, codes); bom.cumulative(id, items, cumulative); }
+    order = sortedIds(items)..sort((a, b) { final comparison = codes[a]!.compareTo(codes[b]!); return comparison != 0 ? comparison : a.compareTo(b); });
+    centerOrder = sortedIds(centers); weeks = List.generate(horizon, (i) => i + 1);
+    receipts = {for (final id in items.keys) id: []}; scheduled = {for (final id in items.keys) id: List.filled(horizon + 1, 0)};
+    receiptRows.sort((a, b) { final comparison = a.week.compareTo(b.week); return comparison != 0 ? comparison : a.line.compareTo(b.line); });
+    for (final row in receiptRows) { receipts[row.item]!.add(row); scheduled[row.item]![row.week] += row.quantity; }
+  }
+}
+Plan runMrp(PlanningData data, List<Demand> orders) {
+  final plans = {for (final id in data.order) id: ItemPlan(data.items[id]!, data.horizon, data.scheduled[id]!)};
+  for (final demand in [...data.mps, ...orders]) { plans[demand.item]!.demands.add(demand); }
+  for (final id in data.order) {
+    final plan = plans[id]!, item = plan.item;
+    for (final demand in plan.demands) { plan.gross[demand.week] += demand.quantity; }
+    var projected = item.onHand;
+    for (final week in data.weeks) {
+      projected += plan.receipts[week] - plan.gross[week];
+      if (projected < item.safety) {
+        final quantity = lotSize(item, week, projected, plan.receipts, plan.gross, data.horizon);
+        final order = PlannedOrder(id, plan.orders.length + 1, week, quantity, item.lead); plan.orders.add(order);
+        plan.net[week] = item.safety - projected; plan.plannedReceipts[week] = quantity; plan.plannedReleases[order.release] += quantity; projected += quantity;
+      }
+      plan.onHand[week] = projected;
+    }
+    for (final order in plan.orders) {
+      for (final row in data.bom.children[id]!) { plans[row.child]!.demands.add(Demand(row.child, 'DEPENDENT', order.release, need(row, order.quantity), parent: id, parentNumber: order.number)); }
+    }
+  }
+  final loads = {for (final id in data.centers.keys) id: List.filled(data.horizon + 1, 0)};
+  for (final entry in data.routings.entries) {
+    for (final order in plans[entry.key]!.orders) {
+      for (final (index, op) in entry.value.indexed) { loads[op.center]![operationWeek(order.receipt, data.items[entry.key]!.lead, index, entry.value.length)] += op.minutes(order.quantity); }
+    }
+  }
+  return Plan(plans, loads, data.centers);
+}
+({List<Promise> promises, Plan finalPlan}) promiseInquiries(PlanningData data, Plan base) {
+  var current = base;
+  final promised = <Demand>[], promises = <Promise>[];
+  for (final inquiry in data.inquiries) {
+    final promise = Promise(inquiry);
+    for (var week = inquiry.week; week <= data.horizon; week++) {
+      final demand = Demand(inquiry.item, 'ORDER', week, inquiry.quantity, orderId: inquiry.id, line: inquiry.line);
+      final trial = runMrp(data, [...promised, demand]); String? reason;
+      for (final id in data.order) { if (trial.items[id]!.pastDue > current.items[id]!.pastDue) { reason = id; break; } }
+      if (reason == null) {
+        if (promise.materialWeek == 0) promise.materialWeek = week;
+        capacity: for (final id in data.centerOrder) {
+          for (final w in data.weeks) { if (trial.overloads[id]![w] > current.overloads[id]![w]) { reason = '$id week $w'; break capacity; } }
+        }
+      }
+      if (reason == null) { promise.week = week; promised.add(demand); current = trial; break; }
+      if (week == inquiry.week) promise.reason = reason;
+    }
+    promises.add(promise);
+  }
+  return (promises: promises, finalPlan: current);
+}
+List<String> gridLines(PlanningData data, Plan plan) {
+  final lines = <String>[];
+  for (final id in data.order) {
+    final p = plan.items[id]!, item = p.item;
+    lines.add('ITEM $id LLC ${data.codes[id]} LT ${item.lead} LOT ${item.lotLabel} SS ${item.safety} OH ${item.onHand} ${item.description}');
+    lines.add(tableRow('WEEK', data.weeks, 6));
+    for (final entry in {'GROSS': p.gross, 'RECEIPTS': p.receipts, 'ON_HAND': p.onHand, 'NET': p.net, 'PLAN_RCPT': p.plannedReceipts, 'PLAN_REL': p.plannedReleases}.entries) {
+      lines.add(tableRow(entry.key, entry.value.skip(1), 6));
+    }
+    lines.add('TOTAL gross ${total(p.gross)} receipts ${total(p.receipts)} planned ${total(p.plannedReceipts)} orders ${p.orders.length} ending ${p.onHand[data.horizon]}');
+  }
+  return lines;
+}
+List<String> capacityLines(PlanningData data, Plan plan) {
+  final lines = <String>[], totals = <String, int>{};
+  for (final id in data.centerOrder) {
+    final center = data.centers[id]!, loads = plan.loads[id]!.sublist(1), overloads = plan.overloads[id]!.sublist(1), leveled = levelLoads(plan.loads[id]!, center.available);
+    final loadTotal = totals[id] = total(loads), capacity = center.available * data.horizon;
+    final peak = loadTotal > 0 ? loads.indexOf(loads.reduce(max)) + 1 : 0, overloaded = overloads.where((v) => v > 0).length, backlog = max(0, leveled[1] - center.available);
+    lines.add('CENTER $id minutes ${center.minutes} efficiency ${center.efficiency} available ${center.available} ${center.description}');
+    for (final entry in {'WEEK': data.weeks, 'LOAD': loads, 'UTIL': loads.map((load) => percent(load, center.available)).toList(), 'OVER': overloads, 'LEVELED': leveled.sublist(1)}.entries) {
+      lines.add(tableRow(entry.key, entry.value, 7));
+    }
+    lines.add('TOTAL load $loadTotal available $capacity utilization ${percent(loadTotal, capacity)} overloaded $overloaded peak $peak backlog $backlog');
+  }
+  return lines;
+}
+List<String> promiseLines(PlanningData data, List<Promise> promises, Plan base, Plan finalPlan) {
+  final lines = <String>[], counts = {'on_time': 0, 'late': 0, 'rejected': 0};
+  for (final promise in promises) {
+    final inquiry = promise.inquiry, status = promise.status;
+    counts[status] = counts[status]! + 1;
+    final head = 'ORDER ${inquiry.id} ${inquiry.item} quantity ${inquiry.quantity} requested ${inquiry.week}', material = promise.materialWeek > 0 ? '${promise.materialWeek}' : 'none';
+    if (status == 'rejected') { lines.add('$head rejected material $material reason ${promise.reason}'); continue; }
+    lines.add(status == 'on_time' ? '$head promised ${promise.week}' : '$head promised ${promise.week} late ${promise.week - inquiry.week} material $material reason ${promise.reason}');
+    for (final id in data.order) {
+      for (final supply in finalPlan.items[id]!.orderSupplies) {
+        if (supply.serves(inquiry.id)) { final order = supply.order!; lines.add('  SUPPLY $id order ${order.number} receipt ${order.receipt} release ${order.release} quantity ${order.quantity}'); }
+      }
+    }
+  }
+  for (final id in data.order) {
+    final before = base.items[id]!, after = finalPlan.items[id]!; var changed = 0;
+    for (final week in data.weeks) { if (before.plannedReceipts[week] != after.plannedReceipts[week]) { changed = week; break; } }
+    if (changed > 0) lines.add('CHANGE $id from $changed planned ${total(before.plannedReceipts)} -> ${total(after.plannedReceipts)} orders ${before.orders.length} -> ${after.orders.length}');
+  }
+  lines.add('SUMMARY orders ${promises.length} on_time ${counts['on_time']} late ${counts['late']} rejected ${counts['rejected']}');
+  return lines;
+}
+  final data = PlanningData(), base = runMrp(data, []), result = promiseInquiries(data, base), finalPlan = result.finalPlan;
+  final reports = {
+    'mrp_grid.txt': gridLines(data, finalPlan), 'pegging.txt': peggingLines(data, finalPlan), 'bom_tree.txt': bomTreeLines(data),
+    'cost_rollup.csv': costLines(data, finalPlan, costs), 'exceptions.txt': exceptionLines(data, finalPlan), 'capacity.txt': capacityLines(data, finalPlan),
+    'promises.txt': promiseLines(data, result.promises, base, finalPlan), 'releases.txt': releaseLines(data, finalPlan), 'value_plan.csv': valueLines(data, finalPlan, costs)
+  };
+  for (final entry in reports.entries) { writeReport(entry.key, entry.value); }
+String tableRow(String label, Iterable<int> values, int width) => label.padRight(10) + values.map((value) => value.toString().padLeft(width)).join();
+void writeReport(String name, List<String> lines) {
+  Directory('output').createSync(recursive: true);
+  File('output/$name').writeAsStringSync(lines.isEmpty ? '' : '${lines.join('\n')}\n');
+}

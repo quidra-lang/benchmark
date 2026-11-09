@@ -1,0 +1,7 @@
+With no eligible enemy, target selection returns null. The result represents an Enemy pointer inside ?*e.Enemy; the immediate firing guard is if (...) |target|, so no shot is created for an empty choice. It cannot be confused with the first enemy’s number: absence is a separate sentinel/optional value, and where the result is an index its mapping to an enemy is shown in the firing path.
+
+The optional pointer type distinguishes null from every enemy pointer. Optional capture unwraps only a present pointer before self.fire.
+
+Evidence: towers.zig: 98–110; main.zig: 421. The selected complete lines contain the decision and its necessary data dependencies. The initialization/empty collection result, eligibility filtering, return and immediate guard establish the complete empty-set path. Target-priority arithmetic is irrelevant when no candidate survives, so its internal formulas are omitted where they would add lines; there is no need to inspect projectile travel or damage.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 293 tokenizer tokens. The full selected source file(s) would be 16316 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

@@ -1,0 +1,260 @@
+import sys
+def round_half_up(numerator, denominator):
+    return (2 * numerator + denominator) // (2 * denominator)
+def round_half_away(numerator, denominator):
+    if numerator < 0:
+        return -round_half_up(-numerator, denominator)
+    return round_half_up(numerator, denominator)
+def decimal_display(value, negative_sign="-"):
+    sign = negative_sign if value < 0 else ""
+    value = abs(value)
+    return f"{sign}{value // 10}.{value % 10}"
+def index_display(value):
+    return "none" if value is None else decimal_display(value, "+")
+def allocation(handicap, indexes):
+    quotient, remainder = divmod(abs(handicap), 18)
+    if handicap >= 0:
+        return [quotient + int(index <= remainder) for index in indexes]
+    return [-quotient - int(index >= 19 - remainder) for index in indexes]
+class Course:
+    def __init__(self, identifier, pars, indexes):
+        self.identifier = identifier
+        self.pars = pars
+        self.indexes = indexes
+        self.par = sum(pars)
+        self.tees = {}
+class Tee:
+    def __init__(self, identifier, rating, slope):
+        self.identifier = identifier
+        self.rating = rating
+        self.slope = slope
+    def handicap(self, index, course):
+        numerator = index * self.slope + 113 * (self.rating - 10 * course.par)
+        return round_half_up(numerator, 1130)
+class Player:
+    def __init__(self, identifier, name, index):
+        self.identifier = identifier
+        self.name = name
+        self.index = index
+        self.rounds = []
+        self.records = []
+        self.calculation = None
+    def low_index(self, day):
+        records = [(index, date) for date, index in self.records if day - 365 <= date < day]
+        return min(records) if records else None
+    def eligible(self):
+        start = max(0, len(self.rounds) - 20)
+        reduction = 0
+        eligible = []
+        for position in range(len(self.rounds) - 1, start - 1, -1):
+            record = self.rounds[position]
+            reduction += record.exceptional
+            eligible.append((position + 1, record, record.differential - reduction))
+        return eligible[::-1]
+    def counting(self, eligible):
+        count = len(eligible)
+        if count < 3:
+            return [], 0
+        lowest = next(
+            k for k, limit in enumerate((5, 8, 11, 14, 16, 18, 19, 20), 1)
+            if count <= limit
+        )
+        adjustment = -20 if count == 3 else -10 if count in (4, 6) else 0
+        return sorted(eligible, key=lambda row: (row[2], -row[0]))[:lowest], adjustment
+    def update_index(self, day):
+        selected, adjustment = self.counting(self.eligible())
+        if not selected:
+            self.calculation = None
+            return
+        average = round_half_away(sum(row[2] for row in selected), len(selected))
+        candidate = average + adjustment
+        low_record = self.low_index(day)
+        low = low_record[0] if low_record is not None else None
+        soft = False
+        hard = False
+        maximum = False
+        if low is not None:
+            if candidate - low > 30:
+                candidate = low + 30 + (candidate - low - 30) // 2
+                soft = True
+            if candidate - low > 50:
+                candidate = low + 50
+                hard = True
+        if candidate > 540:
+            candidate = 540
+            maximum = True
+        self.index = candidate
+        self.calculation = (len(selected), average, adjustment, low, hard, soft, maximum)
+class Round:
+    def __init__(self, player, course, tee, day, scores):
+        self.course = course
+        self.tee = tee
+        self.day = day
+        self.scores = scores
+        self.previous_index = player.index
+        self.previous_records = len(player.records)
+        self.previous_calculation = player.calculation
+        self.handicap = tee.handicap(player.index, course) if player.index is not None else None
+        strokes = allocation(self.handicap or 0, course.indexes)
+        self.adjusted = []
+        for par, score, stroke in zip(course.pars, scores, strokes):
+            limit = par + 5 if self.handicap is None else par + 2 + stroke
+            if score == "-":
+                adjusted = par + stroke
+            elif score == "X":
+                adjusted = limit
+            else:
+                adjusted = min(score, limit)
+            self.adjusted.append(adjusted)
+        self.ags = sum(self.adjusted)
+        self.differential = round_half_away(113 * (10 * self.ags - tee.rating), tee.slope)
+        self.exceptional = 0
+        if player.index is not None and player.index - self.differential >= 70:
+            self.exceptional = 20 if player.index - self.differential >= 100 else 10
+class GolfScorer:
+    def __init__(self):
+        self.courses = {}
+        self.players = {}
+        self.output = []
+    def emit(self, *parts):
+        self.output.append(" ".join(str(part) for part in parts))
+    def player(self, identifier):
+        if identifier not in self.players:
+            raise CommandError("unknown player")
+        return self.players[identifier]
+    def course(self, identifier):
+        if identifier not in self.courses:
+            raise CommandError("unknown course")
+        return self.courses[identifier]
+    def tee(self, course_id, tee_id):
+        course = self.course(course_id)
+        if tee_id not in course.tees:
+            raise CommandError("unknown tee")
+        return course, course.tees[tee_id]
+    def register_course(self, arguments):
+        identifier = arguments[0]
+        if identifier in self.courses:
+            raise CommandError("duplicate course")
+        pars = [int(value) for value in arguments[1:19]]
+        indexes = [int(value) for value in arguments[19:37]]
+        if any(par not in (3, 4, 5) for par in pars) or sorted(indexes) != list(range(1, 19)):
+            raise CommandError("invalid course")
+        self.courses[identifier] = Course(identifier, pars, indexes)
+    def register_tee(self, arguments):
+        identifier, tee_id, rating, slope = arguments
+        course = self.course(identifier)
+        if tee_id in course.tees:
+            raise CommandError("duplicate tee")
+        rating, slope = int(rating), int(slope)
+        if not (500 <= rating <= 900 and 55 <= slope <= 155):
+            raise CommandError("invalid tee")
+        course.tees[tee_id] = Tee(tee_id, rating, slope)
+    def register_player(self, arguments):
+        identifier, name = arguments[:2]
+        if identifier in self.players:
+            raise CommandError("duplicate player")
+        index = int(arguments[2]) if len(arguments) == 3 else None
+        if index is not None and not -100 <= index <= 540:
+            raise CommandError("invalid index")
+        self.players[identifier] = Player(identifier, name, index)
+    def add_round(self, arguments):
+        player = self.player(arguments[0])
+        course, tee = self.tee(arguments[1], arguments[2])
+        day = int(arguments[3])
+        if player.rounds and day < player.rounds[-1].day:
+            raise CommandError("invalid day")
+        scores = [int(value) if value.isdigit() else value for value in arguments[4:]]
+        if scores.count("-") >= 5:
+            raise CommandError("too few holes")
+        record = Round(player, course, tee, day, scores)
+        player.rounds.append(record)
+        player.update_index(day)
+        if player.index is not None:
+            player.records.append((day, player.index))
+        parts = [
+            "round", player.identifier, str(len(player.rounds)) + ":",
+            "ags", record.ags, "diff", decimal_display(record.differential),
+        ]
+        if record.exceptional:
+            parts.extend(("exceptional", decimal_display(-record.exceptional)))
+        parts.extend(("index", index_display(player.index)))
+        self.emit(*parts)
+    def remove(self, arguments):
+        player = self.player(arguments[0])
+        if not player.rounds:
+            raise CommandError("no rounds")
+        number = len(player.rounds)
+        record = player.rounds.pop()
+        player.index = record.previous_index
+        player.records = player.records[:record.previous_records]
+        player.calculation = record.previous_calculation
+        self.emit("removed", player.identifier, str(number) + ":", "index", index_display(player.index))
+    def show_index(self, arguments):
+        player = self.player(arguments[0])
+        parts = ["index", player.identifier + ":", index_display(player.index), "rounds", len(player.rounds)]
+        if player.calculation is not None:
+            lowest, average, adjustment, low, hard, soft, maximum = player.calculation
+            parts.extend((
+                "lowest", lowest, "average", decimal_display(average),
+                "adjustment", decimal_display(adjustment),
+            ))
+            if low is not None:
+                parts.extend(("low", index_display(low)))
+            if hard:
+                parts.extend(("hard", "cap"))
+            elif soft:
+                parts.extend(("soft", "cap"))
+            if maximum:
+                parts.append("maximum")
+        self.emit(*parts)
+    def history(self, arguments):
+        player = self.player(arguments[0])
+        eligible = player.eligible()
+        selected, _ = player.counting(eligible)
+        counted = {row[0] for row in selected}
+        self.emit("history", player.identifier + ":", "rounds", len(player.rounds))
+        for number, record, adjusted in eligible:
+            parts = [
+                number, "day", record.day, record.course.identifier, record.tee.identifier,
+                "ags", record.ags, "diff", decimal_display(record.differential),
+            ]
+            if adjusted != record.differential:
+                parts.extend(("adjusted", decimal_display(adjusted)))
+            if number in counted:
+                parts.append("*")
+            self.emit(*parts)
+    def lowindex(self, arguments):
+        player = self.player(arguments[0])
+        day = int(arguments[1])
+        record = player.low_index(day)
+        parts = ["lowindex", player.identifier, str(day) + ":"]
+        if record is None:
+            parts.append("none")
+        else:
+            index, date = record
+            parts.extend((index_display(index), "day", date))
+        self.emit(*parts)
+    def execute(self, line):
+        command, *arguments = line.split()
+        handlers = {
+            "COURSE": self.register_course,
+            "TEE": self.register_tee,
+            "PLAYER": self.register_player,
+            "ROUND": self.add_round,
+            "REMOVE": self.remove,
+            "INDEX": self.show_index,
+            "HISTORY": self.history,
+            "LOWINDEX": self.lowindex,
+        }
+        try:
+            handlers[command](arguments)
+        except CommandError as error:
+def main():
+    scorer = GolfScorer()
+    count = int(sys.stdin.readline())
+    for _ in range(count):
+        scorer.execute(sys.stdin.readline().rstrip("\n"))
+    if scorer.output:
+        sys.stdout.write("\n".join(scorer.output) + "\n")
+if __name__ == "__main__":
+    main()

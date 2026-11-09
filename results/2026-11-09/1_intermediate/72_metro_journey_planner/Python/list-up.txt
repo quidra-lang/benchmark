@@ -1,0 +1,273 @@
+from collections import namedtuple
+from itertools import accumulate
+import sys
+END_OF_SERVICE = 24 * 60
+FARE_CLASSES = ("ADULT", "CHILD")
+Ride = namedtuple("Ride", "line terminal board start alight end stops")
+Walk = namedtuple("Walk", "origin start destination end")
+class CommandError(Exception):
+    pass
+
+
+def parse_time(text):
+    return int(text[:2]) * 60 + int(text[3:])
+def half(amount):
+    return -(-amount // 20) * 10
+
+
+def segment(first, second):
+    return (first, second) if first < second else (second, first)
+
+
+def improves(labels, station_id, time):
+    return station_id not in labels or labels[station_id][0] > time
+class Station:
+    def __init__(self, station_id, zone, name):
+        self.zone = zone
+        self.transfer = 0
+        self.closed = False
+        self.walks = {}
+
+
+class Direction:
+    def __init__(self, line, stops, offsets):
+        self.line = line
+        self.stops = stops
+        self.offsets = offsets
+        self.start = stops[0]
+        self.terminal = stops[-1]
+        self.index = {station_id: j for j, station_id in enumerate(stops)}
+
+    def time(self, train, j):
+        line = self.line
+        return line.first + line.delay + train * line.headway + self.offsets[j]
+
+    def first_train(self, j, ready):
+        train = max(0, -((self.time(0, j) - ready) // self.line.headway))
+        return train if train < self.line.trips else None
+    def ride(self, train, board, alight):
+        return Ride(
+            self.line.id,
+            self.terminal,
+            self.stops[board],
+            self.time(train, board),
+            self.stops[alight],
+            self.time(train, alight),
+            alight - board,
+        )
+
+
+class Line:
+    def __init__(self, line_id, first, last, headway, stops, offsets):
+        self.id = line_id
+        self.first = first
+        self.last = last
+        self.headway = headway
+        self.stops = stops
+        self.offsets = offsets
+        self.total = offsets[-1]
+        self.trips = (last - first) // headway + 1
+        self.delay = 0
+        self.suspended = False
+        self.segments = {segment(a, b) for a, b in zip(stops, stops[1:])}
+        self.directions = (
+            Direction(self, stops, offsets),
+            Direction(self, stops[::-1], [self.total - offset for offset in reversed(offsets)]),
+        )
+    def toward(self, terminal):
+        for direction in self.directions:
+            if direction.terminal == terminal:
+                return direction
+        return None
+class MetroPlanner:
+    def __init__(self):
+        self.stations = {}
+        self.lines = {}
+        self.closed_segments = set()
+        self.tariff = None
+        self.output = []
+        self.handlers = {
+            "STATION": self.add_station,
+            "LINE": self.add_line,
+            "WALK": self.add_walk,
+            "TARIFF": self.set_tariff,
+            "FARE": self.fare,
+        }
+    def emit(self, text):
+        self.output.append(text)
+
+    def execute(self, line):
+        command, *arguments = line.split()
+        try:
+            self.handlers[command](arguments)
+        except CommandError as error:
+            self.emit(f"ERROR {error}")
+
+    def station(self, station_id):
+        if station_id not in self.stations:
+            raise CommandError(f"unknown station {station_id}")
+        return self.stations[station_id]
+    def require_open(self, station_id):
+        if self.stations[station_id].closed:
+            raise CommandError(f"station {station_id} is closed")
+
+    def check_endpoints(self, origin, destination):
+        self.station(origin)
+        self.station(destination)
+        if origin == destination:
+            raise CommandError("origin and destination are the same")
+        self.require_open(origin)
+        self.require_open(destination)
+    def sorted_lines(self):
+        return [self.lines[line_id] for line_id in sorted(self.lines)]
+
+    def active_lines(self):
+        return [line for line in self.sorted_lines() if not line.suspended]
+
+    def blocked(self, first, second):
+        return segment(first, second) in self.closed_segments
+    def ready_time(self, origin, station_id, arrival):
+        if station_id == origin:
+            return arrival
+        return arrival + self.stations[station_id].transfer
+
+    def walk_from(self, labels, station_id, arrival, journey):
+        reached = []
+        for neighbor, minutes in sorted(self.stations[station_id].walks.items()):
+            time = arrival + minutes
+            if (
+                not self.stations[neighbor].closed
+                and time <= END_OF_SERVICE
+                and improves(labels, neighbor, time)
+            ):
+                leg = Walk(station_id, arrival, neighbor, time)
+                labels[neighbor] = (time, journey + (leg,))
+                reached.append(neighbor)
+        return reached
+
+    def ride_from(self, labels, direction, station_id, ready, journey):
+        i = direction.index.get(station_id)
+        if i is None or i == len(direction.stops) - 1:
+            return
+        train = direction.first_train(i, ready)
+        if train is None:
+            return
+        for j in range(i + 1, len(direction.stops)):
+            stop = direction.stops[j]
+            if self.blocked(direction.stops[j - 1], stop):
+                return
+            if self.stations[stop].closed:
+                continue
+            time = direction.time(train, j)
+            if improves(labels, stop, time):
+                labels[stop] = (time, journey + (direction.ride(train, i, j),))
+
+    def earliest_arrival(self, origin, departure):
+        lines = self.active_lines()
+        labels = {origin: (departure, ())}
+        settled = set()
+        while True:
+            pending = [(labels[key][0], key) for key in labels if key not in settled]
+            if not pending:
+                return labels
+            arrival, current = min(pending)
+            settled.add(current)
+            journey = labels[current][1]
+            ready = self.ready_time(origin, current, arrival)
+            for line in lines:
+                for direction in line.directions:
+                    self.ride_from(labels, direction, current, ready, journey)
+            self.walk_from(labels, current, arrival, journey)
+    def tickets(self, journey, child):
+        cap, window, prices = self.tariff
+        if child:
+            cap = half(cap)
+        tickets = []
+        previous = None
+        for leg in journey:
+            if not isinstance(leg, Ride):
+                continue
+            direction = self.lines[leg.line].toward(leg.terminal)
+            start = direction.index[leg.board]
+            covered = direction.stops[start:start + leg.stops + 1]
+            zones = len({self.stations[stop].zone for stop in covered})
+            price = prices[min(zones, len(prices)) - 1]
+            if child:
+                price = half(price)
+            discount = 0
+            if previous is not None and leg.start - previous.end <= window:
+                discount = min(cap, price)
+            tickets.append((leg, zones, price, discount))
+            previous = leg
+        return tickets
+
+    def add_station(self, arguments):
+        station_id, zone, name = arguments
+        if station_id in self.stations:
+            raise CommandError(f"station {station_id} already exists")
+        self.stations[station_id] = Station(station_id, int(zone), name)
+    def add_line(self, arguments):
+        line_id, first_text, last_text, headway, *route = arguments
+        if line_id in self.lines:
+            raise CommandError(f"line {line_id} already exists")
+        stops = route[::2]
+        for stop in stops:
+            self.station(stop)
+        seen = set()
+        for stop in stops:
+            if stop in seen:
+                raise CommandError(f"station {stop} appears twice on line {line_id}")
+            seen.add(stop)
+        first = parse_time(first_text)
+        last = parse_time(last_text)
+        if first > last:
+            raise CommandError(f"line {line_id} first departure is after last departure")
+        offsets = [0, *accumulate(int(minutes) for minutes in route[1::2])]
+        if last + offsets[-1] > END_OF_SERVICE:
+            raise CommandError(f"line {line_id} runs past 24:00")
+        line = Line(line_id, first, last, int(headway), stops, offsets)
+        self.lines[line_id] = line
+    def add_walk(self, arguments):
+        first_id, second_id, minutes_text = arguments
+        first = self.station(first_id)
+        second = self.station(second_id)
+        if first_id == second_id:
+            raise CommandError(f"walk from {first_id} to itself")
+        minutes = int(minutes_text)
+        first.walks[second_id] = minutes
+        second.walks[first_id] = minutes
+    def set_tariff(self, arguments):
+        discount, window, *prices = map(int, arguments)
+        if any(later < earlier for earlier, later in zip(prices, prices[1:])):
+            raise CommandError("tariff prices must not decrease")
+        self.tariff = (discount, window, prices)
+    def fare(self, arguments):
+        origin, destination, time_text, fare_class = arguments
+        self.check_endpoints(origin, destination)
+        if fare_class not in FARE_CLASSES:
+            raise CommandError(f"unknown fare class {fare_class}")
+        if self.tariff is None:
+            raise CommandError("no tariff")
+        labels = self.earliest_arrival(origin, parse_time(time_text))
+        heading = f"FARE {origin} {destination} {time_text} {fare_class}"
+        if destination not in labels:
+            self.emit(f"{heading} unreachable")
+            return
+        tickets = self.tickets(labels[destination][1], fare_class == "CHILD")
+        total = sum(price - discount for _, _, price, discount in tickets)
+        self.emit(f"{heading} rides {len(tickets)} total {total}")
+        for leg, zones, price, discount in tickets:
+            self.emit(
+                f"TICKET {leg.line} {leg.board} {leg.alight} zones {zones} "
+                f"price {price} discount {discount} pay {price - discount}"
+            )
+def main():
+    planner = MetroPlanner()
+    count = int(sys.stdin.readline())
+    for _ in range(count):
+        planner.execute(sys.stdin.readline())
+    sys.stdout.write("\n".join(planner.output) + "\n")
+
+
+if __name__ == "__main__":
+    main()

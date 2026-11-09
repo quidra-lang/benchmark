@@ -1,0 +1,216 @@
+function ordered_sum(values)
+    total = 0.0
+    for value in values
+        total += value
+    end
+    total
+end
+normalize(values) = values./ordered_sum(values)
+function make_model(name,states,symbols,missing,initial,transition,emission)
+    a,b = copy(transition),copy(emission)
+    for i in axes(a,1)
+        a[i,:] = normalize(a[i,:])
+        b[i,:] = normalize(b[i,:])
+    end
+    HMM(name,states,symbols,missing,normalize(initial),a,b)
+end
+function read_inputs()
+    read_tokens(name) = [String.(split(line,' ')) for line in readlines(joinpath("input",name))]
+    rows = read_tokens("model.txt")
+    states,symbols = only.(rows[1][2:end]),only.(rows[2][2:end])
+    k,m = length(states),length(symbols)
+    initial = parse.(Float64,rows[4][2:end])
+    transition,emission = zeros(k,k),zeros(k,m)
+    for i in 1:k
+        transition[i,:] = parse.(Float64,rows[4+i][3:end])
+        emission[i,:] = parse.(Float64,rows[4+k+i][3:end])
+    end
+    model = make_model("INITIAL",states,symbols,only(rows[3][2]),initial,transition,emission)
+    model,read_tokens("sequences.txt"),read_tokens("labeled.txt"),read_tokens("params.txt")
+end
+maximum_index(values) = argmax(values)
+emission_factors(
+    model,
+    observation
+) = observation==0 ? ones(length(model.states)) : model.emission[:,observation]
+log_emission_factors(
+    model,
+    observation
+) = observation==0 ? zeros(length(model.states)) : log.(model.emission[:,observation])
+function scaled_forward(model,observations)
+    k,t_count = length(model.states),length(observations)
+    values,emissions,scales = zeros(t_count,k),zeros(t_count,k),zeros(t_count)
+    loglik = 0.0
+    for t in 1:t_count
+        emissions[t,:] = emission_factors(model,observations[t])
+        unscaled = zeros(k)
+        for j in 1:k
+            incoming = t==1 ? model.initial[j] : ordered_sum(values[t-1,i]*model.transition[i,j] for i in 1:k)
+            unscaled[j] = incoming*emissions[t,j]
+        end
+        scales[t] = ordered_sum(unscaled)
+        values[t,:] = unscaled./scales[t]
+        loglik += log(scales[t])
+    end
+    (values=values,scales=scales,emissions=emissions,loglik=loglik)
+end
+function forward_backward(model,observations)
+    forward = scaled_forward(model,observations)
+    t_count,k = size(forward.values)
+    backward = zeros(t_count,k)
+    backward[end,:] .= 1.0
+    for t in t_count-1:-1:1,i in 1:k
+        backward[t,i] = ordered_sum(model.transition[i,j]*forward.emissions[t+1,j]*backward[
+            t+1,
+            j
+        ] for j in 1:k)/forward.scales[t+1]
+    end
+    (
+        forward=forward.values,
+        backward=backward,
+        scales=forward.scales,
+        emissions=forward.emissions,
+        posterior=forward.values.*backward,
+        loglik=forward.loglik
+    )
+end
+function viterbi(model,observations)
+    k,t_count = length(model.states),length(observations)
+    transition = log.(model.transition)
+    scores = log.(model.initial).+log_emission_factors(model,observations[1])
+    previous = zeros(Int,t_count,k)
+    for t in 2:t_count
+        factors = log_emission_factors(model,observations[t])
+        next_scores = zeros(k)
+        for j in 1:k
+            candidates = [scores[i]+transition[i,j] for i in 1:k]
+            i = maximum_index(candidates)
+            previous[t,j] = i
+            next_scores[j] = candidates[i]+factors[j]
+        end
+        scores = next_scores
+    end
+    path = zeros(Int,t_count)
+    path[end] = maximum_index(scores)
+    logprob = scores[path[end]]
+    for t in t_count:-1:2
+        path[t-1] = previous[t,path[t]]
+    end
+    path,logprob
+end
+function decode(model,observations)
+    fb = forward_backward(model,observations)
+    path,logprob = viterbi(model,observations)
+    posterior = [maximum_index(fb.posterior[t,:]) for t in axes(fb.posterior,1)]
+    confidence = [fb.posterior[t,state] for (t,state) in enumerate(posterior)]
+    (viterbi=path,viterbi_logprob=logprob,posterior=posterior,confidence=confidence,fb=fb)
+end
+confusion_matrix(k) = zeros(Int,k,k)
+function accumulate_confusion!(matrix,truth,prediction)
+    for (actual,predicted) in zip(truth,prediction)
+        matrix[actual,predicted] += 1
+    end
+end
+correct_count(truth,prediction) = count(pair->pair[1]==pair[2],zip(truth,prediction))
+encode_observations(text,model) = [char==model.missing ? 0 : something(findfirst(
+    ==(char),
+    model.symbols
+)) for char in text]
+    for offset in 1:2:length(labeled_rows)
+        name,role,text = labeled_rows[offset]
+        observations,labels = collect(uppercase(text)),collect(labeled_rows[offset+1][1])
+        reason = rejection_reason(name,observations,labels,seen,model,params)
+        if isnothing(reason)
+            path = [something(findfirst(==(char),model.states)) for char in labels]
+            record = SequenceRecord(name,encode_observations(observations,model),path)
+            push!(role=="TRAIN" ? training : testing,record)
+        else
+            push!(rejections,"REJECT labeled.txt line $offset $name $reason")
+        end
+    end
+    sequences,training,testing,rejections
+end
+function evaluate_model(model,records,params)
+    decoded = [decode(model,r.observations) for r in records]
+    blocks,correct_totals = Vector{String}[],Int[]
+    for decoder in ("VITERBI","POSTERIOR")
+        matrix = confusion_matrix(length(model.states))
+        regions,bounds,calibration = zeros(Int,4),zeros(Int,4),zeros(Int,10,2)
+        record_lines,total_correct = String[],0
+        for (record,result) in zip(records,decoded)
+            path = decoder=="VITERBI" ? result.viterbi : result.posterior
+            correct = correct_count(record.path,path)
+            total_correct += correct
+            accumulate_confusion!(matrix,record.path,path)
+            predicted = extract_segments(path,params)
+            truth = [(s,e) for (state,s,e) in runs(record.path) if state==params.segment_state]
+            regions .+= region_counts(predicted,truth)
+            bounds .+= boundary_counts(path,record.path,params.boundary_tolerance)
+            if decoder=="POSTERIOR"
+                for (confidence,prediction,actual) in zip(result.confidence,path,record.path)
+                    bin = min(floor(Int,10confidence),9)+1
+                    calibration[bin,1] += 1
+                    calibration[bin,2] += prediction==actual
+                end
+            end
+            push!(record_lines,"RECORD $(record.name) length $(length(path)) correct $correct")
+        end
+        lines = vcat(
+            ["EVALUATION $(model.name) $decoder"],
+            matrix_lines(model.states,matrix),
+            metric_lines(model.states,matrix)
+        )
+        push!(lines,"REGIONS $(model.states[params.segment_state]) predicted $(regions[1]) true $(regions[2]) precision $(fraction(regions[3],regions[1])) recall $(fraction(regions[4],regions[2]))",
+            "BOUNDARIES predicted $(bounds[1]) true $(bounds[2]) precision $(fraction(bounds[3],bounds[1])) recall $(fraction(bounds[4],bounds[2]))")
+        if decoder=="POSTERIOR"
+            for b in 0:9
+                positions,correct = calibration[b+1,:]
+                positions==0 && continue
+                interval = b==9 ? "0.9-1.0" : "0.$b-0.$(b+1)"
+                push!(
+                    lines,
+                    "CALIBRATION $interval positions $positions correct $correct accuracy $(fraction(correct,positions))"
+                )
+            end
+        end
+        append!(lines,record_lines)
+        push!(blocks,lines)
+        push!(correct_totals,total_correct)
+    end
+    blocks,correct_totals
+end
+state_string(model,path) = join(model.states[path])
+function annotate_sequences(model,records,decoded,params)
+    generator = MINSTD(params.posterior_seed)
+    decoding_lines = String[]
+    segment_lines = ["sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"]
+    for (record,result) in zip(records,decoded)
+        push!(decoding_lines,"SEQUENCE $(record.name) length $n loglik $(real_text(result.fb.loglik)) viterbi $(real_text(result.viterbi_logprob)) differences $differences uncertain $uncertain expected_segments $(real_text(expected_segments))",
+            "VITERBI "*state_string(model,result.viterbi),"POSTERIOR "*state_string(model,result.posterior),"CONFIDENT "*confident,"IMPUTED "*imputed_string(
+                model,
+                record.observations,
+                result.fb.posterior
+            ))
+        for (decoder,path) in (
+function main()
+    initial,sequence_rows,labeled_rows,parameter_rows = read_inputs()
+    params = interpret_parameters(parameter_rows,initial)
+    sequences,training,testing,rejections = validate_inputs(sequence_rows,labeled_rows,initial,params)
+    models = [initial,bw,vt,supervised]
+    evaluation_blocks,scores = Vector{String}[],Vector{Int}[]
+    for model in models
+        blocks,correct = evaluate_model(model,testing,params)
+        append!(evaluation_blocks,blocks)
+        push!(scores,correct)
+    end
+    decoded = [[decode(model,r.observations) for r in sequences] for model in models]
+    decoding_lines,segment_lines = annotate_sequences(bw,sequences,decoded[2],params)
+    reports = [("trained_model.txt",join_blocks(model_lines.(models[2:end]))),("loglik_trace.csv",bw_trace),("viterbi_trace.csv",vt_trace),
+        ("decodings.txt",decoding_lines),("segments.csv",segment_lines),("samples.txt",sample_lines),(
+            "evaluation.txt",
+            join_blocks(evaluation_blocks)
+        ),("report.txt",join_blocks(report_blocks))]
+    for (name,lines) in reports
+        write_lines(name,lines)
+    end
+end

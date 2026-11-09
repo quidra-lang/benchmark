@@ -1,0 +1,291 @@
+sealed record Item(string Id, int Lead, string Rule, long First, long Second, long Safety, long OnHand, long Material, long Labor, string Description)
+{
+    public string LotLabel => Rule == "LFL" ? Rule : Rule == "MIN" ? $"MIN {First}/{Second}" : $"{Rule} {First}";
+    public static SortedDictionary<string, Item> Read(List<string> errors)
+    {
+        SortedDictionary<string, Item> items = new(StringComparer.Ordinal); HashSet<string> rules = ["LFL", "FOQ", "POQ", "MIN"];
+        foreach (Row row in Io.Rows("items.csv"))
+        {
+            string[] f = row.Fields; long[] lot = f[3].Split('/').Select(long.Parse).ToArray(); string error = "";
+            bool fits = f[2] == "LFL" ? lot.Length == 1 && lot[0] == 0 : f[2] == "MIN" ? lot.Length == 2 && lot[0] >= 1 && lot[1] >= 1 : lot.Length == 1 && lot[0] >= 1;
+            if (items.ContainsKey(f[0])) error = "duplicate item " + f[0];
+            else if (!rules.Contains(f[2])) error = "unknown lot rule " + f[2];
+            else if (!fits) error = $"bad lot parameter {f[3]} for {f[2]}";
+            if (error.Length > 0) Io.Error(errors, "items.csv", row.Line, error);
+            else items[f[0]] = new(f[0], int.Parse(f[1]), f[2], lot[0], lot.Length == 2 ? lot[1] : 0, long.Parse(f[4]), long.Parse(f[5]), long.Parse(f[6]), long.Parse(f[7]), f[8]);
+        }
+        return items;
+    }
+sealed record Edge(string Parent, string Child, long Quantity, long Scrap)
+{
+    public long Need(long units) => (units * Quantity * (100 + Scrap) + 99) / 100;
+}
+sealed class Bom
+{
+    public SortedDictionary<string, List<Edge>> Children = new(StringComparer.Ordinal), Parents = new(StringComparer.Ordinal);
+    public bool Manufactured(string item) => Children[item].Count > 0;
+    public int LowLevel(string item, Dictionary<string, int> codes)
+    {
+        if (codes.TryGetValue(item, out int code)) return code;
+        foreach (Edge edge in Parents[item]) code = Math.Max(code, LowLevel(edge.Parent, codes) + 1);
+        return codes[item] = code;
+    }
+    public static Bom Read(SortedDictionary<string, Item> items, List<string> errors)
+    {
+        Bom bom = new(); foreach (string id in items.Keys) { bom.Children[id] = []; bom.Parents[id] = []; }
+        foreach (Row row in Io.Rows("bom.csv"))
+        {
+            string[] f = row.Fields; Edge edge = new(f[0], f[1], long.Parse(f[2]), long.Parse(f[3])); string error = "";
+            if (!items.ContainsKey(edge.Parent)) error = "unknown item " + edge.Parent;
+            else if (!items.ContainsKey(edge.Child)) error = "unknown item " + edge.Child;
+            else if (edge.Quantity < 1) error = "bad quantity " + edge.Quantity;
+            else if (edge.Scrap > 50) error = "bad scrap " + edge.Scrap;
+            else if (edge.Parent == edge.Child) error = $"cycle {edge.Parent} -> {edge.Parent}";
+            else if (bom.Children[edge.Parent].Any(e => e.Child == edge.Child)) error = $"duplicate {edge.Parent} -> {edge.Child}";
+            else { var path = bom.Path(edge.Child, edge.Parent, new(StringComparer.Ordinal)); if (path is not null) error = "cycle " + edge.Parent + " -> " + string.Join(" -> ", path); }
+            if (error.Length > 0) { Io.Error(errors, "bom.csv", row.Line, error); continue; }
+            bom.Children[edge.Parent].Add(edge); bom.Children[edge.Parent].Sort((a, b) => StringComparer.Ordinal.Compare(a.Child, b.Child));
+            bom.Parents[edge.Child].Add(edge); bom.Parents[edge.Child].Sort((a, b) => StringComparer.Ordinal.Compare(a.Parent, b.Parent));
+        }
+        return bom;
+    }
+sealed record Center(string Id, long Minutes, long Efficiency, long Available, string Description);
+sealed record Operation(string Item, int Number, string Center, long Setup, long Run)
+{
+    public long Minutes(long units) => Setup + units * Run;
+}
+static class Capacity
+{
+    public static SortedDictionary<string, Center> ReadCenters(List<string> errors)
+    {
+        SortedDictionary<string, Center> centers = new(StringComparer.Ordinal);
+        foreach (Row row in Io.Rows("workcenters.csv"))
+        {
+            string[] f = row.Fields; long minutes = long.Parse(f[1]), efficiency = long.Parse(f[2]); string error = "";
+            if (centers.ContainsKey(f[0])) error = "duplicate center " + f[0]; else if (efficiency < 50 || efficiency > 150) error = "bad efficiency " + efficiency;
+            if (error.Length > 0) Io.Error(errors, "workcenters.csv", row.Line, error); else centers[f[0]] = new(f[0], minutes, efficiency, minutes * efficiency / 100, f[3]);
+        }
+        return centers;
+    }
+    public static SortedDictionary<string, List<Operation>> ReadRoutings(SortedDictionary<string, Item> items, SortedDictionary<string, Center> centers, Bom bom, List<string> errors)
+    {
+        SortedDictionary<string, List<Operation>> routes = new(StringComparer.Ordinal);
+        foreach (Row row in Io.Rows("routings.csv"))
+        {
+            string[] f = row.Fields; int number = int.Parse(f[1]); long run = long.Parse(f[4]); string error = "";
+            if (!items.ContainsKey(f[0])) error = "unknown item " + f[0];
+            else if (!centers.ContainsKey(f[2])) error = "unknown center " + f[2];
+            else if (!bom.Manufactured(f[0])) error = "purchased item " + f[0];
+            else if (run < 1) error = "bad run time " + run;
+            else if (routes.TryGetValue(f[0], out var existing) && existing.Any(o => o.Number == number)) error = $"duplicate {f[0]} operation {number}";
+            if (error.Length > 0) Io.Error(errors, "routings.csv", row.Line, error);
+            else { if (!routes.TryGetValue(f[0], out var operations)) routes[f[0]] = operations = []; operations.Add(new(f[0], number, f[2], long.Parse(f[3]), run)); }
+        }
+        foreach (var operations in routes.Values) operations.Sort((a, b) => a.Number.CompareTo(b.Number)); return routes;
+    }
+    public static int OperationWeek(int receipt, int lead, int index, int count) => Math.Max(receipt - lead + index * lead / count, 1);
+    public static long Size(Item item, int week, long projected, long[] receipts, long[] gross, int horizon)
+    {
+        long quantity = item.Safety - projected;
+        if (item.Rule == "LFL") return quantity;
+readonly record struct Row(int Line, string[] Fields);
+static class Io
+{
+    public static string[] Lines(string name) => File.ReadAllLines(Path.Combine("input", name), Encoding.ASCII);
+    public static IEnumerable<Row> Rows(string name) => Lines(name).Skip(1).Select((line, index) => new Row(index + 2, line.Split(',')));
+sealed record ScheduleRow(string Item, int Week, long Quantity, int Line);
+sealed record Inquiry(string Id, string Item, long Quantity, int Week, int Line);
+enum DemandKind { Mps, Order, Dependent, Safety }
+sealed record Demand(string Item, DemandKind Kind, int Week, long Quantity, string OrderId = "", int Line = 0, string Parent = "", int ParentNumber = 0)
+sealed record PlannedOrder(string Item, int Number, int Receipt, long Quantity, int Lead)
+{
+    public int Original => Receipt - Lead;
+    public int Release => Math.Max(1, Original);
+}
+sealed class ItemPlan
+{
+    public readonly Item Item;
+    public readonly long[] Receipts, Gross, OnHand, Net, PlannedReceipts, PlannedReleases;
+    public List<Demand> Demands = [];
+    public List<PlannedOrder> Orders = [];
+    public ItemPlan(Item item, int horizon, long[] scheduled)
+    {
+        Item = item; Receipts = (long[])scheduled.Clone(); Gross = new long[horizon + 1]; OnHand = new long[horizon + 1]; Net = new long[horizon + 1]; PlannedReceipts = new long[horizon + 1]; PlannedReleases = new long[horizon + 1]; OnHand[0] = item.OnHand;
+    }
+    public long PastDue => Orders.Where(o => o.Original < 1).Sum(o => o.Quantity);
+}
+sealed class Plan
+{
+    public SortedDictionary<string, ItemPlan> Items = new(StringComparer.Ordinal);
+    public SortedDictionary<string, long[]> Loads = new(StringComparer.Ordinal), Overloads = new(StringComparer.Ordinal);
+}
+sealed class Promise(Inquiry inquiry)
+{
+    public readonly Inquiry Inquiry = inquiry;
+    public int Week, MaterialWeek;
+    public string Reason = "";
+}
+sealed class Data
+{
+    public List<string> Errors = [], PegItems = [], PlanningOrder = [];
+    public int Horizon;
+    public long TreeQuantity;
+    public SortedDictionary<string, Item> Items;
+    public Bom Bom;
+    public SortedDictionary<string, Center> Centers;
+    public SortedDictionary<string, List<Operation>> Routings;
+    public List<Demand> Mps = [];
+    public List<Inquiry> Inquiries = [];
+    public Dictionary<string, int> Codes = new(StringComparer.Ordinal), Cumulative = new(StringComparer.Ordinal);
+    public SortedDictionary<string, List<ScheduleRow>> Receipts = new(StringComparer.Ordinal);
+    public SortedDictionary<string, long[]> Scheduled = new(StringComparer.Ordinal);
+    public long[] Weeks;
+    string ScheduleError(string item, int week, long quantity)
+    {
+        if (!Items.ContainsKey(item)) return "unknown item " + item;
+        if (week < 1 || week > Horizon) return $"week {week} outside horizon";
+        return quantity < 1 ? "bad quantity " + quantity : "";
+    }
+    List<ScheduleRow> ReadSchedule(string name, bool unique)
+    {
+        List<ScheduleRow> accepted = []; HashSet<(string, int)> seen = [];
+        foreach (Row row in Io.Rows(name))
+        {
+            string[] f = row.Fields; ScheduleRow value = new(f[0], int.Parse(f[1]), long.Parse(f[2]), row.Line); string error = ScheduleError(value.Item, value.Week, value.Quantity);
+            if (error.Length == 0 && unique && seen.Contains((value.Item, value.Week))) error = $"duplicate {value.Item} week {value.Week}";
+            if (error.Length > 0) Io.Error(Errors, name, row.Line, error); else { accepted.Add(value); seen.Add((value.Item, value.Week)); }
+        }
+        return accepted;
+    }
+    List<Inquiry> ReadInquiries()
+    {
+        List<Inquiry> accepted = []; HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (Row row in Io.Rows("orders.csv"))
+        {
+            string[] f = row.Fields; Inquiry value = new(f[0], f[1], long.Parse(f[2]), int.Parse(f[3]), row.Line);
+            string error = seen.Contains(value.Id) ? "duplicate order " + value.Id : ScheduleError(value.Item, value.Week, value.Quantity);
+            if (error.Length > 0) Io.Error(Errors, "orders.csv", row.Line, error); else { accepted.Add(value); seen.Add(value.Id); }
+        }
+        return accepted;
+    }
+    public Data()
+    {
+        foreach (string line in Io.Lines("params.txt")) { string[] f = line.Split(' '); if (f[0] == "horizon") Horizon = int.Parse(f[1]); else if (f[0] == "peg") PegItems = f.Skip(1).ToList(); else TreeQuantity = long.Parse(f[1]); }
+        Items = global::Items.Read(Errors); Bom = global::Bom.Read(Items, Errors); Centers = Capacity.ReadCenters(Errors); Routings = Capacity.ReadRoutings(Items, Centers, Bom, Errors);
+        List<ScheduleRow> mps = ReadSchedule("mps.csv", true), receipts = ReadSchedule("receipts.csv", false); Inquiries = ReadInquiries();
+        Mps = mps.Select(row => new Demand(row.Item, DemandKind.Mps, row.Week, row.Quantity)).ToList();
+        foreach (string id in Items.Keys) { Bom.LowLevel(id, Codes); Bom.Cumulative(id, Items, Cumulative); Receipts[id] = []; Scheduled[id] = new long[Horizon + 1]; }
+        PlanningOrder = Items.Keys.OrderBy(id => Codes[id]).ThenBy(id => id, StringComparer.Ordinal).ToList();
+        foreach (ScheduleRow row in receipts.OrderBy(r => r.Week).ThenBy(r => r.Line)) { Receipts[row.Item].Add(row); Scheduled[row.Item][row.Week] += row.Quantity; }
+        Weeks = Enumerable.Range(1, Horizon).Select(w => (long)w).ToArray();
+    }
+sealed class Planner(Data planningData)
+{
+    readonly Data data = planningData;
+    public Plan Run(List<Demand> orders)
+    {
+        Plan plan = new();
+        foreach (string id in data.PlanningOrder) plan.Items[id] = new(data.Items[id], data.Horizon, data.Scheduled[id]);
+        foreach (Demand demand in data.Mps.Concat(orders)) plan.Items[demand.Item].Demands.Add(demand);
+        foreach (string id in data.PlanningOrder)
+        {
+            ItemPlan p = plan.Items[id]; Item item = p.Item; foreach (Demand demand in p.Demands) p.Gross[demand.Week] += demand.Quantity;
+            long projected = item.OnHand;
+            for (int week = 1; week <= data.Horizon; week++)
+            {
+                long available = projected + p.Receipts[week] - p.Gross[week]; projected = available;
+                if (available < item.Safety)
+                {
+                    long quantity = LotSizing.Size(item, week, available, p.Receipts, p.Gross, data.Horizon); PlannedOrder order = new(id, p.Orders.Count + 1, week, quantity, item.Lead);
+                    p.Orders.Add(order); p.Net[week] = item.Safety - available; p.PlannedReceipts[week] = quantity; p.PlannedReleases[order.Release] += quantity; projected += quantity;
+                }
+                p.OnHand[week] = projected;
+            }
+            foreach (PlannedOrder order in p.Orders) foreach (Edge edge in data.Bom.Children[id]) plan.Items[edge.Child].Demands.Add(new(edge.Child, DemandKind.Dependent, order.Release, edge.Need(order.Quantity), Parent: id, ParentNumber: order.Number));
+        }
+        foreach (string id in data.Centers.Keys) plan.Loads[id] = new long[data.Horizon + 1];
+        foreach (var route in data.Routings) foreach (PlannedOrder order in plan.Items[route.Key].Orders) for (int index = 0; index < route.Value.Count; index++)
+        {
+            Operation operation = route.Value[index]; int week = Capacity.OperationWeek(order.Receipt, data.Items[route.Key].Lead, index, route.Value.Count); plan.Loads[operation.Center][week] += operation.Minutes(order.Quantity);
+        }
+        foreach (Center center in data.Centers.Values) { long[] over = new long[data.Horizon + 1]; for (int week = 1; week <= data.Horizon; week++) over[week] = Math.Max(0, plan.Loads[center.Id][week] - center.Available); plan.Overloads[center.Id] = over; }
+        return plan;
+    }
+    public (List<Promise> Promises, Plan Final) PromiseInquiries(Plan baseline)
+    {
+        Plan current = baseline; List<Demand> promised = []; List<Promise> promises = [];
+        foreach (Inquiry inquiry in data.Inquiries)
+        {
+            Promise promise = new(inquiry);
+            for (int week = inquiry.Week; week <= data.Horizon; week++)
+            {
+                Demand demand = new(inquiry.Item, DemandKind.Order, week, inquiry.Quantity, inquiry.Id, inquiry.Line); List<Demand> trialDemands = new(promised) { demand }; Plan trial = Run(trialDemands); string reason = "";
+                foreach (string id in data.PlanningOrder) if (trial.Items[id].PastDue > current.Items[id].PastDue) { reason = id; break; }
+                if (reason.Length == 0)
+                {
+                    if (promise.MaterialWeek == 0) promise.MaterialWeek = week;
+                    foreach (string id in data.Centers.Keys) { for (int w = 1; w <= data.Horizon; w++) if (trial.Overloads[id][w] > current.Overloads[id][w]) { reason = $"{id} week {w}"; break; } if (reason.Length > 0) break; }
+                }
+                if (reason.Length == 0) { promise.Week = week; promised.Add(demand); current = trial; break; }
+                if (week == inquiry.Week) promise.Reason = reason;
+            }
+            promises.Add(promise);
+        }
+        return (promises, current);
+    }
+    public List<string> Grid(Plan plan)
+    {
+        List<string> lines = [];
+        foreach (string id in data.PlanningOrder)
+        {
+            ItemPlan p = plan.Items[id]; Item item = p.Item;
+            lines.Add($"ITEM {id} LLC {data.Codes[id]} LT {item.Lead} LOT {item.LotLabel} SS {item.Safety} OH {item.OnHand} {item.Description}");
+            lines.Add(Report.Table("WEEK", data.Weeks, 6));
+            (string Label, long[] Values)[] rows = [("GROSS", p.Gross), ("RECEIPTS", p.Receipts), ("ON_HAND", p.OnHand), ("NET", p.Net), ("PLAN_RCPT", p.PlannedReceipts), ("PLAN_REL", p.PlannedReleases)];
+            foreach (var row in rows) lines.Add(Report.Table(row.Label, row.Values.Skip(1), 6));
+            lines.Add($"TOTAL gross {p.Gross.Sum()} receipts {p.Receipts.Sum()} planned {p.PlannedReceipts.Sum()} orders {p.Orders.Count} ending {p.OnHand[data.Horizon]}");
+        }
+        return lines;
+    }
+    public List<string> Capacities(Plan plan)
+    {
+        List<string> lines = []; Dictionary<string, long> totals = new(StringComparer.Ordinal);
+        foreach (Center center in data.Centers.Values)
+        {
+            long[] loads = plan.Loads[center.Id], over = plan.Overloads[center.Id], leveled = Capacity.Level(loads, center.Available); long total = loads.Sum(), available = center.Available * data.Horizon; totals[center.Id] = total;
+            int peak = total == 0 ? 0 : Array.IndexOf(loads, loads.Skip(1).Max()); int overloaded = over.Count(value => value > 0); long backlog = Math.Max(0, leveled[1] - center.Available);
+            lines.Add($"CENTER {center.Id} minutes {center.Minutes} efficiency {center.Efficiency} available {center.Available} {center.Description}");
+            lines.Add(Report.Table("WEEK", data.Weeks, 7)); lines.Add(Report.Table("LOAD", loads.Skip(1), 7)); lines.Add(Report.Table("UTIL", loads.Skip(1).Select(value => Report.Percent(value, center.Available)), 7)); lines.Add(Report.Table("OVER", over.Skip(1), 7)); lines.Add(Report.Table("LEVELED", leveled.Skip(1), 7));
+            lines.Add($"TOTAL load {total} available {available} utilization {Report.Percent(total, available)} overloaded {overloaded} peak {peak} backlog {backlog}");
+        }
+        return lines;
+    }
+    public List<string> Promises(List<Promise> promises, Plan baseline, Plan finalPlan)
+    {
+        List<string> lines = []; int onTime = 0, late = 0, rejected = 0;
+        foreach (Promise promise in promises)
+        {
+            Inquiry inquiry = promise.Inquiry; string head = $"ORDER {inquiry.Id} {inquiry.Item} quantity {inquiry.Quantity} requested {inquiry.Week}", material = promise.MaterialWeek == 0 ? "none" : promise.MaterialWeek.ToString();
+            if (promise.Week == 0) { rejected++; lines.Add($"{head} rejected material {material} reason {promise.Reason}"); continue; }
+            if (promise.Week == inquiry.Week) { onTime++; lines.Add($"{head} promised {promise.Week}"); }
+            else { late++; lines.Add($"{head} promised {promise.Week} late {promise.Week - inquiry.Week} material {material} reason {promise.Reason}"); }
+            foreach (string id in data.PlanningOrder) foreach (Supply supply in finalPlan.Items[id].OrderSupplies.Where(s => s.Serves(inquiry.Id))) { PlannedOrder order = supply.Order!; lines.Add($"  SUPPLY {id} order {order.Number} receipt {order.Receipt} release {order.Release} quantity {order.Quantity}"); }
+        }
+        foreach (string id in data.PlanningOrder)
+        {
+            ItemPlan before = baseline.Items[id], after = finalPlan.Items[id]; int first = 0;
+            for (int week = 1; week <= data.Horizon; week++) if (before.PlannedReceipts[week] != after.PlannedReceipts[week]) { first = week; break; }
+            if (first != 0) lines.Add($"CHANGE {id} from {first} planned {before.PlannedReceipts.Sum()} -> {after.PlannedReceipts.Sum()} orders {before.Orders.Count} -> {after.Orders.Count}");
+        }
+        lines.Add($"SUMMARY orders {promises.Count} on_time {onTime} late {late} rejected {rejected}"); return lines;
+    }
+        Data data = new(); Planner planner = new(data); Plan baseline = planner.Run([]); var (promises, finalPlan) = planner.PromiseInquiries(baseline); planner.Peg(finalPlan); var costs = Costing.Rollup(data.Items, data.Bom, data.PlanningOrder);
+        Report.Write("mrp_grid.txt", planner.Grid(finalPlan)); Report.Write("pegging.txt", planner.Pegging(finalPlan)); Report.Write("bom_tree.txt", planner.Trees()); Report.Write("cost_rollup.csv", planner.Costs(finalPlan, costs)); Report.Write("exceptions.txt", planner.Exceptions(finalPlan)); Report.Write("capacity.txt", planner.Capacities(finalPlan)); Report.Write("promises.txt", planner.Promises(promises, baseline, finalPlan)); Report.Write("releases.txt", planner.Releases(finalPlan)); Report.Write("value_plan.csv", planner.ValuePlan(finalPlan, costs));
+    public static string Table(string label, IEnumerable<long> values, int width)
+    {
+        StringBuilder row = new(label.PadRight(10)); foreach (long value in values) row.Append(value.ToString().PadLeft(width)); return row.ToString();
+    }
+    public static void Write(string name, IEnumerable<string> lines)
+    {
+        Directory.CreateDirectory("output"); File.WriteAllText(Path.Combine("output", name), string.Concat(lines.Select(line => line + "\n")), Encoding.ASCII);
+    }

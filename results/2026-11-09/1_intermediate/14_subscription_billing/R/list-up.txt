@@ -1,0 +1,103 @@
+has <- function(environment, key) exists(key, envir = environment, inherits = FALSE)
+integer_text <- function(value) sprintf("%.0f", value)
+emit <- function(..., indent = 0) {
+  parts <- unlist(list(...), use.names = FALSE)
+  service$output <- c(service$output, paste0(
+    strrep(" ", indent), paste(as.character(parts), collapse = " ")
+  ))
+}
+require_subscription <- function(text, allowed = NULL) {
+  number <- as.numeric(text)
+  if (number < 1 || number > length(service$subscriptions))
+    fail(paste("unknown sub", text))
+  sub <- service$subscriptions[[number]]
+  if (!is.null(allowed) && !(sub$state %in% allowed))
+    fail(paste("invalid state", text, sub$state))
+  sub
+}
+plan_fee <- function(plan, seats) if (plan$per_seat) plan$price * seats else plan$price
+usage_charge <- function(plan, units) {
+  for (i in seq_along(plan$tiers)) {
+    tier <- plan$tiers[[i]]
+    upper <- tier$upper
+    last <- i == length(plan$tiers)
+    if (plan$mode == "VOLUME") {
+      if (last || is.null(upper) || units <= upper)
+        return(units * tier$unit + tier$flat)
+item <- function(description, amount) list(description = description, amount = amount)
+period_item <- function(plan, seats, start) {
+  item(paste("charge", plan$name, "seats", seats,
+             paste0(start, "-", start + plan$length)),
+       plan_fee(plan, seats))
+}
+opening_items <- function(sub, start) {
+  items <- list(period_item(sub$plan, sub$seats, start))
+  if (sub$plan$setup > 0) {
+    items <- append(items, list(item(paste("setup", sub$plan$name), sub$plan$setup)))
+  }
+  items
+}
+usage_items <- function(sub, close = FALSE) {
+  if (is.null(sub$plan$mode) || sub$usage == 0) return(list())
+  units <- sub$usage
+  result <- list(item(paste("usage", sub$plan$name, integer_text(units), "units"),
+                      usage_charge(sub$plan, units)))
+  if (close) sub$usage <- 0
+  result
+}
+coupon_usable <- function(sub, subtotal) {
+  subtotal > 0 && !is.null(sub$coupon) &&
+    (is.null(sub$remaining) || sub$remaining > 0)
+}
+tax_rate <- function(region) {
+  if (has(service$taxes, region))
+    get(region, envir = service$taxes, inherits = FALSE)
+  else 0
+}
+invoice_totals <- function(sub, items) {
+  subtotal <- sum(vapply(items, function(x) x$amount, numeric(1)))
+  discount <- 0
+  if (coupon_usable(sub, subtotal)) {
+    coupon <- sub$coupon
+    discount <- if (coupon$kind == "PERCENT")
+      floor(subtotal * coupon$value / 10000)
+    else min(subtotal, coupon$value)
+  }
+  tax <- floor((subtotal - discount) * tax_rate(sub$customer$region) / 10000)
+  total <- subtotal - discount + tax
+  credit <- min(sub$customer$balance, total)
+  c(subtotal = subtotal, discount = discount, tax = tax, total = total,
+    credit = credit, due = total - credit)
+}
+emit_items <- function(items) {
+  for (entry in items) emit(entry$description, money(entry$amount), indent = 2)
+}
+emit_totals <- function(totals) {
+  emit("subtotal", money(totals[["subtotal"]]), "discount", money(totals[["discount"]]),
+       "tax", money(totals[["tax"]]), "total", money(totals[["total"]]), indent = 2)
+}
+cmd_preview <- function(args) {
+  sub <- require_subscription(args[1], c("TRIALING", "ACTIVE", "PAST_DUE", "UNPAID"))
+  day <- if (sub$state == "TRIALING") sub$trial_end else sub$end
+  if (sub$cancel_end) {
+    kind <- "final"
+    items <- if (sub$state == "TRIALING") list() else usage_items(sub)
+  } else if (sub$state == "TRIALING") {
+    kind <- "first"
+    items <- opening_items(sub, day)
+  } else {
+    kind <- "renewal"
+    next_plan <- if (!is.null(sub$pending)) sub$pending$plan else sub$plan
+    next_seats <- if (!is.null(sub$pending)) sub$pending$seats else sub$seats
+    items <- append(usage_items(sub), list(period_item(next_plan, next_seats, day)))
+  }
+  emit("PREVIEW", "sub", sub$number, "day", day, kind)
+  if (!length(items)) {
+    emit("(none)", indent = 2)
+    return(invisible(NULL))
+  }
+  emit_items(items)
+  totals <- invoice_totals(sub, items)
+  emit_totals(totals)
+  emit("credit", money(totals[["credit"]]), "due", money(totals[["due"]]), indent = 2)
+}

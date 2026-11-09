@@ -1,0 +1,3 @@
+#include "mrp.h"
+
+int64_t lot_size(const Item *item,int week,int64_t projected,const int64_t *receipts,const int64_t *gross,int horizon) { int64_t net=item->safety-projected; if (item->rule==LFL) return net; if (item->rule==FOQ) return (net+item->a-1)/item->a*item->a; if (item->rule==MIN) { int64_t quantity=net>item->a ? net : item->a; return (quantity+item->b-1)/item->b*item->b; } int64_t quantity=net; int end=week+(int)item->a-1; if (end>horizon) end=horizon; for (int later=week+1;later<=end;later++) { projected+=receipts[later]-gross[later]; int64_t shortage=item->safety-projected; if (shortage>quantity) quantity=shortage; } return quantity; }

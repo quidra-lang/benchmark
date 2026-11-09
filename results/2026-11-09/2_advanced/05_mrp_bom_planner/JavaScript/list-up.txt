@@ -1,0 +1,444 @@
+function readLines(path) {
+  const text = fs.readFileSync(path, 'ascii');
+  return text === '' ? [] : text.slice(0, -1).split('\n');
+}
+function csvRows(path) {
+  return readLines(path).slice(1).map((text, index) => ({ line: index + 2, fields: text.split(',') }));
+}
+function compareIds(first, second) {
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+function lotParameters(rule, text) {
+  const parts = text.split('/');
+  if (!parts.every(part => /^[0-9]+$/.test(part))) return null;
+  const values = parts.map(Number);
+  if (rule === 'LFL' && values.length === 1 && values[0] === 0) return {};
+  if (rule === 'FOQ' && values.length === 1 && values[0] >= 1) return { fixed: values[0] };
+  if (rule === 'POQ' && values.length === 1 && values[0] >= 1) return { periods: values[0] };
+  if (rule === 'MIN' && values.length === 2 && values.every(value => value >= 1)) {
+    return { minimum: values[0], multiple: values[1] };
+  }
+  return null;
+}
+function loadItems(path, errors) {
+  const items = new Map();
+  for (const { line, fields } of csvRows(path)) {
+    const [id, leadTime, rule, lotParameter, safety, onHand, material, labor, description] = fields;
+    let error = null;
+    let parameters = null;
+    if (items.has(id)) {
+      error = `duplicate item ${id}`;
+    } else if (!['LFL', 'FOQ', 'POQ', 'MIN'].includes(rule)) {
+      error = `unknown lot rule ${rule}`;
+    } else {
+      parameters = lotParameters(rule, lotParameter);
+      if (parameters === null) error = `bad lot parameter ${lotParameter} for ${rule}`;
+    }
+    if (error !== null) {
+      errors.push(`items.csv line ${line}: ${error}`);
+      continue;
+    }
+    items.set(id, {
+      id, line, leadTime: Number(leadTime), rule, ...parameters,
+      safety: Number(safety), onHand: Number(onHand), material: Number(material),
+      labor: Number(labor), description, children: [], parents: [], routing: [], receipts: [],
+    });
+  }
+  return items;
+}
+function need(row, quantity) {
+  return ceilRatio(quantity * row.quantity * (100 + row.scrap), 100);
+}
+function loadBom(path, items, errors) {
+  for (const { line, fields } of csvRows(path)) {
+    const [parent, child, quantityText, scrapText] = fields;
+    const quantity = Number(quantityText);
+    const scrap = Number(scrapText);
+    let error = null;
+    if (!items.has(parent)) error = `unknown item ${parent}`;
+    else if (!items.has(child)) error = `unknown item ${child}`;
+    else if (quantity < 1) error = `bad quantity ${quantity}`;
+    else if (scrap > 50) error = `bad scrap ${scrap}`;
+    else if (parent === child) error = `cycle ${parent} -> ${parent}`;
+    else if (items.get(parent).children.some(row => row.child === child)) {
+      error = `duplicate ${parent} -> ${child}`;
+    } else {
+      const pathToParent = cyclePath(items, child, parent);
+      if (pathToParent !== null) error = `cycle ${parent} -> ${pathToParent.join(' -> ')}`;
+    }
+    if (error !== null) {
+      errors.push(`bom.csv line ${line}: ${error}`);
+      continue;
+    }
+    const row = { parent, child, quantity, scrap, line };
+    items.get(parent).children.push(row);
+    items.get(parent).children.sort((first, second) => compareIds(first.child, second.child));
+    items.get(child).parents.push(row);
+  }
+  for (const item of items.values()) {
+    item.parents.sort((first, second) => compareIds(first.parent, second.parent));
+  }
+}
+function computeStructure(items) {
+  function lowLevel(item) {
+    if (item.lowLevel !== undefined) return item.lowLevel;
+    let level = 0;
+    for (const row of item.parents) level = Math.max(level, lowLevel(items.get(row.parent)) + 1);
+    item.lowLevel = level;
+    return level;
+  }
+  function cumulativeLead(item) {
+    if (item.cumulativeLead !== undefined) return item.cumulativeLead;
+    let longest = 0;
+    for (const row of item.children) longest = Math.max(longest, cumulativeLead(items.get(row.child)));
+    item.cumulativeLead = item.leadTime + longest;
+    return item.cumulativeLead;
+  }
+  for (const item of items.values()) {
+    lowLevel(item);
+    cumulativeLead(item);
+  }
+  return [...items.values()].sort((first, second) =>
+    first.lowLevel - second.lowLevel || compareIds(first.id, second.id));
+}
+function loadCenters(path, errors) {
+  const centers = new Map();
+  for (const { line, fields } of csvRows(path)) {
+    const [id, minutesText, efficiencyText, description] = fields;
+    const minutes = Number(minutesText);
+    const efficiency = Number(efficiencyText);
+    let error = null;
+    if (centers.has(id)) error = `duplicate center ${id}`;
+    else if (efficiency < 50 || efficiency > 150) error = `bad efficiency ${efficiency}`;
+    if (error !== null) {
+      errors.push(`workcenters.csv line ${line}: ${error}`);
+    } else {
+      centers.set(id, { id, line, minutes, efficiency, available: floorRatio(minutes * efficiency, 100), description });
+    }
+  }
+  return centers;
+}
+function loadRoutings(path, items, centers, errors) {
+  for (const { line, fields } of csvRows(path)) {
+    const [id, operationText, center, setupText, runText] = fields;
+    const operation = Number(operationText);
+    const setup = Number(setupText);
+    const run = Number(runText);
+    const item = items.get(id);
+    let error = null;
+    if (item === undefined) error = `unknown item ${id}`;
+    else if (!centers.has(center)) error = `unknown center ${center}`;
+    else if (item.children.length === 0) error = `purchased item ${id}`;
+    else if (run < 1) error = `bad run time ${run}`;
+    else if (item.routing.some(row => row.operation === operation)) error = `duplicate ${id} operation ${operation}`;
+    if (error !== null) {
+      errors.push(`routings.csv line ${line}: ${error}`);
+    } else {
+      item.routing.push({ item: id, operation, center, setup, run, line });
+    }
+  }
+  for (const item of items.values()) item.routing.sort((first, second) => first.operation - second.operation);
+}
+function operationWeek(receipt, leadTime, index, count) {
+  return Math.max(1, receipt - leadTime + floorRatio(index * leadTime, count));
+}
+function orderedCenters(centers) {
+  return [...centers.values()].sort((first, second) => compareIds(first.id, second.id));
+}
+function lotSize(item, net, available, week, gross, receipts, horizon) {
+  if (item.rule === 'LFL') return net;
+function total(values) {
+  let quantity = 0;
+  for (const value of values) quantity += value;
+  return quantity;
+}
+function readParameters() {
+  const lines = readLines('input/params.txt');
+  return {
+    horizon: Number(lines[0].split(' ')[1]),
+    peg: lines[1].split(' ').slice(1),
+    treeQuantity: Number(lines[2].split(' ')[1]),
+  };
+}
+function readRequirements(filename, items, horizon, errors, unique) {
+  const accepted = [];
+  const pairs = new Set();
+  for (const { line, fields } of csvRows(`input/${filename}`)) {
+    const [id, weekText, quantityText] = fields;
+    const week = Number(weekText);
+    const quantity = Number(quantityText);
+    const key = `${id}:${week}`;
+    let error = null;
+    if (!items.has(id)) error = `unknown item ${id}`;
+    else if (week < 1 || week > horizon) error = `week ${week} outside horizon`;
+    else if (quantity < 1) error = `bad quantity ${quantity}`;
+    else if (unique && pairs.has(key)) error = `duplicate ${id} week ${week}`;
+    if (error !== null) {
+      errors.push(`${filename} line ${line}: ${error}`);
+    } else {
+      accepted.push({ item: id, week, quantity, line });
+      pairs.add(key);
+    }
+  }
+  return accepted;
+}
+function readInquiries(items, horizon, errors) {
+  const inquiries = [];
+  const identifiers = new Set();
+  for (const { line, fields } of csvRows('input/orders.csv')) {
+    const [id, item, quantityText, weekText] = fields;
+    const quantity = Number(quantityText);
+    const week = Number(weekText);
+    let error = null;
+    if (identifiers.has(id)) error = `duplicate order ${id}`;
+    else if (!items.has(item)) error = `unknown item ${item}`;
+    else if (week < 1 || week > horizon) error = `week ${week} outside horizon`;
+    else if (quantity < 1) error = `bad quantity ${quantity}`;
+    if (error !== null) {
+      errors.push(`orders.csv line ${line}: ${error}`);
+    } else {
+      inquiries.push({ id, item, quantity, week, line });
+      identifiers.add(id);
+    }
+  }
+  return inquiries;
+}
+function loadInput() {
+  const parameters = readParameters();
+  const errors = [];
+  const items = loadItems('input/items.csv', errors);
+  loadBom('input/bom.csv', items, errors);
+  const centerMap = loadCenters('input/workcenters.csv', errors);
+  loadRoutings('input/routings.csv', items, centerMap, errors);
+  const mps = readRequirements('mps.csv', items, parameters.horizon, errors, true);
+  const receipts = readRequirements('receipts.csv', items, parameters.horizon, errors, false);
+  const inquiries = readInquiries(items, parameters.horizon, errors);
+  for (const receipt of receipts) items.get(receipt.item).receipts.push(receipt);
+  for (const item of items.values()) {
+    item.receipts.sort((first, second) => first.week - second.week || first.line - second.line);
+  }
+  return {
+    ...parameters, errors, items, mps, inquiries,
+    planning: computeStructure(items), centers: orderedCenters(centerMap),
+    orderedItems: [...items.values()].sort((first, second) => compareIds(first.id, second.id)),
+  };
+}
+function emptyItemPlan(item, horizon) {
+  const zeroes = () => Array(horizon + 1).fill(0);
+  const plan = {
+    item, gross: zeroes(), scheduled: zeroes(), onHand: zeroes(), net: zeroes(),
+    plannedReceipt: zeroes(), plannedRelease: zeroes(), demands: [], orders: [], pastDue: 0,
+  };
+  plan.onHand[0] = item.onHand;
+  for (const receipt of item.receipts) plan.scheduled[receipt.week] += receipt.quantity;
+  return plan;
+}
+function totalLoads(data, plan) {
+  const loads = new Map(data.centers.map(center => [center.id, Array(data.horizon + 1).fill(0)]));
+  for (const item of data.planning) {
+    for (const order of plan.items.get(item.id).orders) {
+      item.routing.forEach((operation, index) => {
+        const week = operationWeek(order.receipt, item.leadTime, index, item.routing.length);
+        loads.get(operation.center)[week] += operation.setup + order.quantity * operation.run;
+      });
+    }
+  }
+  return loads;
+}
+function runMrp(data, promised) {
+  const plan = { items: new Map() };
+  for (const item of data.planning) plan.items.set(item.id, emptyItemPlan(item, data.horizon));
+  for (const row of data.mps) plan.items.get(row.item).demands.push({ ...row, kind: 'MPS' });
+  for (const { inquiry, week } of promised) {
+    plan.items.get(inquiry.item).demands.push({
+      kind: 'ORDER', order: inquiry.id, item: inquiry.item, week,
+      quantity: inquiry.quantity, line: inquiry.line,
+    });
+  }
+  for (const item of data.planning) {
+    const itemPlan = plan.items.get(item.id);
+    for (const demand of itemPlan.demands) itemPlan.gross[demand.week] += demand.quantity;
+    for (let week = 1; week <= data.horizon; week += 1) {
+      const available = itemPlan.onHand[week - 1] + itemPlan.scheduled[week] - itemPlan.gross[week];
+      if (available >= item.safety) {
+        itemPlan.onHand[week] = available;
+        continue;
+      }
+      const net = item.safety - available;
+      const quantity = lotSize(item, net, available, week, itemPlan.gross, itemPlan.scheduled, data.horizon);
+      const originalRelease = week - item.leadTime;
+      const release = Math.max(1, originalRelease);
+      const order = {
+        kind: 'PLANNED', item: item.id, number: itemPlan.orders.length + 1,
+        receipt: week, quantity, originalRelease, release,
+      };
+      itemPlan.orders.push(order);
+      itemPlan.net[week] = net;
+      itemPlan.plannedReceipt[week] = quantity;
+      itemPlan.plannedRelease[release] += quantity;
+      itemPlan.onHand[week] = available + quantity;
+      if (originalRelease < 1) itemPlan.pastDue += quantity;
+    }
+    for (const order of itemPlan.orders) {
+      for (const row of item.children) {
+        plan.items.get(row.child).demands.push({
+          kind: 'DEPENDENT', item: row.child, week: order.release, quantity: need(row, order.quantity),
+          parent: item.id, parentOrder: order.number,
+        });
+      }
+    }
+  }
+  plan.loads = totalLoads(data, plan);
+  return plan;
+}
+function overload(plan, center, week) {
+  return Math.max(0, plan.loads.get(center.id)[week] - center.available);
+}
+function promiseInquiries(data) {
+  const base = runMrp(data, []);
+  let current = base;
+  const promised = [];
+  const results = [];
+  for (const inquiry of data.inquiries) {
+    const result = { inquiry, week: null, material: null, reason: null, status: 'rejected' };
+    for (let week = inquiry.week; week <= data.horizon; week += 1) {
+      const placement = { inquiry, week };
+      const trial = runMrp(data, [...promised, placement]);
+      let reason = null;
+      for (const item of data.planning) {
+        if (trial.items.get(item.id).pastDue > current.items.get(item.id).pastDue) {
+          reason = item.id;
+          break;
+        }
+      }
+      if (reason === null) {
+        if (result.material === null) result.material = week;
+        for (const center of data.centers) {
+          for (let loadWeek = 1; loadWeek <= data.horizon; loadWeek += 1) {
+            if (overload(trial, center, loadWeek) > overload(current, center, loadWeek)) {
+              reason = `${center.id} week ${loadWeek}`;
+              break;
+            }
+          }
+          if (reason !== null) break;
+        }
+      }
+      if (week === inquiry.week) result.reason = reason;
+      if (reason === null) {
+        result.week = week;
+        result.status = week === inquiry.week ? 'on_time' : 'late';
+        promised.push(placement);
+        current = trial;
+        break;
+      }
+    }
+    results.push(result);
+  }
+  return { base, final: current, results };
+}
+function ruleLabel(item) {
+  if (item.rule === 'FOQ') return `FOQ ${item.fixed}`;
+  if (item.rule === 'POQ') return `POQ ${item.periods}`;
+  if (item.rule === 'MIN') return `MIN ${item.minimum}/${item.multiple}`;
+  return 'LFL';
+}
+function gridReport(data, plan) {
+  const lines = [];
+  const weeks = Array.from({ length: data.horizon }, (_, index) => index + 1);
+  for (const item of data.planning) {
+    const grid = plan.items.get(item.id);
+    lines.push(`ITEM ${item.id} LLC ${item.lowLevel} LT ${item.leadTime} LOT ${ruleLabel(item)} SS ${item.safety} OH ${item.onHand} ${item.description}`);
+    lines.push(tableRow('WEEK', weeks, 6));
+    for (const [label, values] of [
+      ['GROSS', grid.gross], ['RECEIPTS', grid.scheduled], ['ON_HAND', grid.onHand],
+      ['NET', grid.net], ['PLAN_RCPT', grid.plannedReceipt], ['PLAN_REL', grid.plannedRelease],
+    ]) lines.push(tableRow(label, values.slice(1), 6));
+    lines.push(`TOTAL gross ${total(grid.gross)} receipts ${total(grid.scheduled)} planned ${total(grid.plannedReceipt)} orders ${grid.orders.length} ending ${grid.onHand[data.horizon]}`);
+  }
+  return lines;
+}
+function capacityReport(data, plan) {
+  const lines = [];
+  const summaries = [];
+  const weeks = Array.from({ length: data.horizon }, (_, index) => index + 1);
+  for (const center of data.centers) {
+    const load = plan.loads.get(center.id);
+    const over = weeks.map(week => overload(plan, center, week));
+    const { leveled, backlog } = levelLoad(load, center.available);
+    const loadTotal = total(load);
+    const utilization = percentage(loadTotal, center.available * data.horizon);
+    let peak = 0;
+    for (const week of weeks) if (load[week] > load[peak]) peak = week;
+    lines.push(`CENTER ${center.id} minutes ${center.minutes} efficiency ${center.efficiency} available ${center.available} ${center.description}`);
+    lines.push(tableRow('WEEK', weeks, 7));
+    lines.push(tableRow('LOAD', load.slice(1), 7));
+    lines.push(tableRow('UTIL', weeks.map(week => percentage(load[week], center.available)), 7));
+    lines.push(tableRow('OVER', over, 7));
+    lines.push(tableRow('LEVELED', leveled.slice(1), 7));
+    lines.push(`TOTAL load ${loadTotal} available ${center.available * data.horizon} utilization ${utilization} overloaded ${over.filter(value => value > 0).length} peak ${peak} backlog ${backlog}`);
+    summaries.push({ center, load: loadTotal, utilization });
+  }
+  return lines;
+}
+function promisesReport(data, planning) {
+  const lines = [];
+  const counts = { on_time: 0, late: 0, rejected: 0 };
+  for (const result of planning.results) {
+    const { inquiry } = result;
+    const prefix = `ORDER ${inquiry.id} ${inquiry.item} quantity ${inquiry.quantity} requested ${inquiry.week}`;
+    if (result.status === 'on_time') {
+      lines.push(`${prefix} promised ${result.week}`);
+    } else if (result.status === 'late') {
+      lines.push(`${prefix} promised ${result.week} late ${result.week - inquiry.week} material ${result.material} reason ${result.reason}`);
+    } else {
+      lines.push(`${prefix} rejected material ${result.material ?? 'none'} reason ${result.reason}`);
+    }
+    counts[result.status] += 1;
+    if (result.status !== 'rejected') {
+      for (const item of data.planning) {
+        for (const order of planning.final.items.get(item.id).orders) {
+          if (order.roots.some(root => root.kind === 'ORDER' && root.order === inquiry.id)) {
+            lines.push(`  SUPPLY ${item.id} order ${order.number} receipt ${order.receipt} release ${order.release} quantity ${order.quantity}`);
+          }
+        }
+      }
+    }
+  }
+  for (const item of data.planning) {
+    const before = planning.base.items.get(item.id);
+    const after = planning.final.items.get(item.id);
+    for (let week = 1; week <= data.horizon; week += 1) {
+      if (before.plannedReceipt[week] !== after.plannedReceipt[week]) {
+        lines.push(`CHANGE ${item.id} from ${week} planned ${total(before.plannedReceipt)} -> ${total(after.plannedReceipt)} orders ${before.orders.length} -> ${after.orders.length}`);
+        break;
+      }
+    }
+  }
+  lines.push(`SUMMARY orders ${planning.results.length} on_time ${counts.on_time} late ${counts.late} rejected ${counts.rejected}`);
+  return lines;
+}
+  const data = loadInput();
+  const planning = promiseInquiries(data);
+  const plan = planning.final;
+  writeReports({
+    'mrp_grid.txt': gridReport(data, plan),
+    'capacity.txt': capacityReport(data, plan),
+    'promises.txt': promisesReport(data, planning),
+  });
+function floorRatio(numerator, denominator) {
+  return Number(BigInt(numerator) / BigInt(denominator));
+}
+function ceilRatio(numerator, denominator) {
+  const n = BigInt(numerator);
+  const d = BigInt(denominator);
+  return Number(n / d + (n % d === 0n ? 0n : 1n));
+}
+function tableRow(label, values, width) {
+  return label.padEnd(10, ' ') + values.map(value => String(value).padStart(width, ' ')).join('');
+}
+function writeReports(reports) {
+  fs.mkdirSync('output', { recursive: true });
+  for (const [name, lines] of Object.entries(reports)) {
+    fs.writeFileSync(`output/${name}`, lines.length === 0 ? '' : `${lines.join('\n')}\n`, 'ascii');
+  }
+}

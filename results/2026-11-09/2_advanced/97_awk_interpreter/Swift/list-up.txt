@@ -1,0 +1,791 @@
+struct Position: Error, Hashable, Comparable, CustomStringConvertible {
+    let line: Int, column: Int
+    static func < (a: Self, b: Self) -> Bool {
+        (a.line, a.column) < (b.line, b.column)
+    };
+    var description: String {
+        "\(line):\(column)"
+    }
+}
+struct Token {
+    let kind: String, text: String, value: String, position: Position
+}
+enum Lexer {
+    static func letter(_ c: UInt8) -> Bool {
+        (65...90).contains(c) || (97...122).contains(c)
+    }
+    static func digit(_ c: UInt8) -> Bool {
+        (48...57).contains(c)
+    }
+    static func lex(_ text: String) throws -> [Token] {
+        let bytes = Array(text.utf8);
+        var positions: [Position] = [], line = 1, column = 1
+        for c in bytes {
+            positions.append(Position(line: line, column: column));
+            if c == 10 {
+                line += 1;
+                column = 1
+            } else {
+                column += 1
+            }
+        };
+        positions.append(Position(line: line, column: column))
+        var result: [Token] = [], i = 0
+        func word(_ a: Int, _ b: Int) -> String {
+            String(decoding: bytes[a..<b], as: UTF8.self)
+        }
+        while i < bytes.count {
+            if bytes[i] == 32 {
+                i += 1;
+                continue
+            }
+            let start = i;
+            var kind = "symbol", value = ""
+            if bytes[i] == 10 {
+                i += 1;
+                kind = "newline"
+            }
+            else if digit(bytes[i]) {
+                i += 1;
+                while i < bytes.count && digit(bytes[i]) {
+                    i += 1
+                };
+                kind = "number"
+            }
+            else if letter(bytes[i]) || bytes[i] == 95 {
+                i += 1;
+                while i < bytes.count && (letter(bytes[i]) || digit(bytes[i]) || bytes[i] == 95) {
+                    i += 1
+                };
+                let name = word(start, i)
+                if ["BEGIN", "END", "function", "if", "else", "while", "for", "do", "break", "continue", "next", "exit", "return", "delete", "in", "getline", "print", "printf"].contains(name) {
+                    kind = "keyword"
+                }
+                else if ["length", "substr", "index", "split", "sprintf", "toupper", "tolower", "close", "int"].contains(name) {
+                    kind = "builtin"
+                }
+                else {
+                    kind = i < bytes.count && bytes[i] == 40 ? "function" : "name"
+                }
+            } else if bytes[i] == 34 {
+                i += 1;
+                var closed = false, decoded: [UInt8] = []
+                while i < bytes.count {
+                    if bytes[i] == 10 {
+                        throw positions[start]
+                    };
+                    if bytes[i] == 34 {
+                        i += 1;
+                        closed = true;
+                        break
+                    }
+                    if bytes[i] == 92 {
+                    } else {
+                        decoded.append(bytes[i]);
+                        i += 1
+                    }
+                };
+                if !closed {
+                    throw positions[start]
+                };
+                kind = "string";
+                value = String(decoding: decoded, as: UTF8.self)
+            } else if i + 1 < bytes.count && ["+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=", "!=", "++", "--", "&&", "||", ">>"].contains(word(i, i + 2)) {
+                i += 2
+            }
+            else if Array("+-*/%^!><?:=()[]{},;$".utf8).contains(bytes[i]) {
+                i += 1
+            }
+            else {
+                throw positions[i]
+            }
+            result.append(Token(kind: kind, text: word(start, i), value: value, position: positions[start]))
+        };
+        result.append(Token(kind: "end", text: "", value: "", position: positions[bytes.count]));
+        return result
+    }
+final class Expr {
+    let position: Position, kind: ExprKind
+    init(_ position: Position, _ kind: ExprKind) {
+        self.position = position;
+        self.kind = kind
+    }
+    var lvalue: Bool {
+        switch kind {
+            case .name, .index, .field: return true;
+            default: return false
+        }
+    }
+}
+indirect enum ExprKind {
+    case number(Int), string(String), name(String), index(String, [Expr]), field(Expr), parentheses(Expr), unary(String, Expr), binary(String, Expr, Expr), assignment(String, Expr, Expr), increment(Int, Bool, Expr), conditional(Expr, Expr, Expr), member([Expr], String, Position), call(String, Bool, [Expr]), getline(Expr?, Expr?)
+final class Stmt {
+    let position: Position, kind: StmtKind;
+    init(_ position: Position, _ kind: StmtKind) {
+        self.position = position;
+        self.kind = kind
+    }
+}
+struct Redirect {
+    let append: Bool, expression: Expr, position: Position
+}
+indirect enum StmtKind {
+    case block([Stmt]), empty, expression(Expr), conditional(Expr, Stmt, Stmt?), whileLoop(Expr, Stmt), doLoop(Stmt, Expr), forLoop(Expr?, Expr?, Expr?, Stmt), forIn(String, Position, String, Position, Stmt), output(Bool, [Expr], Redirect?), delete(String, Position, [Expr]?), next, breakLoop, continueLoop, exit(Expr?), returnValue(Expr?)
+struct Rule {
+    let kind: String, position: Position, start: Expr?, end: Expr?, action: Stmt?
+}
+struct Program {
+    let rules: [Rule], functions: [Function]
+}
+final class Parser {
+    let tokens: [Token];
+    var index = 0, function = false, special = false, loops = 0
+    init(_ tokens: [Token]) {
+        self.tokens = tokens
+    };
+    var peek: Token {
+        tokens[index]
+    };
+    var text: String {
+        peek.text
+    }
+    @discardableResult func take() -> Token {
+        let token = peek;
+        if token.kind != "end" {
+            index += 1
+        };
+        return token
+    }
+    @discardableResult func expect(_ text: String) throws -> Token {
+        guard self.text == text && peek.kind != "end" else {
+            throw peek.position
+        };
+        return take()
+    }
+    func name() throws -> Token {
+        guard peek.kind == "name" else {
+            throw peek.position
+        };
+        return take()
+    }
+    func newlines() {
+        while peek.kind == "newline" {
+            take()
+        }
+    }
+    func terminator() throws {
+        if text == ";" || peek.kind == "newline" {
+            take()
+        } else if text != "}" {
+            throw peek.position
+        }
+    }
+    func expressions(_ suppress: Bool) throws -> [Expr] {
+        var result = [try expression(suppress)];
+        while text == "," {
+            take();
+            newlines();
+            result.append(try expression(suppress))
+        };
+        return result
+    }
+    func expression(_ suppress: Bool = false) throws -> Expr {
+        let left = try conditional(suppress)
+        if left.lvalue && ["=", "+=", "-=", "*=", "/=", "%=", "^="].contains(text) {
+            let token = take();
+            return Expr(token.position, .assignment(token.text, left, try expression(suppress)))
+        };
+        return left
+    }
+    func conditional(_ suppress: Bool) throws -> Expr {
+        let condition = try binary(1, suppress)
+        if text == "?" {
+            let token = take(), yes = try conditional(suppress);
+        };
+        return condition
+    }
+    func binary(_ minimum: Int, _ suppress: Bool) throws -> Expr {
+        var left = try unary(suppress)
+        while true {
+            let explicit: Int
+            switch text {
+                case "||": explicit = 1;
+                case "&&": explicit = 2;
+                case "in": explicit = 3;
+                case "<", "<=", "==", "!=", ">=": explicit = 4;
+                case ">" where !suppress: explicit = 4;
+                case "+", "-": explicit = 6;
+                case "*", "/", "%": explicit = 7;
+                default: explicit = 0
+            }
+            let concat = explicit == 0 && (["number", "string", "name", "function", "builtin"].contains(peek.kind) || ["$", "(", "++", "--"].contains(text)), priority = concat ? 5 : explicit
+            if priority == 0 || priority < minimum {
+                return left
+            }
+        }
+    }
+    func unary(_ suppress: Bool) throws -> Expr {
+        if ["!", "-", "+"].contains(text) {
+        }
+        let left = try postfix(suppress)
+        if text == "^" {
+        };
+        return left
+    }
+    func postfix(_ suppress: Bool) throws -> Expr {
+        if text == "++" || text == "--" {
+            return try prefix(suppress)
+        };
+        let body = try atom(suppress)
+        if body.lvalue && (text == "++" || text == "--") {
+        };
+        return body
+    }
+    func lvalue(_ suppress: Bool) throws -> Expr {
+        guard peek.kind == "name" || text == "$" else {
+            throw peek.position
+        };
+        return try atom(suppress)
+    }
+    func atom(_ suppress: Bool) throws -> Expr {
+        let token = peek, kind: ExprKind
+        switch token.kind {
+            case "number": take();
+            kind = .number(Int(token.text)!)
+            case "string": take();
+            kind = .string(token.value)
+            case "name": take();
+            if text == "[" {
+            } else {
+                kind = .name(token.text)
+            }
+            default:
+            switch token.text {
+                case "$": take();
+                kind = .field(text == "++" || text == "--" ? try prefix(suppress) : try atom(suppress))
+                default: throw token.position
+            }
+        };
+        return Expr(token.position, kind)
+    }
+    func block() throws -> Stmt {
+        let position = try expect("{").position;
+        var statements: [Stmt] = []
+        while text != "}" {
+            if peek.kind == "newline" || text == ";" {
+                take()
+            } else {
+                statements.append(try statement())
+            }
+        };
+        try expect("}");
+        return Stmt(position, .block(statements))
+    }
+    func statement() throws -> Stmt {
+        let token = peek, position = peek.position, kind: StmtKind
+        switch text {
+            case "{": return try block()
+            case ";": take();
+            return Stmt(position, .empty)
+            case "print", "printf":
+            take();
+            let printf = token.text == "printf", empty = [";", "\n", "}", ">", ">>"].contains(text);
+            var parenthesized = false
+            if text == "(" {
+            if empty && printf {
+                throw peek.position
+            }
+            let arguments: [Expr]
+            if empty {
+                arguments = []
+            } else if parenthesized {
+                take();
+                arguments = try expressions(false);
+                try expect(")")
+            } else {
+                arguments = try expressions(true)
+            }
+            var redirect: Redirect?;
+            if text == ">" || text == ">>" {
+                let op = take();
+                redirect = Redirect(append: op.text == ">>", expression: try binary(5, false), position: op.position)
+            };
+            kind = .output(printf, arguments, redirect)
+            default: kind = .expression(try expression())
+        };
+        try terminator();
+        return Stmt(position, kind)
+    }
+    func program() throws -> Program {
+        var rules: [Rule] = [], functions: [Function] = []
+        while peek.kind != "end" {
+            if text == ";" || peek.kind == "newline" {
+                take();
+                continue
+            };
+            let position = peek.position
+            if text == "function" {
+            } else if text == "BEGIN" || text == "END" {
+                let kind = take().text;
+                special = true;
+                let action = try block();
+                special = false;
+                rules.append(Rule(kind: kind, position: position, start: nil, end: nil, action: action))
+            }
+            else if text == "{" {
+                rules.append(Rule(kind: "all", position: position, start: nil, end: nil, action: try block()))
+            }
+        };
+        return Program(rules: rules, functions: functions)
+    }
+enum Value {
+    case number(Int), string(String), numeric(String, Int), uninitialized
+    static func whitespace(_ c: Character) -> Bool {
+        c == " " || c == "\t" || c == "\n"
+    }
+    static func input(_ text: String) -> Self {
+        let trimmed = text.drop(while: whitespace).reversed().drop(while: whitespace).reversed(), raw = String(trimmed), digits = raw.first == "+" || raw.first == "-" ? String(raw.dropFirst()) : raw
+        return !digits.isEmpty && digits.utf8.allSatisfy({
+            (48...57).contains($0)
+        }) ? .numeric(text, Value.string(text).number) : .string(text)
+    }
+    var number: Int {
+        switch self {
+            case .number(let n), .numeric(_, let n): return n
+            case .uninitialized: return 0
+            case .string(let s): let raw = String(s.drop(while: Self.whitespace)), negative = raw.first == "-", rest = raw.first == "+" || raw.first == "-" ? raw.dropFirst() : raw[...], digits = rest.prefix {
+        }
+    }
+    var text: String {
+        switch self {
+            case .number(let n): return String(n);
+            case .string(let s), .numeric(let s, _): return s;
+            case .uninitialized: return ""
+        }
+    }
+    var display: String {
+        switch self {
+            case .number(let n): return String(n);
+            case .string(let s): return quote(s);
+            case .numeric(let s, _): return quote(s) + " (strnum)";
+            case .uninitialized: return "(uninitialized)"
+        }
+    }
+}
+func quote(_ text: String) -> String {
+    var result = "\""
+    for c in text.utf8 {
+        switch c {
+            case 34: result += "\\\"";
+            case 92: result += "\\\\";
+            case 10: result += "\\n";
+            case 9: result += "\\t";
+            case 32...126: result.append(Character(UnicodeScalar(c)));
+            default: let octal = String(c, radix: 8);
+            result += "\\" + String(repeating: "0", count: 3 - octal.count) + octal
+        }
+    };
+    return result + "\""
+}
+func splitText(_ text: String, _ separator: String) -> [String] {
+    if separator == " " {
+        return text.split(whereSeparator: Value.whitespace).map(String.init)
+    };
+    if separator.isEmpty {
+        return text.map(String.init)
+    };
+    return text.isEmpty ? [] : text.components(separatedBy: separator)
+}
+final class Fields {
+    var record = Value.string(""), values: [Value] = []
+    func set(_ text: String, _ separator: String) {
+        record = .input(text);
+        values = splitText(text, separator).map(Value.input)
+    }
+    func get(_ index: Int) -> Value {
+        index == 0 ? record : index <= values.count ? values[index - 1] : .uninitialized
+    }
+    func rebuild(_ separator: String) {
+        record = .input(values.map(\.text).joined(separator: separator))
+    }
+    func assign(_ index: Int, _ value: Value, _ fs: String, _ ofs: String) {
+        if index == 0 {
+            set(value.text, fs)
+        } else {
+            if index > values.count {
+                values += Array(repeating: .string(""), count: index - values.count)
+            };
+            values[index - 1] = value;
+            rebuild(ofs)
+        }
+    }
+    func nf(_ size: Int, _ ofs: String) {
+        if size < values.count {
+            values.removeLast(values.count - size)
+        } else {
+            values += Array(repeating: .string(""), count: size - values.count)
+        };
+        rebuild(ofs)
+    }
+}
+enum Operand {
+    case assignment(String, String), file(String, Int)
+}
+struct Arguments {
+    var options: [(String, String)] = [], operands: [Operand] = [], files: [(String, Int)] = []
+}
+func validFile(_ text: String) -> Bool {
+    !text.isEmpty && text.first != "." && text.utf8.allSatisfy {
+        Lexer.letter($0) || Lexer.digit($0) || [UInt8(46), 95, 45].contains($0)
+    }
+}
+func readFile(_ name: String) -> [String]? {
+    guard validFile(name), let text = try? String(contentsOfFile: "input/" + name, encoding: .ascii) else {
+        return nil
+    };
+    return text.isEmpty ? [] : Array(text.components(separatedBy: "\n").dropLast())
+}
+func arguments(_ text: String) -> Arguments {
+    var result = Arguments()
+    func assignment(_ text: String) -> (String, String)? {
+        guard let i = text.firstIndex(of: "=") else {
+            return nil
+        };
+        return (String(text[..<i]), String(text[text.index(after: i)...]))
+    }
+    func variable(_ text: String) -> Bool {
+        guard let first = text.utf8.first, Lexer.letter(first) || first == 95 else {
+            return false
+        };
+        return text.utf8.allSatisfy {
+            Lexer.letter($0) || Lexer.digit($0) || $0 == 95
+        }
+    }
+    for line in text.split(separator: "\n").map(String.init) {
+        if line.hasPrefix("-F ") {
+            result.options.append(("FS", String(line.dropFirst(3))))
+        }
+        else if line.hasPrefix("-v ") {
+            result.options.append(assignment(String(line.dropFirst(3)))!)
+        }
+        else if let (name, value) = assignment(line), variable(name) {
+            result.operands.append(.assignment(name, value))
+        }
+        else {
+            result.operands.append(.file(line, result.files.count));
+            result.files.append((line, 0))
+        }
+    };
+    return result
+}
+final class Streams {
+    var stdout = "", writes = 0, outputs: [OutputStream] = [], inputs: [InputStream] = []
+    func output(_ name: String?, _ append: Bool, _ text: String) {
+        guard let name else {
+            stdout += text;
+            writes += 1;
+            return
+        }
+    func save() {
+        try! FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+        try! stdout.write(toFile: "output/stdout.txt", atomically: true, encoding: .utf8)
+        for output in outputs {
+            try! output.text.write(toFile: "output/" + output.name, atomically: true, encoding: .utf8)
+        }
+    }
+}
+    let program: Program
+    var globals = Set(["FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"]), arrays: Set<NameKey> = [], uses: [(NameKey, Position)] = [], calls: [CallSite] = [], lines: [Int: Int] = [:], functions: [String: Int] = [:]
+    init(_ program: Program) {
+        self.program = program
+    }
+    func key(_ scope: Int?, _ name: String) -> NameKey {
+        NameKey(scope: scope.flatMap {
+            program.functions[$0].parameters.contains {
+                $0.0 == name
+            } ? $0 : nil
+        }, name: name)
+    }
+    func name(_ scope: Int?, _ name: String, _ position: Position, _ array: Bool) {
+        let key = self.key(scope, name);
+        if key.scope == nil {
+            globals.insert(name)
+        };
+        if array {
+            arrays.insert(key)
+        };
+        uses.append((key, position))
+    }
+    func expression(_ expression: Expr, _ scope: Int?) {
+        switch expression.kind {
+            case .name(let name): self.name(scope, name, expression.position, false)
+            case .field(let body), .parentheses(let body), .unary(_, let body), .increment(_, _, let body): self.expression(body, scope)
+            case .binary(_, let a, let b), .assignment(_, let a, let b): self.expression(a, scope);
+            self.expression(b, scope)
+    func statement(_ statement: Stmt, _ scope: Int?) {
+        switch statement.kind {
+            case .block, .empty: break;
+            default: lines[statement.position.line] = 0
+        }
+        switch statement.kind {
+            case .block(let statements): for statement in statements {
+                self.statement(statement, scope)
+            }
+            case .expression(let expression): self.expression(expression, scope)
+            case .output(_, let arguments, let redirect): for argument in arguments {
+                expression(argument, scope)
+            };
+            if let redirect {
+                expression(redirect.expression, scope)
+            }
+    func analyze() throws {
+        var errors: [(Position, Int, String)] = []
+        for rule in program.rules {
+            if let start = rule.start {
+                expression(start, nil)
+            };
+            if let end = rule.end {
+                expression(end, nil)
+            };
+            if let action = rule.action {
+                statement(action, nil)
+            }
+        }
+        for (key, position) in uses where functions[key.name] != nil {
+            errors.append((position, 2, "function \(key.name) used as variable"))
+        }
+        if let error = errors.min(by: {
+            ($0.0, $0.1) < ($1.0, $1.1)
+        }) {
+            throw StaticError(position: error.0, message: error.2)
+        }
+final class Runtime {
+    let program: Program, preparation: Preparation, fields = Fields(), streams = Streams()
+    var globals: [String: Cell] = [:], locals: [[String: Cell]] = [], arguments: Arguments, operand = 0, current: MainInput?, phase = "BEGIN", status = 0, rules: [Int], ranges: [Bool], calls: [Int], active: [Int], depths: [Int]
+    init(_ program: Program, _ preparation: Preparation, _ arguments: Arguments) {
+        self.program = program;
+        self.preparation = preparation;
+        self.arguments = arguments
+        rules = Array(repeating: 0, count: program.rules.count);
+        ranges = Array(repeating: false, count: program.rules.count);
+        calls = Array(repeating: 0, count: program.functions.count);
+        active = calls;
+        depths = calls
+        for name in preparation.globals {
+            globals[name] = preparation.arrays.contains(NameKey(scope: nil, name: name)) ? .array(AwkArray()) : .scalar(.uninitialized)
+        }
+        for (name, value) in [("FS", Value.string(" ")), ("OFS", .string(" ")), ("ORS", .string("\n")), ("SUBSEP", .string("\u{1c}")), ("NR", .number(0)), ("FNR", .number(0)), ("FILENAME", .string(""))] {
+            globals[name] = .scalar(value)
+        }
+    }
+    func frame(_ name: String) -> Int? {
+        locals.last?[name] != nil ? locals.count - 1 : nil
+    }
+    func cell(_ frame: Int?, _ name: String) -> Cell? {
+        frame.map {
+            locals[$0][name]
+        } ?? globals[name]
+    }
+    func value(_ frame: Int?, _ name: String) -> Value {
+        if frame == nil && name == "NF" {
+            return .number(fields.values.count)
+        };
+        if case .scalar(let value)? = cell(frame, name) {
+            return value
+        };
+        return .uninitialized
+    }
+    func global(_ name: String) -> Value {
+        value(nil, name)
+    }
+    func location(_ expression: Expr) throws -> Location {
+        switch expression.kind {
+            case .name(let name): return .variable(frame(name), name)
+            case .index(let name, let indices): let key = try self.key(indices);
+            case .field(let index): let number = try self.expression(index).number;
+            if number < 0 {
+                throw RuntimeError(position: expression.position, message: "negative field index")
+            };
+            return .field(number)
+            default: preconditionFailure()
+        }
+    }
+    func read(_ location: Location) -> Value {
+        switch location {
+            case .variable(let frame, let name): return value(frame, name);
+            case .field(let index): return fields.get(index)
+        }
+    }
+    @discardableResult func store(_ location: Location, _ value: Value, _ position: Position) throws -> Value {
+        switch location {
+            case .variable(let frame, let name):
+            if frame == nil && name == "NF" {
+                let n = value.number;
+                if n < 0 {
+                    throw RuntimeError(position: position, message: "negative NF")
+                };
+                fields.nf(n, global("OFS").text)
+            }
+            else if let frame {
+                locals[frame][name] = .scalar(value)
+            } else {
+                preparation.globals.insert(name);
+                globals[name] = .scalar(value)
+            }
+            case .field(let index): fields.assign(index, value, global("FS").text, global("OFS").text)
+        };
+        return read(location)
+    }
+    func expression(_ expression: Expr) throws -> Value {
+        let position = expression.position
+        switch expression.kind {
+            case .number(let n): return .number(n)
+            case .string(let s): return .string(s)
+            case .name, .index, .field: return read(try location(expression))
+            case .parentheses(let body): return try self.expression(body)
+            case .assignment(let op, let target, let right):
+            let location = try self.location(target), b = try self.expression(right), value: Value
+            if op == "=" {
+                value = b
+            } else {
+                let a = read(location);
+                value = try arithmetic(String(op.prefix(1)), a.number, b.number, position)
+            };
+            return try store(location, value, position)
+    func output(_ printf: Bool, _ arguments: [Expr], _ redirect: Redirect?, _ position: Position) throws {
+        var values: [Value] = [];
+        for argument in arguments {
+            values.append(try expression(argument))
+        }
+        let text: String
+        if printf {
+        else {
+            if values.isEmpty {
+                values = [fields.record]
+            };
+            text = values.map(\.text).joined(separator: global("OFS").text) + global("ORS").text
+        }
+        if let redirect {
+        } else {
+            streams.output(nil, false, text)
+        }
+    }
+    func statement(_ statement: Stmt) throws {
+        let position = statement.position
+        switch statement.kind {
+            case .block, .empty: break;
+            default: preparation.lines[position.line, default: 0] += 1
+        }
+        switch statement.kind {
+            case .block(let statements): for statement in statements {
+                try self.statement(statement)
+            }
+            case .empty: break
+            case .expression(let expression): _ = try self.expression(expression)
+            case .output(let printf, let arguments, let redirect): try output(printf, arguments, redirect, position)
+    func nextRecord() -> String? {
+        while true {
+            if var input = current, input.position < input.lines.count {
+                let line = input.lines[input.position];
+                input.position += 1;
+                current = input;
+                arguments.files[input.file].1 += 1
+                let nr = global("NR").number + 1, fnr = global("FNR").number + 1;
+                globals["NR"] = .scalar(.number(nr));
+                globals["FNR"] = .scalar(.number(fnr));
+                return line
+            }
+            if operand == arguments.operands.count {
+                return nil
+            };
+            let next = arguments.operands[operand];
+            operand += 1
+            switch next {
+                case .assignment(let name, let value): preparation.globals.insert(name);
+                globals[name] = .scalar(.input(value))
+                case .file(let name, let index): globals["FILENAME"] = .scalar(.string(name));
+                globals["FNR"] = .scalar(.number(0));
+                current = MainInput(file: index, lines: readFile(name)!, position: 0)
+            }
+        }
+    }
+    func testRule(_ rule: Rule, _ index: Int) throws -> Bool {
+        if rule.kind == "all" {
+            return true
+        }
+    func execute() throws {
+        for (name, value) in arguments.options {
+            preparation.globals.insert(name);
+            globals[name] = .scalar(.input(value))
+        }
+        var exiting = false
+        for (i, rule) in program.rules.enumerated() where rule.kind == "BEGIN" {
+            rules[i] += 1
+            do {
+                try statement(rule.action!)
+            } catch Flow.exit {
+                exiting = true;
+                break
+            }
+        }
+        phase = "rules"
+        if !exiting && program.rules.contains(where: {
+            $0.kind != "BEGIN"
+        }) {
+            records: while let record = nextRecord() {
+                fields.set(record, global("FS").text)
+                for (i, rule) in program.rules.enumerated() where !["BEGIN", "END"].contains(rule.kind) {
+                    do {
+                        if try testRule(rule, i) {
+                            rules[i] += 1
+                            if let action = rule.action {
+                                try statement(action)
+                            } else {
+                                streams.output(nil, false, fields.record.text + global("ORS").text)
+                            }
+                        }
+    func report(_ status: String) {
+        streams.save();
+        var lines = [status, "[inputs]"]
+        for (name, count) in arguments.files {
+            lines.append("\(name) records=\(count)")
+        };
+        lines.append("[rules]")
+        for (i, rule) in program.rules.enumerated() {
+            lines.append("\(rule.position) \(rule.kind) count=\(rules[i])")
+        };
+        lines += ["[outputs]", "stdout.txt writes=\(streams.writes) bytes=\(streams.stdout.utf8.count)"]
+        lines.append("[lines]")
+        for line in preparation.lines.keys.sorted() {
+            lines.append("\(line) count=\(preparation.lines[line]!)")
+        };
+        lines.append("[globals]")
+        for name in preparation.globals.sorted() {
+            let value: String;
+            if case .array(let array)? = globals[name] {
+                value = "array (\(array.elements.count))"
+            } else {
+                value = global(name).display
+            };
+            lines.append("\(name) = \(value)")
+        };
+        saveStats(lines)
+    }
+}
+func saveStats(_ lines: [String]) {
+    try! FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+    try! (lines.joined(separator: "\n") + "\n").write(toFile: "output/stats.txt", atomically: true, encoding: .utf8)
+}
+func run() {
+    let source = try! String(contentsOfFile: "input/program.awk", encoding: .ascii), program: Program
+    do {
+        program = try Parser(Lexer.lex(source)).program()
+    let preparation = Preparation(program)
+    do {
+        try preparation.analyze()
+    let args = arguments(try! String(contentsOfFile: "input/args.txt", encoding: .ascii)), runtime = Runtime(program, preparation, args), status: String
+    do {
+        try runtime.execute();
+        status = "status: exit \(runtime.status)"
+    runtime.report(status)
+run()
