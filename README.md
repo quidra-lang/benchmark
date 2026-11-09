@@ -9,10 +9,11 @@ Counts exclude prompts, answers, and selection rationales; they do not measure a
 
 ## Preparation
 
-1. Pull the latest `develop`. Limit file changes to the requested work and the benchmark outputs below.
-2. Use the requested benchmark date, or today's date if none is specified. Continue in `results/YYYY-MM-DD` if it exists; otherwise copy the most recent earlier date directory.
-3. Read that date's `version.csv`. For a new run, check official language updates and present the previous/current versions and proposed updates or skips to the user in chat. Obtain the user's explicit approval in chat before starting the benchmark; only then proceed with the approved languages, versions, and source revisions. Preserve those choices when resuming, and update only the corresponding entries in `version.csv`.
-4. Within the approved scope, update only topics affected by language or task-requirement changes. Refresh their Task A sources, Task B selections and rationales, and token counts even if the language version is unchanged.
+1. Run the benchmark only when the user explicitly requests execution (e.g., "Run the benchmark"). Discussion, review, or maintenance requests alone do not authorize a run.
+2. Pull the latest `develop`. Limit file changes to the requested work and the benchmark outputs below.
+3. Use the requested benchmark date, or today's date if none is specified. Continue in `results/YYYY-MM-DD` if it exists; otherwise copy the most recent earlier date directory.
+4. Read that date's `version.csv`. For a new run, check official language updates and present the previous/current versions and proposed updates or skips to the user in chat. Obtain the user's explicit approval in chat before starting the benchmark; only then proceed with the approved languages, versions, and source revisions. Preserve those choices when resuming, and update only the corresponding entries in `version.csv`.
+5. Within the approved scope, update only topics affected by language or task-requirement changes. Refresh their Task A sources, Task B selections and rationales, and token counts even if the language version is unchanged.
 
 Each date contains three difficulty levels with 100 topics each. Task definitions are shared across languages; source files and measured outputs are stored in each topic's language directories.
 
