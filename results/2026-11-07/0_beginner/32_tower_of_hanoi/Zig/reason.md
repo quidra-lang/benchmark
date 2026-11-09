@@ -1,0 +1,5 @@
+The four-disk call binds source A, target C, auxiliary B. Its first subproblem is 3 disks A->B with C auxiliary; then it emits disk 4 A->C; the second is 3 disks B->C with A auxiliary. n=0 emits no move. All invocations share the explicit count pointer, initialized zero, and increment it once per emitted move, giving 15. Peg u8 arguments are values: recursive role permutation does not alter caller label bindings. Only the writer and count pointer designate shared mutable state. The complete recursive decisions and top call are needed; no unrelated main output setup is needed.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

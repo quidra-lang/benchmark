@@ -1,0 +1,533 @@
+package main
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+type prefix struct {
+	address uint32
+	length  int
+func decimal(s string) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+func number(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
+func parseAddress(s string) (uint32, bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return 0, false
+	}
+	var a uint32
+	for _, p := range parts {
+		if len(p) > 3 || !decimal(p) || number(p) > 255 {
+			return 0, false
+		}
+		a = a*256 + uint32(number(p))
+	}
+	return a, true
+func address(a uint32) string {
+	return fmt.Sprintf("%d.%d.%d.%d", a>>24, (a>>16)&255, (a>>8)&255, a&255)
+func parsePrefix(s string) (prefix, bool) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 || len(parts[1]) > 2 || !decimal(parts[1]) || number(parts[1]) > 32 {
+		return prefix{}, false
+	}
+	a, ok := parseAddress(parts[0])
+	return prefix{a, number(parts[1])}, ok
+func network(a uint32, length int) uint32 {
+	if length == 0 {
+		return 0
+	}
+	return a & (^uint32(0) << uint(32-length))
+func (p prefix) contains(a uint32) bool {
+	return network(a, p.length) == network(p.address, p.length)
+func (p prefix) String() string {
+	return fmt.Sprintf("%s/%d", address(p.address), p.length)
+func checkedAddress(s string) (uint32, error) {
+	a, ok := parseAddress(s)
+	if !ok {
+	}
+	return a, nil
+func checkedPrefix(s string) (prefix, error) {
+	p, ok := parsePrefix(s)
+	if !ok {
+	}
+	if network(p.address, p.length) != p.address {
+	}
+	return p, nil
+type portRange struct {
+	lo, hi int
+	any    bool
+func parsePorts(s string) (portRange, error) {
+	if s == "ANY" {
+		return portRange{0, 65535, true}, nil
+	}
+	parts := strings.Split(s, "-")
+	lo, hi := number(parts[0]), number(parts[len(parts)-1])
+	if lo > 65535 || hi > 65535 || lo > hi {
+	}
+	return portRange{lo, hi, false}, nil
+type rule struct {
+	seq            int
+	action, proto  string
+	src, dst       prefix
+	sports, dports portRange
+	established    bool
+	hits           int
+type pat struct {
+	proto                 string
+	inside                uint32
+	inport, outport, last int
+type iface struct {
+	name         string
+	p            prefix
+	up, outside  bool
+	pool         int
+	rpf          string
+	rx, tx, drop int
+	rules        [2][]*rule
+	defaults     [2]int
+	mappings     []*pat
+type route struct {
+	kind         string
+	p            prefix
+	out          *iface
+	hop          *uint32
+	metric, hits int
+func (r *route) String() string {
+	via := ""
+	if r.hop != nil {
+	}
+	return fmt.Sprintf("%s %s%s dev %s metric %d", r.kind, r.p, via, r.out.name, r.metric)
+type staticNAT struct {
+	inside, outside uint32
+type tuple struct {
+	proto string
+	src   uint32
+	sport int
+	dst   uint32
+	dport int
+type connection struct {
+	number                      int
+	orig, reply                 tuple
+	in, out                     *iface
+	state                       string
+	origCount, replyCount, last int
+var reasons = []string{"down", "martian", "rpf", "invalid", "acl_in", "ttl", "noroute", "acl_out", "exhausted"}
+type router struct {
+	ifaces                                              []*iface
+	byName                                              map[string]*iface
+	routes                                              []*route
+	statics                                             []staticNAT
+	forwards                                            []*forward
+	conns                                               []*connection
+	clock, packet, connNumber, forwarded, local, errors int
+	drops                                               map[string]int
+func newRouter() *router {
+	return &router{byName: map[string]*iface{}, timeouts: map[string]int{"TCP": 300, "UDP": 60, "ICMP": 30}, drops: map[string]int{}}
+func (r *router) interfaceNamed(name string) (*iface, error) {
+	i, ok := r.byName[name]
+	if !ok {
+	}
+	return i, nil
+func (r *router) localAddress(a uint32) *iface {
+	for _, i := range r.ifaces {
+		if i.p.address == a {
+			return i
+		}
+	}
+	return nil
+func (r *router) selectRoute(a uint32) *route {
+	var best *route
+	for _, v := range r.routes {
+		if v.out.up && v.p.contains(a) && (best == nil || v.p.length > best.p.length || v.p.length == best.p.length && v.metric < best.metric) {
+			best = v
+		}
+	}
+	return best
+func (r *router) sortedIfaces() []*iface {
+	out := append([]*iface{}, r.ifaces...)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].name < out[j].name
+	return out
+func direction(s string) int {
+	if s == "IN" {
+		return 0
+	}
+	return 1
+func (r *router) acl(i *iface, d int, t tuple, existing bool) string {
+	if len(i.rules[d]) == 0 {
+		return ""
+	}
+	for _, a := range i.rules[d] {
+		if a.proto != "ANY" && a.proto != t.proto || !a.src.contains(t.src) || !a.dst.contains(t.dst) || a.established && !existing {
+			continue
+		}
+		if (a.proto == "TCP" || a.proto == "UDP") && (t.sport < a.sports.lo || t.sport > a.sports.hi || t.dport < a.dports.lo || t.dport > a.dports.hi) {
+			continue
+		}
+		a.hits++
+		if a.action == "PERMIT" {
+			return ""
+		}
+		dir := []string{"in", "out"}[d]
+		if a.action == "DENY" {
+		}
+		reason := "icmp-prohibited"
+		if t.proto == "TCP" {
+		}
+		return fmt.Sprintf("REJECT acl %s %s %d %s", i.name, dir, a.seq, reason)
+	}
+func martian(a uint32) bool {
+	return a>>24 == 0 || a>>24 == 127 || a>>29 == 7
+func (r *router) packetVerdict(i *iface, t tuple, flags string, ttl int) (string, string) {
+	drop := func(reason string) (string, string) {
+		return "DROP " + reason, reason
+	}
+	if !i.up {
+		return drop("down")
+	}
+	if martian(t.src) || martian(t.dst) || r.localAddress(t.src) != nil {
+		return drop("martian")
+	}
+	pure := t.proto == "TCP" && flags == "S"
+	var conn *connection
+	way := "new"
+	for n, c := range r.conns {
+		if c.orig == t {
+			conn = c
+			way = "orig"
+		} else if c.reply == t {
+			conn = c
+			way = "reply"
+		}
+		if conn != nil {
+			break
+		}
+	}
+	if verdict := r.acl(i, 0, t, conn != nil); verdict != "" {
+		return verdict, "acl_in"
+	}
+	translated := t
+	var used *pat
+	if i.outside {
+		matched := false
+		for _, m := range r.statics {
+			if m.outside == t.dst {
+				translated.dst = m.inside
+				matched = true
+				break
+			}
+		}
+		if !matched && t.dst == i.p.address {
+			for _, f := range r.forwards {
+				if f.out == i && f.proto == t.proto && f.port == t.dport {
+				}
+			}
+			if !matched {
+				for _, m := range i.mappings {
+					if m.proto == t.proto && m.outport == t.dport {
+						translated.dst = m.inside
+						translated.dport = m.inport
+						used = m
+						break
+					}
+				}
+			}
+		}
+	}
+	if local := r.localAddress(translated.dst); local != nil {
+		return "LOCAL " + local.name, "local"
+	}
+	if ttl == 1 {
+		return drop("ttl")
+	}
+	route := r.selectRoute(translated.dst)
+	if route == nil {
+		return drop("noroute")
+	}
+	o := route.out
+	if verdict := r.acl(o, 1, translated, conn != nil); verdict != "" {
+		return verdict, "acl_out"
+	}
+	if !i.outside && o.outside {
+		matched := false
+		for _, m := range r.statics {
+			if m.inside == t.src {
+				translated.src = m.outside
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			for _, f := range r.forwards {
+				if f.out == o && f.proto == t.proto && f.inside == t.src && f.inport == t.sport {
+				}
+			}
+		}
+		if !matched && o.pool > 0 {
+			for _, m := range o.mappings {
+				if m.proto == t.proto && m.inside == t.src && m.inport == t.sport {
+					used = m
+					break
+				}
+			}
+			if used == nil {
+				used = &pat{t.proto, t.src, t.sport, port, r.clock}
+				o.mappings = append(o.mappings, used)
+			}
+			translated.src = o.p.address
+			translated.sport = used.outport
+		}
+	}
+	if used != nil {
+		used.last = r.clock
+	}
+	if conn == nil {
+		r.connNumber++
+		state := "UNREPLIED"
+		if t.proto == "TCP" {
+		}
+		conn = &connection{number: r.connNumber, orig: t, reply: tuple{t.proto, translated.dst, translated.dport, translated.src, translated.sport}, in: i, out: o, state: state}
+		r.conns = append(r.conns, conn)
+		way = "new"
+	}
+	if way == "reply" {
+		conn.replyCount++
+	} else {
+		conn.origCount++
+	}
+	conn.last = r.clock
+	if t.proto != "TCP" {
+		if way == "reply" {
+			conn.state = "REPLIED"
+		}
+	} else if strings.Contains(flags, "R") {
+	} else {
+	}
+	o.tx++
+	route.hits++
+	via := "direct"
+	if route.hop != nil {
+	}
+	v := fmt.Sprintf("FORWARD %s %s ttl=%d", o.name, via, ttl-1)
+	if translated.dst != t.dst || translated.dport != t.dport {
+		v += fmt.Sprintf(" dnat=%s:%d", address(translated.dst), translated.dport)
+	}
+	if translated.src != t.src || translated.sport != t.sport {
+		v += fmt.Sprintf(" snat=%s:%d", address(translated.src), translated.sport)
+	}
+	v += fmt.Sprintf(" conn=%d %s", conn.number, way)
+	return v, "forwarded"
+func (r *router) show(what string) string {
+	out := []string{}
+	add := func(format string, args ...any) {
+		out = append(out, fmt.Sprintf(format, args...))
+	is := r.sortedIfaces()
+	switch what {
+	case "COUNTERS":
+		dropped := 0
+		for _, n := range r.drops {
+			dropped += n
+		}
+		add("show counters packets=%d forwarded=%d local=%d dropped=%d errors=%d", r.forwarded+r.local+dropped, r.forwarded, r.local, dropped, r.errors)
+		s := "drops"
+		for _, reason := range reasons {
+			s += fmt.Sprintf(" %s=%d", reason, r.drops[reason])
+		}
+		out = append(out, s)
+		for _, i := range is {
+			add("iface %s rx=%d tx=%d drop=%d", i.name, i.rx, i.tx, i.drop)
+		}
+	}
+	return strings.Join(out, "\n")
+func (r *router) command(w []string) (string, error) {
+	bad := func(format string, args ...any) (string, error) {
+		return "", fmt.Errorf(format, args...)
+	cmd := w[0]
+	switch cmd {
+	case "IFACE":
+		name := w[1]
+		if r.byName[name] != nil {
+		}
+		p, ok := parsePrefix(w[2])
+		if !ok || p.length < 8 || p.length > 30 {
+		}
+		net := network(p.address, p.length)
+		if p.address == net || p.address == net|(^uint32(0)>>uint(p.length)) {
+		}
+		for _, i := range r.ifaces {
+			k := p.length
+			if i.p.length < k {
+				k = i.p.length
+			}
+			if network(p.address, k) == network(i.p.address, k) {
+			}
+		}
+		i := &iface{name: name, p: p, up: true, rpf: "off"}
+		r.ifaces = append(r.ifaces, i)
+		r.byName[name] = i
+		r.routes = append(r.routes, &route{kind: "C", p: prefix{net, p.length}, out: i})
+		return fmt.Sprintf("ok iface %s %s network %s/%d", name, w[2], address(net), p.length), nil
+	case "ROUTE":
+		p, err := checkedPrefix(w[1])
+		if err != nil {
+		}
+		var out *iface
+		var hop *uint32
+		if w[2] == "VIA" {
+		} else {
+			out, err = r.interfaceNamed(w[3])
+			if err != nil {
+			}
+		}
+		metric := number(w[4])
+		if metric < 1 || metric > 255 {
+		}
+		for _, v := range r.routes {
+			sameHop := v.hop == nil && hop == nil || v.hop != nil && hop != nil && *v.hop == *hop
+			if v.kind == "S" && v.p == p && v.out == out && sameHop {
+			}
+		}
+		v := &route{kind: "S", p: p, out: out, hop: hop, metric: metric}
+		r.routes = append(r.routes, v)
+		return "ok route " + v.String(), nil
+	case "ACL":
+		i, err := r.interfaceNamed(w[1])
+		if err != nil {
+		}
+		seq := number(w[3])
+		if seq < 1 || seq > 9999 {
+		}
+		read := func(s string) (prefix, error) {
+			if s == "ANY" {
+				return prefix{}, nil
+			}
+			return checkedPrefix(s)
+		}
+		src, err := read(w[6])
+		if err != nil {
+		}
+		sports, err := parsePorts(w[7])
+		if err != nil {
+		}
+		dst, err := read(w[8])
+		if err != nil {
+		}
+		dports, err := parsePorts(w[9])
+		if err != nil {
+		}
+		if (w[5] == "ICMP" || w[5] == "ANY") && (!sports.any || !dports.any) {
+		}
+		d := direction(w[2])
+		for _, a := range i.rules[d] {
+			if a.seq == seq {
+			}
+		}
+		i.rules[d] = append(i.rules[d], &rule{seq: seq, action: w[4], proto: w[5], src: src, dst: dst, sports: sports, dports: dports, established: len(w) == 11})
+		sort.Slice(i.rules[d], func(a, b int) bool {
+			return i.rules[d][a].seq < i.rules[d][b].seq
+		return fmt.Sprintf("ok acl %s %s %s", i.name, strings.ToLower(w[2]), w[3]), nil
+	case "NAT":
+		switch w[1] {
+		case "STATIC":
+			a, err := checkedAddress(w[2])
+			if err != nil {
+			}
+			b, err := checkedAddress(w[3])
+			if err != nil {
+			}
+			if r.localAddress(a) != nil {
+			}
+			if r.localAddress(b) != nil {
+			}
+			for _, m := range r.statics {
+				if m.inside == a {
+				}
+			}
+			for _, m := range r.statics {
+				if m.outside == b {
+				}
+			}
+			r.statics = append(r.statics, staticNAT{a, b})
+			return "ok nat static " + w[2] + " " + w[3], nil
+		case "OUTSIDE", "PAT", "FORWARD":
+			i, err := r.interfaceNamed(w[2])
+			if err != nil {
+			}
+			switch w[1] {
+			case "PAT":
+				n := number(w[3])
+				if n < 1 || n > 1000 {
+				}
+				if i.pool > 0 {
+				}
+				i.pool = n
+				i.outside = true
+				return fmt.Sprintf("ok nat pat %s %s 20000-%d", i.name, address(i.p.address), 19999+n), nil
+			}
+		}
+	case "PACKET":
+		i, err := r.interfaceNamed(w[1])
+		if err != nil {
+		}
+		proto, flags := w[2], w[3]
+		if proto != "TCP" && flags != "-" {
+		}
+		src, err := checkedAddress(w[4])
+		if err != nil {
+		}
+		sp := number(w[5])
+		if sp > 65535 {
+		}
+		dst, err := checkedAddress(w[6])
+		if err != nil {
+		}
+		dp := number(w[7])
+		if dp > 65535 {
+		}
+		ttl := number(w[8])
+		if ttl < 1 || ttl > 255 {
+		}
+		r.packet++
+		i.rx++
+		v, reason := r.packetVerdict(i, tuple{proto, src, sp, dst, dp}, flags, ttl)
+		switch reason {
+		case "forwarded":
+			r.forwarded++
+		case "local":
+			r.local++
+		default:
+			r.drops[reason]++
+			i.drop++
+		}
+		return fmt.Sprintf("#%d %s %s %s:%s > %s:%s %s", r.packet, proto, flags, w[4], w[5], w[6], w[7], v), nil
+	case "SHOW":
+		return r.show(w[1]), nil
+	}
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	n := number(scanner.Text())
+	r := newRouter()
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	for k := 0; k < n && scanner.Scan(); k++ {
+		line, err := r.command(strings.Split(scanner.Text(), " "))
+		if err != nil {
+			r.errors++
+			fmt.Fprintln(out, "error: "+err.Error())
+		} else {
+			fmt.Fprintln(out, line)
+		}
+	}

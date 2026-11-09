@@ -1,0 +1,365 @@
+const SIGNATURES = [
+    'RND' => ['I'], 'LEN' => ['S'], 'ASC' => ['S'], 'VAL' => ['S'],
+];
+const OPERATORS = [
+    0 => ['OR'], 1 => ['AND'], 2 => [],
+    3 => ['=', '<>', '<', '>', '<=', '>='],
+    4 => ['+', '-'], 5 => ['*', '/', 'MOD'],
+    6 => [], 7 => ['^']
+];
+
+function badSyntax(): never
+{
+    throw new SyntaxFault('SYNTAX ERROR');
+}
+
+function fault(string $message): never
+{
+    throw new BasicFault($message);
+}
+function nameType(string $name): string
+{
+    return str_ends_with($name, '$') ? 'S' : 'I';
+}
+function node(string $kind, string $type, mixed $value, array $args = []): object
+{
+    return (object)['kind' => $kind, 'type' => $type, 'value' => $value, 'args' => $args];
+}
+
+function stmt(string $kind): object
+{
+    return (object)[
+        'kind' => $kind, 'line' => 0, 'next' => null,
+        'expr' => null, 'target' => null, 'targets' => [],
+        'expressions' => [], 'values' => [], 'numbers' => [],
+        'name' => '', 'mode' => '', 'clauses' => [], 'items' => []
+    ];
+}
+function tokenize(string $source): array
+{
+    $tokens = [];
+    $length = strlen($source);
+    $p = 0;
+    while ($p < $length) {
+        $ch = $source[$p];
+        if ($ch === ' ') {
+            $p++;
+        } elseif ($ch === '"') {
+            $end = strpos($source, '"', $p + 1);
+            if ($end === false) badSyntax();
+            $tokens[] = (object)[
+                'kind' => 'S', 'text' => substr($source, $p, $end - $p + 1),
+                'value' => substr($source, $p + 1, $end - $p - 1)
+            ];
+            $p = $end + 1;
+        } elseif (ctype_digit($ch)) {
+            $start = $p;
+            while ($p < $length && ctype_digit($source[$p])) $p++;
+            $word = substr($source, $start, $p - $start);
+            $value = (int)$word;
+            if ($value > 32767 || strlen($word) > 5) badSyntax();
+            $tokens[] = (object)['kind' => 'I', 'text' => $word, 'value' => $value];
+        } elseif ($ch >= 'A' && $ch <= 'Z') {
+            $start = $p;
+            while ($p < $length && (($source[$p] >= 'A' && $source[$p] <= 'Z') ||
+                   ctype_digit($source[$p]))) $p++;
+            if ($p < $length && $source[$p] === '$') $p++;
+            $word = substr($source, $start, $p - $start);
+            $tokens[] = (object)['kind' => 'W', 'text' => $word, 'value' => $word];
+        } else {
+            if (!str_contains('+-*/^=<>() ,;:', $ch)) badSyntax();
+            $two = substr($source, $p, 2);
+            $word = in_array($two, ['<>', '<=', '>='], true) ? $two : $ch;
+            $tokens[] = (object)['kind' => 'P', 'text' => $word, 'value' => $word];
+            $p += strlen($word);
+        }
+    }
+    $tokens[] = (object)['kind' => 'E', 'text' => '', 'value' => ''];
+    return $tokens;
+}
+
+final class Parser
+{
+    private int $position = 0;
+
+    public function __construct(private array $tokens) {}
+
+    private function current(): object
+    {
+        return $this->tokens[$this->position];
+    }
+
+    private function at(string $word): bool
+    {
+        $token = $this->current();
+        return ($token->kind === 'W' || $token->kind === 'P') &&
+               $token->text === $word;
+    }
+
+    private function take(string $word): bool
+    {
+        if (!$this->at($word)) return false;
+        $this->position++;
+        return true;
+    }
+
+    private function expect(string $word): void
+    {
+        if (!$this->take($word)) badSyntax();
+    }
+
+    private function integer(): object
+    {
+        $result = $this->expression();
+        if ($result->type !== 'I') badSyntax();
+        return $result;
+    }
+
+    private function integerAt(int $level): object
+    {
+        $result = $this->expression($level);
+        if ($result->type !== 'I') badSyntax();
+        return $result;
+    }
+    private function expression(int $level = 0): object
+    {
+        if ($level === 2 && $this->take('NOT')) {
+            return node('unary', 'I', 'NOT', [$this->integerAt(2)]);
+        }
+        if ($level === 6 && $this->take('-')) {
+            return node('unary', 'I', '-', [$this->integerAt(6)]);
+        }
+        if ($level === 8) return $this->primary();
+        $left = $this->expression($level + 1);
+        while (in_array($this->current()->text, OPERATORS[$level], true)) {
+            $operation = $this->current()->text;
+            $this->position++;
+            $right = $this->expression($level === 7 ? 6 : $level + 1);
+            if ($left->type !== $right->type ||
+                ($left->type === 'S' && $level !== 3 && $operation !== '+')) badSyntax();
+            $left = node('binary', $level === 3 ? 'I' : $left->type,
+                         $operation, [$left, $right]);
+            if ($level === 7) break;
+        }
+        return $left;
+    }
+
+    private function primary(): object
+    {
+        $token = $this->current();
+        if ($token->kind === 'I' || $token->kind === 'S') {
+            $this->position++;
+            return node('constant', $token->kind, $token->value);
+        }
+        if ($this->take('(')) {
+            $result = $this->expression();
+            $this->expect(')');
+            return $result;
+        }
+        if ($token->kind === 'W' && isset(SIGNATURES[$token->text])) {
+            $this->position++;
+            $this->expect('(');
+            $args = [$this->expression()];
+            while ($this->take(',')) $args[] = $this->expression();
+            $this->expect(')');
+            $signature = implode('', array_map(fn($arg) => $arg->type, $args));
+            if (!in_array($signature, SIGNATURES[$token->text], true)) badSyntax();
+            return node('call', nameType($token->text), $token->text, $args);
+        }
+        badSyntax();
+    }
+    private function listing(bool $inClause = false): array
+    {
+        $result = [$this->statement($inClause)];
+        while ($this->take(':')) $result[] = $this->statement($inClause);
+        return $result;
+    }
+
+    private function statement(bool $inClause): object
+    {
+        $word = $this->current()->text;
+        if ($inClause && in_array($word,
+            ['IF', 'FOR', 'NEXT', 'WHILE', 'WEND', 'DATA'], true)) badSyntax();
+        $s = stmt($word);
+        if ($this->take('PRINT')) {
+            $expressionLast = false;
+            while ($this->current()->kind !== 'E' && !$this->at(':') &&
+                   !$this->at('ELSE')) {
+                if ($this->take(';')) {
+                    $s->items[] = (object)['kind' => ';', 'expr' => null];
+                    $expressionLast = false;
+                } elseif ($this->take(',')) {
+                    $s->items[] = (object)['kind' => ',', 'expr' => null];
+                    $expressionLast = false;
+                } else {
+                    $kind = $this->at('TAB') ? 'TAB' :
+                           ($this->at('SPC') ? 'SPC' : 'value');
+                    if ($kind === 'value' && $expressionLast) badSyntax();
+                    if ($kind === 'value') {
+                        $e = $this->expression();
+                    $s->items[] = (object)['kind' => $kind, 'expr' => $e];
+                    $expressionLast = $kind === 'value';
+                }
+            }
+            return $s;
+        }
+    public function parse(): array
+    {
+        $result = $this->listing();
+        if ($this->current()->kind !== 'E') badSyntax();
+        return $result;
+    }
+    private int $random = 1;
+    private int $handler = 0;
+    private bool $handling = false;
+    private string $buffer = '';
+    private array $output = [];
+    private function endLine(): void
+    {
+        $this->output[] = rtrim($this->buffer, ' ');
+        $this->buffer = '';
+    }
+
+    private function message(string $text): void
+    {
+        if ($this->buffer !== '') $this->endLine();
+        $this->output[] = $text;
+    }
+
+    private function checked(int|float $value): int
+    {
+        if ($value < -32768 || $value > 32767) fault('OVERFLOW');
+        return (int)$value;
+    }
+    private function evaluate(object $e): int|string
+    {
+        $op = $e->value;
+        if ($e->kind === 'constant') return $op;
+        if ($e->kind === 'unary') {
+            $a = $this->evaluate($e->args[0]);
+            return $op === 'NOT' ? ~$a : $this->checked(-$a);
+        }
+        $args = [];
+        foreach ($e->args as $arg) $args[] = $this->evaluate($arg);
+        if ($e->kind === 'call') return $this->callFunction($op, $args);
+        [$a, $b] = $args;
+        return match ($op) {
+            '/' => $this->quotient($a, $b),
+            'MOD' => $this->remainder($a, $b),
+            '^' => $this->exponent($a, $b),
+            'AND' => $a & $b,
+            'OR' => $a | $b,
+            default => throw new BasicFault('ILLEGAL FUNCTION CALL')
+        };
+    }
+
+    private function quotient(int $a, int $b): int
+    {
+        if ($b === 0) fault('DIVISION BY ZERO');
+        return $this->checked(intdiv($a, $b));
+    }
+    private function callFunction(string $name, array $args): int|string
+    {
+        $a = $args[0];
+        $b = $args[1] ?? null;
+        $c = $args[2] ?? null;
+        switch ($name) {
+            case 'RND':
+                if ($a < 1) fault('ILLEGAL FUNCTION CALL');
+                $this->random = ($this->random * 48271) % 2147483647;
+                return $this->random % $a + 1;
+    private function execute(object $s): ?object
+    {
+        $following = $s->next;
+        switch ($s->kind) {
+            case 'PRINT':
+                foreach ($s->items as $item) {
+                    if ($item->kind === ',') {
+                        $this->buffer .= str_repeat(' ', 10 - strlen($this->buffer) % 10);
+                    } elseif ($item->kind !== ';') {
+                        $value = $this->evaluate($item->expr);
+                        if ($item->kind === 'value') {
+                            $this->buffer .= (string)$value;
+                    }
+                }
+                $last = $s->items === [] ? null : end($s->items);
+                if ($last === null || ($last->kind !== ';' && $last->kind !== ',')) {
+                    $this->endLine();
+                }
+                break;
+        return $following;
+    private function connect(array $body, ?object $after, int $number): void
+    {
+        $following = $after;
+        for ($i = count($body) - 1; $i >= 0; --$i) {
+            $s = $body[$i];
+            $s->line = $number;
+            $s->next = $following;
+            $following = $s;
+        }
+    }
+
+    private function finish(): array
+    {
+        if ($this->buffer !== '') $this->endLine();
+        $this->output[] = 'READY';
+        return $this->output;
+    }
+
+    public function run(array $source): array
+    {
+        ksort($source, SORT_NUMERIC);
+        $parsed = [];
+        foreach ($source as $number => $code) {
+            try {
+                $parsed[] = ['number' => $number,
+                             'body' => (new Parser(tokenize($code)))->parse()];
+            } catch (SyntaxFault $error) {
+                $this->message('ERROR IN LINE ' . $number . ': SYNTAX ERROR');
+                return $this->finish();
+            }
+        }
+        $after = null;
+        for ($i = count($parsed) - 1; $i >= 0; --$i) {
+            $entry = $parsed[$i];
+            $this->connect($entry['body'], $after, $entry['number']);
+            $this->entries[$entry['number']] = $entry['body'][0];
+            $after = $entry['body'][0];
+        }
+        $position = $after;
+        while ($position !== null) {
+            $current = $position;
+            try {
+                $position = $this->execute($current);
+            } catch (BasicFault $error) {
+                if ($this->handler !== 0 && !$this->handling) {
+                } else {
+                    $this->message('ERROR IN LINE ' . $current->line .
+                                   ': ' . $error->getMessage());
+                    $position = null;
+                }
+            }
+        }
+        return $this->finish();
+    }
+$lines = file('php://stdin', FILE_IGNORE_NEW_LINES);
+$lines = array_map(fn($line) => rtrim($line, "\r"), $lines);
+$count = (int)$lines[0];
+$cursor = 1;
+$output = [];
+for ($program = 0; $program < $count; ++$program) {
+    $source = [];
+    while ($lines[$cursor] !== 'RUN') {
+        $line = $lines[$cursor++];
+        preg_match('/^([0-9]+)(?: +(.*))?$/D', $line, $parts);
+        $number = (int)$parts[1];
+        if (isset($parts[2])) $source[$number] = $parts[2];
+        else unset($source[$number]);
+    }
+    $cursor++;
+    $inputs = [];
+    while ($lines[$cursor] !== 'END') $inputs[] = $lines[$cursor++];
+    $cursor++;
+    array_push($output, ...(new Machine($inputs))->run($source));
+}
+echo implode("\n", $output), "\n";

@@ -1,0 +1,183 @@
+pub fn binary(file: &str) -> Vec<Example> {
+    fs::read_to_string(file).unwrap().lines().skip(1).map(|line| {
+        let w: Vec<_> = line.split(',').collect();
+        Example { id: w[0].to_owned(), point: [w[1].parse().unwrap(), w[2].parse().unwrap()], label: w[3].parse().unwrap() }
+    }).collect()
+}
+pub fn settings() -> Settings {
+    let mut p = Settings { candidates: Vec::new(), kernels: Vec::new(), tolerance: 0.0, eps: 0.0,
+        max_passes: 0, folds: 0, fractions: Vec::new(), newton: 0, multi_kernel: String::new(), multi_c: 0.0,
+        lambda: 0.0, iterations: 0, seed: 0, x: [0.0; 2], y: [0.0; 2], width: 0, height: 0 };
+    for line in fs::read_to_string("input/params.txt").unwrap().lines() {
+        let w: Vec<_> = line.split_whitespace().collect();
+        match w[0] {
+            "C_GRID" => p.candidates = w[1..].iter().map(|v| v.parse().unwrap()).collect(),
+            "KERNEL" => p.kernels.push(Kernel { name: w[1].to_owned(), kind: match w[2] {
+                "linear" => Kind::Linear,
+                "poly" => Kind::Polynomial { degree: w[3].parse().unwrap(), gamma: w[4].parse().unwrap(), constant: w[5].parse().unwrap() },
+                _ => Kind::Rbf(w[3].parse().unwrap()),
+            } }),
+            "TOLERANCE" => p.tolerance = w[1].parse().unwrap(),
+            "EPS" => p.eps = w[1].parse().unwrap(),
+            "MAX_PASSES" => p.max_passes = w[1].parse().unwrap(),
+            "FOLDS" => p.folds = w[1].parse().unwrap(),
+        }
+    }
+    p
+}
+pub enum Kind { Linear, Polynomial { degree: usize, gamma: f64, constant: f64 }, Rbf(f64) }
+
+#[derive(Clone)]
+pub struct Kernel { pub name: String, pub kind: Kind }
+
+impl Kernel {
+    pub fn value(&self, a: [f64; 2], b: [f64; 2]) -> f64 {
+        match self.kind {
+            Kind::Linear => a[0]*b[0]+a[1]*b[1],
+            Kind::Polynomial { degree, gamma, constant } => {
+                let s = gamma*(a[0]*b[0]+a[1]*b[1])+constant;
+                let mut value = 1.0;
+                for _ in 0..degree { value *= s; }
+                value
+            }
+            Kind::Rbf(gamma) => {
+                let (e1, e2) = (a[0]-b[0], a[1]-b[1]);
+                (-gamma*(e1*e1+e2*e2)).exp()
+            }
+        }
+    }
+    pub fn matrix(&self, points: &[[f64; 2]]) -> Vec<Vec<f64>> {
+        points.iter().map(|&a| points.iter().map(|&b| self.value(a, b)).collect()).collect()
+    }
+pub fn sign(value: f64) -> i32 { if value > 0.0 { 1 } else { -1 } }
+pub fn folds(n: usize, k: usize, fold: usize) -> (Vec<usize>, Vec<usize>) {
+    ((0..n).filter(|i| i%k != fold).collect(), (0..n).filter(|i| i%k == fold).collect())
+}
+pub fn train(points: &[[f64; 2]], labels: &[f64], matrix: &[Vec<f64>], c: f64, params: &Settings) -> Model {
+    let model = Model { points: points.to_vec(), labels: labels.to_vec(), alpha: vec![0.0; points.len()], b: 0.0, c,
+        full: 0, nonbound: 0, examined: 0, steps: 0, choices: [0; 3], clipping: [0; 3], converged: false, passes: Vec::new() };
+    let mut t = Trainer { model, errors: labels.iter().map(|y| -y).collect(), matrix, params };
+    t.model
+}
+    pub fn decision(&self, kernel: &Kernel, point: [f64; 2]) -> f64 {
+        let mut sum = 0.0;
+        for i in 0..self.alpha.len() {
+            if self.alpha[i] > 0.0 { sum += self.alpha[i]*self.labels[i]*kernel.value(self.points[i], point); }
+        }
+        sum-self.b
+    }
+
+    pub fn support(&self) -> (usize, usize, usize) {
+        let total = self.alpha.iter().filter(|&&a| a > 0.0).count();
+        let bound = self.alpha.iter().filter(|&&a| a == self.c).count();
+        (total, bound, total-bound)
+    }
+struct FoldResult { training: usize, test: usize, correct: usize, support: usize, passes: usize, steps: usize, converged: bool }
+struct CrossValidation { folds: Vec<FoldResult>, values: Vec<f64>, correct: usize }
+
+fn cross_validation(data: &[Example], kernel: &Kernel, matrix: &[Vec<f64>], c: f64, params: &Settings) -> CrossValidation {
+    let mut result = CrossValidation { folds: Vec::new(), values: vec![0.0; data.len()], correct: 0 };
+    for fold in 0..params.folds {
+        let (training, test) = evaluation::folds(data.len(), params.folds, fold);
+        let points: Vec<_> = training.iter().map(|&i| data[i].point).collect();
+        let labels: Vec<_> = training.iter().map(|&i| data[i].label as f64).collect();
+        let q: Vec<Vec<_>> = training.iter().map(|&i| training.iter().map(|&j| matrix[i][j]).collect()).collect();
+        let model = smo::train(&points, &labels, &q, c, params);
+        let mut correct = 0;
+        for &i in &test {
+            result.values[i] = model.decision(kernel, data[i].point);
+            correct += usize::from(sign(result.values[i]) == data[i].label);
+        }
+        result.correct += correct;
+        result.folds.push(FoldResult { training: training.len(), test: test.len(), correct, support: model.support().0,
+            passes: model.passes.len(), steps: model.steps, converged: model.converged });
+    }
+    result
+}
+fn values(model: &Model, kernel: &Kernel, data: &[Example]) -> Vec<f64> { data.iter().map(|e| model.decision(kernel, e.point)).collect() }
+fn model_report(model: &Model, kernel: &Kernel, matrix: &[Vec<f64>], train: &[Example], test: &[Example], params: &Settings) -> Vec<String> {
+    let (n, m) = (train.len(), test.len());
+    let f = values(model, kernel, train);
+    let predicted = values(model, kernel, test);
+    let mut lines = vec![format!("model {}", kernel.name), format!("kernel {}", kernel.description()),
+        format!("C {}", real(model.c, 4)), format!("alignment {}", real(sy/(n as f64*sg.sqrt()), 6)),
+fn calibration(cv: &[f64], train: &[Example], test_values: &[f64], test: &[Example], kernel: &Kernel, c: f64, iterations: usize) -> (f64, f64, Vec<f64>, Vec<String>) {
+            let p = probability(cv[i], a, b);
+    let probabilities: Vec<_> = test_values.iter().map(|&v| probability(v, a, b)).collect();
+fn main() {
+    let train = dataset::binary("input/train.csv");
+    let test = dataset::binary("input/test.csv");
+    let params = dataset::settings();
+    let points: Vec<_> = train.iter().map(|e| e.point).collect();
+    let labels: Vec<_> = train.iter().map(|e| e.label as f64).collect();
+    let matrices: Vec<_> = params.kernels.iter().map(|k| k.matrix(&points)).collect();
+    let grid: Vec<Vec<_>> = params.kernels.iter().enumerate().map(|(i, k)| params.candidates.iter()
+        .map(|&c| cross_validation(&train, k, &matrices[i], c, &params)).collect()).collect();
+    let best: Vec<_> = grid.iter().map(|rows| (0..rows.len()).min_by_key(|&c| (std::cmp::Reverse(rows[c].correct), c)).unwrap()).collect();
+    let selected = (0..params.kernels.len()).min_by(|&a, &b| grid[b][best[b]].correct.cmp(&grid[a][best[a]].correct)
+        .then(params.candidates[best[a]].total_cmp(&params.candidates[best[b]])).then(a.cmp(&b))).unwrap();
+    let selected_c = params.candidates[best[selected]];
+    let models: Vec<_> = params.kernels.iter().enumerate().map(|(i, _)| smo::train(&points, &labels, &matrices[i], params.candidates[best[i]], &params)).collect();
+    let test_values: Vec<_> = models.iter().zip(&params.kernels).map(|(m, k)| values(m, k, &test)).collect();
+    let mut lines = vec![format!("cross_validation folds {} examples {}", params.folds, train.len())];
+    let mut cv_csv = vec![format!("kernel,C,{},correct,accuracy,support_vectors,passes,steps",
+        (1..=params.folds).map(|f| format!("fold{}", f)).collect::<Vec<_>>().join(","))];
+    for (i, kernel) in params.kernels.iter().enumerate() {
+        let c = best[i];
+        lines.push(format!("best {} C {} correct {}/{} accuracy {}", kernel.name, real(params.candidates[c], 4), grid[i][c].correct, train.len(), ratio(grid[i][c].correct, train.len())));
+        for (j, &c) in params.candidates.iter().enumerate() {
+            let cv = &grid[i][j];
+            cv_csv.push(format!("{},{},{},{},{},{},{},{}", kernel.name, real(c, 4),
+                cv.folds.iter().map(|f| f.correct.to_string()).collect::<Vec<_>>().join(","), cv.correct,
+                ratio(cv.correct, train.len()), cv.folds.iter().map(|f| f.support).sum::<usize>(),
+                cv.folds.iter().map(|f| f.passes).sum::<usize>(), cv.folds.iter().map(|f| f.steps).sum::<usize>()));
+        }
+    }
+    lines.push(format!("selected {} C {}", params.kernels[selected].name, real(selected_c, 4)));
+    lines.push("ranking".to_owned());
+    let mut ranking: Vec<_> = (0..params.kernels.len()).flat_map(|i| (0..params.candidates.len()).map(move |j| (i, j))).collect();
+    ranking.sort_by(|&(i, c), &(j, d)| grid[j][d].correct.cmp(&grid[i][c].correct)
+        .then(params.candidates[c].total_cmp(&params.candidates[d])).then(i.cmp(&j)));
+    for (rank, &(i, c)) in ranking.iter().enumerate() {
+        lines.push(format!("{} {} C {} correct {}/{}", rank+1, params.kernels[i].name, real(params.candidates[c], 4), grid[i][c].correct, train.len()));
+    }
+    lines.push(format!("cv_detail {} C {}", params.kernels[selected].name, real(selected_c, 4)));
+    for (i, fold) in grid[selected][best[selected]].folds.iter().enumerate() {
+        lines.push(format!("fold {} train {} test {} correct {} support_vectors {} passes {} steps {} converged {}", i+1,
+            fold.training, fold.test, fold.correct, fold.support, fold.passes, fold.steps, yes(fold.converged)));
+    }
+    for (i, model) in models.iter().enumerate() {
+        lines.push(String::new());
+        lines.extend(model_report(model, &params.kernels[i], &matrices[i], &train, &test, &params));
+    }
+    lines.push(String::new());
+    lines.push(format!("training_log {}", params.kernels[selected].name));
+    let passes = &models[selected].passes;
+    lines.push(String::new());
+    lines.push(format!("c_path {}", params.kernels[selected].name));
+    for &c in &params.candidates {
+        let model = smo::train(&points, &labels, &matrices[selected], c, &params);
+        lines.push(format!("C {} {} dual_objective {} train {}/{} test {}/{} {}", real(c, 4), sv_info(&model),
+            real(smo::objective(&model.alpha, &labels, &matrices[selected]).1, 6),
+            evaluation::correct(&train, &values(&model, &params.kernels[selected], &train)), train.len(),
+            evaluation::correct(&test, &values(&model, &params.kernels[selected], &test)), test.len(), run_info(&model)));
+    }
+    lines.push(String::new());
+    lines.push(format!("learning_curve {} C {}", params.kernels[selected].name, real(selected_c, 4)));
+    for &fraction in &params.fractions {
+        let size = train.len()*fraction/100;
+        let matrix: Vec<_> = matrices[selected][..size].iter().map(|row| row[..size].to_vec()).collect();
+        let model = smo::train(&points[..size], &labels[..size], &matrix, selected_c, &params);
+        lines.push(format!("size {} support_vectors {} train {}/{} test {}/{} {}", size, model.support().0,
+            evaluation::correct(&train[..size], &values(&model, &params.kernels[selected], &train[..size])), size,
+            evaluation::correct(&test, &values(&model, &params.kernels[selected], &test)), test.len(), run_info(&model)));
+    }
+    let (a, b, probabilities, calibration) = calibration(&grid[selected][best[selected]].values, &train,
+        &test_values[selected], &test, &params.kernels[selected], selected_c, params.newton);
+    let mut predictions = vec![format!("id,label,{},pegasos,predicted,probability", params.kernels.iter().map(|k| k.name.as_str()).collect::<Vec<_>>().join(","))];
+    for (i, e) in test.iter().enumerate() {
+        predictions.push(format!("{},{},{},{},{},{}", e.id, e.label,
+            test_values.iter().map(|v| real(v[i], 4)).collect::<Vec<_>>().join(","), real(pegasos_values[i], 4), sign(test_values[selected][i]), real(probabilities[i], 4)));
+    }
+    for (file, output) in [("model.txt", lines), ("cv_grid.csv", cv_csv), ("predictions.csv", predictions),
+        ("multiclass.txt", multiclass_lines), ("decision_plot.txt", plot)] { evaluation::write(file, &output); }

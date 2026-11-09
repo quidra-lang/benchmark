@@ -1,0 +1,226 @@
+func trainDiscrete(rows []Row, maxRounds int, initial []float64, shrinkage float64, space *SearchSpace) Model {
+	if space == nil {
+		space = newSearchSpace(rows)
+	}
+	labels := labelsOf(rows)
+	weights := uniformWeights(len(rows))
+	if initial != nil {
+		weights = append([]float64{}, initial...)
+	}
+	model := Model{Stop: "completed"}
+	bound := 1.0
+	for t := 0; t < maxRounds; t++ {
+		c := discreteSearch(space, labels, weights)
+		e := c.Error
+		if e >= 0.5 {
+			model.Stop = "weak"
+			break
+		}
+		alpha := 1.0
+		if e > 1e-10 {
+			alpha = shrinkage * (0.5 * math.Log((1-e)/e))
+		}
+		stump := Stump{c.Feature, []float64{c.Threshold}, []float64{-float64(c.Polarity) * alpha, float64(c.Polarity) * alpha}}
+		for i, row := range rows {
+			decision := -c.Polarity
+			if row.Values[c.Feature] > c.Threshold {
+				decision = c.Polarity
+			}
+			factor := math.Exp(alpha)
+			if decision == row.Label {
+				factor = math.Exp(-alpha)
+			}
+			if weights[i] != 0 {
+				updated[i] = weights[i] * factor
+			}
+		}
+		z := sum(updated)
+		for i, w := range updated {
+			weights[i] = w / z
+		}
+		model.Rounds = append(model.Rounds, Round{Stump: stump, Weights: before, Error: e, Alpha: alpha, Polarity: c.Polarity, Z: z, Bound: bound})
+		if e <= 1e-10 {
+			model.Stop = "perfect"
+			break
+		}
+	}
+	return model
+}
+func sum(values []float64) float64 {
+	total := 0.0
+	for _, x := range values {
+		total += x
+	}
+	return total
+}
+func newSearchSpace(rows []Row) *SearchSpace {
+	out := &SearchSpace{Rows: rows}
+	for feature := range rows[0].Values {
+		order := make([]int, len(rows))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(i, j int) bool { return rows[order[i]].Values[feature] < rows[order[j]].Values[feature] })
+		groups := [][]int{}
+		distinct := []float64{}
+		for _, i := range order {
+			v := rows[i].Values[feature]
+			if len(distinct) == 0 || v != distinct[len(distinct)-1] {
+				distinct = append(distinct, v)
+				groups = append(groups, []int{})
+			}
+			groups[len(groups)-1] = append(groups[len(groups)-1], i)
+		}
+		thresholds := []float64{distinct[0] - 1}
+		for k := 0; k < len(distinct)-1; k++ {
+			thresholds = append(thresholds, (distinct[k]+distinct[k+1])/2)
+		}
+		out.Orders = append(out.Orders, order)
+		out.Groups = append(out.Groups, groups)
+		out.Thresholds = append(out.Thresholds, thresholds)
+	}
+	return out
+}
+func leftCumulative(groups [][]int, values []float64) []float64 {
+	out := make([]float64, len(groups))
+	total := 0.0
+	for k, group := range groups[:len(groups)-1] {
+		for _, i := range group {
+			total += values[i]
+		}
+		out[k+1] = total
+	}
+	return out
+}
+func discreteSearch(space *SearchSpace, labels []int, weights []float64) Candidate {
+	positive, negative := make([]float64, len(weights)), make([]float64, len(weights))
+	for i, w := range weights {
+		if labels[i] == 1 {
+			positive[i] = w
+		} else {
+			negative[i] = w
+		}
+	}
+	wp, wn := sum(positive), sum(negative)
+	candidates := []Candidate{}
+	for feature, thresholds := range space.Thresholds {
+		lp, ln := leftCumulative(space.Groups[feature], positive), leftCumulative(space.Groups[feature], negative)
+		for k, t := range thresholds {
+			candidates = append(candidates, Candidate{Error: lp[k] + (wn - ln[k]), Feature: feature, Threshold: t,
+				Polarity: 1}, Candidate{Error: ln[k] + (wp - lp[k]), Feature: feature, Threshold: t,
+				Polarity: -1})
+		}
+	}
+	return choose(candidates)
+}
+func rowScore(rounds []Round, values []float64) float64 {
+	total := 0.0
+	for _, r := range rounds {
+		total += r.Stump.output(values)
+	}
+	return total
+}
+func scoreRows(rounds []Round, rows []Row) []float64 {
+	out := make([]float64, len(rows))
+	for i, row := range rows {
+		out[i] = rowScore(rounds, row.Values)
+	}
+	return out
+}
+func addRoundScores(r Round, rows []Row, scores []float64) {
+	for i, row := range rows {
+		scores[i] += r.Stump.output(row.Values)
+	}
+}
+func countErrors(rows []Row, scores []float64) int {
+	count := 0
+	for i, row := range rows {
+		if prediction(scores[i]) != row.Label {
+			count++
+		}
+	}
+	return count
+}
+func trainingCurve(rounds []Round, training, testing []Row, variant string) []CurvePoint {
+	trainScores, testScores := make([]float64, len(training)), make([]float64, len(testing))
+	scale := 0.0
+	curve := []CurvePoint{}
+	for j, r := range rounds {
+		addRoundScores(r, training, trainScores)
+		addRoundScores(r, testing, testScores)
+		curve = append(curve, CurvePoint{j + 1, countErrors(training, trainScores), countErrors(testing,
+			testScores), loss(training, trainScores, variant), loss(testing, testScores, variant),
+			minimum / scale})
+	}
+	return curve
+}
+func crossValidate(rows []Row, p Params) CrossValidation {
+	space := newSearchSpace(rows)
+	cv := CrossValidation{Errors: make([]int, p.Rounds), Scores: make([]float64, len(rows))}
+	for fold := 0; fold < p.Folds; fold++ {
+		indices := []int{}
+		for i := range rows {
+			if i%p.Folds == fold {
+				indices = append(indices, i)
+			}
+		}
+		n := len(rows) - len(indices)
+		weights := make([]float64, len(rows))
+		for i := range weights {
+			if i%p.Folds != fold {
+				weights[i] = 1 / float64(n)
+			}
+		}
+		model := trainDiscrete(rows, p.Rounds, weights, 1, space)
+		validation := []Row{}
+		for _, i := range indices {
+			validation = append(validation, rows[i])
+		}
+		scores := make([]float64, len(validation))
+		errors := make([]int, p.Rounds)
+		for t := 0; t < p.Rounds; t++ {
+			if t < len(model.Rounds) {
+				addRoundScores(model.Rounds[t], validation, scores)
+			}
+			errors[t] = countErrors(validation, scores)
+			cv.Errors[t] += errors[t]
+		}
+		cv.Folds = append(cv.Folds, Fold{indices, n, model, errors})
+	}
+	best := 0
+	for t := 1; t < p.Rounds; t++ {
+		if cv.Errors[t] < cv.Errors[best] {
+			best = t
+		}
+	}
+	cv.Selected = best + 1
+	for _, fold := range cv.Folds {
+		rounds := fold.Model.Rounds[:min(cv.Selected, len(fold.Model.Rounds))]
+		for _, i := range fold.Indices {
+			cv.Scores[i] = rowScore(rounds, rows[i].Values)
+		}
+	}
+	return cv
+}
+func analyzeVariants(in Inputs, selected int) []VariantAnalysis {
+	out := []VariantAnalysis{}
+	for _, name := range in.Params.Variants {
+		model := trainVariant(name, in.Train, in.Params)
+		rounds := model.Rounds
+		if name == "discrete" {
+			rounds = rounds[:min(selected, len(rounds))]
+		}
+		out = append(out, VariantAnalysis{name, model, rounds, totalMagnitude(rounds), scoreRows(rounds,
+			in.Train), scoreRows(rounds, in.Test), trainingCurve(model.Rounds, in.Train, in.Test,
+			name), magnitudeImportance(rounds, len(in.Features), false)})
+	}
+	return out
+}
+	for _, a := range analysis {
+		lines = append(lines, metricsLine("train", a.Name, len(a.Rounds), in.Train, a.Train), metricsLine("test", a.Name, len(a.Rounds), in.Test, a.Test))
+func prediction(score float64) int {
+	if score > 0 {
+		return 1
+	}
+	return -1
+}

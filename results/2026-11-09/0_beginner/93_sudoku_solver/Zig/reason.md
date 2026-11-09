@@ -1,0 +1,5 @@
+Keep the exact integer placements counter unchanged. At the final reporting site, display thousands as a real quotient using conversion before division by 1000.0 and exactly three fractional digits, with label `placements (thousands): ` and LF. An exact alternative avoids floating precision entirely: print integer quotient placements/1000, a decimal point and zero-padded remainder placements%1000 of width 3. For 1234 this is 1.234; moving the unit by three decimal places requires no rounding of the count. The declaration and final expression identify the only affected reporting path; solver search is irrelevant.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

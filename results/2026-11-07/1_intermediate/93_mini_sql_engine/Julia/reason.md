@@ -1,0 +1,22 @@
+# Task B selection — Julia
+
+## Answer requirements shared across languages
+
+1. Locate the ordered UPDATE assignment representation, preserve table lookup, left-to-right target-column lookup and duplicate rejection, then each expression check and its destination-type check, then WHERE validation.
+2. Freeze target membership from original table rows and their original values; evaluate each selected row into a separate candidate row from left to right, making later expressions read the already-updated candidate.
+3. Keep final constraints in target row order, NOT NULL by column order before primary-key uniqueness against the entire final candidate table, and publish only after every constraint succeeds.
+4. Preserve the original table on any failure and retain the number of target rows including unchanged rows, with the singular/plural rows-updated output; explain the ownership/copy boundary using source and language semantics.
+
+## Selected source locations
+
+- `main.jl`: 1, 2, 3, 4, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 119, 120, 121, 122, 123, 124, 125, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 396, 397, 398, 399, 441, 442, 443, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 637, 638, 644, 645, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 679, 680, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690
+
+## Evidence and language semantics
+
+SET a=b, b=a on a row (a=1,b=2) must now produce (2,2), because the second expression reads the candidate after the first assignment; the previous simultaneous result was (2,1). Keep the ordered assignment list and all preflight validation. Snapshot target indices from original rows before assigning (or retain the immutable original row source while constructing candidates, so membership is equivalent and independent). Change only the expression evaluation context from the old row to the candidate row and immediately store each result there. Do not write the original table as a shortcut. Check the complete final candidate table once in the existing order, then publish once; a late NULL/duplicate-key failure must discard all earlier candidates. Count matched rows even when their values do not change. parselist! and zip retain assignment order; targets checks names and duplicates, then each check/require precedes condition. A mutable Table alone would alias storage, but the selected constructor creates a new table and copies every row vector. affected is materialized before writes. Change evaluate(assignment[2],before) to the evolving t.rows[i], retaining immediate slot replacement. The original database object and its row vectors remain unchanged until DATABASE[s.name]=t. Column metadata is immutable and untouched. constraints traverses affected and columns then every candidate row for primary uniqueness; throw prevents publication on failure. countmessage uses affected length, including unchanged targets.
+
+## Minimization and alternatives
+
+The interaction scope requires the UPDATE validation/candidate/constraint/commit chain, not lexer, all SELECT operators, joins, rendering or every statement. Selected parser/list-order evidence where needed, the destination-name/duplicate helper, type/condition check boundaries, column-reference evaluation, candidate ownership, final constraint helper and count formatting. Expression checking and all other operator implementations remain unchanged; their complete bodies would add unrelated operations, while dropping the row-context read, independent candidate or commit guard would make the proposed semantics and rollback unprovable. Comparing a local candidate-row approach with in-place mutation plus rollback shows the former preserves atomicity with fewer changes. Reviewed the resulting excerpt independently; each retained complete source line supports a shared requirement and no program modification or execution is claimed.
+
+The excerpt contains 1970 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

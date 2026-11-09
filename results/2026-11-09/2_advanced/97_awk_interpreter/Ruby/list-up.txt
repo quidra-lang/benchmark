@@ -1,0 +1,730 @@
+Token = Struct.new(:kind, :text, :value, :line, :column) do
+  def position
+    "#{line}:#{column}"
+  end
+end
+class Lexer
+  KEYWORDS = %w[BEGIN END function if else while for do break continue next exit return delete in getline print printf].freeze
+  BUILTINS = %w[length substr index split sprintf toupper tolower close int].freeze
+  PAIRS = %w[+= -= *= /= %= ^= == <= >= != ++ -- && || >>].freeze
+  SYMBOLS = '+-*/%^!><?:=()[]{},;$'.freeze
+
+  def self.letter?(c)
+    c && (('a'..'z').cover?(c) || ('A'..'Z').cover?(c) || c == '_')
+  end
+
+  def self.digit?(c)
+    c && ('0'..'9').cover?(c)
+  end
+  def initialize(source)
+    @source, @at, @line, @column = source, 0, 1, 1
+  end
+
+  def advance
+    char = @source[@at]
+    @at += 1
+    if char == "\n"
+      @line += 1
+      @column = 1
+    else
+      @column += 1
+    end
+    char
+  end
+
+  def tokens
+    result = []
+    while @at < @source.length
+      c = @source[@at]
+      token = Token.new(nil, c, nil, @line, @column)
+      if c == ' '
+        advance
+        next
+      elsif c == '\\' && @source[@at + 1] == "\n"
+        2.times { advance }
+        next
+      elsif c == '#'
+        advance while @at < @source.length && @source[@at] != "\n"
+        next
+      elsif c == "\n"
+        token.kind = :nl
+        advance
+      elsif self.class.digit?(c)
+        first = @at
+        advance while self.class.digit?(@source[@at])
+        token.kind, token.text = :number, @source[first...@at]
+        token.value = token.text.to_i
+      elsif self.class.letter?(c)
+        first = @at
+        advance while self.class.letter?(@source[@at]) || self.class.digit?(@source[@at])
+        token.text = @source[first...@at]
+        token.kind = if KEYWORDS.include?(token.text) then token.text
+                     elsif BUILTINS.include?(token.text) then :builtin
+                     elsif @source[@at] == '(' then :funcname
+                     else :name
+                     end
+      elsif c == '"'
+        advance
+        value = +''
+        loop do
+          raise AwkSyntaxError.new(token) if @at >= @source.length || @source[@at] == "\n"
+          break if @source[@at] == '"'
+          if @source[@at] == '\\'
+            slash = Token.new(nil, '\\', nil, @line, @column)
+            advance
+            escaped = { 'n' => "\n", 't' => "\t", '\\' => '\\', '"' => '"', '/' => '/' }[@source[@at]]
+            raise AwkSyntaxError.new(slash) unless escaped
+            value << escaped
+            advance
+          else
+            value << advance
+          end
+        end
+        advance
+        token.kind, token.value = :string, value
+      else
+        pair = @source[@at, 2]
+        if PAIRS.include?(pair)
+          token.kind = token.text = pair
+          2.times { advance }
+        elsif SYMBOLS.include?(c)
+          token.kind = c
+          advance
+        else
+          raise AwkSyntaxError.new(token)
+        end
+      end
+      result << token
+    end
+    result << Token.new(:eof, '', nil, @line, 1)
+  end
+end
+Node = Struct.new(:kind, :token, :args)
+
+class Parser
+  ASSIGNMENTS = %w[= += -= *= /= %= ^=].freeze
+  attr_reader :rules, :functions, :statement_lines
+
+  def initialize(tokens)
+    @tokens, @at, @rules, @functions = tokens, 0, [], []
+    @statement_lines, @context, @loops, @stop_gt = {}, :rule, 0, false
+  end
+
+  def current
+    @tokens[@at]
+  end
+
+  def kind
+    current.kind
+  end
+
+  def take
+    token = current
+    @at += 1
+    token
+  end
+
+  def expect(wanted)
+    raise AwkSyntaxError.new(current) unless kind == wanted
+    take
+  end
+
+  def accept(wanted)
+    take if kind == wanted
+  end
+
+  def newlines
+    take while kind == :nl
+  end
+
+  def node(kind, token, *args)
+    Node.new(kind, token, args)
+  end
+
+  def parse
+    until kind == :eof
+      if [:nl, ';'].include?(kind)
+        take
+      elsif kind == 'function'
+        function
+      else
+        item
+      end
+    end
+    self
+  end
+  def item
+    token, first, last = current, nil, nil
+    if ['BEGIN', 'END'].include?(kind)
+      type = take.text
+      @context = type.to_sym
+      action = block
+      @context = :rule
+    elsif kind == '{'
+      type, action = 'all', block
+    else
+    end
+    @rules << { token: token, kind: type, first: first, last: last, action: action, count: 0, inside: false }
+  end
+
+  def block
+    token = expect('{')
+    statements = []
+    until kind == '}'
+      if [:nl, ';'].include?(kind)
+        take
+      else
+        statements << statement
+      end
+    end
+    expect('}')
+    node(:block, token, statements)
+  end
+
+  def statement
+    return block if kind == '{'
+    return node(:empty, take) if kind == ';'
+    token = current
+    @statement_lines[token.line] = 0
+    case kind
+    else
+      result = simple_statement
+      terminator
+      result
+    end
+  end
+  def terminator
+    return if kind == '}'
+    raise AwkSyntaxError.new(current) unless [';', :nl].include?(kind)
+    take
+  end
+
+  def simple_statement
+    token = current
+    case kind
+    when 'print', 'printf' then output_statement
+    else
+      node(:expression, token, expression)
+    end
+  end
+
+  def output_statement
+    token = take
+    arguments = []
+    if kind == '('
+    if enclosed
+      take
+      arguments = nested { expression_list }
+      expect(')')
+    elsif ![';', :nl, '}', '>', '>>'].include?(kind)
+      old, @stop_gt = @stop_gt, true
+      arguments = expression_list
+      @stop_gt = old
+    end
+    raise AwkSyntaxError.new(current) if token.text == 'printf' && arguments.empty?
+    redirect = nil
+    if ['>', '>>'].include?(kind)
+      operator = take
+      redirect = [operator, concat_expression]
+    end
+    node(:output, token, arguments, redirect)
+  end
+  def expression_list
+    list = [expression]
+    while accept(',')
+      newlines
+      list << expression
+    end
+    list
+  end
+
+  def lvalue?(n)
+    [:variable, :array, :field].include?(n.kind)
+  end
+
+  def expression
+    left = conditional
+    if lvalue?(left) && ASSIGNMENTS.include?(kind)
+      token = take
+      left = node(:assign, token, left, expression)
+    end
+    left
+  end
+
+  def conditional
+    condition = or_expression
+    if (token = accept('?'))
+    else
+      condition
+    end
+  end
+
+  def binary(method, operators, skip_newlines = false)
+    left = send(method)
+    while operators.include?(kind)
+      token = take
+      newlines if skip_newlines
+    end
+    left
+  end
+
+  def or_expression
+    binary(:and_expression, ['||'], true)
+  end
+
+  def and_expression
+    binary(:in_expression, ['&&'], true)
+  end
+
+  def in_expression
+    left = comparison
+    while (token = accept('in'))
+      left = node(:in, token, [left], expect(:name))
+    end
+    left
+  end
+  def comparison
+    operators = %w[< <= == != >=]
+    operators << '>' unless @stop_gt
+    binary(:concat_expression, operators)
+  end
+
+  def concat_expression
+    left = additive
+    while [:number, :string, :name, :funcname, :builtin, '$', '(', '++', '--'].include?(kind)
+    end
+    left
+  end
+
+  def additive
+    binary(:multiplicative, ['+', '-'])
+  end
+
+  def multiplicative
+    binary(:unary, ['*', '/', '%'])
+  end
+
+  def unary
+    if ['!', '-', '+'].include?(kind)
+    else
+      left = postfix
+      if (token = accept('^'))
+      end
+      left
+    end
+  end
+
+  def postfix
+    return prefix if ['++', '--'].include?(kind)
+    result = atom
+    if lvalue?(result) && ['++', '--'].include?(kind)
+    end
+    result
+  end
+
+  def prefix
+    token = take
+    node(:increment, token, lvalue, true)
+  end
+
+  def lvalue
+    if kind == :name
+      token = take
+      if accept('[')
+      else
+        node(:variable, token)
+      end
+    elsif kind == '$'
+      token = take
+      field = ['++', '--'].include?(kind) ? prefix : atom
+      node(:field, token, field)
+    else
+      raise AwkSyntaxError.new(current)
+    end
+  end
+
+  def atom
+    token = current
+    case kind
+    when :number, :string
+      take
+      node(token.kind, token)
+    when :name, '$' then lvalue
+class Value
+  attr_reader :kind, :data
+  def initialize(kind, data = nil)
+    @kind, @data = kind, data
+  end
+
+  UNSET = new(:unset).freeze
+  def self.number(n)
+    new(:number, n)
+  end
+  def self.string(s)
+    new(:string, s)
+  end
+  def self.input(s)
+    first, last = 0, s.length
+    first += 1 while first < last && [' ', "\t", "\n"].include?(s[first])
+    last -= 1 while last > first && [' ', "\t", "\n"].include?(s[last - 1])
+    trimmed = s[first...last]
+    body = ['+', '-'].include?(trimmed[0]) ? trimmed[1..] : trimmed
+    numeric = !body.empty? && body.each_char.all? { |c| ('0'..'9').cover?(c) }
+    new(numeric ? :strnum : :string, s)
+  end
+
+  def number
+    return @data if @kind == :number
+    return 0 if @kind == :unset
+    text, at, sign = @data, 0, 1
+    at += 1 while [' ', "\n", "\t"].include?(text[at])
+    if ['+', '-'].include?(text[at])
+      sign = -1 if text[at] == '-'
+      at += 1
+    end
+    first = at
+    at += 1 while text[at] && ('0'..'9').cover?(text[at])
+    first == at ? 0 : sign * text[first...at].to_i
+  end
+
+  def string
+    @kind == :unset ? '' : @data.to_s
+  end
+  def display
+    return '(uninitialized)' if @kind == :unset
+    return string if @kind == :number
+    escaped = string.bytes.map do |c|
+      { 34 => '\\"', 92 => '\\\\', 10 => '\\n', 9 => '\\t' }.fetch(c) do
+        (32..126).cover?(c) ? c.chr : format('\\%03o', c)
+      end
+    end.join
+    '"' + escaped + '"' + (@kind == :strnum ? ' (strnum)' : '')
+  end
+  def self.split(text, separator)
+    return [] if text.empty?
+    return text.chars if separator.empty?
+    if separator == ' '
+    else
+      parts, start = [], 0
+      while (at = text.index(separator, start))
+        parts << text[start...at]
+        start = at + separator.length
+      end
+      parts << text[start..]
+    end
+  end
+class Fields
+  attr_reader :record, :fields
+  def initialize
+    @record, @fields = Value.string(''), []
+  end
+
+  def set(text, fs)
+    @record = Value.input(text)
+    @fields = Value.split(text, fs).map { |part| Value.input(part) }
+  end
+
+  def read(k)
+    k.zero? ? @record : @fields.fetch(k - 1, Value::UNSET)
+  end
+
+  def rebuild(ofs)
+    @record = Value.input(@fields.map(&:string).join(ofs))
+  end
+
+  def assign(k, value, fs, ofs)
+    if k.zero?
+      set(value.string, fs)
+    else
+      @fields << Value.string('') while @fields.length < k
+      @fields[k - 1] = value
+      rebuild(ofs)
+    end
+  end
+
+  def resize(n, ofs)
+    @fields = @fields.take(n)
+    @fields << Value.string('') while @fields.length < n
+    rebuild(ofs)
+  end
+end
+class Streams
+  attr_reader :options, :operands, :outputs, :getlines
+  def initialize(lines)
+    @options, @operands = [], []
+    lines.each do |line|
+      if line.start_with?('-F ')
+        @options << ['FS', line[3..]]
+      elsif line.start_with?('-v ')
+        @options << line[3..].split('=', 2)
+      else
+        name, value = line.split('=', 2)
+        if value && Lexer.name?(name)
+          @operands << { kind: :assignment, name: name, value: value }
+        else
+          @operands << { kind: :file, name: line, records: 0 }
+        end
+      end
+    end
+    @operand_index, @current, @current_lines, @record_index = 0, nil, [], 0
+    @outputs = { 'stdout.txt' => { text: +'', writes: 0, open: true } }
+    @getlines = {}
+  end
+
+  def read_main
+    loop do
+      if @record_index < @current_lines.length
+        line = @current_lines[@record_index]
+        @record_index += 1
+        @current[:records] += 1
+        return line
+      end
+      return nil if @operand_index >= @operands.length
+      operand = @operands[@operand_index]
+      @operand_index += 1
+      if operand[:kind] == :assignment
+        yield(:assignment, operand[:name], operand[:value])
+      else
+        @current = operand
+        @current_lines = File.readlines("input/#{operand[:name]}", chomp: true)
+        @record_index = 0
+        yield(:file, operand[:name], nil)
+      end
+    end
+  end
+  def write(text, name = 'stdout.txt', mode = nil, token = nil)
+    if mode && (!self.class.valid_name?(name) || ['stdout.txt', 'stats.txt'].include?(name))
+      raise AwkRuntimeError.new('invalid output file name', token)
+    end
+    entry = (@outputs[name] ||= { text: +'', writes: 0, open: false })
+    unless entry[:open]
+      entry[:text] = +'' if mode == '>'
+      entry[:open] = true
+    end
+    entry[:text] << text
+    entry[:writes] += 1
+  end
+  def save
+    @outputs.each { |name, entry| File.write("output/#{name}", entry[:text]) }
+  end
+end
+  SPECIALS = %w[FILENAME FNR FS NF NR OFS ORS SUBSEP].freeze
+  def initialize(program, arguments)
+    @parser = Parser.new(Lexer.new(program).tokens).parse
+    @rules, @functions = @parser.rules, @parser.functions
+    @function_map = @functions.to_h { |function| [function[:name].text, function] }
+    @references, @calls, @arrays = [], [], {}
+    @functions.each { |function| analyze_node(function[:body], function) }
+    @rules.each do |rule|
+      [rule[:first], rule[:last], rule[:action]].each { |tree| analyze_node(tree, nil) }
+    end
+    @static_error = static_checks
+    return if @static_error
+    infer_arrays
+    @globals = SPECIALS.to_h { |name| [name, Value::UNSET] }
+    @references.each do |token, function, _|
+      @globals[token.text] = Value::UNSET if scope_key(token.text, function)[0].nil?
+    end
+    @arrays.each_key { |scope, name| @globals[name] = {} if scope.nil? }
+    @globals.merge!('FS' => Value.string(' '), 'OFS' => Value.string(' '), 'ORS' => Value.string("\n"),
+                    'SUBSEP' => Value.string(28.chr), 'NR' => Value.number(0), 'FNR' => Value.number(0),
+                    'FILENAME' => Value.string(''))
+    @fields, @frames, @streams = Fields.new, [], Streams.new(arguments)
+    @line_counts = @parser.statement_lines.dup
+    @exit_status, @phase = 0, :BEGIN
+  end
+
+  def scope_key(name, function)
+    local = function && function[:parameters].any? { |parameter| parameter.text == name }
+    [local ? function[:name].text : nil, name]
+  end
+
+  def reference(token, function, array = false)
+    @references << [token, function, array]
+  end
+
+  def analyze_node(tree, function)
+    return unless tree.is_a?(Node)
+    a = tree.args
+    case tree.kind
+    when :variable then reference(tree.token, function)
+    end
+    visit = lambda do |value|
+      if value.is_a?(Node)
+        analyze_node(value, function)
+      elsif value.is_a?(Array)
+        value.each { |child| visit.call(child) }
+      end
+    end
+    a.each { |value| visit.call(value) }
+  end
+
+  def static_checks
+    errors, seen = [], {}
+    add = ->(rank, token, message) { errors << [token.line, token.column, rank, token, message] }
+    @functions.each do |function|
+    @references.each do |token, _function, _array|
+      add.call(2, token, "function #{token.text} used as variable") if @function_map.key?(token.text)
+    end
+    first = errors.min_by { |line, column, rank, _token, _message| [line, column, rank] }
+    first && "status: error at #{first[3].position}: #{first[4]}"
+  end
+  def environment(name)
+    !@frames.empty? && @frames[-1].key?(name) ? @frames[-1] : @globals
+  end
+  def global_string(name)
+    @globals.fetch(name).string
+  end
+  def location(tree)
+    case tree.kind
+    when :variable then [:variable, environment(tree.token.text), tree.token.text]
+    when :field
+      index = evaluate(tree.args[0]).number
+      raise AwkRuntimeError.new('negative field index', tree.token) if index.negative?
+      [:field, index]
+    end
+  end
+
+  def read(location)
+    kind, container, key = location
+    if kind == :field
+      @fields.read(container)
+    elsif kind == :variable && container.equal?(@globals) && key == 'NF'
+      Value.number(@fields.fields.length)
+    else
+      container[key] = Value::UNSET unless container.key?(key)
+      container[key]
+    end
+  end
+
+  def store(location, value, token)
+    kind, container, key = location
+    if kind == :field
+      @fields.assign(container, value, global_string('FS'), global_string('OFS'))
+    elsif kind == :variable && container.equal?(@globals) && key == 'NF'
+      n = value.number
+      raise AwkRuntimeError.new('negative NF', token) if n.negative?
+      @fields.resize(n, global_string('OFS'))
+    else
+      container[key] = value
+    end
+    read(location)
+  end
+  def evaluate(tree)
+    a, b, c = tree.args
+    token = tree.token
+    case tree.kind
+    when :number then Value.number(token.value)
+    when :string then Value.string(token.value)
+    when :variable, :array, :field then read(location(tree))
+    when :parentheses then evaluate(a)
+    when :assign
+      target = location(a)
+      value = evaluate(b)
+      value = arithmetic(token.text[0], read(target), value, token) unless token.text == '='
+      store(target, value, token)
+  def main_record
+    return nil if @phase == :END
+    record = @streams.read_main do |kind, name, value|
+      if kind == :assignment
+        @globals[name] = Value.input(value)
+      else
+        @globals['FILENAME'] = Value.string(name)
+        @globals['FNR'] = Value.number(0)
+      end
+    end
+    if record
+      %w[NR FNR].each { |name| @globals[name] = Value.number(@globals[name].number + 1) }
+    end
+    record
+  end
+  def output(tree)
+    arguments, redirect = tree.args
+    values = arguments.map { |argument| evaluate(argument) }
+    text = if tree.token.text == 'print'
+             values = [@fields.record] if values.empty?
+             values.map(&:string).join(global_string('OFS')) + global_string('ORS')
+           end
+    if redirect
+      operator, expression = redirect
+      @streams.write(text, evaluate(expression).string, operator.text, operator)
+    else
+      @streams.write(text)
+    end
+  end
+  def execute(tree)
+    return unless tree
+    a, b, c, d = tree.args
+    @line_counts[tree.token.line] += 1 unless [:block, :empty].include?(tree.kind)
+    case tree.kind
+    when :block then a.each { |statement| execute(statement) }
+    when :empty then nil
+    when :expression then evaluate(a)
+    when :output then output(tree)
+  def execute_rule(rule)
+    rule[:count] += 1
+    if rule[:action]
+      execute(rule[:action])
+    else
+      @streams.write(@fields.record.string + global_string('ORS'))
+    end
+  end
+
+  def run_rules
+    @rules.each do |rule|
+      matches = case rule[:kind]
+                when 'all' then true
+                else false
+                end
+      execute_rule(rule) if matches
+    end
+  def run
+    if @static_error
+    @streams.options.each { |name, value| @globals[name] = Value.input(value) }
+    status = nil
+    begin
+      begin
+        @rules.each { |rule| execute_rule(rule) if rule[:kind] == 'BEGIN' }
+        if @rules.any? { |rule| rule[:kind] != 'BEGIN' }
+          @phase = :record
+          while (record = main_record)
+            @fields.set(record, global_string('FS'))
+            run_rules
+          end
+        end
+    status ||= "status: exit #{@exit_status}"
+    @streams.save
+    File.write('output/stats.txt', statistics(status).join("\n") + "\n")
+  end
+
+  def statistics(status)
+    lines = [status, '[inputs]']
+    @streams.operands.each { |item| lines << "#{item[:name]} records=#{item[:records]}" if item[:kind] == :file }
+    lines << '[getline]'
+    @streams.getlines.each do |name, entry|
+      lines << (entry[:opened] ? "#{name} reads=#{entry[:reads]}" : "#{name} missing")
+    end
+    lines << '[rules]'
+    @rules.each { |rule| lines << "#{rule[:token].position} #{rule[:kind]} count=#{rule[:count]}" }
+    lines << '[outputs]'
+    @streams.outputs.each { |name, entry| lines << "#{name} writes=#{entry[:writes]} bytes=#{entry[:text].length}" }
+    lines << '[lines]'
+    @line_counts.sort.each { |line, count| lines << "#{line} count=#{count}" }
+    lines << '[globals]'
+    @globals.keys.sort.each do |name|
+      value = name == 'NF' ? Value.number(@fields.fields.length) : @globals[name]
+      lines << "#{name} = #{value.is_a?(Hash) ? "array (#{value.length})" : value.display}"
+    end
+    lines
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    interpreter = AwkInterpreter.new(File.read('input/program.awk'), File.readlines('input/args.txt', chomp: true))
+    interpreter.run
+  rescue AwkSyntaxError => error
+    File.write('output/stdout.txt', '')
+    File.write('output/stats.txt', error.message + "\n")
+  end
+end

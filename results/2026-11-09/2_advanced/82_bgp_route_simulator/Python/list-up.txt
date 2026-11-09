@@ -1,0 +1,456 @@
+def best_route(candidates, router_ids):
+    remaining = list(candidates)
+    if len(remaining) == 1:
+        return remaining[0], "ONLY"
+    origin_order = {"IGP": 0, "EGP": 1, "INCOMPLETE": 2}
+    stages = (
+        ("LOCALPREF", lambda route: -route.local_pref),
+        ("ASPATH", lambda route: len(route.path)),
+        ("ORIGIN", lambda route: origin_order[route.origin]),
+        ("MED", None),
+        ("ROUTERID", lambda route: router_ids[route.neighbor]),
+        ("LINK", lambda route: route.link.number),
+    )
+    for reason, key in stages:
+        if reason == "MED":
+            minima = {}
+            for route in remaining:
+                minima[route.neighbor] = min(minima.get(route.neighbor, route.med), route.med)
+            remaining = [route for route in remaining if route.med == minima[route.neighbor]]
+        else:
+            minimum = min(key(route) for route in remaining)
+            remaining = [route for route in remaining if key(route) == minimum]
+        if len(remaining) == 1:
+            return remaining[0], reason
+    def import_route(self, session, prefix, attribute):
+        rule = self.policies.applied("IMPORT", session.owner, session.link, prefix,
+                                     attribute.path, attribute.communities)
+        local_pref = self.defaults[session.link.role(session.owner)]
+        if rule is not None and rule.has("DENY"):
+            return None, rule
+        med, communities = attribute.med, attribute.communities
+        if rule is not None:
+            local_pref = rule.value("LOCALPREF", local_pref)
+            med = rule.value("MED", med)
+            communities = policy.edit_communities(communities, rule)
+        route = decision.Route(attribute.path, attribute.origin, med, communities, local_pref, session.link)
+        return route, rule
+    def candidates(self, owner, prefix):
+        routes = []
+        for session in self.routers[owner].sessions:
+            if prefix in session.incoming:
+                route, _ = self.import_route(session, prefix, session.incoming[prefix])
+                if route is not None:
+                    routes.append(route)
+        return routes
+    def advertised(self, session, prefix):
+        owner, link = session.owner, session.link
+        route = self.routers[owner].rib.get(prefix)
+        if route is None:
+            return None, None
+        if not route.local and route.neighbor == link.other(owner):
+            return None, None
+        if policy.NO_EXPORT in route.communities:
+            return None, None
+        rule = self.policies.applied("EXPORT", owner, link, prefix, route.path, route.communities)
+        if rule is not None and rule.has("DENY"):
+            return None, rule
+        allowed = rule is not None and rule.has("ALLOW")
+        if not allowed and not route.local:
+            if route.link.role(owner) in ("peer", "provider") and link.role(owner) in ("peer", "provider"):
+                return None, rule
+        prepend = 0 if rule is None else rule.value("PREPEND", 0)
+        med = 0 if rule is None else rule.value("MED", 0)
+        communities = route.communities if rule is None else policy.edit_communities(route.communities, rule)
+        attribute = decision.Attribute((owner,) * (1 + prepend) + route.path, route.origin, med, communities)
+        return attribute, rule
+    def redecide(self, owner, prefix):
+        router = self.routers[owner]
+        if prefix in router.origination:
+            route = router.origination[prefix]
+        else:
+            candidates = self.candidates(owner, prefix)
+            route = decision.best_route(candidates, self.network.router_ids)[0] if candidates else None
+        if router.rib.get(prefix) == route:
+            return
+        if route is None:
+            router.rib.pop(prefix, None)
+        else:
+            router.rib[prefix] = route
+        self.log(f"BEST {owner} {topology.prefix_text(prefix)} {report.route_text(route)}")
+        router.changes += 1
+        self.period.counters["best_changes"] += 1
+        self.period.exploration[owner, prefix] += 1
+        self.period.best_lines.append((self.time, owner, prefix, route))
+        self.changed_prefixes.add(prefix)
+        for session in router.sessions:
+            if session.link.up:
+                session.pending.add(prefix)
+                if session.timer is None:
+                    self.process_pending(session)
+    def process_pending(self, session):
+        sent = 0
+        for prefix in sorted(session.pending):
+            content, rule = self.advertised(session, prefix)
+            if session.outgoing.get(prefix) == content:
+                continue
+            if content is None:
+                session.outgoing.pop(prefix, None)
+            else:
+                session.outgoing[prefix] = content
+            message = self.messages.send(self.time, session.owner, session.link.other(session.owner),
+                                         session.link, prefix, content)
+            suffix = "WITHDRAW" if content is None else "ANNOUNCE " + report.attribute_text(content)
+            self.log(f"SEND {message_text(message)} {suffix}")
+            session.sent += 1
+            sent += 1
+            self.period.counters["updates"] += 1
+            if content is None:
+                self.period.counters["withdrawals"] += 1
+            if rule is not None:
+                rule.hits += 1
+        session.pending.clear()
+        session.timer = self.time + session.link.mrai if sent and session.link.mrai >= 1 else None
+    def receive(self, message):
+        session = self.by_session[message.receiver, message.link.number]
+        prefix, content = message.prefix, message.content
+        session.received += 1
+        self.period.convergence_time = self.time - self.period.event.time
+        if content is None:
+            session.incoming.pop(prefix, None)
+            result = "WITHDRAW"
+        elif message.receiver in content.path:
+            session.incoming.pop(prefix, None)
+            result = "ANNOUNCE loop"
+        else:
+            session.incoming[prefix] = content
+            route, rule = self.import_route(session, prefix, content)
+            if rule is not None:
+                rule.hits += 1
+            if route is None:
+                result = f"ANNOUNCE deny {rule.name}"
+            elif rule is not None:
+                result = f"ANNOUNCE accept {rule.name}"
+            else:
+                result = "ANNOUNCE accept"
+        self.log(f"RECV {message_text(message)} {result}")
+        self.redecide(message.receiver, prefix)
+    def originate(self, owner, prefix, origin, communities):
+        self.routers[owner].origination[prefix] = decision.Route.originated(
+            origin, policy.parse_communities(communities))
+        self.redecide(owner, prefix)
+    def execute_event(self, event):
+        self.log(f"EVENT {self.period.number} {event.text}")
+        fields = event.fields
+        if event.kind == "INITIAL":
+            for owner, prefix, origin, communities in self.network.initial:
+                self.originate(owner, prefix, origin, communities)
+        elif event.kind == "ANNOUNCE":
+            self.originate(int(fields[1]), topology.parse_prefix(fields[2]), fields[3], fields[4:])
+        elif event.kind == "WITHDRAW":
+            owner, prefix = int(fields[1]), topology.parse_prefix(fields[2])
+            self.routers[owner].origination.pop(prefix)
+            self.redecide(owner, prefix)
+        elif event.kind == "LINK_DOWN":
+            self.link_down(self.network.by_name[fields[2]])
+        elif event.kind == "LINK_UP":
+            self.link_up(self.network.by_name[fields[2]])
+        else:
+            self.change_policy(self.policies.by_name[fields[2]], event.kind == "POLICY_ON")
+    def run_period(self, number, event, boundary):
+        self.period = Period(number, event, self.routers)
+        self.periods.append(self.period)
+        self.time = event.time
+        self.changed_prefixes = set()
+        self.execute_event(event)
+        while True:
+            delivered = False
+            while self.messages.next_time() == self.time:
+                self.receive(self.messages.take())
+                delivered = True
+            for session in self.sessions:
+                if session.timer == self.time:
+                    session.timer = None
+                    if session.pending:
+                        self.process_pending(session)
+            if self.changed_prefixes:
+                self.forwarding_checks()
+            if delivered:
+                self.period.delivery_times += 1
+                self.detect_divergence()
+            quiet = self.quiet()
+            if boundary is None:
+                if quiet or self.period.divergence is not None or self.period.delivery_times >= self.stepcap:
+                    break
+            elif self.time == boundary:
+                break
+            self.time = self.next_moment(boundary)
+            self.changed_prefixes = set()
+        if self.period.divergence is not None:
+            self.period.status = "DIVERGENT"
+        elif quiet:
+            self.period.status = "CONVERGED"
+        else:
+            self.period.status = "CAPPED" if boundary is None else "UNSETTLED"
+        self.period.finish(self.routers)
+        self.period.states.clear()
+    def trace(self, source, address):
+        visits = [source]
+        visited = {source}
+        hops = []
+        owner = source
+        while True:
+            matches = [prefix for prefix in self.routers[owner].rib if topology.contains(prefix, address)]
+            if not matches:
+                return Forwarding("UNREACHABLE" if not hops else "BLACKHOLE", visits, hops)
+            prefix = max(matches, key=lambda item: item[1])
+            route = self.routers[owner].rib[prefix]
+            if route.local:
+                hops.append((owner, prefix, None))
+                return Forwarding("DELIVERED", visits, hops)
+            hops.append((owner, prefix, route.link))
+            owner = route.link.other(owner)
+            visits.append(owner)
+            if owner in visited:
+                return Forwarding("LOOP", visits, hops)
+            visited.add(owner)
+    def forwarding_checks(self):
+        for prefix in sorted(self.changed_prefixes):
+            loops = self.prefix_loops(prefix)
+            for key, record in list(self.ongoing_rings.items()):
+                if key[0] == prefix and key[1] not in loops:
+                    record["end"] = self.time
+                    del self.ongoing_rings[key]
+            for loop in sorted(loops):
+                key = prefix, loop
+                if key not in self.ongoing_rings:
+                    record = {"prefix": prefix, "path": loop, "start": self.time, "end": None}
+                    self.ring_records.append(record)
+                    self.ongoing_rings[key] = record
+        for index, (source, address, value) in enumerate(self.traces):
+            path = self.trace(source, value)
+            status = (path.result, path.visits) if path.result in ("LOOP", "BLACKHOLE") else None
+            record = self.ongoing_traces.get(index)
+            if record is not None and record["status"] != status:
+                record["end"] = self.time
+                del self.ongoing_traces[index]
+            if status is not None and index not in self.ongoing_traces:
+                record = {"index": index, "status": status, "start": self.time, "end": None}
+                self.trace_records.append(record)
+                self.ongoing_traces[index] = record
+    def rib_lines(self):
+        lines = []
+        for owner, router in self.routers.items():
+            local = sum(route.local for route in router.rib.values())
+            sent = sum(session.sent for session in router.sessions)
+            received = sum(session.received for session in router.sessions)
+            lines.append(f"AS {owner} routes {len(router.rib)} local {local} sent {sent} "
+                         f"received {received} changes {router.changes}")
+            for session in router.sessions:
+                accepted = sum(self.import_route(session, prefix, attribute)[0] is not None
+                               for prefix, attribute in session.incoming.items())
+                link = session.link
+                state = "UP" if link.up else "DOWN"
+                lines.append(f"SESSION {link.name} {link.other(owner)} {link.role(owner)} {state} "
+                             f"in {len(session.incoming)} accepted {accepted} out {len(session.outgoing)} "
+                             f"sent {session.sent} received {session.received} flaps {link.down_count}")
+            for prefix, route in sorted(router.rib.items()):
+                candidates = self.candidates(owner, prefix)
+                line = f"{topology.prefix_text(prefix)} {report.route_text(route)} candidates {len(candidates)}"
+                if not route.local:
+                    _, reason = decision.best_route(candidates, self.network.router_ids)
+                    line += " reason " + reason
+                lines.append(line)
+                remaining = [candidate for candidate in candidates if candidate != route]
+                while remaining:
+                    alternate, _ = decision.best_route(remaining, self.network.router_ids)
+                    lines.append("ALT " + report.route_text(alternate))
+                    remaining.remove(alternate)
+        return lines
+    def path_lines(self):
+        lines = []
+        for source, address, value in self.traces:
+            lines.extend(self.trace_lines(source, address, value))
+        originated = set()
+        for router in self.routers.values():
+            originated.update(router.origination)
+        prefixes = sorted(originated)
+        names = ",".join(topology.prefix_text(prefix) for prefix in prefixes)
+        lines.append("PREFIXES" + (" " + names if names else ""))
+        for source in self.network.ases:
+            symbols = []
+            for prefix in prefixes:
+                path = self.trace(source, prefix[0])
+                if path.result == "DELIVERED":
+                    if path.count == 0:
+                        symbols.append("*")
+                    elif prefix in self.routers[path.arrival].origination:
+                        symbols.append("+")
+                    else:
+                        symbols.append("X")
+                else:
+                    symbols.append({"LOOP": "L", "BLACKHOLE": "B", "UNREACHABLE": "U"}[path.result])
+            joined = "".join(symbols)
+            lines.append(f"REACH {source}" + (" " + joined if joined else ""))
+        return lines
+    def audit_lines(self):
+        lines = []
+        trace_totals = Counter()
+        records = sorted(self.trace_records, key=lambda record: (record["start"], record["index"]))
+        for record in records:
+            source, address, _ = self.traces[record["index"]]
+            result, visits = record["status"]
+            trace_totals[result] += 1
+            end = "END" if record["end"] is None else str(record["end"])
+            line = f"{result} {source} {address} from {record['start']} to {end}"
+            if result == "BLACKHOLE":
+                line += f" at {visits[-1]}"
+            lines.append(line + " path " + report.path_text(visits))
+        rings = sorted(self.ring_records,
+                       key=lambda record: (record["start"], record["prefix"], record["path"][0]))
+        for record in rings:
+            end = "END" if record["end"] is None else str(record["end"])
+            lines.append(f"RING {topology.prefix_text(record['prefix'])} from {record['start']} to {end} "
+                         f"path {report.path_text(record['path'])}")
+        routes, valleys = 0, 0
+        for owner, router in self.routers.items():
+            for prefix, route in sorted(router.rib.items()):
+                if route.local:
+                    continue
+                routes += 1
+                path = collapse_runs((owner,) + route.path)
+                pattern = "".join(self.network.connecting(first, second)[0].direction(first)
+                                  for first, second in zip(path, path[1:]))
+                violation = valley_position(pattern)
+                if violation != len(pattern):
+                    valleys += 1
+                    lines.append(f"VALLEY {owner} {topology.prefix_text(prefix)} path {report.path_text(route.path)} "
+                                 f"pattern {pattern} leaker {path[violation]}")
+        for rule in self.policies.rules:
+            state = "ON" if rule.active else "OFF"
+            lines.append(f"RULE {rule.name} {rule.direction} {state} hits {rule.hits}")
+        divergent = 0
+        for period in self.periods:
+            if period.divergence is None:
+                continue
+            divergent += 1
+            first, repeat, cycle = period.divergence
+            lines.append(f"DIVERGENT event {period.number} first {first} repeat {repeat} period {repeat - first}")
+            oscillations = Counter()
+            for time, owner, prefix, route in cycle:
+                lines.append(f"CYCLE {time} {owner} {topology.prefix_text(prefix)} {report.route_text(route)}")
+                oscillations[owner, prefix] += 1
+            for (owner, prefix), count in sorted(oscillations.items()):
+                lines.append(f"OSCILLATE {owner} {topology.prefix_text(prefix)} changes {count}")
+        lines.append(f"SUMMARY loops {trace_totals['LOOP']} blackholes {trace_totals['BLACKHOLE']} "
+                     f"rings {len(rings)} routes {routes} valleys {valleys} divergent {divergent} end {self.time}")
+        return lines
+    def write_outputs(self):
+        report.write_reports({
+            "updates.txt": self.logs,
+            "convergence.csv": [CONVERGENCE_HEADER] + [period.csv_line() for period in self.periods],
+            "ribs.txt": self.rib_lines(),
+            "paths.txt": self.path_lines(),
+            "audit.txt": self.audit_lines(),
+        })
+def main():
+    network = topology.read_topology()
+    policies = policy.read_policies()
+    events = simulator.read_events()
+    defaults, stepcap, traces = simulator.read_params()
+    simulation = Simulation(network, policies, defaults, stepcap, traces)
+    simulation.run(events)
+    simulation.write_outputs()
+def read_topology():
+    router_ids, links, initial = {}, [], []
+    for line in Path("input/topology.txt").read_text(encoding="ascii").splitlines():
+        fields = line.split(" ")
+        if fields[0] == "AS":
+            router_ids[int(fields[1])] = address_value(fields[2])
+        elif fields[0] == "LINK":
+            name, first, second, relationship, delay, mrai = fields[1:]
+            links.append(Link(len(links), name, int(first), int(second), relationship,
+                              int(delay), int(mrai)))
+        else:
+            initial.append((int(fields[1]), parse_prefix(fields[2]), fields[3], fields[4:]))
+    return Topology(router_ids, links, initial)
+    def matches(self, rule, owner, link, prefix, path, communities):
+        if not rule.active or rule.owner != owner:
+            return False
+        if rule.target not in ("*", str(link.other(owner)), link.name):
+            return False
+        for condition, value in rule.conditions:
+            if condition == "PREFIX" and not self.permitted(value, prefix):
+                return False
+            if condition == "CONTAINS" and value not in path:
+                return False
+            if condition == "ORIGINAS" and (path[-1] if path else owner) != value:
+                return False
+            if condition == "LENGTH" and not value[0] <= len(path) <= value[1]:
+                return False
+            if condition == "COMMUNITY" and value not in communities:
+                return False
+        return True
+    def applied(self, direction, owner, link, prefix, path, communities):
+        for rule in self.by_owner_direction.get((owner, direction), []):
+            if self.matches(rule, owner, link, prefix, path, communities):
+                return rule
+        return None
+def read_policies():
+    lists, rules = {}, []
+    for line in Path("input/policies.txt").read_text(encoding="ascii").splitlines():
+        fields = line.split(" ")
+        if fields[0] == "PLIST":
+            name, action = fields[1:3]
+            prefix = topology.parse_prefix(fields[3])
+            bounds = {fields[index]: int(fields[index + 1]) for index in range(4, len(fields), 2)}
+            low = bounds.get("GE", prefix[1])
+            high = bounds.get("LE", 32 if "GE" in bounds else prefix[1])
+            lists.setdefault(name, []).append((action == "PERMIT", prefix, low, high))
+            continue
+        name, state, owner, direction, target = fields[1:6]
+        separator = fields.index("THEN")
+        conditions = []
+        for index in range(6, separator, 2):
+            condition, value = fields[index:index + 2]
+            if condition in ("CONTAINS", "ORIGINAS"):
+                value = int(value)
+            elif condition == "LENGTH":
+                value = tuple(map(int, value.split("-")))
+            elif condition == "COMMUNITY":
+                value = parse_community(value)
+            conditions.append((condition, value))
+        actions = []
+        index = separator + 1
+        while index < len(fields):
+            action = fields[index]
+            index += 1
+            value = None
+            if action not in ("DENY", "ALLOW"):
+                value = fields[index]
+                index += 1
+                value = parse_community(value) if action in ("ADD", "REMOVE") else int(value)
+            actions.append((action, value))
+        rules.append(Rule(name, state, int(owner), direction, target, conditions, actions))
+    return Policies(lists, rules)
+    def send(self, time, sender, receiver, link, prefix, content):
+        self.serial += 1
+        message = Message(self.serial, sender, receiver, link, prefix, content, time + link.delay)
+        heapq.heappush(self.heap, (*message.key(), message))
+        return message
+def read_events():
+    events = [Event(0, "INITIAL")]
+    for line in Path("input/events.txt").read_text(encoding="ascii").splitlines():
+        time, text = line.split(" ", 1)
+        events.append(Event(int(time), text))
+    return events
+def read_params():
+    lines = Path("input/params.txt").read_text(encoding="ascii").splitlines()
+    customer, peer, provider = map(int, lines[0].split(" ")[1:])
+    defaults = {"customer": customer, "peer": peer, "provider": provider}
+    stepcap = int(lines[1].split(" ")[1])
+    traces = []
+    for line in lines[2:]:
+        _, source, address = line.split(" ")
+        traces.append((int(source), address, topology.address_value(address)))
+    return defaults, stepcap, traces

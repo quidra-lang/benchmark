@@ -1,98 +1,82 @@
 # Quidra Benchmark
 
-## Purpose
+Compare the source-code tokens needed to generate and understand programs across programming languages.
 
-This repository contains the data and instructions needed to benchmark the number of tokens an LLM would need to generate and understand programs written in different programming languages.
+- **Task A — Generation:** tokens in the complete program required by `taskA.txt`.
+- **Task B — Understanding:** the minimum tokens in complete source lines needed to answer `taskB.txt`.
 
-The benchmark measures two source-code-based quantities:
-- Task A (Generation): output tokens, represented by the complete source code needed to satisfy a programming request.
-- Task B (Understanding): input tokens, represented by the minimum source-code lines that must be read to understand where and how to make a requested change.
+Counts exclude prompts, answers, and selection rationales; they do not measure actual LLM API usage.
 
-These are reproducible proxies for token usage, not measurements of complete LLM conversations. Natural-language prompts and explanations are not counted.
+## Preparation
 
-When the user asks you to "start the benchmark," follow the steps below.
+1. Run the benchmark only when the user explicitly requests execution (e.g., "Run the benchmark"). Discussion, review, or maintenance requests alone do not authorize a run.
+2. Pull the latest `develop`. Limit file changes to the requested work and the benchmark outputs below.
+3. Use the requested benchmark date, or today's date if none is specified. Continue in `results/YYYY-MM-DD` if it exists; otherwise copy the most recent earlier date directory.
+4. Read that date's `version.csv`. For a new run, check official language updates and present the previous/current versions and proposed updates or skips to the user in chat. Obtain the user's explicit approval in chat before starting the benchmark; only then proceed with the approved languages, versions, and source revisions. Preserve those choices when resuming, and update only the corresponding entries in `version.csv`.
+5. Within the approved scope, update only topics affected by language or task-requirement changes. Refresh their Task A sources, Task B selections and rationales, and token counts even if the language version is unchanged.
 
-## 1. Preparation and language selection
+Each date contains three difficulty levels with 100 topics each. Task definitions are shared across languages; source files and measured outputs are stored in each topic's language directories.
 
-1. Clone this repository, or pull its latest changes if it is already available locally. Work on the `develop` branch.
-2. Under `results/`, find the most recent directory named `YYYY-MM-DD`. Copy that directory and name the copy using today's date (`results/YYYY-MM-DD`). Work only in the new directory. If today's directory already exists, continue there without overwriting it.
-3. Read `version.csv` in the working directory to identify the language versions used in the previous benchmark.
-4. Check the latest stable release of each language against reliable, preferably official, sources. For Quidra, use the current `develop` branch of `quidra-lang/quidra` instead of a stable release.
-5. Compare each current version with the version in `version.csv`. Identify languages whose relevant syntax has changed. For Quidra, check changes to `develop` even if its version number has not changed.
-6. Before editing benchmark data, report to the user:
-   - Each language with relevant syntax changes, and its previous and current versions.
-   - Which languages you recommend benchmarking again, and why.
-   - Any languages you recommend skipping because the syntax changes are too minor to affect the benchmark meaningfully.
-7. Ask the user to select the languages to update in this run. Update the corresponding entries in `version.csv` only for the approved languages, then proceed.
+## Task A
 
-Do not update an unapproved language merely because a newer version exists.
+- Satisfy `taskA.txt`, including its restrictions, using idiomatic features, library APIs, and data structures for the selected language version.
+- Prefer concise, clear code while preserving the required behavior and type guarantees. Do not impose declaration styles or implementation structures beyond the task requirements.
+- Do not include source-code comments.
 
-## 2. Benchmark execution
+Review the source against the task and language version. Compiling, running, and testing Task A programs are not required; source review alone does not establish execution correctness.
 
-### 2.1. Dataset and tasks
+## Task B
 
-Under `results/YYYY-MM-DD`, each programming language has three difficulty levels, with 100 programming topics per level. Each topic has two tasks:
+`taskB.txt` asks for code comprehension or an explanation of a proposed modification. Analyze the existing Task A source without implementing the modification.
 
-**Task A â Generation (`task1.txt`)**
+For this analysis, assume Task A compiles, is bug-free, and satisfies its requirements. This is an evaluation assumption, not a claim of verified correctness; do not select extra code to investigate hypothetical bugs.
 
-`task1.txt` describes a program to create. The corresponding source code is stored within that language's directory.
+Create `list-up.txt` using these rules:
 
-The source code must follow these rules:
-- Use idiomatic, widely accepted conventions for the language. For example, do not add Python type annotations when they would not normally be used for that kind of program.
-- When several implementations are reasonable, prefer one that is concise and conveys the required meaning clearly. Do not shorten code at the expense of important type information or clarity. For example, do not use C++ `auto` indiscriminately when an explicit type would better communicate the program's meaning.
-- Preserve the intended behavior of the task.
+1. Define the same answer requirements for every language. Select enough source evidence to answer all of them using the excerpt and known language or documented library semantics. Task A's requirements alone are not source evidence.
+2. Include only necessary declarations, operations, dependencies, and affected callers. Use guarantees such as types, mutation rules, and value semantics where available; inspect implementation lines only when those guarantees are insufficient. Apply this equally across languages.
+3. Minimize the token count reported by `metric/tokenizer.py`, not the number of lines. Consider alternative excerpts that support the same answer with fewer tokens.
+4. Copy complete source lines verbatim, preserving indentation and their order within each file. Group lines by source file without adding filenames, line numbers, headings, or separators.
+5. Include each source location once. Identical lines from different locations may both be included when necessary.
 
-**Task B â Understanding (`task2.txt` and `list-up.txt`)**
+Create `reason.md` alongside each excerpt. Explain how it answers every requirement, which language or library guarantees are used, and why the selected lines are necessary, including relevant alternatives considered.
 
-`task2.txt` describes a change to the program created for Task A. Assume the existing program is bug-free.
+Before finalizing, independently check that the excerpt alone supports every answer requirement and remove unnecessary lines. Do not rely on implementation details absent from the excerpt.
 
-`list-up.txt` contains the smallest set of lines from the Task A source code that an LLM would need to read to identify and understand the required change.
+## Token counts
 
-Rules for `list-up.txt`:
-- Include all source lines necessary to understand the change, including relevant declarations or dependencies when needed.
-- Include each required line only once, preferably in source order.
-- Include only code written for Task A. Do not include the implementations of standard-library functions or external libraries.
-- Do not include unrelated lines merely to provide additional context.
+Run from the repository root, replacing the example paths:
 
-### 2.2. Update affected programs
-
-For each language approved in Step 1:
-
-1. Identify only the topics whose existing Task A implementation needs to change because of syntax changes in the language's updated version, while still meeting the Task A writing rules above.
-2. For each affected topic, make the minimum necessary changes to its source code and, where needed, its `list-up.txt` file. Ensure the Task B selection still accurately reflects the source lines required to understand the requested change.
-3. Leave all unaffected topics unchanged.
-
-Building and executing programs is not required for this benchmark update. Nevertheless, review edited code for consistency with the target language version and the intended task behavior.
-
-### 2.3. Recalculate token counts
-
-For each language/topic updated in Step 2.2, use `metric/tokenizer.py` to recalculate:
-
-- `task1`: tokens in the complete Task A source code for that topic.
-- `task2`: tokens in that topic's `list-up.txt` file.
-
-Write both totals to the `tokens.csv` file in the corresponding topic directory, using this format:
-
-```csv
-task1,27492
-task2,3749
+```sh
+LANG_DIR="results/YYYY-MM-DD/difficulty/topic/language"
+python3 metric/tokenizer.py --json "$LANG_DIR/taskA.json" "$LANG_DIR/source.ext"
+python3 metric/tokenizer.py --json "$LANG_DIR/taskB.json" "$LANG_DIR/list-up.txt"
 ```
 
-Repeat this for every affected language/topic. Keep existing `tokens.csv` values for topics that were not modified; do not retokenize the entire dataset unnecessarily.
+For a multi-file program, pass all source files to the Task A command and sum the per-file counts printed to standard output. Save the two totals in `$LANG_DIR/tokens.csv`:
 
-## 3. Aggregate results
+```csv
+taskA,27492
+taskB,3749
+```
 
-Read every `tokens.csv` file across all languages, difficulty levels, and topics in the working date directory.
+Generate `taskA.json` and `taskB.json` for each measured language/topic. Do not retain individual task HTML files.
 
-Recalculate and update every applicable value in `results/YYYY-MM-DD/score.md`, using the same aggregation and normalization rules already defined by the benchmark. Preserve the existing score structure and metric definitions.
+## Results
 
-## 4. Report results
+1. Aggregate all `tokens.csv` files in the working date into `score.md`, preserving its existing metrics, normalization, weights, and structure. Do not add scope or focus breakdowns.
+2. Commit and push the changes to `develop`, then verify that the remote branch contains them.
+3. Report **Normalized token consumption** and **Total token consumption** to the user in chat, along with the updated languages/topics and skipped language updates.
 
-Report the updated results to the user, including both of these metrics (using these exact names):
+## Viewer
 
-- **Normalized token consumption**
-- **Total token consumption**
+[Open the token viewer](https://quidra-lang.github.io/benchmark/) and select a date, difficulty, topic, language, and task. Copy the resulting URL to share that view.
 
-Also identify which languages and topics were updated, and which language updates were skipped. Make clear that the values reflect the benchmark's source-code token measures, not total tokens billed by an actual LLM API.
+For a local preview, run from the repository root:
 
-The benchmark run is complete once the results have been updated and reported.
+```sh
+python3 metric/build_viewer.py
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+
+Open [http://localhost:8000/results/](http://localhost:8000/results/) through the server, rather than opening the HTML file directly.

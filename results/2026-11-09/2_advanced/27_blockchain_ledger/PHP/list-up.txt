@@ -1,0 +1,613 @@
+        'expiry' => (int) $fields['EXPIRY'][0],
+        'maxReorg' => (int) $fields['MAXREORG'][0],
+    $lines = file('input/events.txt', FILE_IGNORE_NEW_LINES);
+    $events = [];
+    for ($i = 0; $i < count($lines); $i++) {
+        $tokens = explode(' ', $lines[$i]);
+        $event = ['time' => (int) $tokens[0], 'kind' => $tokens[1], 'tokens' => $tokens];
+        if ($event['kind'] === 'TX') {
+            $event['transaction'] = new Transaction($tokens[3]);
+        } elseif ($event['kind'] === 'BLOCK') {
+            $count = (int) $tokens[9];
+            $event['block'] = parseBlock($tokens, array_slice($lines, $i + 1, $count));
+            $i += $count;
+        }
+        $events[] = $event;
+    }
+    return [$settings, $events, readWallets()];
+function priorityOrder(array $a, array $b): int
+{
+    $left = $a['fee'] * $b['transaction']->size;
+    $right = $b['fee'] * $a['transaction']->size;
+    return $left === $right ? strcmp($a['transaction']->txid, $b['transaction']->txid) : $right <=> $left;
+}
+    private function nextHeight(): int
+    {
+        return $this->tip->block->height + 1;
+    }
+    private function message(string $text): void
+    {
+        $this->log[] = $this->time . ' ' . $text;
+    }
+    private function refreshMainChain(): void
+    {
+        $this->mainChain = chainSequence($this->tip);
+        $this->mainTransactions = [];
+        foreach ($this->mainChain as $stored) {
+            foreach ($stored->block->transactions as $transaction) {
+                $this->mainTransactions[$transaction->txid] = ['transaction' => $transaction, 'height' => $stored->block->height];
+            }
+        }
+    }
+    private function priority(): array
+    {
+        $entries = $this->pool;
+        usort($entries, 'priorityOrder');
+        return $entries;
+    }
+    private function lockedReferences(): array
+    {
+        $locked = [];
+        foreach ($this->pool as $entry) {
+            foreach ($entry['transaction']->inputs as $input) {
+                $locked[$input['key']] = true;
+            }
+        }
+        return $locked;
+    }
+    private function acceptable(Transaction $transaction): array
+    {
+        if ($transaction->coinbase) {
+            return ['reason' => 'coinbase'];
+        }
+        if (isset($this->mainTransactions[$transaction->txid])) {
+            return ['reason' => 'duplicate'];
+        }
+        foreach ($this->pool as $entry) {
+            if ($entry['transaction']->txid === $transaction->txid) {
+                return ['reason' => 'duplicate'];
+            }
+        }
+        $result = checkTransaction($transaction, $this->tip->utxo, [], $this->nextHeight(), $this->settings['maturity'], $this->owners);
+        if (isset($result['reason'])) {
+            return $result;
+        }
+        $fee = $result['fee'];
+        if ($fee * 1000 < $this->settings['minFee'] * $transaction->size) {
+            return ['reason' => 'low-fee'];
+        }
+        $references = [];
+        foreach ($transaction->inputs as $input) {
+            $references[$input['key']] = true;
+        }
+        $conflicts = [];
+        foreach ($this->pool as $entry) {
+            foreach ($entry['transaction']->inputs as $input) {
+                if (isset($references[$input['key']])) {
+                    $conflicts[] = $entry;
+                    break;
+                }
+            }
+        }
+        if ($conflicts) {
+            if ($fee <= array_sum(array_column($conflicts, 'fee'))) {
+                return ['reason' => 'conflict'];
+            }
+            foreach ($conflicts as $entry) {
+                if ($fee * $entry['transaction']->size <= $entry['fee'] * $transaction->size) {
+                    return ['reason' => 'conflict'];
+                }
+            }
+        }
+        return ['fee' => $fee, 'conflicts' => $conflicts];
+    }
+    private function recordDrop(Transaction $transaction, string $reason): void
+    {
+        $this->dropped[$transaction->txid] = $reason;
+        $this->message('DROP ' . shortHash($transaction->txid) . ' ' . $reason);
+    }
+    private function drop(array $entry, string $reason): void
+    {
+        foreach ($this->pool as $i => $candidate) {
+            if ($candidate['transaction']->txid === $entry['transaction']->txid) {
+                array_splice($this->pool, $i, 1);
+                break;
+            }
+        }
+        $this->recordDrop($entry['transaction'], $reason);
+    }
+    private function register(Transaction $transaction, array $result, int $arrival): void
+    {
+        foreach ($result['conflicts'] as $conflict) {
+            $this->drop($conflict, 'replaced');
+        }
+        $this->pool[] = ['transaction' => $transaction, 'fee' => $result['fee'], 'arrival' => $arrival];
+        if (count($this->pool) > $this->settings['maxMempool']) {
+            $priority = $this->priority();
+            $this->drop($priority[count($priority) - 1], 'mempool-full');
+        }
+    }
+    private function rebuild(array $returned): void
+    {
+        $previous = $this->pool;
+        $this->pool = [];
+        $candidates = [];
+        foreach ($returned as $transaction) {
+            $candidates[] = ['transaction' => $transaction, 'arrival' => $this->time, 'returned' => true];
+        }
+        foreach ($previous as $entry) {
+            $candidates[] = ['transaction' => $entry['transaction'], 'arrival' => $entry['arrival'], 'returned' => false];
+        }
+        foreach ($candidates as $candidate) {
+            $transaction = $candidate['transaction'];
+            if (isset($this->mainTransactions[$transaction->txid])) {
+                continue;
+            }
+            $result = $this->acceptable($transaction);
+            if (isset($result['reason'])) {
+                $this->recordDrop($transaction, $result['reason']);
+            } else {
+                if ($candidate['returned']) {
+                    $this->message('RETURN ' . shortHash($transaction->txid));
+                }
+                $this->register($transaction, $result, $candidate['arrival']);
+            }
+        }
+    }
+    private function switchTip(StoredBlock $stored): void
+    {
+        $previous = $this->tip;
+        $fork = forkPoint($previous, $stored);
+        $disconnected = $previous->block->height - $fork->block->height;
+        $connected = $stored->block->height - $fork->block->height;
+        $block = $stored->block;
+        $prefix = $block->height . ' ' . shortHash($block->hash) . ' work ' . $stored->work . ' fork ' . $fork->block->height;
+        if ($disconnected > $this->settings['maxReorg']) {
+            $this->message('REFUSE ' . $prefix . ' depth ' . $disconnected);
+            return;
+        }
+        $returned = [];
+        foreach ($this->mainChain as $old) {
+            if ($old->block->height > $fork->block->height) {
+                array_push($returned, ...array_slice($old->block->transactions, 1));
+            }
+        }
+        $this->tip = $stored;
+        $this->refreshMainChain();
+        if ($disconnected === 0) {
+            $this->message('TIP ' . $block->height . ' ' . shortHash($block->hash) . ' work ' . $stored->work);
+        } else {
+            $this->message('REORG ' . $prefix . ' disconnected ' . $disconnected . ' connected ' . $connected);
+            $this->reorganizations[] = ['time' => $this->time, 'fork' => $fork->block->height,
+                'disconnected' => $disconnected, 'connected' => $connected, 'old' => $previous->block->hash, 'next' => $block->hash];
+        }
+        $this->rebuild($returned);
+    }
+    private function connectBlock(string $kind, Block $block, object $peer): void
+    {
+        $parent = $this->blocks[$block->previous];
+        if ($block->height !== $parent->block->height + 1) {
+            $this->rejectBlock($kind, $block, $peer, 'bad-height');
+            return;
+        }
+        if ($block->difficulty !== requiredDifficulty($parent, $this->settings)) {
+            $this->rejectBlock($kind, $block, $peer, 'bad-difficulty');
+            return;
+        }
+        if ($block->timestamp <= medianTime($parent)) {
+            $this->rejectBlock($kind, $block, $peer, 'time-too-old');
+            return;
+        }
+        if ($block->timestamp > $this->time + $this->settings['drift']) {
+            $this->rejectBlock($kind, $block, $peer, 'time-too-new');
+            return;
+        }
+        $utxo = $parent->utxo;
+        $spent = [];
+        $transactionFees = [0];
+        $fees = 0;
+        for ($i = 1; $i < count($block->transactions); $i++) {
+            $transaction = $block->transactions[$i];
+            $result = checkTransaction($transaction, $utxo, $spent, $block->height, $this->settings['maturity'], $this->owners);
+            if (isset($result['reason'])) {
+                $this->rejectBlock($kind, $block, $peer, $result['reason'] . ' tx ' . ($i + 1));
+                return;
+            }
+            foreach ($transaction->inputs as $input) {
+                $spent[$input['key']] = true;
+            }
+            applyTransaction($transaction, $utxo, $block->height);
+            $fees += $result['fee'];
+            $transactionFees[] = $result['fee'];
+        }
+        $coinbase = $block->transactions[0];
+        foreach ($coinbase->outputs as $output) {
+            if (!isset($this->owners[$output['address']]) || $output['amount'] === 0) {
+                $this->rejectBlock($kind, $block, $peer, 'bad-output tx 1');
+                return;
+            }
+        }
+        if (outputTotal($coinbase) > reward($block->height, $this->settings) + $fees) {
+            $this->rejectBlock($kind, $block, $peer, 'bad-coinbase');
+            return;
+        }
+        applyTransaction($coinbase, $utxo, $block->height);
+        $stored = new StoredBlock($block, $parent, $utxo, $fees, $transactionFees, $peer->name);
+        $this->blocks[$block->hash] = $stored;
+        $peer->blocks++;
+        $this->message($kind . ' ' . $peer->name . ' ' . $block->height . ' ' . shortHash($block->hash) . ' accepted work ' . $stored->work);
+        if ($stored->work > $this->tip->work) {
+            $this->switchTip($stored);
+        }
+    }
+    private function resolveOrphans(string $startingHash): void
+    {
+        $queue = [$startingHash];
+        for ($head = 0; $head < count($queue); $head++) {
+            $parentHash = $queue[$head];
+            $children = [];
+            $remaining = [];
+            foreach ($this->orphans as $orphan) {
+                if ($orphan['block']->previous === $parentHash) {
+                    $children[] = $orphan;
+                } else {
+                    $remaining[] = $orphan;
+                }
+            }
+            $this->orphans = $remaining;
+            foreach ($children as $orphan) {
+                $block = $orphan['block'];
+                $peer = $this->peerRecord($orphan['peer']);
+                if (isset($this->rejected[$parentHash])) {
+                    $this->rejectBlock('UNORPHAN', $block, $peer, 'bad-parent');
+                } else {
+                    $this->connectBlock('UNORPHAN', $block, $peer);
+                }
+                $queue[] = $block->hash;
+            }
+        }
+    }
+    private function receiveBlock(Block $block, object $peer): void
+    {
+        $duplicate = isset($this->blocks[$block->hash]) || isset($this->rejected[$block->hash]);
+        foreach ($this->orphans as $orphan) {
+            if ($orphan['block']->hash === $block->hash) {
+                $duplicate = true;
+                break;
+            }
+        }
+        if ($duplicate) {
+            $this->message('BLOCK ' . $peer->name . ' ' . $block->height . ' ' . shortHash($block->hash) . ' rejected duplicate');
+            $peer->rejectedBlocks++;
+            $this->tally('block', 'duplicate');
+            return;
+        }
+        $reason = contextFreeCheck($block, $this->settings['maxBlock']);
+        if ($reason === null && isset($this->rejected[$block->previous])) {
+            $reason = 'bad-parent';
+        }
+        if ($reason !== null) {
+            $this->rejectBlock('BLOCK', $block, $peer, $reason);
+            $this->resolveOrphans($block->hash);
+            return;
+        }
+        if (!isset($this->blocks[$block->previous])) {
+            $this->orphans[] = ['block' => $block, 'peer' => $peer->name];
+            $peer->orphans++;
+            $this->message('BLOCK ' . $peer->name . ' ' . $block->height . ' ' . shortHash($block->hash) . ' orphan parent ' . shortHash($block->previous));
+            if (count($this->orphans) > $this->settings['maxOrphans']) {
+                $oldest = array_shift($this->orphans);
+                $this->message('EVICT ' . shortHash($oldest['block']->hash) . ' orphan-limit');
+            }
+            return;
+        }
+        $this->connectBlock('BLOCK', $block, $peer);
+        $this->resolveOrphans($block->hash);
+    }
+    public function processEvents(): void
+    {
+        foreach ($this->events as $event) {
+            $this->time = $event['time'];
+            foreach ($this->pool as $entry) {
+                if ($this->time - $entry['arrival'] >= $this->settings['expiry']) {
+                    $this->drop($entry, 'expired');
+                }
+            }
+            $kind = $event['kind'];
+            $tokens = $event['tokens'];
+            if ($kind === 'TX' || $kind === 'BLOCK') {
+                $peer = $this->peerRecord($tokens[2]);
+                if ($peer->score >= $this->settings['banThreshold']) {
+                    $peer->ignored++;
+                    $this->message('IGNORE ' . $peer->name . ' ' . $kind);
+                    continue;
+                }
+            }
+                case 'BLOCK':
+                    $this->receiveBlock($event['block'], $peer);
+                    break;
+    private function chainLines(): array
+    {
+        $lines = ['TIP ' . $this->tip->block->height . ' ' . $this->tip->block->hash . ' work ' . $this->tip->work .
+            ' stored ' . count($this->blocks) . ' orphans ' . count($this->orphans)];
+        $mainHashes = [];
+        foreach ($this->mainChain as $stored) {
+            $block = $stored->block;
+            $mainHashes[$block->hash] = true;
+            $miner = $block->height === 0 ? '-' : $this->owners[$block->transactions[0]->outputs[0]['address']]['name'];
+            $lines[] = 'BLOCK ' . $block->height . ' ' . $block->hash . ' prev ' . shortHash($block->previous) . ' time ' . $block->timestamp .
+                ' bits ' . $block->difficulty . ' nonce ' . $block->nonce . ' txs ' . count($block->transactions) . ' size ' . $block->size .
+                ' fees ' . $stored->fees . ' miner ' . $miner . ' source ' . $stored->source . ' work ' . $stored->work;
+        }
+        $stale = array_values(array_filter($this->blocks, fn($stored) => !isset($mainHashes[$stored->block->hash])));
+        usort($stale, fn($a, $b) => ($a->block->height <=> $b->block->height) ?: strcmp($a->block->hash, $b->block->hash));
+        foreach ($stale as $stored) {
+            $block = $stored->block;
+            $lines[] = 'STALE ' . $block->height . ' ' . $block->hash . ' prev ' . shortHash($block->previous) .
+                ' source ' . $stored->source . ' work ' . $stored->work;
+        }
+        foreach ($this->reorganizations as $change) {
+            $lines[] = 'REORG ' . $change['time'] . ' fork ' . $change['fork'] . ' disconnected ' . $change['disconnected'] .
+                ' connected ' . $change['connected'] . ' old ' . shortHash($change['old']) . ' new ' . shortHash($change['next']);
+        }
+        foreach ($this->priority() as $i => $entry) {
+            $lines[] = 'MEMPOOL ' . ($i + 1) . ' ' . $entry['transaction']->txid . ' fee ' . $entry['fee'] .
+                ' size ' . $entry['transaction']->size . ' time ' . $entry['arrival'];
+        }
+        return $lines;
+    }
+    private function balanceLines(): array
+    {
+        $lines = ['wallet,address,balance,immature,locked,incoming,utxos'];
+        $locked = $this->lockedReferences();
+        foreach ($this->wallets as $wallet) {
+            $balance = 0;
+            $immature = 0;
+            $reserved = 0;
+            $incoming = 0;
+            $count = 0;
+            foreach ($this->tip->utxo as $key => $coin) {
+                if ($coin['address'] !== $wallet['address']) {
+                    continue;
+                }
+                $count++;
+                $balance += $coin['amount'];
+                if (!mature($coin, $this->nextHeight(), $this->settings['maturity'])) {
+                    $immature += $coin['amount'];
+                }
+                if (isset($locked[$key])) {
+                    $reserved += $coin['amount'];
+                }
+            }
+            foreach ($this->pool as $entry) {
+                foreach ($entry['transaction']->outputs as $output) {
+                    if ($output['address'] === $wallet['address']) {
+                        $incoming += $output['amount'];
+                    }
+                }
+            }
+            $lines[] = implode(',', [$wallet['name'], $wallet['address'], $balance, $immature, $reserved, $incoming, $count]);
+        }
+        return $lines;
+    }
+    private function utxoLines(): array
+    {
+        $locked = $this->lockedReferences();
+        $coins = array_values($this->tip->utxo);
+        usort($coins, 'referenceOrder');
+        $lines = [];
+        $total = 0;
+        foreach ($coins as $coin) {
+            $reference = $coin['txid'] . ':' . $coin['index'];
+            $category = $coin['height'] === 0 ? 'genesis' : ($coin['coinbase'] ? 'coinbase' : 'payment');
+            $state = !mature($coin, $this->nextHeight(), $this->settings['maturity']) ? 'immature' :
+                (isset($locked[$reference]) ? 'locked' : 'free');
+            $lines[] = $reference . ' ' . $this->owners[$coin['address']]['name'] . ' ' . $coin['amount'] .
+                ' height ' . $coin['height'] . ' ' . $category . ' ' . $state;
+            $total += $coin['amount'];
+        }
+        $root = merkleRoot(array_map('ledgerHash', $lines));
+        $lines[] = 'TOTAL ' . count($coins) . ' ' . $total;
+        $lines[] = 'ROOT ' . $root;
+        return $lines;
+    }
+    private function historyLines(): array
+    {
+        $lines = [];
+        $priority = $this->priority();
+        foreach ($this->wallets as $wallet) {
+            $lines[] = 'WALLET ' . $wallet['name'] . ' ' . $wallet['address'];
+            $count = 0;
+            $totalSpent = 0;
+            $totalReceived = 0;
+            $balance = 0;
+            foreach ($this->mainChain as $stored) {
+                $block = $stored->block;
+                foreach ($block->transactions as $transaction) {
+                    $spent = 0;
+                    foreach ($transaction->inputs as $input) {
+                        $previous = $this->mainTransactions[$input['txid']]['transaction'];
+                        $output = $previous->outputs[$input['index']];
+                        if ($output['address'] === $wallet['address']) {
+                            $spent += $output['amount'];
+                        }
+                    }
+                    $received = 0;
+                    foreach ($transaction->outputs as $output) {
+                        if ($output['address'] === $wallet['address']) {
+                            $received += $output['amount'];
+                        }
+                    }
+                    if ($spent === 0 && $received === 0) {
+                        continue;
+                    }
+                    $net = $received - $spent;
+                    $balance += $net;
+                    $count++;
+                    $totalSpent += $spent;
+                    $totalReceived += $received;
+                    $category = $block->height === 0 ? 'genesis' : ($transaction->coinbase ? 'coinbase' : 'payment');
+                    $lines[] = $block->height . ' ' . shortHash($transaction->txid) . ' ' . $category . ' spent ' . $spent .
+                        ' received ' . $received . ' net ' . signedAmount($net) . ' balance ' . $balance;
+                }
+            }
+            $pending = 0;
+            foreach ($priority as $entry) {
+                $transaction = $entry['transaction'];
+                $spent = 0;
+                foreach ($transaction->inputs as $input) {
+                    $coin = $this->tip->utxo[$input['key']];
+                    if ($coin['address'] === $wallet['address']) {
+                        $spent += $coin['amount'];
+                    }
+                }
+                $received = 0;
+                foreach ($transaction->outputs as $output) {
+                    if ($output['address'] === $wallet['address']) {
+                        $received += $output['amount'];
+                    }
+                }
+                if ($spent !== 0 || $received !== 0) {
+                    $pending++;
+                    $lines[] = 'pending ' . shortHash($transaction->txid) . ' spent ' . $spent . ' received ' . $received .
+                        ' net ' . signedAmount($received - $spent);
+                }
+            }
+            $lines[] = 'END ' . $wallet['name'] . ' txs ' . $count . ' spent ' . $totalSpent . ' received ' . $totalReceived .
+                ' balance ' . $balance . ' pending ' . $pending;
+        }
+        return $lines;
+    }
+        $files = ['log.txt' => $this->log, 'chain.txt' => $this->chainLines(), 'balances.csv' => $this->balanceLines(),
+            'utxo.txt' => $this->utxoLines(), 'history.txt' => $this->historyLines()];
+class StoredBlock
+{
+    public int $work;
+    public function __construct(
+        public Block $block, public ?StoredBlock $parent, public array $utxo,
+        public int $fees, public array $transactionFees, public string $source
+    ) {
+        $this->work = $parent === null ? 1 : $parent->work + 16 ** $block->difficulty;
+    }
+}
+function ancestor(StoredBlock $block, int $height): StoredBlock
+{
+    while ($block->block->height > $height) {
+        $block = $block->parent;
+    }
+    return $block;
+}
+function chainSequence(StoredBlock $tip): array
+{
+    $chain = [];
+    for ($current = $tip; $current !== null; $current = $current->parent) {
+        $chain[] = $current;
+    }
+    return array_reverse($chain);
+}
+function forkPoint(StoredBlock $first, StoredBlock $second): StoredBlock
+{
+    $height = min($first->block->height, $second->block->height);
+    $first = ancestor($first, $height);
+    $second = ancestor($second, $height);
+    while ($first->block->hash !== $second->block->hash) {
+        $first = $first->parent;
+        $second = $second->parent;
+    }
+    return $first;
+}
+class Block
+{
+    public string $hash;
+    public int $size = 0;
+    public function __construct(
+        public int $height, public string $previous, public string $root, public int $timestamp,
+        public int $difficulty, public int $nonce, public array $transactions
+    ) {
+        $this->hash = ledgerHash($this->header());
+        foreach (array_slice($transactions, 1) as $transaction) {
+            $this->size += $transaction->size;
+        }
+    }
+    public function header(): string
+    {
+        return implode('|', [$this->height, $this->previous, $this->root, $this->timestamp, $this->difficulty, $this->nonce]);
+    }
+    public function proofOfWork(): bool
+    {
+        return str_starts_with($this->hash, str_repeat('0', $this->difficulty));
+    }
+}
+function parseBlock(array $fields, array $lines): Block
+{
+    return new Block((int) $fields[3], $fields[4], $fields[5], (int) $fields[6], (int) $fields[7], (int) $fields[8],
+        array_map(fn($line) => new Transaction($line), $lines));
+}
+function contextFreeCheck(Block $block, int $maximumSize): ?string
+{
+    if (!$block->proofOfWork()) {
+        return 'bad-pow';
+    }
+    if (merkleRoot(array_map(fn($tx) => $tx->txid, $block->transactions)) !== $block->root) {
+        return 'bad-merkle';
+    }
+    $first = $block->transactions[0];
+    if (!$first->coinbase || $first->height !== $block->height) {
+        return 'bad-structure';
+    }
+    foreach (array_slice($block->transactions, 1) as $transaction) {
+        if ($transaction->coinbase) {
+            return 'bad-structure';
+        }
+    }
+    return $block->size > $maximumSize ? 'too-large' : null;
+}
+function mature(array $coin, int $height, int $maturity): bool
+{
+    return !$coin['coinbase'] || $coin['height'] === 0 || $height >= $coin['height'] + $maturity;
+}
+function outputTotal(Transaction $transaction): int
+{
+    return array_sum(array_column($transaction->outputs, 'amount'));
+}
+function checkTransaction(Transaction $transaction, array $utxo, array $spent, int $height, int $maturity, array $owners): array
+{
+    foreach ($transaction->outputs as $out) {
+        if (!isset($owners[$out['address']]) || $out['amount'] === 0) {
+            return ['reason' => 'bad-output'];
+        }
+    }
+    $seen = [];
+    $inputTotal = 0;
+    foreach ($transaction->inputs as $i => $input) {
+        $key = $input['key'];
+        if (isset($spent[$key]) || isset($seen[$key])) {
+            return ['reason' => 'double-spend'];
+        }
+        $seen[$key] = true;
+        if (!isset($utxo[$key])) {
+            return ['reason' => 'missing-input'];
+        }
+        $coin = $utxo[$key];
+        if (!mature($coin, $height, $maturity)) {
+            return ['reason' => 'immature'];
+        }
+        if ($transaction->signatures[$i] !== signature($owners[$coin['address']]['secret'], $i, $transaction->body)) {
+            return ['reason' => 'bad-sig'];
+        }
+        $inputTotal += $coin['amount'];
+    }
+    $outputTotal = outputTotal($transaction);
+    return $inputTotal < $outputTotal ? ['reason' => 'overspend'] : ['fee' => $inputTotal - $outputTotal];
+}
+function applyTransaction(Transaction $transaction, array &$utxo, int $height): void
+{
+    foreach ($transaction->inputs as $input) {
+        unset($utxo[$input['key']]);
+    }
+    foreach ($transaction->outputs as $index => $output) {
+        $utxo[$transaction->txid . ':' . $index] = $output + [
+            'txid' => $transaction->txid, 'index' => $index, 'height' => $height, 'coinbase' => $transaction->coinbase
+        ];
+    }
+}

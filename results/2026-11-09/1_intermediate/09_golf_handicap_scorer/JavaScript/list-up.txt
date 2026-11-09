@@ -1,0 +1,222 @@
+import { readFileSync } from "node:fs";
+const sum = (v) => v.reduce((a, b) => a + b, 0);
+const halfUp = (n, d) => Math.floor((2 * n + d) / (2 * d));
+const halfAway = (n, d) => n < 0 ? -halfUp(-n, d) : halfUp(n, d);
+const decimal = (n, sign = "-") => (n < 0 ? sign : "") + Math.floor(Math.abs(n) / 10) + "." + Math.abs(n) % 10;
+const indexText = (n) => n === null ? "none" : decimal(n, "+");
+function allocation(h, si) {
+  const q = Math.floor(Math.abs(h) / 18);
+  const r = Math.abs(h) % 18;
+  return si.map(i => h >= 0 ? q + Number(i <= r) : -q - Number(i >= 19 - r));
+}
+function handicap(index, c, t) {
+  return halfUp(index * t.slope + 113 * (t.rating - 10 * c.par), 1130);
+}
+class Player {
+  rounds = [];
+  records = [];
+  calculation = null;
+  constructor(id, name, index) {
+    this.id = id;
+    this.name = name;
+    this.index = index;
+  }
+  low(day) {
+    const records = this.records.filter(([d]) => d >= day - 365 && d < day);
+    records.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    return records.length ? records[0] : null;
+  }
+  eligible() {
+    const rows = [];
+    let reduction = 0;
+    for (let i = this.rounds.length - 1; i >= Math.max(0, this.rounds.length - 20); i--) {
+      const round = this.rounds[i];
+      reduction += round.exceptional;
+      rows.push({number: i + 1, round, adjusted: round.diff - reduction});
+    }
+    return rows.reverse();
+  }
+  counting(rows) {
+    const n = rows.length;
+    if (n < 3) return {selected: [], adjustment: 0};
+    const k = [5, 8, 11, 14, 16, 18, 19, 20].findIndex(limit => n <= limit) + 1;
+    const adjustment = n === 3 ? -20 : n === 4 || n === 6 ? -10 : 0;
+    const selected = [...rows].sort((a, b) => a.adjusted - b.adjusted || b.number - a.number).slice(0, k);
+    return {selected, adjustment};
+  }
+  update(day) {
+    const {selected, adjustment} = this.counting(this.eligible());
+    if (!selected.length) {
+      this.calculation = null;
+      return;
+    }
+    const average = halfAway(sum(selected.map(r => r.adjusted)), selected.length);
+    let candidate = average + adjustment;
+    const record = this.low(day);
+    const low = record === null ? null : record[1];
+    let soft = false;
+    let hard = false;
+    let maximum = false;
+    if (low !== null) {
+      if (candidate - low > 30) {
+        candidate = low + 30 + Math.floor((candidate - low - 30) / 2);
+        soft = true;
+      }
+      if (candidate - low > 50) {
+        candidate = low + 50;
+        hard = true;
+      }
+    }
+    if (candidate > 540) {
+      candidate = 540;
+      maximum = true;
+    }
+    this.index = candidate;
+    this.calculation = {k: selected.length, average, adjustment, low, hard, soft, maximum};
+  }
+}
+class GolfRound {
+  constructor(p, c, t, day, scores) {
+    this.course = c;
+    this.tee = t;
+    this.day = day;
+    this.scores = scores;
+    this.previousIndex = p.index;
+    this.previousRecords = p.records.length;
+    this.previousCalculation = p.calculation;
+    this.hcp = p.index === null ? null : handicap(p.index, c, t);
+    const strokes = allocation(this.hcp ?? 0, c.si);
+    this.adjusted = scores.map((score, h) => {
+      const limit = this.hcp === null ? c.pars[h] + 5 : c.pars[h] + 2 + strokes[h];
+      return score === "-" ? c.pars[h] + strokes[h] : score === "X" ? limit : Math.min(score, limit);
+    });
+    this.ags = sum(this.adjusted);
+    this.diff = halfAway(113 * (10 * this.ags - t.rating), t.slope);
+    this.exceptional = p.index !== null && p.index - this.diff >= 70 ? p.index - this.diff >= 100 ? 20 : 10 : 0;
+  }
+}
+class GolfScorer {
+  courses = new Map();
+  players = new Map();
+  output = [];
+  emit(...parts) {
+    this.output.push(parts.join(" "));
+  }
+  player(id) {
+    const p = this.players.get(id);
+    if (!p) throw new CommandError("unknown player");
+    return p;
+  }
+  course(id) {
+    const c = this.courses.get(id);
+    if (!c) throw new CommandError("unknown course");
+    return c;
+  }
+  tee(cid, tid) {
+    const c = this.course(cid);
+    const t = c.tees.get(tid);
+    if (!t) throw new CommandError("unknown tee");
+    return [c, t];
+  }
+  command(cmd, a) {
+    switch (cmd) {
+      case "COURSE": {
+        if (this.courses.has(a[0])) throw new CommandError("duplicate course");
+        const pars = a.slice(1, 19).map(Number);
+        const si = a.slice(19).map(Number);
+        if (pars.some(p => ![3, 4, 5].includes(p)) || [...si].sort((a, b) => a - b).some((v, i) => v !== i + 1)) throw new CommandError("invalid course");
+        this.courses.set(a[0], {id: a[0], pars, si, par: sum(pars), tees: new Map()});
+        break;
+      }
+      case "TEE": {
+        const c = this.course(a[0]);
+        if (c.tees.has(a[1])) throw new CommandError("duplicate tee");
+        const rating = Number(a[2]);
+        const slope = Number(a[3]);
+        if (rating < 500 || rating > 900 || slope < 55 || slope > 155) throw new CommandError("invalid tee");
+        c.tees.set(a[1], {id: a[1], rating, slope});
+        break;
+      }
+      case "PLAYER": {
+        if (this.players.has(a[0])) throw new CommandError("duplicate player");
+        const index = a.length === 3 ? Number(a[2]) : null;
+        if (index !== null && (index < -100 || index > 540)) throw new CommandError("invalid index");
+        this.players.set(a[0], new Player(a[0], a[1], index));
+        break;
+      }
+      case "ROUND": {
+        const p = this.player(a[0]);
+        const [c, t] = this.tee(a[1], a[2]);
+        const day = Number(a[3]);
+        if (p.rounds.length && day < p.rounds[p.rounds.length - 1].day) throw new CommandError("invalid day");
+        const scores = a.slice(4).map(s => s === "-" || s === "X" ? s : Number(s));
+        if (scores.filter(s => s === "-").length >= 5) throw new CommandError("too few holes");
+        const r = new GolfRound(p, c, t, day, scores);
+        p.rounds.push(r);
+        p.update(day);
+        if (p.index !== null) p.records.push([day, p.index]);
+        const parts = ["round", p.id, p.rounds.length + ":", "ags", r.ags, "diff", decimal(r.diff)];
+        if (r.exceptional) parts.push("exceptional", decimal(-r.exceptional));
+        this.emit(...parts, "index", indexText(p.index));
+        break;
+      }
+      case "REMOVE": {
+        const p = this.player(a[0]);
+        if (!p.rounds.length) throw new CommandError("no rounds");
+        const number = p.rounds.length;
+        const r = p.rounds.pop();
+        p.index = r.previousIndex;
+        p.records.length = r.previousRecords;
+        p.calculation = r.previousCalculation;
+        this.emit("removed", p.id, number + ":", "index", indexText(p.index));
+        break;
+      }
+      case "INDEX": {
+        const p = this.player(a[0]);
+        const parts = ["index", p.id + ":", indexText(p.index), "rounds", p.rounds.length];
+        const c = p.calculation;
+        if (c) {
+          parts.push("lowest", c.k, "average", decimal(c.average), "adjustment", decimal(c.adjustment));
+          if (c.low !== null) parts.push("low", indexText(c.low));
+          if (c.hard) parts.push("hard", "cap");
+          else if (c.soft) parts.push("soft", "cap");
+          if (c.maximum) parts.push("maximum");
+        }
+        this.emit(...parts);
+        break;
+      }
+      case "HISTORY": {
+        const p = this.player(a[0]);
+        const rows = p.eligible();
+        const counted = new Set(p.counting(rows).selected.map(r => r.number));
+        this.emit("history", p.id + ":", "rounds", p.rounds.length);
+        for (const row of rows) {
+          const r = row.round;
+          const parts = [row.number, "day", r.day, r.course.id, r.tee.id, "ags", r.ags, "diff", decimal(r.diff)];
+          if (row.adjusted !== r.diff) parts.push("adjusted", decimal(row.adjusted));
+          if (counted.has(row.number)) parts.push("*");
+          this.emit(...parts);
+        }
+        break;
+      }
+      case "LOWINDEX": {
+        const p = this.player(a[0]);
+        const day = Number(a[1]);
+        const low = p.low(day);
+        this.emit("lowindex", p.id, day + ":", ...(low === null ? ["none"] : [indexText(low[1]), "day", low[0]]));
+        break;
+      }
+    }
+  }
+  execute(line) {
+    const [cmd, ...args] = line.split(" ");
+    try {
+      this.command(cmd, args);
+    } catch (error) {
+    }
+  }
+}
+const lines = readFileSync(0, "utf8").trimEnd().split("\n");
+const scorer = new GolfScorer();
+for (let i = 1; i <= Number(lines[0]); i++) scorer.execute(lines[i]);
+if (scorer.output.length) process.stdout.write(scorer.output.join("\n") + "\n");

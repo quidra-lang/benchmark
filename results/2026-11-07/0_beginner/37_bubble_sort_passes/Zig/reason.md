@@ -1,0 +1,5 @@
+Each pass resets its swap indication, compares adjacent entries over the shrinking unsorted prefix and swaps only when left>right. In pass 1, 88 moves right past 41,5,72,36 to the last slot. Each pass line is emitted after all comparisons and before the no-swap break, so a final unchanged pass is still printed. The final array is `5 13 27 36 41 64 72 88`; the last printed pass is 6 and total swaps are 14. The excerpt includes the supplied data, every state-changing sort operation, pass output and termination, while omitting entry-point and unrelated writer scaffolding.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

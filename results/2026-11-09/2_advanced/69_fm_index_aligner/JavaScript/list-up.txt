@@ -1,0 +1,320 @@
+function read() {
+  const references = [];
+  for (const line of lines('input/reference.fasta')) {
+    if (line.startsWith('>')) references.push({ name: line.slice(1).split(' ')[0], sequence: '', masked: 0 });
+    else {
+      const reference = references[references.length - 1];
+      for (const base of line) if (base >= 'a' && base <= 'z') reference.masked++;
+      reference.sequence += line.toUpperCase();
+    }
+  }
+  const records = lines('input/reads.fastq'), reads = [];
+  for (let i = 0; i < records.length; i += 4) reads.push({ name: records[i].slice(1),
+    sequence: records[i + 1], quality: records[i + 3], qualities: Array.from(records[i + 3], character => character.charCodeAt(0) - 33) });
+  const params = {};
+  for (const line of lines('input/params.txt')) {
+    const [key, ...values] = line.split(' ');
+    params[key] = key === 'SCORES' || key === 'VARIANTS' ? values.map(Number) : Number(values[0]);
+  }
+  return { references, reads, params };
+}
+function reverseComplement(sequence) {
+  const complements = { A: 'T', C: 'G', G: 'C', T: 'A', N: 'N' };
+  return Array.from(sequence).reverse().map(base => complements[base]).join('');
+}
+  constructor(text, sa, interval, sampleInterval = null) {
+    this.text = text; this.sa = sa; this.interval = interval;
+    this.bwt = sa.map(position => text[position > 0 ? position - 1 : text.length - 1]).join('');
+    this.checkpoints = [];
+    const counts = Array(6).fill(0);
+    for (let i = 0; i <= text.length; i++) {
+      if (i % interval === 0) this.checkpoints.push(counts.slice());
+      if (i < text.length) counts[SYMBOLS.indexOf(this.bwt[i])]++;
+    }
+    this.counts = counts;
+    this.C = Array(6).fill(0);
+    for (let i = 1; i < 6; i++) this.C[i] = this.C[i - 1] + counts[i - 1];
+    this.samples = new Map();
+    if (sampleInterval !== null) sa.forEach((position, row) => {
+      if (position % sampleInterval === 0) this.samples.set(row, position);
+    });
+  }
+
+  occ(symbol, position) {
+    const checkpoint = Math.floor(position / this.interval), index = SYMBOLS.indexOf(symbol);
+    let count = this.checkpoints[checkpoint][index];
+    for (let i = checkpoint * this.interval; i < position; i++) if (this.bwt[i] === symbol) count++;
+    return count;
+  }
+
+  lf(row) { return this.C[SYMBOLS.indexOf(this.bwt[row])] + this.occ(this.bwt[row], row); }
+
+  extend(lo, hi, base) {
+    if (base === 'N') return [0, 0];
+    const start = this.C[SYMBOLS.indexOf(base)];
+    return [start + this.occ(base, lo), start + this.occ(base, hi)];
+  }
+
+  backward(sequence) {
+    let lo = 0, hi = this.text.length;
+    for (let i = sequence.length - 1; i >= 0; i--) {
+      [lo, hi] = this.extend(lo, hi, sequence[i]);
+      if (lo >= hi) break;
+    }
+    return [lo, hi];
+  }
+
+  locate(row) {
+    let steps = 0;
+    while (!this.samples.has(row)) { row = this.lf(row); steps++; }
+    return { position: this.samples.get(row) + steps, steps };
+  }
+function lowerBound(sequence, reverse) {
+  const D = [];
+  let z = 0, lo = 0, hi = reverse.text.length;
+  for (const base of sequence) {
+    [lo, hi] = reverse.extend(lo, hi, base);
+    if (lo >= hi) { z++; lo = 0; hi = reverse.text.length; }
+    D.push(z);
+  }
+  return D;
+}
+function backtrack(sequence, maximum, forward, reverse) {
+  const D = lowerBound(sequence, reverse), stack = [[sequence.length - 1, maximum, 0, forward.text.length]];
+  const leaves = [];
+  let nodes = 0, hits = 0;
+  while (stack.length) {
+    const [i, z, lo, hi] = stack.pop(); nodes++;
+    if (z < (i < 0 ? 0 : D[i])) continue;
+    if (i === -1) { leaves.push({ lo, hi, mismatches: maximum - z }); hits += hi - lo; continue; }
+    for (const base of 'TGCA') {
+      const [nextLo, nextHi] = forward.extend(lo, hi, base);
+      if (nextLo >= nextHi) continue;
+      if (base === sequence[i]) stack.push([i - 1, z, nextLo, nextHi]);
+      else if (z >= 1) stack.push([i - 1, z - 1, nextLo, nextHi]);
+    }
+  }
+  return { nodes, leaves, hits };
+}
+function textPosition(references, position) {
+  for (let r = 0; r < references.length; r++) {
+    const reference = references[r];
+    if (position >= reference.offset && position < reference.offset + reference.sequence.length) {
+      return { r, pos: position - reference.offset };
+    }
+  }
+  return null;
+}
+function mapRead(read, references, params, forward, reverse, searchStats, seedStats) {
+  let length = read.sequence.length;
+  while (length > 0 && read.qualities[length - 1] < params.TRIM_QUALITY) length--;
+  read.length = length; read.trimmed = read.sequence.length - length;
+  if (length < params.MIN_READ_LENGTH) return { reason: 'SHORT' };
+  const core = read.sequence.slice(0, length), oriented = [core, reverseComplement(core)];
+  const exact = oriented.map(sequence => forward.backward(sequence));
+  const maximum = exact.some(([lo, hi]) => lo < hi) ? 1 : params.MAX_MISMATCHES;
+  const hits = [];
+  for (let strand = 0; strand < 2; strand++) {
+    const searched = backtrack(oriented[strand], maximum, forward, reverse);
+    searchStats.calls++; searchStats.nodes += searched.nodes;
+    searchStats.leaves += searched.leaves.length; searchStats.positions += searched.hits;
+    for (const leaf of searched.leaves) for (let row = leaf.lo; row < leaf.hi; row++) {
+      const location = textPosition(references, forward.locate(row).position);
+      hits.push({ ...location, strand, mm: leaf.mismatches, ops: 'M'.repeat(length) });
+    }
+  }
+  if (hits.length > 0) {
+    hits.sort((a, b) => a.mm - b.mm || positionOrder(a, b));
+    const best = hits[0].mm, x0 = hits.filter(hit => hit.mm === best).length;
+    const x1 = hits.filter(hit => hit.mm === best + 1).length;
+    const mapq = x0 >= 2 ? 0 : x1 === 0 ? 60 - 12 * best : Math.max(30 - 12 * best - 3 * x1, 1);
+    return { alignments: hits.filter(hit => hit.mm <= best + 1), x0, x1, mapq,
+      score: (length - best) * params.SCORES[0] - best * params.SCORES[1], method: best === 0 ? 'EXACT' : 'MISMATCH' };
+  }
+}
+function describeAlignment(read, alignment, references) {
+  const core = read.sequence.slice(0, read.length), sequence = alignment.strand === 0 ? core : reverseComplement(core);
+  const reference = references[alignment.r].sequence, runs = [], pairs = [], md = [];
+  for (const operation of alignment.ops) {
+    if (runs.length && runs[runs.length - 1].operation === operation) runs[runs.length - 1].length++;
+    else runs.push({ operation, length: 1 });
+  }
+  let i = 0, j = alignment.pos, matches = 0, nm = 0;
+  for (const run of runs) {
+    if (run.operation === 'I') { i += run.length; nm += run.length; continue; }
+    if (run.operation === 'D') {
+      md.push(`${matches}^${reference.slice(j, j + run.length)}`); matches = 0;
+      j += run.length; nm += run.length; continue;
+    }
+    for (let k = 0; k < run.length; k++) {
+      const cycle = alignment.strand === 0 ? i + 1 : read.length - i, match = sequence[i] === reference[j];
+      pairs.push({ refPos: j, base: sequence[i], reference: reference[j], cycle, quality: read.qualities[cycle - 1], match });
+      if (match) matches++;
+      else { md.push(`${matches}${reference[j]}`); matches = 0; nm++; }
+      i++; j++;
+    }
+  }
+  md.push(String(matches));
+  let cigar = runs.map(run => `${run.length}${run.operation}`).join('');
+  if (read.trimmed > 0) cigar = alignment.strand === 0 ? cigar + `${read.trimmed}S` : `${read.trimmed}S` + cigar;
+  Object.assign(alignment, { runs, pairs, cigar, md: md.join(''), nm });
+}
+function tallyCoverage(reads, results, references, params) {
+  const coverage = references.map(reference => ({ depth: Array(reference.sequence.length).fill(0),
+    starts: Array(reference.sequence.length).fill(0), pileup: Array.from({ length: reference.sequence.length }, () => Array(8).fill(0)) }));
+  for (let index = 0; index < reads.length; index++) {
+    const result = results[index];
+    if (result.reason) continue;
+    const primary = result.alignments[0], target = coverage[primary.r];
+    if (result.mapq === 0) target.starts[primary.pos]++;
+    if (result.mapq < params.COVERAGE_MIN_MAPQ) continue;
+    for (const pair of primary.pairs) {
+      target.depth[pair.refPos]++;
+      if (pair.base !== 'N' && pair.quality >= params.VARIANTS[1]) target.pileup[pair.refPos][4 * primary.strand + BASES.indexOf(pair.base)]++;
+    }
+  }
+  return coverage;
+}
+function coverageReport(references, coverage, params) {
+  const lines = [`window ${params.COVERAGE_WINDOW} min_mapq ${params.COVERAGE_MIN_MAPQ}`];
+  references.forEach((reference, r) => {
+    const { depth, starts } = coverage[r], length = reference.sequence.length;
+    let sum = 0, maximum = 0, covered = 0;
+    for (const value of depth) { sum += value; maximum = Math.max(maximum, value); if (value > 0) covered++; }
+    const histogram = Array(maximum + 1).fill(0);
+    for (const value of depth) histogram[value]++;
+    lines.push(`reference ${reference.name} length ${length} covered ${covered} breadth ${ratio(covered, length)} mean_depth ${ratio(sum, length)} max_depth ${maximum}`,
+      `depth_histogram ${histogram.map((count, value) => `${value}:${count}`).join(' ')}`);
+    for (let first = 0; first < length; first += params.COVERAGE_WINDOW) {
+      const end = Math.min(first + params.COVERAGE_WINDOW, length), width = end - first;
+      let windowSum = 0, windowMaximum = 0, zero = 0, mapq0 = 0;
+      for (let j = first; j < end; j++) {
+        windowSum += depth[j]; windowMaximum = Math.max(windowMaximum, depth[j]);
+        if (depth[j] === 0) zero++;
+        mapq0 += starts[j];
+      }
+      lines.push(`${reference.name} ${first + 1} ${end} gc ${ratio(gcCount(reference.sequence.slice(first, end)), width)} sum ${windowSum} mean ${ratio(windowSum, width)} max ${windowMaximum} zero ${zero} mapq0 ${mapq0} |${'#'.repeat(Math.floor(10 * windowSum / width))}`);
+    }
+  });
+  return lines;
+}
+function summaryReport(reads, results, references, searchStats, seedStats) {
+  const count = { trimmed: 0, trimmedBases: 0, SHORT: 0, NOHIT: 0, mapped: 0, unique: 0, multi: 0,
+    EXACT: 0, MISMATCH: 0, SEED: 0, forward: 0, reverse: 0, nReads: 0, nBases: 0, nMapped: 0 };
+  const refStats = references.map(() => ({ mapped: 0, unique: 0, forward: 0, reverse: 0 }));
+  const bins = new Map(), targets = new Map(), mapqHistogram = new Map(), nmHistogram = new Map();
+  const substitutions = Array.from({ length: 4 }, () => Array(5).fill(0));
+  const maxLength = Math.max(...reads.map(read => read.sequence.length));
+  const cycles = Array.from({ length: maxLength }, () => ({ aligned: 0, mismatches: 0 }));
+  const qualityBins = Array.from({ length: 5 }, () => ({ aligned: 0, mismatches: 0 }));
+  const error = { aligned: 0, mismatches: 0, matchedQuality: 0, mismatchedQuality: 0 };
+  const cigar = { M: 0, I: 0, D: 0, S: 0 }, indels = { I: { events: 0, bases: 0 }, D: { events: 0, bases: 0 } };
+  for (let index = 0; index < reads.length; index++) {
+    const read = reads[index], result = results[index], lo = 10 * Math.floor(read.length / 10);
+    if (!bins.has(lo)) bins.set(lo, { reads: 0, mapped: 0, unique: 0 });
+    const bin = bins.get(lo); bin.reads++;
+    if (read.trimmed > 0) count.trimmed++;
+    count.trimmedBases += read.trimmed;
+    const nBases = Array.from(read.sequence).filter(base => base === 'N').length;
+    if (nBases > 0) { count.nReads++; count.nBases += nBases; if (!result.reason) count.nMapped++; }
+    if (result.reason) { count[result.reason]++; continue; }
+    count.mapped++; count[result.method]++; bin.mapped++;
+    const primary = result.alignments[0], ref = refStats[primary.r], strand = primary.strand === 0 ? 'forward' : 'reverse';
+    const unique = result.x0 === 1;
+    count[strand]++; ref[strand]++; ref.mapped++;
+    if (unique) { count.unique++; ref.unique++; bin.unique++; }
+    else {
+      count.multi++;
+      const names = Array.from(new Set(result.alignments.slice(0, result.x0).map(alignment => alignment.r)))
+        .sort((a, b) => a - b).map(r => references[r].name).join('+');
+      increment(targets, names);
+    }
+    increment(mapqHistogram, result.mapq); increment(nmHistogram, primary.nm);
+    for (const run of primary.runs) {
+      cigar[run.operation] += run.length;
+      if (unique && run.operation !== 'M') { indels[run.operation].events++; indels[run.operation].bases += run.length; }
+    }
+    cigar.S += read.trimmed;
+    if (!unique) continue;
+    for (const pair of primary.pairs) {
+      const cycle = cycles[pair.cycle - 1], qualityBin = qualityBins[Math.min(4, Math.floor(pair.quality / 10))];
+      error.aligned++; cycle.aligned++; qualityBin.aligned++;
+      substitutions[BASES.indexOf(pair.reference)]['ACGTN'.indexOf(pair.base)]++;
+      if (pair.match) error.matchedQuality += pair.quality;
+      else { error.mismatches++; cycle.mismatches++; qualityBin.mismatches++; error.mismatchedQuality += pair.quality; }
+    }
+  }
+  const lines = [`reads total ${reads.length} trimmed ${count.trimmed} trimmed_bases ${count.trimmedBases} short ${count.SHORT}`,
+    `mapped ${count.mapped} rate ${ratio(count.mapped, reads.length)} unique ${count.unique} multi ${count.multi} unmapped ${count.SHORT + count.NOHIT}`,
+    `unmapped short ${count.SHORT} nohit ${count.NOHIT}`, `method exact ${count.EXACT} mismatch ${count.MISMATCH} seed ${count.SEED}`,
+    `strand forward ${count.forward} reverse ${count.reverse}`];
+  references.forEach((reference, r) => {
+    const stats = refStats[r];
+    lines.push(`reference ${reference.name} mapped ${stats.mapped} unique ${stats.unique} forward ${stats.forward} reverse ${stats.reverse}`);
+  });
+  lines.push('length_bins');
+  const minBin = Math.min(...bins.keys()), maxBin = Math.max(...bins.keys());
+  for (let lo = minBin; lo <= maxBin; lo += 10) {
+    const bin = bins.get(lo) || { reads: 0, mapped: 0, unique: 0 };
+    lines.push(`${lo}-${lo + 9} reads ${bin.reads} mapped ${bin.mapped} unique ${bin.unique}`);
+  }
+  lines.push(`n_reads ${count.nReads} n_bases ${count.nBases} mapped ${count.nMapped}`, 'multi_targets');
+  if (targets.size === 0) lines.push('none');
+  else for (const name of Array.from(targets.keys()).sort()) lines.push(`${name} ${targets.get(name)}`);
+  lines.push('mapq_histogram');
+  for (const mapq of Array.from(mapqHistogram.keys()).sort((a, b) => b - a)) lines.push(`${mapq} ${mapqHistogram.get(mapq)}`);
+  lines.push('nm_histogram');
+  for (const nm of Array.from(nmHistogram.keys()).sort((a, b) => a - b)) lines.push(`${nm} ${nmHistogram.get(nm)}`);
+  lines.push(`error_profile aligned_bases ${error.aligned} mismatches ${error.mismatches} rate ${ratio(error.mismatches, error.aligned)}`,
+    'substitutions', 'ref A C G T N');
+  for (let base = 0; base < 4; base++) lines.push(`${BASES[base]} ${substitutions[base].join(' ')}`);
+  lines.push('mismatch_by_cycle');
+  cycles.forEach((cycle, i) => lines.push(`cycle ${i + 1} aligned ${cycle.aligned} mismatches ${cycle.mismatches} rate ${ratio(cycle.mismatches, cycle.aligned)}`));
+  lines.push(`quality matched ${error.aligned - error.mismatches} mean ${ratio(error.matchedQuality, error.aligned - error.mismatches)} mismatched ${error.mismatches} mean ${ratio(error.mismatchedQuality, error.mismatches)}`, 'quality_bins');
+  qualityBins.forEach((bin, i) => lines.push(`${['0-9', '10-19', '20-29', '30-39', '40-'][i]} aligned ${bin.aligned} mismatches ${bin.mismatches} rate ${ratio(bin.mismatches, bin.aligned)}`));
+  lines.push(`cigar M ${cigar.M} I ${cigar.I} D ${cigar.D} S ${cigar.S}`,
+    `indels insertions ${indels.I.events} ${indels.I.bases} deletions ${indels.D.events} ${indels.D.bases}`,
+    `search dfs_calls ${searchStats.calls} dfs_nodes ${searchStats.nodes} dfs_leaves ${searchStats.leaves} dfs_positions ${searchStats.positions}`,
+    `seeds reads ${seedStats.reads} seeds ${seedStats.seeds} with_n ${seedStats.withN} repetitive ${seedStats.repetitive} without_hit ${seedStats.withoutHit} candidates ${seedStats.candidates} passing ${seedStats.passing}`);
+  return lines;
+}
+function main() {
+  const { references, reads, params } = read();
+  let offset = 0;
+  for (const reference of references) { reference.offset = offset; offset += reference.sequence.length + 1; }
+  const text = references.map(reference => reference.sequence).join('#') + '$';
+  const reverseText = Array.from(text.slice(0, -1)).reverse().join('') + '$';
+  const forwardBuild = suffixArray.build(text), reverseBuild = suffixArray.build(reverseText);
+  const forward = new FMIndex(text, forwardBuild.sa, params.OCC_INTERVAL, params.SA_SAMPLE_INTERVAL);
+  const reverse = new FMIndex(reverseText, reverseBuild.sa, params.OCC_INTERVAL);
+  const indexLines = indexStatistics(references, params, forwardBuild, reverseBuild, forward, reverse);
+  const searchStats = { calls: 0, nodes: 0, leaves: 0, positions: 0 };
+  const seedStats = { reads: 0, seeds: 0, withN: 0, repetitive: 0, withoutHit: 0, candidates: 0, passing: 0 };
+  const results = reads.map(read => mapRead(read, references, params, forward, reverse, searchStats, seedStats));
+  results.forEach((result, i) => {
+    if (!result.reason) for (const alignment of result.alignments) describeAlignment(reads[i], alignment, references);
+  });
+  const coverage = tallyCoverage(reads, results, references, params);
+  const sam = header(references);
+  reads.forEach((read, i) => sam.push(record(read, results[i], references, params.MAX_ALT_HITS)));
+  fs.mkdirSync('output', { recursive: true });
+  write('output/alignments.sam', sam);
+  write('output/coverage.txt', coverageReport(references, coverage, params));
+  write('output/variants.txt', variantReport(references, coverage, params));
+  write('output/index_stats.txt', indexLines);
+  write('output/summary.txt', summaryReport(reads, results, references, searchStats, seedStats));
+}
+function record(read, result, references, maximumAlternatives) {
+  if (result.reason) return [read.name, 4, '*', 0, 0, '*', '*', 0, 0, read.sequence, read.quality, `YM:Z:${result.reason}`].join('\t');
+  const primary = result.alignments[0], reverse = primary.strand === 1;
+  const fields = [read.name, reverse ? 16 : 0, references[primary.r].name, primary.pos + 1, result.mapq,
+    primary.cigar, '*', 0, 0, reverse ? reverseComplement(read.sequence) : read.sequence,
+    reverse ? Array.from(read.quality).reverse().join('') : read.quality,
+    `NM:i:${primary.nm}`, `MD:Z:${primary.md}`, `AS:i:${result.score}`, `X0:i:${result.x0}`, `X1:i:${result.x1}`, `YM:Z:${result.method}`];
+  const alternatives = result.alignments.slice(1);
+  if (alternatives.length > 0 && alternatives.length <= maximumAlternatives) {
+    fields.push('XA:Z:' + alternatives.map(alignment =>
+      `${references[alignment.r].name},${alignment.strand === 0 ? '+' : '-'}${alignment.pos + 1},${alignment.cigar},${alignment.nm};`).join(''));
+  }
+  return fields.join('\t');
+}

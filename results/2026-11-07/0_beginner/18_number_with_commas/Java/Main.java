@@ -1,0 +1,11 @@
+import java.util.Locale;
+
+public class Main {
+    public static void main(String[] args) {
+        for (long n : new long[]{0, 7, 999, 1000, -456789, 3141592, 9876543210L}) {
+            boolean negative = n < 0;
+            long magnitude = Math.abs(n);
+            System.out.printf(Locale.US, "%s%,d%n", negative ? "-" : "", magnitude);
+        }
+    }
+}

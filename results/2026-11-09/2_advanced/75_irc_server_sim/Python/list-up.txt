@@ -1,0 +1,196 @@
+def read_inputs():
+    settings = {"MOTD": []}
+    integers = {"NICKLEN", "CHANNELLEN", "TOPICLEN", "MAXCHANNELS", "BUCKET",
+                "REFILL", "QUEUE", "PINGFREQ", "TIMEOUT"}
+    for line in Path("input/server.txt").read_text(encoding="ascii").splitlines():
+        key, value = line.split(" ", 1)
+        if key == "MOTD":
+            settings[key].append(value)
+        else:
+            settings[key] = int(value) if key in integers else value
+    traffic = []
+    for line in Path("input/traffic.txt").read_text(encoding="ascii").splitlines():
+        time, identifier, body = line.split(" ", 2)
+        kind = "messages"
+        if body.startswith("CONNECT "):
+            host = body[8:]
+            if 1 <= len(host) <= 63 and all(character in LETTERS + "0123456789.-" for character in host):
+                kind = "connect"
+        elif body == "DISCONNECT":
+            kind = "disconnect"
+        traffic.append((int(time), identifier, kind, body))
+    return settings, traffic
+            "NICK": self.nick, "USER": self.user, "PING": self.ping, "PONG": self.pong,
+    def send(self, client, line):
+        self.sent.append(f"{self.time} {client.identifier} {line}")
+        client.sent += 1
+    def disconnect(self, client, reason, kind):
+        if kind != "closed":
+            self.send(client, f"ERROR :Closing Link: {client.addressee}[{client.hostname}] ({reason})")
+            self.statistics["errors"] += 1
+        if client.registered:
+            self.send_peers(client, f":{client.prefix} QUIT :{reason}")
+        for channel in list(client.channels):
+            self.remove_member(client, channel)
+        self.statistics["discarded"] += len(client.queue)
+        client.queue.clear()
+        del self.clients[client.identifier]
+        client.active = False
+        self.gone.append((self.time, client.identifier, client.addressee, reason))
+        self.disconnections[kind] += 1
+    def arrival(self, record):
+        time, identifier, kind, body = record
+        if kind == "connect":
+            self.clients[identifier] = Client(identifier, body[8:], self.time, self.settings["BUCKET"])
+            if len(self.clients) > self.peak_connections[0]:
+                self.peak_connections = len(self.clients), self.time
+            return
+        client = self.clients.get(identifier)
+        if kind == "disconnect":
+            if client is not None:
+                self.disconnect(client, "Remote host closed the connection", "closed")
+            return
+        if client is None:
+            self.statistics["dropped"] += 1
+            return
+        client.received += 1
+        client.last_received = self.time
+        client.ping_sent = None
+        if not client.queue and client.tokens >= 1:
+            client.use_token(self.time, self.settings["BUCKET"], self.settings["REFILL"])
+            self.process(client, body)
+        elif len(client.queue) >= self.settings["QUEUE"]:
+            self.statistics["discarded"] += 1
+            self.disconnect(client, "Excess Flood", "flood")
+        else:
+            client.queue.append(body)
+            self.statistics["queued"] += 1
+    def run(self):
+        position = 0
+        for time in range(self.end + 1):
+            self.time = time
+            for client in list(self.clients.values()):
+                client.refill(time, self.settings["BUCKET"], self.settings["REFILL"])
+                while client.active and client.queue and client.tokens >= 1:
+                    client.use_token(time, self.settings["BUCKET"], self.settings["REFILL"])
+                    raw = client.queue.popleft()
+                    self.process(client, raw)
+            while position < len(self.traffic) and self.traffic[position][0] == time:
+                self.arrival(self.traffic[position])
+                position += 1
+            for client in list(self.clients.values()):
+                if client.ping_sent is not None:
+                    if time - client.ping_sent >= self.settings["TIMEOUT"]:
+                        reason = f"Ping timeout: {time - client.last_received} seconds"
+                        self.disconnect(client, reason, "timeout")
+                elif time - client.last_received >= self.settings["PINGFREQ"]:
+                    self.send(client, f"PING :{self.settings['NAME']}")
+                    self.statistics["pings"] += 1
+                    client.ping_sent = time
+    def process(self, client, raw):
+        self.statistics["processed"] += 1
+        command, parameters = parse(raw)
+        if not command:
+            self.statistics["empty"] += 1
+            return
+        self.commands[command] += 1
+        if not client.registered and command not in ("NICK", "USER", "PING", "PONG", "QUIT"):
+            self.numeric(client, 451)
+            return
+        if command in ("PRIVMSG", "NOTICE"):
+            self.message(client, parameters, command)
+        elif command in self.handlers:
+            self.handlers[command](client, parameters)
+        else:
+            self.numeric(client, 421, command=command)
+    def pong(self, client, parameters):
+        return
+    def client_report(self):
+        lines = []
+        for client in self.clients.values():
+            username = client.username if client.username is not None else "*"
+            signon = client.registration_time if client.registered else "-"
+            channels = self.joined_channels(client, ",") or "none"
+            invites = ",".join(channel.name for channel in client.invites) or "none"
+            lines.append(
+                f"CLIENT {client.identifier} {client.addressee} {username} {client.hostname} {client.mode} "
+                f"connected {client.connection_time} signon {signon} received {client.received} sent {client.sent} "
+                f"tokens {client.tokens} queue {len(client.queue)} channels {channels} invites {invites}"
+            )
+            if client.away:
+                lines.append(f"AWAY {client.identifier} {client.away}")
+        registered = sum(client.registered for client in self.clients.values())
+        invisible = sum(client.invisible for client in self.clients.values())
+        away = sum(bool(client.away) for client in self.clients.values())
+        lines.append(f"TOTAL clients {len(self.clients)} registered {registered} invisible {invisible} away {away}")
+        return lines
+    def statistics_report(self):
+        counts = self.statistics
+        pending = sum(len(client.queue) for client in self.clients.values())
+        lines = [f"END {self.end}",
+                 f"LINES total {len(self.traffic)} connect {self.line_counts['connect']} "
+                 f"disconnect {self.line_counts['disconnect']} messages {self.line_counts['messages']}",
+                 f"MESSAGES dropped {counts['dropped']} queued {counts['queued']} processed {counts['processed']} "
+                 f"discarded {counts['discarded']} pending {pending} empty {counts['empty']}",
+                 f"SENT lines {len(self.sent)} numerics {sum(self.numeric_counts.values())} "
+                 f"pings {counts['pings']} errors {counts['errors']}"]
+        for command, count in sorted(self.commands.items()):
+            lines.append(f"COMMAND {command} {count}")
+        for number, count in sorted(self.numeric_counts.items()):
+            lines.append(f"NUMERIC {number:03d} {count}")
+        for kind, peak in (("connections", self.peak_connections), ("registered", self.peak_registered)):
+            lines.append(f"PEAK {kind} {peak[0]} at {peak[1]}")
+        lines.append("DISCONNECTS " + " ".join(f"{kind} {self.disconnections[kind]}"
+                                              for kind in ("quit", "closed", "flood", "timeout")))
+        for time, identifier, addressee, reason in self.gone:
+            lines.append(f"GONE {time} {identifier} {addressee} {reason}")
+        return lines
+    def write_outputs(self):
+        outputs = {"sent.txt": self.sent, "channels.txt": self.channel_report(),
+                   "clients.txt": self.client_report(), "stats.txt": self.statistics_report()}
+        directory = Path("output")
+        directory.mkdir(parents=True, exist_ok=True)
+        for filename, lines in outputs.items():
+            text = "\n".join(lines) + ("\n" if lines else "")
+            (directory / filename).write_text(text, encoding="ascii", newline="\n")
+def main():
+    server = Server(*read_inputs())
+    server.run()
+    server.write_outputs()
+    def use_token(self, time, capacity, interval):
+        if self.tokens == capacity:
+            self.refill_time = time + interval
+        self.tokens -= 1
+    def refill(self, time, capacity, interval):
+        if self.refill_time == time:
+            self.tokens += 1
+            self.refill_time = time + interval if self.tokens < capacity else None
+def parse(raw):
+    position = 0
+    if raw.startswith(":"):
+        position = raw.find(" ")
+        if position == -1:
+            return "", []
+    while position < len(raw) and raw[position] == " ":
+        position += 1
+    start = position
+    while position < len(raw) and raw[position] != " ":
+        position += 1
+    command = raw[start:position].upper()
+    parameters = []
+    while position < len(raw):
+        while position < len(raw) and raw[position] == " ":
+            position += 1
+        if position == len(raw):
+            break
+        if raw[position] == ":":
+            parameters.append(raw[position + 1:])
+            break
+        if len(parameters) == 14:
+            parameters.append(raw[position:])
+            break
+        start = position
+        while position < len(raw) and raw[position] != " ":
+            position += 1
+        parameters.append(raw[start:position])
+    return command, parameters

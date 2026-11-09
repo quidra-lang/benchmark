@@ -1,0 +1,332 @@
+const signatures = <String, List<String>>{
+  'RND': ['I'],
+const operators = <List<String>>[
+  ['OR'],
+  ['AND'],
+  [],
+  ['=', '<>', '<', '>', '<=', '>='],
+  ['+', '-'],
+  ['*', '/', 'MOD'],
+  [],
+  ['^'],
+];
+
+Never syntax() => throw SyntaxFault();
+Never fault(String reason) => throw BasicFault(reason);
+String nameType(String name) => name.endsWith('\$') ? 'S' : 'I';
+class Token {
+  final String kind, text;
+  final Object value;
+  const Token(this.kind, this.text, this.value);
+}
+
+class Expr {
+  String kind;
+  final String type;
+  final Object value;
+  final List<Expr> args;
+  Expr(this.kind, this.type, this.value, [List<Expr>? args])
+    : args = args ?? [];
+}
+
+class PrintItem {
+  final String kind;
+  final Expr? expr;
+  const PrintItem(this.kind, this.expr);
+}
+class Statement {
+  String kind;
+  int line = 0;
+  Statement? next;
+  final items = <PrintItem>[];
+  Statement(this.kind);
+List<Token> tokenize(String text) {
+  final tokens = <Token>[];
+  var p = 0;
+  while (p < text.length) {
+    final ch = text[p];
+    if (ch == ' ') {
+      p++;
+      continue;
+    }
+    if (ch == '"') {
+      final end = text.indexOf('"', p + 1);
+      if (end < 0) syntax();
+      tokens.add(
+        Token('S', text.substring(p, end + 1), text.substring(p + 1, end)),
+      );
+      p = end + 1;
+    } else if (digit(ch)) {
+      final start = p;
+      while (p < text.length && digit(text[p])) p++;
+      final word = text.substring(start, p), value = int.tryParse(word);
+      if (value == null || value > 32767) syntax();
+      tokens.add(Token('I', word, value));
+    } else if (upper(ch)) {
+      final start = p;
+      while (p < text.length && (upper(text[p]) || digit(text[p]))) p++;
+      if (p < text.length && text[p] == '\$') p++;
+      final word = text.substring(start, p);
+      tokens.add(Token('W', word, word));
+    } else {
+      if (!'+-*/^=<>() ,;:'.contains(ch)) syntax();
+      final pair = text.substring(p, math.min(p + 2, text.length));
+      final word = ['<>', '<=', '>='].contains(pair) ? pair : ch;
+      tokens.add(Token('P', word, word));
+      p += word.length;
+    }
+  }
+  tokens.add(const Token('E', '', ''));
+  return tokens;
+}
+
+class Parser {
+  final List<Token> tokens;
+  int pos = 0;
+  Parser(this.tokens);
+  Token get current => tokens[pos];
+  bool at(String s) =>
+      (current.kind == 'P' || current.kind == 'W') && current.text == s;
+  bool take(String s) {
+    if (!at(s)) return false;
+    pos++;
+    return true;
+  }
+
+  void expect(String s) {
+    if (!take(s)) syntax();
+  }
+  Expr integer([int level = 0]) {
+    final e = expression(level);
+    if (e.type != 'I') syntax();
+    return e;
+  }
+  Expr primary() {
+    final token = current;
+    if (token.kind == 'I' || token.kind == 'S') {
+      pos++;
+      return Expr('constant', token.kind, token.value);
+    }
+    if (take('(')) {
+      final e = expression();
+      expect(')');
+      return e;
+    }
+    if (token.kind == 'W' && signatures.containsKey(token.text)) {
+      pos++;
+      expect('(');
+      final args = <Expr>[expression()];
+      while (take(',')) args.add(expression());
+      expect(')');
+      if (!signatures[token.text]!.contains(args.map((e) => e.type).join()))
+        syntax();
+      return Expr('call', nameType(token.text), token.text, args);
+    }
+    syntax();
+  }
+
+  Expr expression([int level = 0]) {
+    if (level == 2 && take('NOT'))
+      return Expr('unary', 'I', 'NOT', [integer(2)]);
+    if (level == 6 && take('-')) return Expr('unary', 'I', '-', [integer(6)]);
+    if (level == 8) return primary();
+    var left = expression(level + 1);
+    while (operators[level].contains(current.text)) {
+      final op = current.text;
+      pos++;
+      final right = expression(level == 7 ? 6 : level + 1);
+      if (left.type != right.type ||
+          (left.type == 'S' && level != 3 && op != '+'))
+        syntax();
+      left = Expr('binary', level == 3 ? 'I' : left.type, op, [left, right]);
+      if (level == 7) break;
+    }
+    return left;
+  }
+  List<Statement> listing([bool inside = false]) {
+    final body = <Statement>[statement(inside)];
+    while (take(':')) body.add(statement(inside));
+    return body;
+  }
+
+  Statement statement(bool inside) {
+    final word = current.text;
+    if (inside && ['IF', 'FOR', 'NEXT', 'WHILE', 'WEND', 'DATA'].contains(word))
+      syntax();
+    final s = Statement(word);
+    if (take('PRINT')) {
+      var expressionLast = false;
+      while (current.kind != 'E' && !at(':') && !at('ELSE')) {
+        if (take(';')) {
+          s.items.add(const PrintItem(';', null));
+          expressionLast = false;
+        } else if (take(',')) {
+          s.items.add(const PrintItem(',', null));
+          expressionLast = false;
+        } else {
+          final kind = at('TAB')
+              ? 'TAB'
+              : at('SPC')
+              ? 'SPC'
+              : 'value';
+          if (kind == 'value' && expressionLast) syntax();
+          late Expr e;
+          if (kind == 'value') {
+            e = expression();
+          s.items.add(PrintItem(kind, e));
+          expressionLast = kind == 'value';
+        }
+      }
+      return s;
+    }
+  List<Statement> parse() {
+    final result = listing();
+    if (current.kind != 'E') syntax();
+    return result;
+  }
+  int dataPos = 0, inputPos = 0, random = 1, handler = 0, err = 0, erl = 0;
+  bool handling = false;
+  Statement? remembered;
+  String buffer = '';
+  final output = <String>[];
+  void endLine() {
+    output.add(buffer.replaceFirst(RegExp(r' +$'), ''));
+    buffer = '';
+  }
+
+  void message(String s) {
+    if (buffer.isNotEmpty) endLine();
+    output.add(s);
+  }
+
+  int checked(num n) {
+    if (n < -32768 || n > 32767) fault('OVERFLOW');
+    return n.toInt();
+  }
+  Object evaluate(Expr e) {
+    final op = e.value;
+    if (e.kind == 'constant') return op;
+    if (e.kind == 'unary') {
+      final a = evaluate(e.args[0]) as int;
+      return op == 'NOT' ? ~a : checked(-a);
+    }
+    final args = e.args.map(evaluate).toList();
+    if (e.kind == 'call') return call(op as String, args);
+    final a = args[0];
+    final b = args[1];
+    final x = a as int, y = b as int;
+    switch (op) {
+      case '/':
+        if (y == 0) fault('DIVISION BY ZERO');
+        return checked(x ~/ y);
+      case 'MOD':
+        if (y == 0) fault('DIVISION BY ZERO');
+        return x - y * (x ~/ y);
+      case 'AND':
+        return x & y;
+      case 'OR':
+        return x | y;
+    }
+    fault('ILLEGAL FUNCTION CALL');
+  }
+
+  Object call(String name, List<Object> args) {
+    final a = args[0];
+    final b = args.length > 1 ? args[1] : null;
+    final c = args.length > 2 ? args[2] : null;
+    switch (name) {
+      case 'RND':
+        final n = a as int;
+        if (n < 1) fault('ILLEGAL FUNCTION CALL');
+        random = (48271 * random) % 2147483647;
+        return random % n + 1;
+  Statement? execute(Statement s) {
+    Statement? following = s.next;
+    switch (s.kind) {
+      case 'PRINT':
+        for (final item in s.items) {
+          if (item.kind == ',') {
+            buffer += ''.padRight(10 - buffer.length % 10);
+          } else if (item.kind != ';') {
+            final value = evaluate(item.expr!);
+            if (item.kind == 'value') {
+              buffer += value.toString();
+          }
+        }
+        if (s.items.isEmpty || ![';', ','].contains(s.items.last.kind))
+          endLine();
+        break;
+    return following;
+  void connect(List<Statement> body, Statement? after, int lineNumber) {
+    Statement? following = after;
+    for (final s in body.reversed) {
+      s.line = lineNumber;
+      s.next = following;
+      following = s;
+    }
+  }
+
+  List<String> finish() {
+    if (buffer.isNotEmpty) endLine();
+    output.add('READY');
+    return output;
+  }
+
+  List<String> run(Map<int, String> source) {
+    final parsed = <ProgramLine>[];
+    final numbers = source.keys.toList()..sort();
+    for (final n in numbers) {
+      try {
+        parsed.add(ProgramLine(n, Parser(tokenize(source[n]!)).parse()));
+      } on SyntaxFault {
+        message('ERROR IN LINE ' + n.toString() + ': SYNTAX ERROR');
+        return finish();
+      }
+    }
+    Statement? after;
+    for (final e in parsed.reversed) {
+      connect(e.body, after, e.number);
+      entries[e.number] = e.body[0];
+      after = e.body[0];
+    }
+    var pos = after;
+    while (pos != null) {
+      final current = pos;
+      try {
+        pos = execute(current);
+      } on BasicFault catch (failure) {
+        if (handler != 0 && !handling) {
+        } else {
+          message(
+            'ERROR IN LINE ' + current.line.toString() + ': ' + failure.reason,
+          );
+          pos = null;
+        }
+      }
+    }
+    return finish();
+  }
+void main() {
+  final count = int.parse(stdin.readLineSync()!);
+  for (var i = 0; i < count; i++) {
+    final source = <int, String>{};
+    while (true) {
+      final line = stdin.readLineSync()!;
+      if (line == 'RUN') break;
+      final match = RegExp(r'^([0-9]+)(?: +(.*))?$').firstMatch(line)!;
+      final number = int.parse(match[1]!);
+      final body = match[2];
+      if (body == null)
+        source.remove(number);
+      else
+        source[number] = body;
+    }
+    final inputs = <String>[];
+    while (true) {
+      final line = stdin.readLineSync()!;
+      if (line == 'END') break;
+      inputs.add(line);
+    }
+    for (final line in Machine(inputs).run(source)) stdout.writeln(line);
+  }
+}

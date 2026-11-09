@@ -1,0 +1,380 @@
+import sys
+OBJECT = "object"
+ARRAY = "array"
+NULL = "null"
+KEY = "key"
+ALL = "all"
+SLICE = "slice"
+QUOTE_ESCAPES = {
+    "\\": "\\\\", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t",
+class CommandError(Exception):
+    pass
+class JsonError(Exception):
+    def __init__(self, reason, position):
+        super().__init__(reason)
+        self.reason = reason
+        self.position = position
+def is_letter(char):
+    return "a" <= char <= "z" or "A" <= char <= "Z"
+def is_digit(char):
+    return "0" <= char <= "9"
+def is_identifier_start(char):
+    return is_letter(char) or char == "_"
+def is_identifier_char(char):
+    return is_identifier_start(char) or is_digit(char)
+def is_identifier(text):
+    return text != "" and is_identifier_start(text[0]) and all(
+        is_identifier_char(char) for char in text
+def quote(text, mark):
+    parts = [mark]
+    for char in text:
+        code = ord(char)
+        if char == mark:
+        elif char in QUOTE_ESCAPES:
+        elif code < 32 or code == 127:
+        else:
+            parts.append(char)
+    parts.append(mark)
+    return "".join(parts)
+class JsonValue:
+    def __init__(self, kind, scalar=None):
+        self.kind = kind
+        self.scalar = scalar
+        self.keys = []
+        self.items = []
+    def find(self, key):
+        return self.keys.index(key) if key in self.keys else -1
+    def copy(self):
+        duplicate = JsonValue(self.kind, self.scalar)
+        duplicate.keys = self.keys[:]
+        duplicate.items = [item.copy() for item in self.items]
+        return duplicate
+    def value_count(self):
+        return 1 + sum(item.value_count() for item in self.items)
+    def depth(self):
+        return 1 + max((item.depth() for item in self.items), default=0)
+def compact(value):
+    if value.kind == NULL:
+        return "null"
+def pretty(value, indent=""):
+    if value.kind not in (OBJECT, ARRAY) or not value.items:
+        return compact(value)
+    inner = indent + "  "
+    lines = []
+    for position, item in enumerate(value.items):
+        label = quote(value.keys[position], '"') + ": " if value.kind == OBJECT else ""
+        lines.append(inner + label + pretty(item, inner))
+    opening, closing = ("{", "}") if value.kind == OBJECT else ("[", "]")
+    return opening + "\n" + ",\n".join(lines) + "\n" + indent + closing
+class JsonReader:
+    def __init__(self, text):
+        self.text = text
+        self.pos = 0
+    def peek(self):
+        return self.text[self.pos] if self.pos < len(self.text) else ""
+    def fail(self, reason, position=None):
+        raise JsonError(reason, self.pos if position is None else position)
+    def skip_whitespace(self):
+        while self.peek() in (" ", "\n"):
+            self.pos += 1
+    def require(self, char, reason):
+        if self.pos == len(self.text):
+            self.fail("unexpected end of input")
+        if self.text[self.pos] != char:
+            self.fail(reason)
+    def parse(self):
+        value = self.value()
+        self.skip_whitespace()
+        if self.pos < len(self.text):
+            self.fail("trailing characters")
+        return value
+    def value(self):
+        self.skip_whitespace()
+        char = self.peek()
+        if char == "":
+            self.fail("unexpected end of input")
+        if char == "{":
+            return self.object()
+        if char == "[":
+            return self.array()
+        if is_letter(char):
+            return self.literal()
+    def container_end(self, closing, reason):
+        self.skip_whitespace()
+        if self.peek() == closing:
+            self.pos += 1
+            return True
+        self.require(",", reason)
+        self.pos += 1
+        self.skip_whitespace()
+        if self.peek() == closing:
+            self.fail("trailing comma")
+        return False
+    def object(self):
+        node = JsonValue(OBJECT)
+        self.pos += 1
+        self.skip_whitespace()
+        if self.peek() == "}":
+            self.pos += 1
+            return node
+        while True:
+            self.skip_whitespace()
+            self.require('"', "expected key")
+            start = self.pos
+            key = self.string()
+            if key in node.keys:
+                self.fail("duplicate key " + quote(key, '"'), start)
+            self.skip_whitespace()
+            self.require(":", "expected ':'")
+            self.pos += 1
+            node.keys.append(key)
+            node.items.append(self.value())
+            if self.container_end("}", "expected ',' or '}'"):
+                return node
+    def array(self):
+        node = JsonValue(ARRAY)
+        self.pos += 1
+        self.skip_whitespace()
+        if self.peek() == "]":
+            self.pos += 1
+            return node
+        while True:
+            node.items.append(self.value())
+            if self.container_end("]", "expected ',' or ']'"):
+                return node
+    def string(self):
+        self.pos += 1
+        chars = []
+        while True:
+            char = self.peek()
+            if char == "" or char == "\n":
+                self.fail("unterminated string")
+            if char == '"':
+                self.pos += 1
+                return "".join(chars)
+            if char == "\\":
+                chars.append(self.escape())
+            else:
+                chars.append(char)
+                self.pos += 1
+    def literal(self):
+        start = self.pos
+        while is_letter(self.peek()):
+            self.pos += 1
+        word = self.text[start:self.pos]
+        if word == "null":
+            return JsonValue(NULL)
+class Segment:
+    def __init__(self, kind, key="", index=0, start=None, end=None):
+        self.kind = kind
+        self.key = key
+        self.descendant = False
+class PathReader:
+    def __init__(self, text, error):
+        self.text = text
+        self.pos = 0
+        self.error = error
+    def fail(self):
+        raise CommandError(self.error)
+    def at_end(self):
+        return self.pos == len(self.text)
+    def peek(self):
+        return "" if self.at_end() else self.text[self.pos]
+    def accept(self, char):
+        if self.peek() != char:
+            return False
+        self.pos += 1
+        return True
+    def expect(self, char):
+        if not self.accept(char):
+            self.fail()
+    def identifier(self):
+        start = self.pos
+        if not is_identifier_start(self.peek()):
+            self.fail()
+        while is_identifier_char(self.peek()):
+            self.pos += 1
+        return self.text[start:self.pos]
+    def selection(self):
+        if self.peek() == "'":
+        end = self.text.find("]", self.pos)
+        if end < 0:
+            self.fail()
+        content = self.text[self.pos:end]
+        self.pos = end + 1
+        if content == "*":
+            return Segment(ALL)
+def parse_path(text):
+    reader = PathReader(text, "bad path")
+    reader.expect("$")
+    segments = []
+    while not reader.at_end():
+        if reader.accept("["):
+            segments.append(reader.selection())
+            continue
+        reader.expect(".")
+        descendant = reader.accept(".")
+        if reader.accept("*"):
+            segment = Segment(ALL)
+        elif descendant and reader.accept("["):
+        else:
+            segment = Segment(KEY, key=reader.identifier())
+        segment.descendant = descendant
+        segments.append(segment)
+    return segments
+def parse_key(text):
+    reader = PathReader(text, "bad key")
+    if reader.peek() == "'":
+    else:
+        key = reader.identifier()
+    if not reader.at_end():
+        reader.fail()
+    return key
+class Step:
+    def __init__(self, key, position):
+        self.key = key
+        self.position = position
+    def text(self):
+        if self.key is None:
+            return f"[{self.position}]"
+        if is_identifier(self.key):
+            return "." + self.key
+class Match:
+    def __init__(self, node, steps):
+        self.node = node
+        self.steps = steps
+    def child(self, position):
+        key = self.node.keys[position] if self.node.kind == OBJECT else None
+        return Match(self.node.items[position], self.steps + [Step(key, position)])
+    def location(self):
+        return "$" + "".join(step.text() for step in self.steps)
+    def positions(self):
+        return [step.position for step in self.steps]
+def child_position(value, segment):
+    if segment.kind == KEY:
+        return value.find(segment.key) if value.kind == OBJECT else -1
+def select(segment, match, results):
+    if segment.kind == ALL:
+        positions = range(len(match.node.items))
+    elif segment.kind == SLICE:
+    else:
+        position = child_position(match.node, segment)
+        positions = [position] if position >= 0 else []
+    for position in positions:
+        results.append(match.child(position))
+def apply_segment(segment, matches):
+    results = []
+    for match in matches:
+        sources = preorder(match, []) if segment.descendant else [match]
+        for source in sources:
+            select(segment, source, results)
+    return results
+def evaluate(root, segments):
+    matches = [Match(root, [])]
+    for segment in segments:
+        matches = apply_segment(segment, matches)
+    return matches
+def reverse_document_order(matches):
+    ordered = sorted(matches, key=lambda match: match.positions(), reverse=True)
+    targets = []
+    for match in ordered:
+        if not targets or targets[-1].positions() != match.positions():
+            targets.append(match)
+    return targets
+def resolve(root, positions):
+    value = root
+    for position in positions:
+        value = value.items[position]
+    return value
+def locate(root, target):
+    positions = target.positions()
+    return resolve(root, positions[:-1]), positions[-1]
+def words(argument_part, minimum, maximum):
+    result = [] if argument_part is None else argument_part.split(" ")
+    if not minimum <= len(result) <= maximum:
+        raise CommandError("bad arguments")
+    return result
+class JsonQueryTool:
+    def __init__(self):
+        self.document = JsonValue(NULL)
+        self.history = []
+        self.output = []
+        self.handlers = {
+            "PRETTY": self.show_pretty,
+            "RENAME": self.rename,
+            "UNDO": self.undo,
+    def emit(self, *parts):
+        self.output.append(" ".join(str(part) for part in parts))
+    def commit(self, document):
+        self.history.append(self.document)
+        self.document = document
+    def load(self, lines):
+        text = "\n".join(lines)
+        try:
+            document = JsonReader(text).parse()
+        self.commit(document)
+        self.emit(f"LOADED nodes={document.value_count()} depth={document.depth()}")
+    def execute(self, line):
+        name, space, argument_part = line.partition(" ")
+        if name not in self.handlers:
+            self.emit(f"ERROR unknown command '{name}'")
+            return
+        try:
+            self.handlers[name](argument_part if space else None)
+        except CommandError as error:
+            self.emit("ERROR", error)
+    def path_matches(self, argument_part, optional=False):
+        arguments = words(argument_part, 0 if optional else 1, 1)
+        path = arguments[0] if arguments else "$"
+        return evaluate(self.document, parse_path(path))
+    def report(self, matches, describe):
+        if not matches:
+            self.emit("no match")
+        for match in matches:
+            self.emit(describe(match))
+    def show_pretty(self, argument_part):
+        matches = self.path_matches(argument_part, True)
+        self.report(matches, lambda match: pretty(match.node))
+    def rename(self, argument_part):
+        path, key_text = words(argument_part, 2, 2)
+        segments = parse_path(path)
+        new_key = parse_key(key_text)
+        matches = evaluate(self.document, segments)
+        for match in matches:
+            if not match.steps or match.steps[-1].key is None:
+                raise CommandError(f"not a member at {match.location()}")
+        targets = reverse_document_order(matches)
+        document = self.document.copy()
+        for target in targets:
+            container, position = locate(document, target)
+            if container.keys[position] != new_key and new_key in container.keys:
+                raise CommandError(f"key exists at {target.location()}")
+            container.keys[position] = new_key
+        self.commit(document)
+        self.emit("RENAME", len(targets))
+    def undo(self, argument_part):
+        words(argument_part, 0, 0)
+        if not self.history:
+            raise CommandError("nothing to undo")
+        self.document = self.history.pop()
+        self.emit("UNDO", len(self.history))
+def read_block(lines, start):
+    end = start
+    while end < len(lines) and lines[end] != "%%":
+        end += 1
+    return lines[start:end], end + 1
+def main():
+    lines = sys.stdin.read().split("\n")
+    tool = JsonQueryTool()
+    block, position = read_block(lines, 0)
+    tool.load(block)
+    while position < len(lines) and lines[position] != "END":
+        line = lines[position]
+        position += 1
+        if line == "LOAD":
+            block, position = read_block(lines, position)
+            tool.load(block)
+        else:
+            tool.execute(line)
+    sys.stdout.write("\n".join(tool.output) + "\n")
+    main()

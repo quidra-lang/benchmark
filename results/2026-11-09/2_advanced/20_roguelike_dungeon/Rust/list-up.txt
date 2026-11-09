@@ -1,0 +1,132 @@
+    let mut commands = Vec::new();
+    for words in rows {
+        let (command, count) = match words[0].as_str() {
+            "move" => {
+                let number = DIRECTION_NAMES.iter().position(|&name| name == words[1]).unwrap();
+                let (dx, dy) = DIRECTIONS[number];
+                (Command::Move(dx, dy), words.get(2).map_or(1, |value| value.parse().unwrap()))
+            }
+            "wait" => (Command::Wait, words.get(1).map_or(1, |value| value.parse().unwrap())),
+            "pickup" => (Command::Pickup, 1), "descend" => (Command::Descend, 1),
+            name => {
+                let action = match name { "quaff" => UseAction::Quaff, "read" => UseAction::Read, "wield" => UseAction::Wield,
+                    "wear" => UseAction::Wear, "eat" => UseAction::Eat, _ => unreachable!() };
+                (Command::Use(action, words[1].parse().unwrap()), 1)
+            }
+        };
+        commands.extend(std::iter::repeat_n(command, count));
+    }
+        Self { config, monster_types, item_types, commands, generator, levels, player, turn: 1, messages: Vec::new(), map_lines: Vec::new(),
+            visible, distance: Vec::new(), result: None, cause: String::new(), succeeded: 0, failed: 0, unused: 0, moves: 0,
+            player_attacks: AttackStats::default(), monster_attacks: AttackStats::default(), poison_damage: 0, starvation_damage: 0, usage: [0; 6], kills }
+    fn die(&mut self, cause: String) { self.say("You die.".to_owned()); self.result = Some("died"); self.cause = cause; }
+    fn run(&mut self) {
+        self.update_view();
+        for number in 0..self.commands.len() {
+            if self.result.is_some() { self.unused += 1; continue; }
+            if !self.execute(self.commands[number]) { self.failed += 1; continue; }
+            self.succeeded += 1;
+            if self.result.is_none() { self.advance_turn(); }
+        }
+        if self.result.is_none() { self.result = Some("alive"); self.cause = "commands_exhausted".to_owned(); }
+    }
+    fn advance_turn(&mut self) {
+        self.update_view();
+        let depth = self.player.depth - 1;
+        self.distance = distances(&self.levels[depth], self.player.x, self.player.y);
+        for number in 0..self.levels[depth].monsters.len() {
+            let kind = self.levels[depth].monsters[number].kind;
+            self.levels[depth].monsters[number].energy += self.monster_types[kind].speed;
+            while self.levels[depth].monsters[number].energy >= 2 {
+                self.levels[depth].monsters[number].energy -= 2;
+                self.monster_action(number);
+                if self.result.is_some() { return; }
+            }
+        }
+        self.end_turn();
+        if self.result.is_some() { return; }
+        if self.config.checkpoints.contains(&self.turn) {
+            self.map_lines.push(format!("CHECKPOINT turn {} depth {}", self.turn, self.player.depth));
+            let rows = self.map_rows(depth, true);
+            self.map_lines.extend(rows);
+            let status = self.status_line();
+            self.map_lines.push(status);
+        }
+        self.turn += 1;
+    }
+    fn execute(&mut self, command: Command) -> bool {
+        match command { Command::Move(dx, dy) => self.move_player(dx, dy), Command::Wait => true, Command::Pickup => self.pickup(),
+    fn pickup(&mut self) -> bool {
+        let depth = self.player.depth - 1;
+        let Some(number) = self.levels[depth].item_at(self.player.x, self.player.y) else { self.say("There is nothing here.".to_owned()); return false; };
+        let item = self.levels[depth].items[number].clone();
+        let name = item.display_name(&self.item_types);
+        match self.item_types[item.kind].class {
+            ItemClass::Gold(_) => { self.player.gold += item.amount; self.say(format!("You pick up {name}.")); }
+            ItemClass::Amulet => {
+                self.say("You pick up the amulet.".to_owned()); self.say("You win!".to_owned()); self.result = Some("won"); self.cause = "amulet".to_owned();
+            }
+            _ => {
+                if self.player.pack.len() >= self.config.pack_limit { self.say("Your pack is full.".to_owned()); return false; }
+                self.player.pack.push(item);
+                self.say(format!("You pick up the {name} ({}).", self.player.pack.len()));
+            }
+        }
+        self.levels[depth].items.remove(number);
+        self.levels[depth].picked += 1;
+        self.usage[0] += 1;
+        true
+                self.say(format!("You quaff the {}.", item.display_name(&self.item_types)));
+                match class {
+                    ItemClass::Potion(PotionEffect::Heal(dice)) => {
+                        self.player.hp += dice.roll(&mut self.generator);
+                        if self.player.hp > self.player.max_hp { self.player.max_hp += 1; self.player.hp = self.player.max_hp; }
+                        self.player.poison = 0; self.say("You feel better.".to_owned());
+                    }
+                    ItemClass::Potion(PotionEffect::Poison(turns)) => { self.player.poison += turns; self.say("You feel very sick.".to_owned()); }
+            UseAction::Eat => {
+                let item = self.player.remove_consumable(number);
+                self.usage[3] += 1;
+                let ItemClass::Food(nutrition) = class else { unreachable!(); };
+                self.player.food = (self.player.food + nutrition).min(self.config.food_max);
+                self.say(format!("You eat the {}.", item.display_name(&self.item_types)));
+    fn monster_attack(&mut self, number: usize) {
+        let depth = self.player.depth - 1;
+        let kind = self.levels[depth].monsters[number].kind;
+        let attack = &self.monster_types[kind];
+        let (outcome, damage) = resolve_attack(&mut self.generator, attack.to_hit, self.player.defense(&self.item_types), attack.damage, 0);
+        self.monster_attacks.record(outcome, damage);
+        let name = attack.name.clone();
+        let poisonous = attack.poisonous;
+        if outcome == AttackOutcome::Miss { self.say(format!("The {name} misses you.")); return; }
+        self.say(format!("The {name} hits you{} for {damage}.", if outcome == AttackOutcome::Critical { " hard" } else { "" }));
+        self.player.hp -= damage;
+        if self.player.hp <= 0 { self.die(format!("killed_by {name}")); }
+        else if poisonous { self.player.poison += 5; self.say("You are poisoned.".to_owned()); }
+    fn end_turn(&mut self) {
+        let depth = self.player.depth - 1;
+        for monster in &mut self.levels[depth].monsters {
+            if self.monster_types[monster.kind].regenerates && monster.hp < monster.max_hp { monster.hp += 1; }
+        }
+        if self.player.poison > 0 {
+            self.player.hp -= 1; self.poison_damage += 1;
+            if self.player.hp <= 0 { self.die("poison".to_owned()); return; }
+            self.player.poison -= 1;
+            if self.player.poison == 0 { self.say("You feel less sick.".to_owned()); }
+        }
+        if self.player.food == 0 {
+            self.player.hp -= 1; self.starvation_damage += 1;
+            if self.player.hp <= 0 { self.die("starvation".to_owned()); return; }
+        } else {
+            let before = self.hunger_state();
+            self.player.food -= 1;
+            let after = self.hunger_state();
+            if before != after {
+                self.say(match after { "hungry" => "You are getting hungry.", "weak" => "You feel weak from hunger.",
+                    "starving" => "You are starving.", _ => unreachable!() }.to_owned());
+            }
+        }
+        if self.turn % self.config.regen_interval == 0 && self.player.poison == 0 && self.player.food > 0 && self.player.hp < self.player.max_hp { self.player.hp += 1; }
+    }
+    fn final_block(&self) -> Vec<String> {
+        let mut lines = vec![format!("FINAL turn {} depth {}", self.succeeded, self.player.depth)];

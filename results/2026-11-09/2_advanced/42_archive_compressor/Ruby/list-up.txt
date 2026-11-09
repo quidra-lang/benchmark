@@ -1,0 +1,268 @@
+  METHODS = %w[STORE LZW LZ77 LZH ARITH].freeze
+  STATUSES = %w[ok repaired checksum error unsupported truncated bad_header].freeze
+  MODULUS = 65521
+
+  Parameters = Struct.new(:offset_bits, :length_bits, :max_code_length, keyword_init: true)
+  EncodedFile = Struct.new(:name, :data, :payloads, :best, :lzw_stats, :lz77_stats,
+                           :lzh_stats, :arith_stats, keyword_init: true) do
+    def payload = payloads[best]
+  end
+  Entry = Struct.new(:number, :offset, :status, :valid_header, :name, :method, :original,
+                     :compressed, :checksum, :start, :ending, :data, :error, :repair,
+                     :computed, keyword_init: true)
+  ParsedArchive = Struct.new(:size, :offset_bits, :length_bits, :declared, :entries,
+                             :error, :stopped, :trailing, keyword_init: true) do
+    def intact = entries.select { |entry| entry.status == 'ok' || entry.status == 'repaired' }
+  end
+  def read_inputs
+    lines = File.readlines('input/manifest.txt', chomp: true)
+    values = lines.first(3).map { |line| line.split[1].to_i }
+    parameters = Parameters.new(offset_bits: values[0], length_bits: values[1], max_code_length: values[2])
+    hexadecimal = File.readlines('input/archive.hex', chomp: true).join
+    [parameters, files, [hexadecimal].pack('H*')]
+  end
+  def method_name(number) = METHODS[number] || "##{number}"
+  def hex8(value) = format('%08x', value)
+
+  def adler32(data)
+    first = 1
+    second = 0
+    data.each_byte do |value|
+      first = (first + value) % MODULUS
+      second = (second + first) % MODULUS
+    end
+    second * 65536 + first
+  end
+
+  def repair_one_byte(data, stored, computed)
+    delta_a = (stored % 65536 - computed % 65536) % MODULUS
+    delta_b = (stored / 65536 - computed / 65536) % MODULUS
+    delta = if delta_a.between?(1, 255)
+              delta_a
+            elsif delta_a.between?(MODULUS - 255, MODULUS - 1)
+              delta_a - MODULUS
+            else
+              return
+            end
+    inverse = (delta % MODULUS).pow(MODULUS - 2, MODULUS)
+    distance_from_end = delta_b * inverse % MODULUS
+    return unless distance_from_end.between?(1, data.bytesize)
+
+    position = data.bytesize - distance_from_end
+    before = data.getbyte(position)
+    after = before + delta
+    return unless after.between?(0, 255)
+
+    repaired = data.dup
+    repaired.setbyte(position, after)
+    [repaired, [position, before, after]] if adler32(repaired) == stored
+  end
+
+  def decode_store(payload, original_size)
+    raise DecodeError.new('end_of_data', payload.bytesize) if payload.bytesize < original_size
+
+    payload.byteslice(0, original_size)
+  end
+  def encode_lzh(tokens, parameters)
+    literal_lengths, literal_halvings = Huffman.limited_lengths(literal_frequencies, parameters.max_code_length)
+    distance_lengths, distance_halvings = Huffman.limited_lengths(distance_frequencies, parameters.max_code_length)
+  def decode_payload(method, payload, original_size, offset_bits, length_bits)
+    case method
+    when 0 then decode_store(payload, original_size)
+    when 1 then LZW.decode(payload, original_size)
+    when 2 then decode_lz77(payload, original_size, offset_bits, length_bits)
+    when 3 then decode_lzh(payload, original_size, offset_bits, length_bits)
+    when 4 then ArithCoder.decode(payload, original_size)
+    end
+  end
+
+  def encode_file(name, data, parameters)
+    tokens = LZ77.tokenize(data, parameters.offset_bits, parameters.length_bits)
+    lzw_payload, lzw_stats = LZW.encode(data)
+    lz77_payload = encode_lz77(tokens, parameters.offset_bits, parameters.length_bits)
+    lzh_payload, lzh_stats = encode_lzh(tokens, parameters)
+    arith_payload, arith_stats = ArithCoder.encode(data)
+    payloads = [data, lzw_payload, lz77_payload, lzh_payload, arith_payload]
+    best = payloads.each_index.min_by { |method| [payloads[method].bytesize, method] }
+    EncodedFile.new(name: name, data: data, payloads: payloads, best: best, lzw_stats: lzw_stats,
+                    lz77_stats: lz77_stats, lzh_stats: lzh_stats, arith_stats: arith_stats)
+  end
+
+  def build_archive(encodings, parameters)
+    archive = 'TXAR'.b + [parameters.offset_bits, parameters.length_bits, encodings.length].pack('CCn')
+    encodings.each do |encoding|
+      header = [encoding.name.bytesize].pack('C') + encoding.name.b
+      header << [encoding.best, encoding.data.bytesize, encoding.payload.bytesize,
+                 adler32(encoding.data)].pack('CNNN')
+      header << (header.bytes.sum % 256)
+      archive << header << encoding.payload
+    end
+    archive
+  end
+
+  def read_entry_header(archive, number, position)
+    name_length = archive.getbyte(position)
+    name = archive.byteslice(position + 1, name_length)
+    cursor = position + 1 + name_length
+    start = position + 15 + name_length
+    original, compressed, checksum = archive.byteslice(cursor + 1, 12).unpack('N3')
+    valid_name = name_length.between?(1, 32) && name.match?(/\A[a-z0-9._-]+\z/n)
+    valid_check = archive.byteslice(position, start - position - 1).bytes.sum % 256 == archive.getbyte(start - 1)
+    Entry.new(number: number, offset: position, valid_header: valid_name && valid_check,
+              name: valid_name && valid_check ? name : '', method: archive.getbyte(cursor),
+              original: original, compressed: compressed, checksum: checksum,
+              start: start, ending: start + compressed)
+  end
+
+  def examine_payload(entry, archive, offset_bits, length_bits)
+    begin
+      entry.data = decode_payload(entry.method, archive.byteslice(entry.start, entry.compressed),
+                                  entry.original, offset_bits, length_bits)
+    rescue DecodeError => error
+      entry.status = 'error'
+      entry.error = error
+      return
+    end
+    entry.computed = adler32(entry.data)
+    if entry.computed == entry.checksum
+      entry.status = 'ok'
+      return
+    end
+    repair = repair_one_byte(entry.data, entry.checksum, entry.computed)
+    if repair
+      entry.data, entry.repair = repair
+      entry.status = 'repaired'
+    else
+      entry.status = 'checksum'
+    end
+  end
+
+  def parse_archive(archive)
+    result = ParsedArchive.new(size: archive.bytesize, entries: [], stopped: false, trailing: 0)
+    if archive.bytesize < 8 || archive.byteslice(0, 4) != 'TXAR'
+      result.error = 'bad_magic'
+      return result
+    end
+    result.offset_bits = archive.getbyte(4)
+    result.length_bits = archive.getbyte(5)
+    unless result.offset_bits.between?(6, 12) && result.length_bits.between?(2, 5)
+      result.error = 'bad_params'
+      return result
+    end
+    result.declared = archive.byteslice(6, 2).unpack1('n')
+    position = 8
+    1.upto(result.declared) do |number|
+      if position >= archive.bytesize || position + 15 + archive.getbyte(position) > archive.bytesize
+        result.entries << Entry.new(number: number, offset: position, status: 'truncated', valid_header: false)
+        result.stopped = true
+        break
+      end
+      entry = read_entry_header(archive, number, position)
+      result.entries << entry
+      unless entry.valid_header
+        entry.status = 'bad_header'
+        position = entry.ending
+        if position > archive.bytesize
+          result.stopped = true
+          break
+        end
+        next
+      end
+      if entry.ending > archive.bytesize
+        entry.status = 'truncated'
+        result.stopped = true
+        break
+      end
+      if entry.method >= METHODS.length
+        entry.status = 'unsupported'
+      else
+        examine_payload(entry, archive, result.offset_bits, result.length_bits)
+      end
+      position = entry.ending
+    end
+    result.trailing = archive.bytesize - position unless result.stopped
+    result
+  end
+
+  def verify_archive(archive, originals)
+    parsed = parse_archive(archive)
+    verified = parsed.entries.each_with_index.count do |entry, index|
+      entry.status == 'ok' && entry.data == originals[index]
+    end
+    [parsed.entries.length, verified]
+  end
+  def entry_test_line(entry, archive_size)
+    prefix = "entry #{entry.number} offset #{entry.offset}"
+    unless entry.valid_header
+      return "#{prefix} status #{entry.status == 'bad_header' ? 'bad_header' : 'truncated header'}"
+    end
+
+    line = "#{prefix} name #{entry.name} method #{method_name(entry.method)} status #{entry.status}"
+    case entry.status
+    when 'repaired'
+      position, before, after = entry.repair
+      line += " byte #{position} from #{before} to #{after}"
+    when 'checksum'
+      line += " stored #{hex8(entry.checksum)} computed #{hex8(entry.computed)}"
+    when 'error'
+      line += " #{entry.error.kind} at #{entry.error.position}"
+    when 'truncated'
+      line += " payload have #{archive_size - entry.start} need #{entry.compressed}"
+    end
+    line
+  end
+
+  def test_report(parsed, salvaged, salvage_archive, verified)
+    if parsed.error
+      lines = ["archive error #{parsed.error}"]
+    else
+      lines = parsed.entries.map { |entry| entry_test_line(entry, parsed.size) }
+      counts = parsed.entries.each_with_object(Hash.new(0)) { |entry, hash| hash[entry.status] += 1 }
+      summary = "summary entries #{parsed.declared} checked #{parsed.entries.length}"
+      summary += ' ' + STATUSES.map { |status| "#{status} #{counts[status]}" }.join(' ')
+      summary += " missing #{parsed.declared - parsed.entries.length} trailing #{parsed.trailing}"
+      lines << summary
+    end
+    parsed.intact.zip(salvaged).each do |entry, encoding|
+      lines << "salvage #{entry.name} method #{METHODS[encoding.best]} compressed #{encoding.payload.bytesize} " \
+               "was #{method_name(entry.method)} #{entry.compressed}"
+    end
+    original_total = salvaged.sum { |encoding| encoding.data.bytesize }
+    lines << "salvaged entries #{salvaged.length} bytes #{salvage_archive.bytesize} " \
+             "original #{original_total} verified #{verified}"
+  end
+
+  def text_lines(data)
+    data.empty? ? [] : data.split("\n", -1)[0...-1]
+  end
+
+  def extraction_report(entries)
+    entries.flat_map do |entry|
+      contents = text_lines(entry.data)
+      words = contents.sum { |line| line.scan(/[^ ]+/).length }
+      longest = contents.map(&:bytesize).max || 0
+      ["file #{entry.name} bytes #{entry.data.bytesize} lines #{contents.length} words #{words} longest #{longest}",
+       *contents]
+    end
+  end
+  def salvage_archive(parsed, parameters)
+    salvage_parameters = if parsed.error
+                           parameters
+                         else
+                           Parameters.new(offset_bits: parsed.offset_bits, length_bits: parsed.length_bits,
+                                          max_code_length: parameters.max_code_length)
+                         end
+    encodings = parsed.intact.map { |entry| encode_file(entry.name, entry.data, salvage_parameters) }
+    archive = build_archive(encodings, salvage_parameters)
+    _examined, verified = verify_archive(archive, encodings.map(&:data))
+    [archive, encodings, verified]
+  end
+  def write_hex(name, archive)
+    write_lines(name, archive.bytes.each_slice(32).map { |group| group.pack('C*').unpack1('H*') })
+  end
+    parameters, files, supplied_archive = read_inputs
+    parsed = parse_archive(supplied_archive)
+    salvaged, salvage_encodings, salvage_verified = salvage_archive(parsed, parameters)
+    write_lines('test_report.txt', test_report(parsed, salvage_encodings, salvaged, salvage_verified))
+    write_lines('extracted.txt', extraction_report(parsed.intact))
+    write_hex('salvaged.hex', salvaged)

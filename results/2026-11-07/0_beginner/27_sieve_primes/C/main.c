@@ -1,0 +1,28 @@
+#include <stdio.h>
+
+int main(void) {
+    const int limit = 200;
+    _Bool prime[limit + 1];
+    for (int n = 0; n <= limit; n++)
+        prime[n] = n >= 2;
+    for (int p = 2; p <= limit; p++)
+        if (prime[p])
+            for (int j = p * 2; j <= limit; j += p)
+                prime[j] = 0;
+    int count = 0;
+    for (int n = 2; n <= limit; n++)
+        if (prime[n])
+            count++;
+    printf("count: %d\n", count);
+    int printed = 0;
+    for (int n = 2; n <= limit; n++)
+        if (prime[n]) {
+            if (printed % 10)
+                putchar(' ');
+            printf("%d", n);
+            printed++;
+            if (printed % 10 == 0 || printed == count)
+                putchar('\n');
+        }
+    return 0;
+}

@@ -1,0 +1,5 @@
+The prior input establishes height=12-5=7. For the selected assignment, token position starts after its equals sign. expression calls term then unary/primary, and the parenthesized expression reads height and subtracts 7 to zero. Division returns error.DivisionByZero; try propagates it before expression can consume `+ bonus`, so no bonus lookup occurs. The catch prints `error: division by zero` and continues, bypassing the later variables.put commit; height remains 7. Selected precedence, lookup, propagation and commit lines establish the complete single-assignment path without tokenizer implementation or other lines.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

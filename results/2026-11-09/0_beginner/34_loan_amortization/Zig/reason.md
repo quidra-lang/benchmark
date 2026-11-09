@@ -1,0 +1,5 @@
+The incoming balance is 1000000 and month starts at zero. Increment month first; integer interest is balance/100=10000. Actual payment is min(50000,balance+interest)=50000, principal is 40000, and next balance becomes 960000. Totals add that interest and actual payment before record emission; month 1 prints `month 1: interest=10000 principal=40000 balance=960000`. If a final balance plus interest is below 50000, the cap uses exactly that amount and principal clears the remaining balance. The selected loop preserves this update/emission order without tracing other months.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

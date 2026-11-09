@@ -1,0 +1,263 @@
+function read_rows(string $name): array {
+    $lines = explode("\n", file_get_contents("input/$name")); array_pop($lines); $result = [];
+    foreach (array_slice($lines, 1) as $index => $line) $result[] = [$index + 2, explode(',', $line)];
+    return $result;
+}
+class Item {
+    public string $id, $rule, $description;
+    public int $lead, $safety, $onHand, $material, $labor;
+    public function __construct(array $fields, public array $lot) {
+        $this->id = $fields[0]; $this->lead = (int)$fields[1]; $this->rule = $fields[2]; $this->safety = (int)$fields[4];
+        $this->onHand = (int)$fields[5]; $this->material = (int)$fields[6]; $this->labor = (int)$fields[7]; $this->description = $fields[8];
+    }
+    public function lotLabel(): string { return $this->rule === 'LFL' ? 'LFL' : $this->rule . ' ' . implode($this->rule === 'MIN' ? '/' : '', $this->lot); }
+}
+function lot_values(string $rule, string $text): ?array {
+    $values = array_map('intval', explode('/', $text));
+    $valid = $rule === 'MIN' ? count($values) === 2 && min($values) >= 1 : count($values) === 1 && ($rule === 'LFL' ? $values[0] === 0 : $values[0] >= 1);
+    return $valid ? $values : null;
+}
+function read_items(array &$errors): array {
+    $items = [];
+    foreach (read_rows('items.csv') as [$number, $fields]) {
+        [$id, , $rule, $lot] = $fields;
+        $reason = isset($items[$id]) ? "duplicate item $id" : (!in_array($rule, ['LFL', 'FOQ', 'POQ', 'MIN'], true) ? "unknown lot rule $rule" : (lot_values($rule, $lot) === null ? "bad lot parameter $lot for $rule" : null));
+        if ($reason !== null) $errors[] = "items.csv line $number: $reason";
+        else $items[$id] = new Item($fields, lot_values($rule, $lot));
+    }
+    return $items;
+}
+class BomRow {
+    public string $parent, $child;
+    public int $quantity, $scrap;
+    public function __construct(array $fields) { [$this->parent, $this->child] = $fields; $this->quantity = (int)$fields[2]; $this->scrap = (int)$fields[3]; }
+}
+function need(BomRow $row, int $quantity): int { return intdiv($quantity * $row->quantity * (100 + $row->scrap) + 99, 100); }
+class Bom {
+    public array $children, $parents;
+    public function __construct(array $items) { $this->children = $this->parents = array_fill_keys(array_keys($items), []); }
+    public function manufactured(string $id): bool { return count($this->children[$id]) > 0; }
+    public function code(string $id, array &$codes): int {
+        if (isset($codes[$id])) return $codes[$id];
+        $value = 0; foreach ($this->parents[$id] as $row) $value = max($value, $this->code($row->parent, $codes) + 1);
+        return $codes[$id] = $value;
+    }
+function read_bom(array $items, array &$errors): Bom {
+    $bom = new Bom($items);
+    foreach (read_rows('bom.csv') as [$number, $fields]) {
+        $row = new BomRow($fields); $parent = $row->parent; $child = $row->child; $reason = null;
+        if (!isset($items[$parent])) $reason = "unknown item $parent";
+        elseif (!isset($items[$child])) $reason = "unknown item $child";
+        elseif ($row->quantity < 1) $reason = "bad quantity $row->quantity";
+        elseif ($row->scrap > 50) $reason = "bad scrap $row->scrap";
+        elseif ($parent === $child) $reason = "cycle $parent -> $parent";
+        elseif (count(array_filter($bom->children[$parent], fn($other) => $other->child === $child)) > 0) $reason = "duplicate $parent -> $child";
+        else { $visited = []; $path = $bom->path($child, $parent, $visited); if ($path !== null) $reason = "cycle $parent -> " . implode(' -> ', $path); }
+        if ($reason !== null) { $errors[] = "bom.csv line $number: $reason"; continue; }
+        $bom->children[$parent][] = $row; $bom->parents[$child][] = $row;
+        usort($bom->children[$parent], fn($a, $b) => strcmp($a->child, $b->child));
+        usort($bom->parents[$child], fn($a, $b) => strcmp($a->parent, $b->parent));
+    }
+    return $bom;
+}
+class WorkCenter {
+    public string $id, $description;
+    public int $minutes, $efficiency, $available;
+    public function __construct(array $fields) { $this->id = $fields[0]; $this->minutes = (int)$fields[1]; $this->efficiency = (int)$fields[2]; $this->description = $fields[3]; $this->available = intdiv($this->minutes * $this->efficiency, 100); }
+}
+class Operation {
+    public string $item, $center;
+    public int $number, $setup, $run;
+    public function __construct(array $fields) { $this->item = $fields[0]; $this->number = (int)$fields[1]; $this->center = $fields[2]; $this->setup = (int)$fields[3]; $this->run = (int)$fields[4]; }
+    public function minutes(int $quantity): int { return $this->setup + $quantity * $this->run; }
+}
+function read_centers(array &$errors): array {
+    $centers = [];
+    foreach (read_rows('workcenters.csv') as [$number, $fields]) {
+        $id = $fields[0]; $efficiency = (int)$fields[2];
+        $reason = isset($centers[$id]) ? "duplicate center $id" : ($efficiency < 50 || $efficiency > 150 ? "bad efficiency $efficiency" : null);
+        if ($reason !== null) $errors[] = "workcenters.csv line $number: $reason"; else $centers[$id] = new WorkCenter($fields);
+    }
+    return $centers;
+}
+function read_routings(array $items, array $centers, Bom $bom, array &$errors): array {
+    $routings = [];
+    foreach (read_rows('routings.csv') as [$number, $fields]) {
+        $operation = new Operation($fields); $id = $operation->item; $center = $operation->center; $reason = null;
+        if (!isset($items[$id])) $reason = "unknown item $id";
+        elseif (!isset($centers[$center])) $reason = "unknown center $center";
+        elseif (!$bom->manufactured($id)) $reason = "purchased item $id";
+        elseif ($operation->run < 1) $reason = "bad run time $operation->run";
+        elseif (count(array_filter($routings[$id] ?? [], fn($other) => $other->number === $operation->number)) > 0) $reason = "duplicate $id operation $operation->number";
+        if ($reason !== null) $errors[] = "routings.csv line $number: $reason"; else $routings[$id][] = $operation;
+    }
+    foreach ($routings as $id => $operations) { usort($operations, fn($a, $b) => $a->number <=> $b->number); $routings[$id] = $operations; }
+    return $routings;
+}
+function operation_week(int $receipt, int $lead, int $index, int $count): int { return max($receipt - $lead + intdiv($index * $lead, $count), 1); }
+function lot_size(Item $item, int $week, int $projected, array $receipts, array $gross, int $horizon): int {
+    $net = $item->safety - $projected;
+    if ($item->rule === 'LFL') return $net;
+function sorted_ids(array $map): array { $ids = array_keys($map); usort($ids, fn($a, $b) => strcmp((string)$a, (string)$b)); return $ids; }
+class ScheduleRow {
+    public string $item;
+    public int $week, $quantity;
+    public function __construct(array $fields, public int $line) { $this->item = $fields[0]; $this->week = (int)$fields[1]; $this->quantity = (int)$fields[2]; }
+}
+class Inquiry {
+    public string $id, $item;
+    public int $quantity, $week;
+    public function __construct(array $fields, public int $line) { $this->id = $fields[0]; $this->item = $fields[1]; $this->quantity = (int)$fields[2]; $this->week = (int)$fields[3]; }
+}
+class Demand {
+    public function __construct(public string $item, public string $kind, public int $week, public int $quantity, public string $orderId = '', public int $line = 0, public string $parent = '', public int $parentNumber = 0) {}
+class PlannedOrder {
+    public int $originalRelease, $release;
+    public function __construct(public string $item, public int $number, public int $receipt, public int $quantity, int $lead) { $this->originalRelease = $receipt - $lead; $this->release = max(1, $this->originalRelease); }
+}
+class ItemPlan {
+    public array $demands = [], $gross, $onHand, $net, $plannedReceipts, $plannedReleases, $orders = [], $supplies = [], $orderSupplies = [];
+    public function __construct(public Item $item, int $horizon, public array $receipts) {
+        $this->gross = $this->onHand = $this->net = $this->plannedReceipts = $this->plannedReleases = array_fill(0, $horizon + 1, 0);
+        $this->onHand[0] = $item->onHand;
+    }
+    public function pastDue(): int { $total = 0; foreach ($this->orders as $order) if ($order->originalRelease < 1) $total += $order->quantity; return $total; }
+}
+class Plan {
+    public array $overloads = [];
+    public function __construct(public array $items, public array $loads, array $centers) {
+        foreach ($loads as $id => $weeks) $this->overloads[$id] = array_map(fn($load) => max(0, $load - $centers[$id]->available), $weeks);
+    }
+}
+class Promise {
+    public int $week = 0, $materialWeek = 0;
+    public string $reason = '';
+    public function __construct(public Inquiry $inquiry) {}
+    public function status(): string { return $this->week === 0 ? 'rejected' : ($this->week === $this->inquiry->week ? 'on_time' : 'late'); }
+}
+function schedule_error(ScheduleRow|Inquiry $row, array $items, int $horizon): ?string {
+    if (!isset($items[$row->item])) return "unknown item $row->item";
+    if ($row->week < 1 || $row->week > $horizon) return "week $row->week outside horizon";
+    if ($row->quantity < 1) return "bad quantity $row->quantity";
+    return null;
+}
+function read_schedule(string $name, array $items, int $horizon, array &$errors, bool $unique): array {
+    $rows = $seen = [];
+    foreach (read_rows($name) as [$number, $fields]) {
+        $row = new ScheduleRow($fields, $number); $reason = schedule_error($row, $items, $horizon); $key = $row->item . "\0" . $row->week;
+        if ($reason === null && $unique && isset($seen[$key])) $reason = "duplicate $row->item week $row->week";
+        if ($reason !== null) $errors[] = "$name line $number: $reason"; else { $rows[] = $row; $seen[$key] = true; }
+    }
+    return $rows;
+}
+class PlanningData {
+    public array $errors = [], $peg = [], $items, $centers, $routings, $inquiries = [], $mps = [], $codes = [], $cumulative = [], $order, $centerOrder, $weeks, $receipts, $scheduled;
+    public int $horizon = 0, $treeQuantity = 0;
+    public Bom $bom;
+    public function __construct() {
+        foreach (explode("\n", rtrim(file_get_contents('input/params.txt'), "\n")) as $line) {
+            $words = explode(' ', $line); $kind = array_shift($words);
+            if ($kind === 'horizon') $this->horizon = (int)$words[0]; elseif ($kind === 'peg') $this->peg = $words; else $this->treeQuantity = (int)$words[0];
+        }
+        $this->items = read_items($this->errors); $this->bom = read_bom($this->items, $this->errors); $this->centers = read_centers($this->errors);
+        $this->routings = read_routings($this->items, $this->centers, $this->bom, $this->errors);
+        $mps = read_schedule('mps.csv', $this->items, $this->horizon, $this->errors, true);
+        $receipts = read_schedule('receipts.csv', $this->items, $this->horizon, $this->errors, false); $seen = [];
+        foreach (read_rows('orders.csv') as [$number, $fields]) {
+            $inquiry = new Inquiry($fields, $number);
+            $reason = isset($seen[$inquiry->id]) ? "duplicate order $inquiry->id" : schedule_error($inquiry, $this->items, $this->horizon);
+            if ($reason !== null) $this->errors[] = "orders.csv line $number: $reason"; else { $this->inquiries[] = $inquiry; $seen[$inquiry->id] = true; }
+        }
+        foreach ($mps as $row) $this->mps[] = new Demand($row->item, 'MPS', $row->week, $row->quantity);
+        foreach ($this->items as $id => $_) { $this->bom->code((string)$id, $this->codes); $this->bom->cumulative((string)$id, $this->items, $this->cumulative); }
+        $this->order = sorted_ids($this->items); usort($this->order, fn($a, $b) => ($this->codes[$a] <=> $this->codes[$b]) ?: strcmp((string)$a, (string)$b));
+        $this->centerOrder = sorted_ids($this->centers); $this->weeks = range(1, $this->horizon);
+        $this->receipts = array_fill_keys(array_keys($this->items), []); $this->scheduled = array_fill_keys(array_keys($this->items), array_fill(0, $this->horizon + 1, 0));
+        usort($receipts, fn($a, $b) => ($a->week <=> $b->week) ?: ($a->line <=> $b->line));
+        foreach ($receipts as $row) { $this->receipts[$row->item][] = $row; $this->scheduled[$row->item][$row->week] += $row->quantity; }
+    }
+}
+function run_mrp(PlanningData $data, array $orders): Plan {
+    $plans = []; foreach ($data->order as $id) $plans[$id] = new ItemPlan($data->items[$id], $data->horizon, $data->scheduled[$id]);
+    foreach ([...$data->mps, ...$orders] as $demand) $plans[$demand->item]->demands[] = $demand;
+    foreach ($data->order as $id) {
+        $plan = $plans[$id]; $item = $plan->item;
+        foreach ($plan->demands as $demand) $plan->gross[$demand->week] += $demand->quantity;
+        $projected = $item->onHand;
+        foreach ($data->weeks as $week) {
+            $projected += $plan->receipts[$week] - $plan->gross[$week];
+            if ($projected < $item->safety) {
+                $quantity = lot_size($item, $week, $projected, $plan->receipts, $plan->gross, $data->horizon);
+                $order = new PlannedOrder($item->id, count($plan->orders) + 1, $week, $quantity, $item->lead); $plan->orders[] = $order;
+                $plan->net[$week] = $item->safety - $projected; $plan->plannedReceipts[$week] = $quantity; $plan->plannedReleases[$order->release] += $quantity; $projected += $quantity;
+            }
+            $plan->onHand[$week] = $projected;
+        }
+        foreach ($plan->orders as $order) foreach ($data->bom->children[$id] as $row) $plans[$row->child]->demands[] = new Demand($row->child, 'DEPENDENT', $order->release, need($row, $order->quantity), parent: $order->item, parentNumber: $order->number);
+    }
+    $loads = array_fill_keys(array_keys($data->centers), array_fill(0, $data->horizon + 1, 0));
+    foreach ($data->routings as $id => $operations) foreach ($plans[$id]->orders as $order) foreach ($operations as $index => $operation) $loads[$operation->center][operation_week($order->receipt, $data->items[$id]->lead, $index, count($operations))] += $operation->minutes($order->quantity);
+    return new Plan($plans, $loads, $data->centers);
+}
+function promise_inquiries(PlanningData $data, Plan $base): array {
+    $current = $base; $promised = $promises = [];
+    foreach ($data->inquiries as $inquiry) {
+        $promise = new Promise($inquiry);
+        for ($week = $inquiry->week; $week <= $data->horizon; $week++) {
+            $demand = new Demand($inquiry->item, 'ORDER', $week, $inquiry->quantity, $inquiry->id, $inquiry->line);
+            $trial = run_mrp($data, [...$promised, $demand]); $reason = null;
+            foreach ($data->order as $id) if ($trial->items[$id]->pastDue() > $current->items[$id]->pastDue()) { $reason = (string)$id; break; }
+            if ($reason === null) {
+                if ($promise->materialWeek === 0) $promise->materialWeek = $week;
+                foreach ($data->centerOrder as $id) foreach ($data->weeks as $w) if ($trial->overloads[$id][$w] > $current->overloads[$id][$w]) { $reason = "$id week $w"; break 2; }
+            }
+            if ($reason === null) { $promise->week = $week; $promised[] = $demand; $current = $trial; break; }
+            if ($week === $inquiry->week) $promise->reason = $reason;
+        }
+        $promises[] = $promise;
+    }
+    return [$promises, $current];
+}
+function grid_lines(PlanningData $data, Plan $plan): array {
+    $lines = [];
+    foreach ($data->order as $id) {
+        $p = $plan->items[$id]; $item = $p->item;
+        $lines[] = "ITEM $id LLC {$data->codes[$id]} LT $item->lead LOT " . $item->lotLabel() . " SS $item->safety OH $item->onHand $item->description";
+        $lines[] = table_row('WEEK', $data->weeks, 6);
+        foreach (['GROSS' => $p->gross, 'RECEIPTS' => $p->receipts, 'ON_HAND' => $p->onHand, 'NET' => $p->net, 'PLAN_RCPT' => $p->plannedReceipts, 'PLAN_REL' => $p->plannedReleases] as $label => $values) $lines[] = table_row($label, array_slice($values, 1), 6);
+        $lines[] = 'TOTAL gross ' . array_sum($p->gross) . ' receipts ' . array_sum($p->receipts) . ' planned ' . array_sum($p->plannedReceipts) . ' orders ' . count($p->orders) . ' ending ' . $p->onHand[$data->horizon];
+    }
+    return $lines;
+}
+function capacity_lines(PlanningData $data, Plan $plan): array {
+    $lines = $totals = [];
+    foreach ($data->centerOrder as $id) {
+        $center = $data->centers[$id]; $loads = array_slice($plan->loads[$id], 1); $overloads = array_slice($plan->overloads[$id], 1); $leveled = level_loads($plan->loads[$id], $center->available);
+        $total = $totals[$id] = array_sum($loads); $capacity = $center->available * $data->horizon; $peak = $total > 0 ? array_search(max($loads), $loads, true) + 1 : 0; $overloaded = count(array_filter($overloads, fn($over) => $over > 0)); $backlog = max(0, $leveled[1] - $center->available);
+        $lines[] = "CENTER $id minutes $center->minutes efficiency $center->efficiency available $center->available $center->description";
+        foreach (['WEEK' => $data->weeks, 'LOAD' => $loads, 'UTIL' => array_map(fn($load) => percent($load, $center->available), $loads), 'OVER' => $overloads, 'LEVELED' => array_slice($leveled, 1)] as $label => $values) $lines[] = table_row($label, $values, 7);
+        $lines[] = "TOTAL load $total available $capacity utilization " . percent($total, $capacity) . " overloaded $overloaded peak $peak backlog $backlog";
+    }
+    return $lines;
+}
+function promise_lines(PlanningData $data, array $promises, Plan $base, Plan $final): array {
+    $lines = []; $counts = ['on_time' => 0, 'late' => 0, 'rejected' => 0];
+    foreach ($promises as $promise) {
+        $inquiry = $promise->inquiry; $status = $promise->status(); $counts[$status]++; $head = "ORDER $inquiry->id $inquiry->item quantity $inquiry->quantity requested $inquiry->week"; $material = $promise->materialWeek > 0 ? (string)$promise->materialWeek : 'none';
+        if ($status === 'rejected') { $lines[] = "$head rejected material $material reason $promise->reason"; continue; }
+        $lines[] = $status === 'on_time' ? "$head promised $promise->week" : "$head promised $promise->week late " . ($promise->week - $inquiry->week) . " material $material reason $promise->reason";
+        foreach ($data->order as $id) foreach ($final->items[$id]->orderSupplies as $supply) if ($supply->serves($inquiry->id)) { $order = $supply->order; $lines[] = "  SUPPLY $id order $order->number receipt $order->receipt release $order->release quantity $order->quantity"; }
+    }
+    foreach ($data->order as $id) {
+        $before = $base->items[$id]; $after = $final->items[$id]; $changed = 0;
+        foreach ($data->weeks as $week) if ($before->plannedReceipts[$week] !== $after->plannedReceipts[$week]) { $changed = $week; break; }
+        if ($changed > 0) $lines[] = "CHANGE $id from $changed planned " . array_sum($before->plannedReceipts) . ' -> ' . array_sum($after->plannedReceipts) . ' orders ' . count($before->orders) . ' -> ' . count($after->orders);
+    }
+    $lines[] = 'SUMMARY orders ' . count($promises) . " on_time {$counts['on_time']} late {$counts['late']} rejected {$counts['rejected']}";
+    return $lines;
+}
+$data = new PlanningData(); $base = run_mrp($data, []); [$promises, $final] = promise_inquiries($data, $base); peg_plan($data, $final);
+foreach (['mrp_grid.txt' => grid_lines($data, $final), 'pegging.txt' => pegging_lines($data, $final), 'bom_tree.txt' => bom_tree_lines($data), 'cost_rollup.csv' => cost_lines($data, $final, $costs),
+    'exceptions.txt' => exception_lines($data, $final), 'capacity.txt' => capacity_lines($data, $final), 'promises.txt' => promise_lines($data, $promises, $base, $final), 'releases.txt' => release_lines($data, $final), 'value_plan.csv' => value_lines($data, $final, $costs)] as $name => $lines) write_report($name, $lines);
+function table_row(string $label, array $values, int $width): string { return str_pad($label, 10) . implode('', array_map(fn($value) => str_pad((string)$value, $width, ' ', STR_PAD_LEFT), $values)); }
+function write_report(string $name, array $lines): void { if (!is_dir('output')) mkdir('output', 0777, true); file_put_contents("output/$name", $lines ? implode("\n", $lines) . "\n" : ''); }

@@ -1,0 +1,462 @@
+type Token struct {
+	Kind, Text string
+	Value      any
+}
+type Expr struct {
+	Kind, Type string
+	Value      any
+	Args       []*Expr
+}
+
+func node(kind, typ string, value any, args ...*Expr) *Expr {
+	return &Expr{kind, typ, value, args}
+}
+
+type PrintItem struct {
+	Kind string
+	Expr *Expr
+}
+type Statement struct {
+	Kind                 string
+	Line                 int
+	Next                 *Statement
+	Items                []PrintItem
+type SyntaxFault struct{}
+type BasicFault struct{ Message string }
+
+func syntax()             { panic(SyntaxFault{}) }
+func fault(reason string) { panic(BasicFault{reason}) }
+
+var signatures = map[string][]string{
+	"ABS": {"I"}, "SGN": {"I"}, "INT": {"I"}, "SQR": {"I"}, "RND": {"I"},
+var operators = [][]string{
+	{"OR"}, {"AND"}, {}, {"=", "<>", "<", ">", "<=", ">="},
+	{"+", "-"}, {"*", "/", "MOD"}, {}, {"^"},
+}
+
+func contains(words []string, word string) bool {
+	for _, w := range words {
+		if w == word {
+			return true
+		}
+	}
+	return false
+}
+func digit(c byte) bool { return c >= '0' && c <= '9' }
+func upper(c byte) bool { return c >= 'A' && c <= 'Z' }
+func nameType(name string) string {
+	if strings.HasSuffix(name, "$") {
+		return "S"
+	}
+	return "I"
+}
+func tokenize(text string) []Token {
+	tokens := []Token{}
+	for p := 0; p < len(text); {
+		ch := text[p]
+		if ch == ' ' {
+			p++
+			continue
+		}
+		if ch == '"' {
+			end := strings.IndexByte(text[p+1:], '"')
+			if end < 0 {
+				syntax()
+			}
+			end += p + 1
+			tokens = append(tokens, Token{"S", text[p : end+1], text[p+1 : end]})
+			p = end + 1
+		} else if digit(ch) {
+			start := p
+			for p < len(text) && digit(text[p]) {
+				p++
+			}
+			word := text[start:p]
+			n, e := strconv.Atoi(word)
+			if e != nil || n > 32767 {
+				syntax()
+			}
+			tokens = append(tokens, Token{"I", word, n})
+		} else if upper(ch) {
+			start := p
+			for p < len(text) && (upper(text[p]) || digit(text[p])) {
+				p++
+			}
+			if p < len(text) && text[p] == '$' {
+				p++
+			}
+			word := text[start:p]
+			tokens = append(tokens, Token{"W", word, word})
+		} else {
+			if !strings.ContainsRune("+-*/^=<>() ,;:", rune(ch)) {
+				syntax()
+			}
+			word := string(ch)
+			if p+1 < len(text) {
+				pair := text[p : p+2]
+				if pair == "<>" || pair == "<=" || pair == ">=" {
+					word = pair
+				}
+			}
+			tokens = append(tokens, Token{"P", word, word})
+			p += len(word)
+		}
+	}
+	return append(tokens, Token{"E", "", ""})
+}
+
+type Parser struct {
+	Tokens []Token
+	Pos    int
+}
+
+func (p *Parser) current() Token { return p.Tokens[p.Pos] }
+func (p *Parser) at(word string) bool {
+	t := p.current()
+	return (t.Kind == "P" || t.Kind == "W") && t.Text == word
+}
+func (p *Parser) take(word string) bool {
+	if !p.at(word) {
+		return false
+	}
+	p.Pos++
+	return true
+}
+func (p *Parser) expect(word string) {
+	if !p.take(word) {
+		syntax()
+	}
+}
+func (p *Parser) integer(level int) *Expr {
+	e := p.expression(level)
+	if e.Type != "I" {
+		syntax()
+	}
+	return e
+}
+func (p *Parser) primary() *Expr {
+	t := p.current()
+	if t.Kind == "I" || t.Kind == "S" {
+		p.Pos++
+		return node("constant", t.Kind, t.Value)
+	}
+	if p.take("(") {
+		e := p.expression(0)
+		p.expect(")")
+		return e
+	}
+	if t.Kind == "W" && signatures[t.Text] != nil {
+		p.Pos++
+		p.expect("(")
+		args := []*Expr{p.expression(0)}
+		for p.take(",") {
+			args = append(args, p.expression(0))
+		}
+		p.expect(")")
+		types := ""
+		for _, e := range args {
+			types += e.Type
+		}
+		if !contains(signatures[t.Text], types) {
+			syntax()
+		}
+		return node("call", nameType(t.Text), t.Text, args...)
+	}
+	syntax()
+	return nil
+}
+func (p *Parser) expression(level int) *Expr {
+	if level == 2 && p.take("NOT") {
+		return node("unary", "I", "NOT", p.integer(2))
+	}
+	if level == 6 && p.take("-") {
+		return node("unary", "I", "-", p.integer(6))
+	}
+	if level == 8 {
+		return p.primary()
+	}
+	left := p.expression(level + 1)
+	for contains(operators[level], p.current().Text) {
+		op := p.current().Text
+		p.Pos++
+		next := level + 1
+		if level == 7 {
+			next = 6
+		}
+		right := p.expression(next)
+		if left.Type != right.Type || (left.Type == "S" && level != 3 && op != "+") {
+			syntax()
+		}
+		typ := left.Type
+		if level == 3 {
+			typ = "I"
+		}
+		left = node("binary", typ, op, left, right)
+		if level == 7 {
+			break
+		}
+	}
+	return left
+}
+func (p *Parser) list(inside bool) []*Statement {
+	out := []*Statement{p.statement(inside)}
+	for p.take(":") {
+		out = append(out, p.statement(inside))
+	}
+	return out
+}
+func (p *Parser) statement(inside bool) *Statement {
+	word := p.current().Text
+	if inside && contains([]string{"IF", "FOR", "NEXT", "WHILE", "WEND", "DATA"}, word) {
+		syntax()
+	}
+	s := &Statement{Kind: word}
+	if p.take("PRINT") {
+		lastValue := false
+		for p.current().Kind != "E" && !p.at(":") && !p.at("ELSE") {
+			if p.take(";") {
+				s.Items = append(s.Items, PrintItem{Kind: ";"})
+				lastValue = false
+			} else if p.take(",") {
+				s.Items = append(s.Items, PrintItem{Kind: ","})
+				lastValue = false
+			} else {
+				kind := "value"
+				if p.at("TAB") {
+					kind = "TAB"
+				} else if p.at("SPC") {
+					kind = "SPC"
+				}
+				if kind == "value" && lastValue {
+					syntax()
+				}
+				var e *Expr
+				if kind == "value" {
+					e = p.expression(0)
+				s.Items = append(s.Items, PrintItem{kind, e})
+				lastValue = kind == "value"
+			}
+		}
+		return s
+	}
+func (p *Parser) parse() []*Statement {
+	result := p.list(false)
+	if p.current().Kind != "E" {
+		syntax()
+	}
+	return result
+}
+	DataPos, InputPos, Random, Handler, Err, Erl int
+	Handling                                     bool
+	Buffer                                       string
+	Output                                       []string
+func newMachine(inputs []string) *Machine {
+	return &Machine{
+		Inputs: inputs, Variables: map[string]any{}, Arrays: map[string]*ArrayDef{},
+		Entries: map[int]*Statement{}, Random: 1,
+	}
+}
+func (m *Machine) endLine() {
+	m.Output = append(m.Output, strings.TrimRight(m.Buffer, " "))
+	m.Buffer = ""
+}
+func (m *Machine) message(s string) {
+	if len(m.Buffer) > 0 {
+		m.endLine()
+	}
+	m.Output = append(m.Output, s)
+}
+func checked(value int) int {
+	if value < -32768 || value > 32767 {
+		fault("OVERFLOW")
+	}
+	return value
+}
+func (m *Machine) evaluate(e *Expr) any {
+	op := e.Value
+	if e.Kind == "constant" {
+		return op
+	}
+	if e.Kind == "unary" {
+		a := m.evaluate(e.Args[0]).(int)
+		if op == "NOT" {
+			return ^a
+		}
+		return checked(-a)
+	}
+	args := make([]any, len(e.Args))
+	for i, child := range e.Args {
+		args[i] = m.evaluate(child)
+	}
+	if e.Kind == "call" {
+		return m.call(op.(string), args)
+	}
+	a, b := args[0], args[1]
+	x, y := a.(int), b.(int)
+	switch op {
+	case "/":
+		if y == 0 {
+			fault("DIVISION BY ZERO")
+		}
+		return checked(x / y)
+	case "MOD":
+		if y == 0 {
+			fault("DIVISION BY ZERO")
+		}
+		return x - y*(x/y)
+	case "AND":
+		return x & y
+	case "OR":
+		return x | y
+	}
+	fault("ILLEGAL FUNCTION CALL")
+	return 0
+}
+
+var valRegex = regexp.MustCompile(`^ *([+-]?[0-9]+)`)
+
+func (m *Machine) call(name string, args []any) any {
+	a := args[0]
+	switch name {
+	case "RND":
+		n := a.(int)
+		if n < 1 {
+			fault("ILLEGAL FUNCTION CALL")
+		}
+		m.Random = m.Random * 48271 % 2147483647
+		return m.Random%n + 1
+func (m *Machine) execute(s *Statement) *Statement {
+	next := s.Next
+	switch s.Kind {
+	case "PRINT":
+		for _, item := range s.Items {
+			if item.Kind == "," {
+				m.Buffer += strings.Repeat(" ", 10-len(m.Buffer)%10)
+			} else if item.Kind != ";" {
+				value := m.evaluate(item.Expr)
+				if item.Kind == "value" {
+					m.Buffer += fmt.Sprint(value)
+			}
+		}
+		if len(s.Items) == 0 || s.Items[len(s.Items)-1].Kind != ";" &&
+			s.Items[len(s.Items)-1].Kind != "," {
+			m.endLine()
+		}
+	return next
+func (m *Machine) connect(body []*Statement, after *Statement, number int) {
+	next := after
+	for i := len(body) - 1; i >= 0; i-- {
+		s := body[i]
+		s.Line = number
+		s.Next = next
+		next = s
+	}
+}
+func (m *Machine) finish() []string {
+	if len(m.Buffer) > 0 {
+		m.endLine()
+	}
+	m.Output = append(m.Output, "READY")
+	return m.Output
+}
+func safeParse(text string) (result []*Statement, err bool) {
+	defer func() {
+		if e := recover(); e != nil {
+			if _, ok := e.(SyntaxFault); !ok {
+				panic(e)
+			}
+			err = true
+		}
+	}()
+	result = (&Parser{Tokens: tokenize(text)}).parse()
+	return
+}
+func (m *Machine) safeExecute(s *Statement) (next *Statement, reason string) {
+	defer func() {
+		if e := recover(); e != nil {
+			if fault, ok := e.(BasicFault); ok {
+				reason = fault.Message
+			} else {
+				panic(e)
+			}
+		}
+	}()
+	next = m.execute(s)
+	return
+}
+func (m *Machine) run(source map[int]string) []string {
+	numbers := make([]int, 0, len(source))
+	for n := range source {
+		numbers = append(numbers, n)
+	}
+	sort.Ints(numbers)
+	parsed := []ProgramLine{}
+	for _, n := range numbers {
+		body, err := safeParse(source[n])
+		if err {
+			m.message(fmt.Sprintf("ERROR IN LINE %d: SYNTAX ERROR", n))
+			return m.finish()
+		}
+		parsed = append(parsed, ProgramLine{n, body})
+	}
+	var after *Statement
+	for i := len(parsed) - 1; i >= 0; i-- {
+		entry := parsed[i]
+		m.connect(entry.Body, after, entry.Number)
+		m.Entries[entry.Number] = entry.Body[0]
+		after = entry.Body[0]
+	}
+	for position := after; position != nil; {
+		current := position
+		next, reason := m.safeExecute(current)
+		if reason != "" {
+			if m.Handler != 0 && !m.Handling {
+			} else {
+				m.message(fmt.Sprintf("ERROR IN LINE %d: %s", current.Line, reason))
+				position = nil
+			}
+		} else {
+			position = next
+		}
+	}
+	return m.finish()
+}
+func main() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 4096), 8*1024*1024)
+	scanner.Scan()
+	count, _ := strconv.Atoi(strings.TrimSuffix(scanner.Text(), "\r"))
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	for range count {
+		source := map[int]string{}
+		for scanner.Scan() {
+			text := strings.TrimSuffix(scanner.Text(), "\r")
+			if text == "RUN" {
+				break
+			}
+			index := strings.IndexByte(text, ' ')
+			key := text
+			if index >= 0 {
+				key = text[:index]
+			}
+			n, _ := strconv.Atoi(key)
+			if index < 0 {
+				delete(source, n)
+			} else {
+				source[n] = strings.TrimLeft(text[index+1:], " ")
+			}
+		}
+		inputs := []string{}
+		for scanner.Scan() {
+			text := strings.TrimSuffix(scanner.Text(), "\r")
+			if text == "END" {
+				break
+			}
+			inputs = append(inputs, text)
+		}
+		for _, line := range newMachine(inputs).run(source) {
+			fmt.Fprintln(out, line)
+		}
+	}
+}

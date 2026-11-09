@@ -1,0 +1,86 @@
+            Stats.Core counters = cores.get(core);
+            Cache cache = l1.get(core);
+            Map<Integer, List<String>> before = new HashMap<>();
+            if (primary)
+                for (int watched : config.watch)
+                    before.put(watched, lineStates(watched));
+            String old = cache.state(block);
+            boolean hit = !old.equals("I");
+            counters.simple.add("accesses", 1);
+            counters.simple.add(event.op.equals("R") ? "reads" : "writes", 1);
+            counters.simple.add(hit ? "hits" : "misses", 1);
+            boolean otherCopy = false;
+            for (int k = 0; k < config.cores; k++)
+                if (k != core && !l1.get(k).state(block).equals("I"))
+                    otherCopy = true;
+            Protocol.Request transition =
+                Protocol.requester(scenario.protocol(), old, event.op, otherCopy);
+            String missKind = null;
+            if (hit)
+                cache.touch(block);
+            int completion;
+            String service;
+            if (transition.transaction() == null) {
+                completion = issue + config.t1;
+                service = "l1";
+            } else {
+                BusResult result =
+                    runTransaction(core, transition.transaction(), block, word, issue + config.t1);
+                completion = result.completion();
+                Bus.Transaction tx = result.transaction();
+                service = tx.kind.equals("BusUpgr") ? "upgrade"
+                          : tx.kind.equals("BusWr") ? "through"
+                          : tx.supplier != null     ? "cache"
+                          : tx.l2.equals("hit")     ? "l2"
+                                                    : "memory";
+            }
+            if (!old.equals("I"))
+                cache.change(block, transition.state());
+            int latency = completion - issue;
+            counters.service.add(service, 1);
+            counters.simple.add("latency", latency);
+            if (event.op.equals("R")) {
+                counters.simple.add("read_latency", latency);
+                ready[core] = completion;
+            } else {
+            counters.finish = Math.max(counters.finish, completion);
+            processed.add(new Processed(event, issue, latency, service, missKind, hit));
+            if (primary)
+                renderWatch(event, issue, before);
+    void touchWay(int row, int way, boolean fill) {
+        if (replacement.equals("LRU") || replacement.equals("FIFO") && fill)
+            touched[row][way] = ++clock;
+        else if (replacement.equals("PLRU")) {
+            int low = 0, high = ways, node = 1;
+            while (high - low > 1) {
+                int mid = (low + high) / 2;
+                if (way < mid) {
+                    bits[row][node] = 1;
+                    high = mid;
+                    node *= 2;
+                } else {
+                    bits[row][node] = 0;
+                    low = mid;
+                    node = 2 * node + 1;
+                }
+            }
+        }
+    }
+    void touch(int block) {
+        Location p = locate(block);
+        if (p != null)
+            touchWay(p.row(), p.way(), false);
+    }
+    static Request requester(String protocol, String old, String op, boolean otherHasLine) {
+        if (protocol.equals("VI"))
+            return op.equals("R") ? new Request(old.equals("I") ? "BusRd" : null, "V")
+                                  : new Request("BusWr", old.equals("I") ? "I" : "V");
+        if (old.equals("I"))
+            return op.equals("W")
+                ? new Request("BusRdX", "M")
+                : new Request("BusRd", !protocol.equals("MSI") && !otherHasLine ? "E" : "S");
+        if (op.equals("R"))
+            return new Request(null, old);
+        return old.equals("M") || old.equals("E") ? new Request(null, "M")
+                                                  : new Request("BusUpgr", "M");
+    }

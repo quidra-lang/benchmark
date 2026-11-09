@@ -1,0 +1,244 @@
+enum Strategy: string { case Kind = 'KIND'; case Straight = 'STRAIGHT'; case High = 'HIGH'; case Upper = 'UPPER'; }
+enum JokerRule: string { case Forced = 'FORCED'; case Free = 'FREE'; case Off = 'OFF'; }
+final class CommandError extends RuntimeException {}
+
+function positive(string $word, int $maximum): int {
+    if (preg_match('/\A[1-9][0-9]*\z/', $word) !== 1 || (int)$word > $maximum) throw new CommandError("bad value $word");
+    return (int)$word;
+}
+
+function checkName(string $word): void {
+    if (preg_match('/\A[A-Z]{1,8}\z/', $word) !== 1) throw new CommandError("bad name $word");
+}
+
+function parsePattern(string $word): int {
+    if (preg_match('/\A[01]{5}\z/', $word) !== 1) throw new CommandError("bad pattern $word");
+    return intval($word, 2);
+}
+
+function parseCategory(string $word): int {
+    $category = array_search($word, Dice::CATEGORIES, true);
+    if ($category === false) throw new CommandError("bad category $word");
+    return $category;
+final readonly class Candidates {
+    public function __construct(public array $points, public int $allowed, public bool $joker, public int $best) {}
+final class Dice {
+    public const CATEGORIES = ['ONES', 'TWOS', 'THREES', 'FOURS', 'FIVES', 'SIXES', 'THREEKIND', 'FOURKIND', 'FULLHOUSE', 'SMALL', 'LARGE', 'YAHTZEE', 'CHANCE'];
+    public static function held(int $mask, int $die): bool { return ($mask & (1 << (4 - $die))) !== 0; }
+    public static function pattern(int $mask): string { return str_pad(decbin($mask), 5, '0', STR_PAD_LEFT); }
+    public static function faces(?array $faces, int $mask = 31): string {
+        $selected = [];
+        if ($faces !== null) for ($i = 0; $i < 5; $i++) if (self::held($mask, $i)) $selected[] = $faces[$i];
+        return $selected === [] ? '-' : implode(' ', $selected);
+    }
+    public static function counts(array $faces): array {
+        $counts = array_fill(0, 6, 0);
+        foreach ($faces as $face) $counts[$face - 1]++;
+        return $counts;
+    }
+    public static function yahtzee(array $counts): bool { return in_array(5, $counts, true); }
+    public static function normal(int $category, array $counts): int {
+        if ($category < 6) return ($category + 1) * $counts[$category];
+    public static function evaluate(Player $player, array $counts, JokerRule $rule): Candidates {
+        $allowed = 0;
+        for ($c = 0; $c < 13; $c++) if ($player->scores[$c] === null) $allowed |= 1 << $c;
+        $joker = $rule !== JokerRule::Off && self::yahtzee($counts) && $player->scores[11] !== null;
+        if ($joker && $rule === JokerRule::Forced) {
+        $points = array_fill(0, 13, -1);
+        $best = -1;
+        for ($c = 0; $c < 13; $c++) {
+            if ($player->scores[$c] !== null) continue;
+            $points[$c] = ($allowed & (1 << $c)) === 0 ? 0
+                : ($joker && $c >= 8 && $c <= 10 ? [25, 30, 40][$c - 8] : self::normal($c, $counts));
+            if ($best < 0 || $points[$c] > $points[$best]) $best = $c;
+        }
+        return new Candidates($points, $allowed, $joker, $best);
+final class Player {
+    public array $scores;
+    public int $yahtzeeBonus = 0;
+    public function __construct(public readonly string $name, public Strategy $strategy = Strategy::Kind) {
+        $this->scores = array_fill(0, 13, null);
+    }
+    public function upper(): int {
+        $sum = 0;
+        for ($c = 0; $c < 6; $c++) $sum += $this->scores[$c] ?? 0;
+        return $sum;
+    }
+    public function upperBonus(): int { return $this->upper() >= 63 ? 35 : 0; }
+    public function total(): int {
+        $sum = $this->upperBonus() + $this->yahtzeeBonus;
+        foreach ($this->scores as $score) $sum += $score ?? 0;
+        return $sum;
+    }
+    public function round(): int {
+        $round = 1;
+        foreach ($this->scores as $score) if ($score !== null) $round++;
+        return $round;
+    }
+}
+
+final readonly class Turn {
+    public function __construct(public int $seat = 0, public int $rolls = 0, public ?array $faces = null, public int $hold = 0, public bool $finished = false) {}
+}
+final readonly class ScoreEntry {
+    public function __construct(public Turn $before, public int $category, public int $points, public int $bonus, public bool $joker) {}
+}
+final readonly class RedoEntry {
+    public function __construct(public Turn $after, public ScoreEntry $entry) {}
+}
+
+final class Game {
+    public readonly SplQueue $loaded;
+    public array $faceTotals = [0, 0, 0, 0, 0, 0];
+    public array $entries = [];
+    public array $redoList = [];
+    public Turn $state;
+    public function __construct(public int $randomState, public readonly array $players, public readonly int $maxRolls,
+                                public readonly JokerRule $joker, private readonly ?Closure $output = null) {
+        $this->loaded = new SplQueue();
+        $this->state = new Turn();
+    }
+    public function current(): Player { return $this->players[$this->state->seat]; }
+    private function emit(string $format, mixed ...$args): void {
+        if ($this->output !== null) ($this->output)($args === [] ? $format : sprintf($format, ...$args));
+    }
+    public function checkTurn(): void {
+        if ($this->state->finished) throw new CommandError('game over');
+    }
+    public function checkRolled(): void {
+        $this->checkTurn();
+        if ($this->state->rolls === 0) throw new CommandError('not rolled');
+    }
+    public function checkRollsLeft(): void {
+        $this->checkRolled();
+        if ($this->state->rolls === $this->maxRolls) throw new CommandError('no rolls left');
+    }
+    public function roll(): void {
+        $this->checkTurn();
+        $turn = $this->state;
+        if ($turn->rolls === $this->maxRolls) throw new CommandError('no rolls left');
+        if ($turn->hold === 31) throw new CommandError('all dice held');
+        $this->redoList = [];
+        $faces = $turn->faces ?? array_fill(0, 5, 0);
+        for ($i = 0; $i < 5; $i++) {
+            if ($turn->rolls > 0 && Dice::held($turn->hold, $i)) continue;
+            if (!$this->loaded->isEmpty()) $faces[$i] = $this->loaded->dequeue();
+            else {
+                $this->randomState = 48271 * $this->randomState % 2147483647;
+                $faces[$i] = $this->randomState % 6 + 1;
+            }
+            $this->faceTotals[$faces[$i] - 1]++;
+        }
+        $this->state = new Turn($turn->seat, $turn->rolls + 1, $faces, $turn->hold);
+        $this->emit('%s roll %d: %s', $this->current()->name, $this->state->rolls, Dice::faces($faces));
+    }
+    public function hold(int $mask): void {
+        $this->checkRollsLeft();
+        $this->redoList = [];
+        $turn = $this->state;
+        $this->state = new Turn($turn->seat, $turn->rolls, $turn->faces, $mask);
+        $this->emit('%s holds %s: %s', $this->current()->name, Dice::pattern($mask), Dice::faces($turn->faces, $mask));
+    public function score(int $category, bool $preview = false): void {
+        $this->checkRolled();
+        $player = $this->current();
+        if ($player->scores[$category] !== null) throw new CommandError(Dice::CATEGORIES[$category] . ' already used');
+        $counts = Dice::counts($this->state->faces);
+        $candidates = Dice::evaluate($player, $counts, $this->joker);
+        if (($candidates->allowed & (1 << $category)) === 0) {
+            $upper = Dice::frequent($counts);
+            throw new CommandError('joker requires ' . ($player->scores[$upper] === null ? Dice::CATEGORIES[$upper] : 'lower box'));
+        }
+        $points = $candidates->points[$category];
+        $bonus = Dice::yahtzee($counts) && $player->scores[11] === 50 ? 100 : 0;
+        $upperBonus = $category < 6 && $player->upper() < 63 && $player->upper() + $points >= 63 ? 35 : 0;
+        $line = sprintf('%s %s %d in %s', $player->name, $preview ? 'would score' : 'scores', $points, Dice::CATEGORIES[$category]);
+        if ($candidates->joker) $line .= ' joker';
+        if ($bonus !== 0) $line .= ' ybonus 100';
+        if ($upperBonus !== 0) $line .= ' ubonus 35';
+        $line .= ' total ' . ($player->total() + $points + $bonus + $upperBonus);
+        if ($preview) { $this->emit($line); return; }
+        $this->redoList = [];
+        $this->entries[] = new ScoreEntry($this->state, $category, $points, $bonus, $candidates->joker);
+        $player->scores[$category] = $points;
+        $player->yahtzeeBonus += $bonus;
+        $this->state = count($this->entries) === 13 * count($this->players) ? new Turn(finished: true)
+            : new Turn(seat: ($this->state->seat + 1) % count($this->players));
+        $this->emit($line);
+        if ($this->state->finished) $this->emit('game over');
+        else $this->emit('turn %d %s', $this->current()->round(), $this->current()->name);
+    }
+    public function undo(): void {
+        if ($this->entries === []) throw new CommandError('nothing to undo');
+        $entry = array_pop($this->entries);
+        $this->redoList[] = new RedoEntry($this->state, $entry);
+        $player = $this->players[$entry->before->seat];
+        $player->scores[$entry->category] = null;
+        $player->yahtzeeBonus -= $entry->bonus;
+        $this->state = $entry->before;
+        $this->emit('undo %s %s %d', $player->name, Dice::CATEGORIES[$entry->category], $entry->points);
+    }
+    public function redo(): void {
+        if ($this->redoList === []) throw new CommandError('nothing to redo');
+        $saved = array_pop($this->redoList);
+        $entry = $saved->entry;
+        $player = $this->players[$entry->before->seat];
+        $player->scores[$entry->category] = $entry->points;
+        $player->yahtzeeBonus += $entry->bonus;
+        $this->entries[] = $entry;
+        $this->state = $saved->after;
+        $this->emit('redo %s %s %d', $player->name, Dice::CATEGORIES[$entry->category], $entry->points);
+final class Program {
+    private int $rolls = 3;
+    private JokerRule $joker = JokerRule::Forced;
+    private ?Game $game = null;
+    public array $output = [];
+    public function emit(string $format, mixed ...$args): void { $this->output[] = $args === [] ? $format : sprintf($format, ...$args); }
+    private function table(): Game { return $this->game ?? throw new CommandError('no game'); }
+    public function execute(array $words): void {
+        switch ($words[0]) {
+            case 'GAME':
+                $seed = positive($words[1], 2147483646);
+                $names = array_slice($words, 2);
+                foreach ($names as $name) checkName($name);
+                if (count($names) > 6) throw new CommandError('too many players');
+                if ($this->game !== null) throw new CommandError('game in progress');
+                $seen = [];
+                foreach ($names as $name) {
+                    if (isset($seen[$name])) throw new CommandError("duplicate name $name");
+                    $seen[$name] = true;
+                }
+                $this->game = new Game($seed, array_map(fn(string $name): Player => new Player($name), $names), $this->rolls, $this->joker, $this->emit(...));
+                $this->emit('game seed %d players %s', $seed, implode(' ', $names));
+                $this->emit('turn 1 %s', $names[0]);
+                return;
+            case 'LOAD':
+            case 'KEEP':
+                $values = [];
+                foreach (array_slice($words, 1) as $word) $values[] = positive($word, 6);
+                $table = $this->table();
+                if ($words[0] === 'KEEP') $table->keep($values);
+                else { foreach ($values as $value) $table->loaded->enqueue($value); $this->emit('loaded %d', $table->loaded->count()); }
+                return;
+            case 'ROLL': $this->table()->roll(); return;
+            case 'HOLD':
+            case 'ODDS':
+                $mask = parsePattern($words[1]);
+                $table = $this->table();
+                if ($words[0] === 'HOLD') $table->hold($mask); else $this->odds($table, $mask);
+                return;
+            case 'SCORE':
+            case 'WHATIF':
+                $category = parseCategory($words[1]);
+                $this->table()->score($category, $words[0] === 'WHATIF');
+                return;
+            case 'UNDO': $this->table()->undo(); return;
+            case 'REDO': $this->table()->redo(); return;
+            default: throw new CommandError('unknown command ' . $words[0]);
+$count = (int)trim(fgets(STDIN));
+$program = new Program();
+for ($i = 0; $i < $count; $i++) {
+    $words = explode(' ', rtrim(fgets(STDIN), "\r\n"));
+    try { $program->execute($words); }
+    catch (CommandError $error) { $program->emit('error: %s', $error->getMessage()); }
+}
+if ($program->output !== []) echo implode("\n", $program->output), "\n";

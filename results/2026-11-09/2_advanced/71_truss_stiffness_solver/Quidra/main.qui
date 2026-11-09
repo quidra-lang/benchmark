@@ -1,0 +1,579 @@
+import math
+import model_io = "./model_io.qui"
+import assembly = "./assembly.qui"
+import solver = "./solver.qui"
+import postprocess = "./postprocess.qui"
+import design = "./design.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+real64 total(real64[] values)
+    if #values == 0
+        return 0.0
+    result := values[0]
+    for: 1 <= i < int(#values)
+        result += values[i]
+    return result
+
+int rounded_units(real64 value, int digits)
+    scale := 10 ^ digits
+    units := math.floor(absolute(value) * real64(scale) + 0.5)
+    return if value < 0.0 then -units else units
+
+string fixed(real64 value, int digits)
+    units := rounded_units(value, digits)
+    sign := if units < 0 then "-" else ""
+    if units < 0
+        units = -units
+    scale := 10 ^ digits
+    tail := string(units % scale)
+    return sign + string(units / scale) + "." + "0" * nat(digits - int(#tail)) + tail
+
+string format_real(real64 value)
+    return fixed(value, 4)
+
+int extreme(real64[] values, bool minimum)
+    chosen := 0
+    for: 1 <= i < int(#values)
+        candidate := rounded_units(values[i], 4)
+        current := rounded_units(values[chosen], 4)
+        if (minimum and candidate < current) or (not minimum and candidate > current)
+            chosen = i
+    return chosen
+
+bool contains(int[] values, int wanted)
+    return model_io.index_of(values, wanted) >= 0
+
+int[][] adjacency(model_io.Node[] nodes, model_io.Member[] members)
+    int[][] neighbours := [for i := (0:<int(#nodes))[] then []]
+    for member := members[]
+        neighbours[member.start] = neighbours[member.start].append(member.end)
+        neighbours[member.end] = neighbours[member.end].append(member.start)
+    return neighbours
+
+int[] degree_order(int[] nodes, int[][] neighbours, model_io.Node[] descriptions)
+    keys := [for node := nodes[] then int(#neighbours[node]) * 1000 + descriptions[node].identifier]
+    int[] result := []
+    for key := keys.sorted()[]
+        result = result.append(nodes[model_io.index_of(keys, key)])
+    return result
+
+int[] renumber(int[][] neighbours, model_io.Node[] nodes)
+    all_nodes := [for i := (0:<int(#nodes))[] then i]
+    queue := [degree_order(all_nodes, neighbours, nodes)[0]]
+    cursor := 0
+    while cursor < int(#queue)
+        following := [for node := neighbours[queue[cursor]][] if not contains(queue, node) then node]
+        queue = queue.concat(degree_order(following, neighbours, nodes))
+        cursor += 1
+    return queue[::-1]
+
+int[] numbering_metrics(int[] numbers, int[][] neighbours, model_io.Member[] members)
+    bandwidth := 0
+    for member := members[]
+        difference := numbers[member.start] - numbers[member.end]
+        if difference < 0
+            difference = -difference
+        if difference > bandwidth
+            bandwidth = difference
+    profile := 0
+    for: node < int(#numbers)
+        smallest := numbers[node]
+        for neighbour := neighbours[node][]
+            if numbers[neighbour] < smallest
+                smallest = numbers[neighbour]
+        profile += numbers[node] - smallest
+    return [bandwidth, profile]
+
+class Canvas(model_io.Node[] nodes, int horizontal, int vertical)
+    int x0 := nodes[0].x
+    int x1 := nodes[0].x
+    int y0 := nodes[0].y
+    int y1 := nodes[0].y
+    for node := nodes[]
+        if node.x < x0
+            x0 = node.x
+        if node.x > x1
+            x1 = node.x
+        if node.y < y0
+            y0 = node.y
+        if node.y > y1
+            y1 = node.y
+    int width := math.floor(real64(x1 - x0) / real64(horizontal) + 0.5) + 5
+    int height := math.floor(real64(y1 - y0) / real64(vertical) + 0.5) + 5
+    string[][] grid := [for row := (0:<int(height))[] then [for column := (0:<int(width))[] then " "]]
+
+    int[] position(real64 x, real64 y)
+        int column := math.floor((x - real64(x0)) / real64(horizontal) + 0.5) + 2
+        int row := math.floor((real64(y1) - y) / real64(vertical) + 0.5) + 2
+        return [column, row]
+
+    void .put(int column, int row, string character)
+        if 0 <= column and column < width and 0 <= row and row < height
+            grid[row][column] = character
+
+    void .line(int[] first, int[] last, string character)
+        column := first[0]
+        row := first[1]
+        dc := last[0] - column
+        if dc < 0
+            dc = -dc
+        dr := last[1] - row
+        if dr > 0
+            dr = -dr
+        sc := if column < last[0] then 1 else -1
+        sr := if row < last[1] then 1 else -1
+        residual := dc + dr
+        while true
+            .put(column, row, character)
+            if column == last[0] and row == last[1]
+                break
+            twice := 2 * residual
+            if twice >= dr
+                residual += dr
+                column += sc
+            if twice <= dc
+                residual += dc
+                row += sr
+
+    string[] framed()
+        string border := "+" + "-" * nat(width) + "+"
+        return [border].concat([for row := grid[] then "|" + row.join("") + "|"]).append(border)
+
+class System(assembly.Properties[] properties, real64[][] matrix, real64[][] free_matrix, real64[][] lower, int unstable, int removed)
+
+class Truss(model_io.Model model)
+    model_io.Node[] nodes := model.nodes
+    model_io.Member[] members := model.members
+    model_io.Settings settings := model.settings
+    node_count := int(#nodes)
+    member_count := int(#members)
+    neighbours := adjacency(nodes, members)
+    order := renumber(neighbours, nodes)
+    int[] numbers := [for node := (0:<int(node_count))[] then model_io.index_of(order, node)]
+    int[][] node_dofs := [for number := numbers[] then [2 * number, 2 * number + 1]]
+    degrees := 2 * node_count
+    int[][] owners := [for d := (0:<int(degrees))[] then [order[d / 2], d % 2]]
+    real64[] prescribed := [for d := (0:<int(degrees))[] then 0.0]
+    int[][] support_directions := []
+    for support := model.supports[]
+        for: axis < 2
+            if support.fixed[axis]
+                degree := node_dofs[support.node][axis]
+                prescribed[degree] = support.prescribed[axis]
+                support_directions = support_directions.append([support.node, axis, degree])
+    int[] restrained := [for direction := support_directions[] then direction[2]].sorted()
+    int[] free := [for d := (0:<int(degrees))[] if not contains(restrained, d) then d]
+    assembly.Geometry[] geometry := assembly.member_geometry(nodes, members, node_dofs)
+    int[][] groups := [for g := (0:<int(#model.groups))[] then [for m := (0:<int(member_count))[] if members[m].group == g then m]]
+    int[] choices := [for member := members[] then member.section]
+    final_system := System([], [], [], [], -1, -1)
+    postprocess.Result[] results := []
+    postprocess.Result[] combinations := []
+    real64[] limits := []
+    real64[][] utilizations := []
+    real64 weight := 0.0
+    int[] governing_cases := []
+    real64[] governing := []
+    string[] history := []
+    int[] deck_x := [for node := settings.deck[] then nodes[node].x]
+
+    System make_system(int[] selected, int removed)
+        assembly.Properties[] properties := assembly.member_properties(model, selected, geometry)
+        matrix := assembly.assemble(geometry, properties, degrees, removed)
+        free_matrix := [for row := free[] then [for column := free[] then matrix[row][column]]]
+        factorization := solver.cholesky(free_matrix, free)
+        return System(properties, matrix, free_matrix, factorization.lower, factorization.unstable, removed)
+
+    real64[] displacement(System state, real64[] force, bool settlement)
+        real64[] vector := [for d := (0:<int(degrees))[] then 0.0]
+        for degree := restrained[]
+            vector[degree] = if settlement then prescribed[degree] else 0.0
+        real64[] right := []
+        for degree := free[]
+            value := force[degree]
+            for fixed_degree := restrained[]
+                value -= state.matrix[degree][fixed_degree] * vector[fixed_degree]
+            right = right.append(value)
+        solution := solver.solve(state.lower, right)
+        for: i < int(#free)
+            vector[free[i]] = solution[i]
+        return vector
+
+    postprocess.Result case_result(System state, model_io.LoadCase load_case)
+        loading := assembly.load_vectors(load_case, geometry, state.properties, node_dofs, degrees, state.removed)
+        real64[] vector := displacement(state, loading.total, loading.settlement)
+        forces := postprocess.axial_forces(geometry, state.properties, vector, loading.temperature, state.removed)
+        reaction := postprocess.reactions(state.matrix, vector, loading.total, restrained)
+        return postprocess.Result(load_case.name, vector, forces, reaction, loading.external)
+
+    postprocess.Result[] analyze(System state)
+        postprocess.Result[] analyzed := [for load_case := model.cases[] then case_result(state, load_case)]
+        for combination := model.combinations[]
+            analyzed = analyzed.append(postprocess.superpose(combination, analyzed))
+        return analyzed
+
+    int result_index(string name)
+        return model_io.name_index([for result := results[] then result.name], name)
+
+    postprocess.Result unit_result(int node)
+        real64[] force := [for d := (0:<int(degrees))[] then 0.0]
+        force[node_dofs[node][1]] = -1000.0
+        real64[] vector := displacement(final_system, force, false)
+        real64[] temperature := [for m := (0:<int(member_count))[] then 0.0]
+        forces := postprocess.axial_forces(geometry, final_system.properties, vector, temperature, -1)
+        reaction := postprocess.reactions(final_system.matrix, vector, force, restrained)
+        return postprocess.Result("unit", vector, forces, reaction, force)
+
+    void .design_sections()
+        for: 1 <= round_number <= 10
+            final_system = make_system(choices, -1)
+            results = analyze(final_system)
+            combinations = results[int(#model.cases):<int(#results)]
+            limits = [for m := (0:<int(member_count))[] then design.slenderness_limit(m, combinations, settings.slenderness)]
+            utilizations = [for m := (0:<int(member_count))[] then [for result := combinations[] then design.utilization(result.forces[m], final_system.properties[m], geometry[m], final_system.properties[m].area, final_system.properties[m].inertia)]]
+            real64[] flattened := []
+            for row := utilizations[]
+                flattened = flattened.concat(row)
+            largest := extreme(flattened, false)
+            combination_count := int(#combinations)
+            maximum_member := largest / combination_count
+            maximum_case := largest % combination_count
+            weight = total([for m := (0:<int(member_count))[] then assembly.member_weight(final_system.properties[m], geometry[m])])
+            int[][] changes := []
+            real64[] change_values := []
+            for: g < int(#groups)
+                selected := design.select_section(groups[g], model.sections, final_system.properties, geometry, combinations, limits)
+                current := choices[groups[g][0]]
+                if selected != current
+                    real64[] values := []
+                    for m := groups[g][]
+                        values = values.concat(utilizations[m])
+                    changes = changes.append([g, current, selected])
+                    change_values = change_values.append(values[extreme(values, false)])
+            history = history.append("round {round_number} weight " + format_real(weight / 1000.0) + " max_utilization " + format_real(flattened[largest]) + " at {members[maximum_member].identifier} {combinations[maximum_case].name} changes {#changes}")
+            for: i < int(#changes)
+                change := changes[i]
+                history = history.append("change {model.groups[change[0]]} {model.sections[change[1]].name} {model.sections[change[2]].name} utilization " + format_real(change_values[i]))
+            converged := #changes == 0
+            if converged or round_number == 10
+                status := if converged then "converged" else "not_converged"
+                history = history.append("result {status} rounds {round_number}")
+                break
+            for change := changes[]
+                for m := groups[change[0]][]
+                    choices[m] = change[2]
+        governing_cases = [for row := utilizations[] then extreme(row, false)]
+        governing = [for m := (0:<int(member_count))[] then utilizations[m][governing_cases[m]]]
+
+    string[] design_report()
+        lines := history
+        for: g < int(#groups)
+            values := [for m := groups[g][] then governing[m]]
+            member := groups[g][extreme(values, false)]
+            string section := model.sections[choices[groups[g][0]]].name
+            lines = lines.append("group {model.groups[g]} section {section} members {#groups[g]} utilization " + format_real(governing[member]) + " at {members[member].identifier}")
+        for: m < member_count
+            assembly.Properties properties := final_system.properties[m]
+            slender := design.slenderness(geometry[m], properties.area, properties.inertia)
+            verdict := if governing[m] <= 1.0 and slender <= limits[m] then "ok" else "over"
+            lines = lines.append("member {members[m].identifier} group {model.groups[members[m].group]} section {model.sections[choices[m]].name} utilization " + format_real(governing[m]) + " governing {combinations[governing_cases[m]].name} slenderness " + format_real(slender) + " limit " + format_real(limits[m]) + " {verdict}")
+        int[] ranked := []
+        rank_count := if member_count < 5 then member_count else 5
+        for: 1 <= rank <= rank_count
+            remaining := [for m := (0:<int(member_count))[] if not contains(ranked, m) then m]
+            member := remaining[extreme([for m := remaining[] then governing[m]], false)]
+            ranked = ranked.append(member)
+            lines = lines.append("rank {rank} member {members[member].identifier} utilization " + format_real(governing[member]))
+        for: m < member_count
+            values := [for result := combinations[] then result.forces[m] / 1000.0]
+            largest := extreme(values, false)
+            smallest := extreme(values, true)
+            lines = lines.append("envelope {members[m].identifier} max " + format_real(values[largest]) + " {combinations[largest].name} min " + format_real(values[smallest]) + " {combinations[smallest].name}")
+        for: s < int(#model.sections)
+            selected := [for m := (0:<int(member_count))[] if choices[m] == s then m]
+            if #selected != 0
+                length := total([for m := selected[] then geometry[m].length])
+                lines = lines.append("section {model.sections[s].name} members {#selected} length " + format_real(length))
+        return lines.append("weight " + format_real(weight / 1000.0))
+
+    real64[] magnitudes(postprocess.Result result)
+        return [for dofs := node_dofs[] then assembly.square_root(result.displacement[dofs[0]] * result.displacement[dofs[0]] + result.displacement[dofs[1]] * result.displacement[dofs[1]])]
+
+    string result_summary(string kind, postprocess.Result result)
+        real64[] values := magnitudes(result)
+        node := extreme(values, false)
+        energy := total([for m := (0:<int(member_count))[] then result.forces[m] * result.forces[m] * geometry[m].length / (2.0 * final_system.properties[m].young * final_system.properties[m].area)]) / 1000.0
+        reaction_totals := [for axis := (0:<2)[] then total([for dofs := node_dofs[] then result.reactions[dofs[axis]]]) / 1000.0]
+        force_totals := [for axis := (0:<2)[] then total([for dofs := node_dofs[] then result.external[dofs[axis]]]) / 1000.0]
+        real64 scale := 1.0
+        for value := result.external.concat(result.reactions)[]
+            if absolute(value) > scale
+                scale = absolute(value)
+        verdict := if postprocess.equilibrium_residual(result, geometry) <= 0.000001 * scale then "ok" else "failed"
+        return "{kind} {result.name} equilibrium {verdict} max_displacement " + format_real(values[node]) + " at {nodes[node].identifier} energy " + format_real(energy) + " reactions " + format_real(reaction_totals[0]) + " " + format_real(reaction_totals[1]) + " loads " + format_real(force_totals[0]) + " " + format_real(force_totals[1])
+
+    string[] deflection_report()
+        result := results[result_index(settings.deflection)]
+        fixed_nodes := [for direction := support_directions[] if direction[1] == 1 then direction[0]]
+        anchors := [for k := (0:<int(#settings.deck))[] if contains(fixed_nodes, settings.deck[k]) then k]
+        string[] lines := []
+        for: 1 <= span < int(#anchors)
+            first := anchors[span - 1]
+            last := anchors[span]
+            left := settings.deck[first]
+            right := settings.deck[last]
+            xa := deck_x[first]
+            xb := deck_x[last]
+            va := result.displacement[node_dofs[left][1]]
+            vb := result.displacement[node_dofs[right][1]]
+            interior := [for k := (int(first + 1):<int(last))[] then k]
+            values := [for k := interior[] then absolute(result.displacement[node_dofs[settings.deck[k]][1]] - (va + (vb - va) * real64(deck_x[k] - xa) / real64(xb - xa)))]
+            selected := extreme(values, false)
+            node := settings.deck[interior[selected]]
+            limit := real64(xb - xa) / real64(settings.deflection_ratio)
+            verdict := if values[selected] <= limit then "ok" else "exceeded"
+            lines = lines.append("deflection {settings.deflection} span {nodes[left].identifier} {nodes[right].identifier} max " + format_real(values[selected]) + " at {nodes[node].identifier} limit " + format_real(limit) + " {verdict}")
+            postprocess.Result unit := unit_result(node)
+            virtual := total([for m := (0:<int(member_count))[] then result.forces[m] * (unit.forces[m] / 1000.0) * geometry[m].length / (final_system.properties[m].young * final_system.properties[m].area)])
+            stiffness := -result.displacement[node_dofs[node][1]]
+            scale := if absolute(stiffness) > 1.0 then absolute(stiffness) else 1.0
+            verified := if absolute(virtual - stiffness) <= 0.000001 * scale then "ok" else "failed"
+            lines = lines.append("virtual_work {settings.deflection} node {nodes[node].identifier} stiffness " + format_real(stiffness) + " virtual " + format_real(virtual) + " {verified}")
+        return lines
+
+    string[] removal_report()
+        int selected := result_index(settings.removal)
+        string[] lines := []
+        for: removed < member_count
+            System state := make_system(choices, removed)
+            if state.unstable >= 0
+                owner := owners[state.unstable]
+                axis := if owner[1] == 0 then "x" else "y"
+                lines = lines.append("removal {members[removed].identifier} unstable at {nodes[owner[0]].identifier} {axis}")
+                continue
+            postprocess.Result result := analyze(state)[selected]
+            remaining := [for m := (0:<int(member_count))[] if m != removed then m]
+            values := [for m := remaining[] then design.utilization(result.forces[m], state.properties[m], geometry[m], state.properties[m].area, state.properties[m].inertia)]
+            largest := extreme(values, false)
+            real64[] movement := magnitudes(result)
+            node := extreme(movement, false)
+            lines = lines.append("removal {members[removed].identifier} stable max_utilization " + format_real(values[largest]) + " at {members[remaining[largest]].identifier} max_displacement " + format_real(movement[node]) + " at {nodes[node].identifier}")
+        return lines
+
+    string[] analysis_report()
+        indeterminacy := member_count + int(#restrained) - 2 * node_count
+        before := numbering_metrics([for n := (0:<int(node_count))[] then n], neighbours, members)
+        after := numbering_metrics(numbers, neighbours, members)
+        sequence := [for node := order[] then string(nodes[node].identifier)].join(" ")
+        lines := ["model nodes {node_count} members {member_count} supports {#model.supports} free_dofs {#free} restrained_dofs {#restrained} indeterminacy {indeterminacy}", "renumbering " + sequence, "bandwidth before {before[0]} after {after[0]}", "profile before {before[1]} after {after[1]}"]
+        for: m < member_count
+            lines = lines.append("member {members[m].identifier} nodes {nodes[members[m].start].identifier} {nodes[members[m].end].identifier} length " + format_real(geometry[m].length) + " cos " + fixed(geometry[m].cosine, 6) + " sin " + fixed(geometry[m].sine, 6))
+        for: i < int(#results)
+            lines = lines.append(result_summary(if i < int(#model.cases) then "case" else "combination", results[i]))
+        for direction := support_directions[]
+            values := [for result := combinations[] then result.reactions[direction[2]] / 1000.0]
+            largest := extreme(values, false)
+            smallest := extreme(values, true)
+            axis := if direction[1] == 0 then "x" else "y"
+            line := "reaction_envelope {nodes[direction[0]].identifier} {axis} max " + format_real(values[largest]) + " {combinations[largest].name} min " + format_real(values[smallest]) + " {combinations[smallest].name}"
+            if direction[1] == 1
+                uplift := #[for value := values[] if value < 0.0 then value] != 0
+                line += " uplift " + (if uplift then "yes" else "no")
+            lines = lines.append(line)
+        real64[][] movements := [for result := combinations[] then magnitudes(result)]
+        for: node < node_count
+            values := [for movement := movements[] then movement[node]]
+            largest := extreme(values, false)
+            lines = lines.append("displacement_envelope {nodes[node].identifier} max " + format_real(values[largest]) + " {combinations[largest].name}")
+        return lines.concat(deflection_report()).concat(removal_report())
+
+    real64 ordinate(real64[] values, int position)
+        last := int(#deck_x) - 1
+        if position < deck_x[0] or position > deck_x[last]
+            return 0.0
+        if position == deck_x[last]
+            return values[last]
+        k := 0
+        while position >= deck_x[k + 1]
+            k += 1
+        return values[k] + (values[k + 1] - values[k]) * real64(position - deck_x[k]) / real64(deck_x[k + 1] - deck_x[k])
+
+    real64[] vehicle_effects(real64[] values, int[] positions)
+        real64[] effects := []
+        for position := positions[]
+            real64[] terms := [for k := (0:<int(#settings.offsets))[] then settings.axle_loads[k] * ordinate(values, position - settings.offsets[k])]
+            effects = effects.append(total(terms))
+        return effects
+
+    string[] influence_report()
+        real64[][] member_ordinates := [for m := (0:<int(member_count))[] then []]
+        real64[][] reaction_ordinates := [for d := (0:<int(degrees))[] then []]
+        for node := settings.deck[]
+            postprocess.Result unit := unit_result(node)
+            for: m < member_count
+                member_ordinates[m] = member_ordinates[m].append(unit.forces[m] / 1000.0)
+            for direction := support_directions[]
+                degree := direction[2]
+                reaction_ordinates[degree] = reaction_ordinates[degree].append(unit.reactions[degree] / 1000.0)
+        string[] lines := []
+        for m := settings.influence[]
+            values := member_ordinates[m]
+            lines = lines.append("influence {members[m].identifier}")
+            for: k < int(#settings.deck)
+                lines = lines.append("node {nodes[settings.deck[k]].identifier} " + format_real(values[k]))
+            largest := extreme(values, false)
+            smallest := extreme(values, true)
+            positive := total([for value := values[] if value > 0.0 then value])
+            negative := total([for value := values[] if value < 0.0 then value])
+            lines = lines.append("max " + format_real(values[largest]) + " at {nodes[settings.deck[largest]].identifier} min " + format_real(values[smallest]) + " at {nodes[settings.deck[smallest]].identifier} positive " + format_real(positive) + " negative " + format_real(negative))
+            real64[] crossings := []
+            for: k < int(#values) - 1
+                if (values[k] > 0.0 and values[k + 1] < 0.0) or (values[k] < 0.0 and values[k + 1] > 0.0)
+                    position := real64(deck_x[k]) + real64(deck_x[k + 1] - deck_x[k]) * values[k] / (values[k] - values[k + 1])
+                    crossings = crossings.append(position)
+            text := "crossings {#crossings}"
+            if #crossings != 0
+                text += " " + [for value := crossings[] then fixed(value, 1)].join(" ")
+            lines = lines.append(text)
+        end_position := deck_x[-1] + settings.offsets[-1]
+        positions := [for position := (deck_x[0]:end_position:settings.increment)[] then position]
+        lines = lines.append("vehicle axles {#settings.offsets} positions {#positions}")
+        real64[][] member_ranges := []
+        for: m < member_count
+            real64[] values := vehicle_effects(member_ordinates[m], positions)
+            largest := extreme(values, false)
+            smallest := extreme(values, true)
+            member_ranges = member_ranges.append([values[largest], values[smallest]])
+            lines = lines.append("vehicle_member {members[m].identifier} max " + format_real(values[largest]) + " at {positions[largest]} min " + format_real(values[smallest]) + " at {positions[smallest]}")
+        for direction := support_directions[]
+            real64[] values := vehicle_effects(reaction_ordinates[direction[2]], positions)
+            largest := extreme(values, false)
+            smallest := extreme(values, true)
+            axis := if direction[1] == 0 then "x" else "y"
+            lines = lines.append("vehicle_reaction {nodes[direction[0]].identifier} {axis} max " + format_real(values[largest]) + " at {positions[largest]} min " + format_real(values[smallest]) + " at {positions[smallest]}")
+        dead := results[result_index(settings.rating)]
+        real64[] rating_values := []
+        int[] rating_members := []
+        string[] rating_kinds := []
+        for: m < member_count
+            assembly.Properties properties := final_system.properties[m]
+            nd := dead.forces[m] / 1000.0
+            capacity := properties.area * properties.yield_stress
+            euler := design.buckling(properties, geometry[m], properties.inertia)
+            compression_capacity := (if capacity < euler then capacity else euler) / 1000.0
+            tension := "none"
+            compression := "none"
+            if rounded_units(member_ranges[m][0], 4) > 0
+                factor := (capacity / 1000.0 - settings.gamma_dead * nd) / (settings.gamma_live * member_ranges[m][0])
+                tension = format_real(factor)
+                rating_values = rating_values.append(factor)
+                rating_members = rating_members.append(m)
+                rating_kinds = rating_kinds.append("tension")
+            if rounded_units(member_ranges[m][1], 4) < 0
+                factor := (compression_capacity + settings.gamma_dead * nd) / (settings.gamma_live * (-member_ranges[m][1]))
+                compression = format_real(factor)
+                rating_values = rating_values.append(factor)
+                rating_members = rating_members.append(m)
+                rating_kinds = rating_kinds.append("compression")
+            lines = lines.append("rating {members[m].identifier} tension {tension} compression {compression}")
+        selected := extreme(rating_values, true)
+        return lines.append("rating_min " + format_real(rating_values[selected]) + " at {members[rating_members[selected]].identifier} {rating_kinds[selected]}")
+
+    string[] vibration_report()
+        result := results[result_index(settings.vibration)]
+        masses := [for dofs := node_dofs[] then -result.external[dofs[1]] / 9.81]
+        free_masses := [for degree := free[] then masses[owners[degree][0]]]
+        size := int(#free)
+        real64[][] modes := []
+        lines := ["vibration {settings.vibration} mass " + format_real(total(masses)) + " iterations {settings.iterations}"]
+        for: 1 <= mode <= settings.modes
+            real64[] vector := [for i := (0:<int(size))[] then 1.0]
+            for: iteration < settings.iterations
+                for previous := modes[]
+                    beta := total([for i := (0:<int(size))[] then previous[i] * free_masses[i] * vector[i]])
+                    vector = [for i := (0:<int(size))[] then vector[i] - beta * previous[i]]
+                right := [for i := (0:<int(size))[] then free_masses[i] * vector[i]]
+                solution := solver.solve(final_system.lower, right)
+                norm := assembly.square_root(total([for i := (0:<int(size))[] then free_masses[i] * solution[i] * solution[i]]))
+                vector = [for value := solution[] then value / norm]
+            modes = modes.append(vector)
+            product := [for i := (0:<int(size))[] then total([for j := (0:<int(size))[] then final_system.free_matrix[i][j] * vector[j]])]
+            numerator := total([for i := (0:<int(size))[] then vector[i] * product[i]])
+            denominator := total([for i := (0:<int(size))[] then free_masses[i] * vector[i] * vector[i]])
+            eigenvalue := numerator / denominator
+            frequency := assembly.square_root(1000.0 * eigenvalue) / (2.0 * 3.141592653589793)
+            lines = lines.append("mode {mode} frequency " + format_real(frequency) + " period " + format_real(1.0 / frequency))
+            peak := 0
+            for: 1 <= i < size
+                if absolute(vector[i]) > absolute(vector[peak])
+                    peak = i
+            real64[] normalized := [for d := (0:<int(degrees))[] then 0.0]
+            for: i < size
+                normalized[free[i]] = vector[i] / vector[peak]
+            for: node < node_count
+                lines = lines.append("node {nodes[node].identifier} " + format_real(normalized[node_dofs[node][0]]) + " " + format_real(normalized[node_dofs[node][1]]))
+        return lines
+
+    string[] drawing_report()
+        string[] lines := []
+        for drawing := settings.drawings[]
+            result := results[result_index(drawing.name)]
+            canvas := Canvas(nodes, drawing.horizontal, drawing.vertical)
+            original := [for node := nodes[] then canvas.position(real64(node.x), real64(node.y))]
+            deformed := [for n := (0:<int(node_count))[] then canvas.position(real64(nodes[n].x) + real64(drawing.magnification) * result.displacement[node_dofs[n][0]], real64(nodes[n].y) + real64(drawing.magnification) * result.displacement[node_dofs[n][1]])]
+            for member := members[]
+                .canvas.line(original[member.start], original[member.end], ".")
+            for point := original[]
+                .canvas.put(point[0], point[1], "+")
+            for member := members[]
+                .canvas.line(deformed[member.start], deformed[member.end], "*")
+            for point := deformed[]
+                .canvas.put(point[0], point[1], "o")
+            lines = lines.append("drawing {drawing.name} magnification {drawing.magnification} columns {canvas.width} rows {canvas.height}").concat(canvas.framed())
+        canvas := Canvas(nodes, settings.map_horizontal, settings.map_vertical)
+        positions := [for node := nodes[] then canvas.position(real64(node.x), real64(node.y))]
+        for: m < member_count
+            digit := math.floor(10.0 * governing[m])
+            character := if governing[m] >= 1.0 then "#" else string(digit)
+            .canvas.line(positions[members[m].start], positions[members[m].end], character)
+        for point := positions[]
+            .canvas.put(point[0], point[1], "o")
+        return lines.append("utilization_map columns {canvas.width} rows {canvas.height}").concat(canvas.framed())
+
+    string[][] csv_reports()
+        displacement_lines := ["case,node,dx,dy"]
+        force_lines := ["case,member,force,stress,utilization"]
+        reaction_lines := ["case,node,rx,ry"]
+        for result := results[]
+            for: node < node_count
+                dofs := node_dofs[node]
+                displacement_lines = displacement_lines.append("{result.name},{nodes[node].identifier}," + format_real(result.displacement[dofs[0]]) + "," + format_real(result.displacement[dofs[1]]))
+            for: m < member_count
+                assembly.Properties properties := final_system.properties[m]
+                value := design.utilization(result.forces[m], properties, geometry[m], properties.area, properties.inertia)
+                force_lines = force_lines.append("{result.name},{members[m].identifier}," + format_real(result.forces[m] / 1000.0) + "," + format_real(result.forces[m] / properties.area) + "," + format_real(value))
+            for support := model.supports[]
+                dofs := node_dofs[support.node]
+                reaction_lines = reaction_lines.append("{result.name},{nodes[support.node].identifier}," + format_real(result.reactions[dofs[0]] / 1000.0) + "," + format_real(result.reactions[dofs[1]] / 1000.0))
+        return [displacement_lines, force_lines, reaction_lines]
+
+void write_lines(string name, string[] lines)
+    writer1 := file.write("output/" + name)
+    .writer1(lines.join(NL) + NL)
+
+void run_program()
+    truss := Truss(model_io.read_model())
+    .truss.design_sections()
+    csv := truss.csv_reports()
+    write_lines("analysis.txt", truss.analysis_report())
+    write_lines("displacements.csv", csv[0])
+    write_lines("member_forces.csv", csv[1])
+    write_lines("reactions.csv", csv[2])
+    write_lines("design.txt", truss.design_report())
+    write_lines("influence.txt", truss.influence_report())
+    write_lines("drawing.txt", truss.drawing_report())
+    write_lines("vibration.txt", truss.vibration_report())
+
+run_program()

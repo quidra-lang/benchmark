@@ -1,0 +1,5 @@
+Pair selection already compares integer squared distance d=dx*dx+dy*dy and saves it independently of display. Keep those strict comparisons, increasing i/j traversal and pair-index assignments, so ties retain the earliest index pair. Change only the final square-root conversion to the saved squared integer and replace four-fraction formatting with decimal-integer formatting. Keep closest/farthest labels, P indices, spaces and two newlines. No coordinate data is needed because the question asks the change and tie behavior rather than deriving pair identities.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,9 @@
+The current question asks: Explain the cache-access operation from an accessed key and current cache order to its next order, status and hit/miss totals. Use the fourth access B and following D to cover refreshing a hit and inserting a miss with eviction. Identify whether updates mutate shared cache storage or create/rebind replacement values, which state the next access reads, and whether the original access sequence shares that mutable ordering storage.
+
+Answer and source evidence: Before fourth access B, cache order is C A B (most recent first). The hit removes B from its old position and reinserts at front, yielding B C A and one hit. Following miss D evicts last A and inserts at front, yielding D B C with four misses total. Rust/Swift mutate the cache collection; Go deletes from its slice, slices on eviction and rebinds a newly prepended slice. The next access reads that updated cache; the immutable input string does not share mutable ordering storage.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21. Initialization, input order, lookup, status/totals and every cache state update are needed. Detailed cache-list text printing and final summary formatting do not determine access semantics.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

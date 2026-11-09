@@ -1,0 +1,308 @@
+import math
+import re
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass, replace
+from fractions import Fraction
+GROUND = "0"
+NODE_PATTERN = re.compile(r"0|[a-z][a-z0-9]{0,7}")
+MANTISSA_PATTERN = re.compile(r"[0-9]+(\.[0-9]+|/[0-9]+)?")
+SUFFIXES = (
+    ("meg", Fraction(1_000_000)),
+    ("k", Fraction(1000)),
+    ("m", Fraction(1, 1000)),
+    ("u", Fraction(1, 1_000_000)),
+)
+FIELD_COUNTS = {"R": 4, "V": 4, "I": 4, "E": 6, "G": 6, "F": 5, "H": 5}
+VOLTAGE_SOURCES = {"V", "E", "H"}
+INDEPENDENT_SOURCES = {"V", "I"}
+GROUNDING_TYPES = {"R", "V", "E", "H"}
+MAX_SWEEP_POINTS = 20
+
+
+class CircuitError(Exception):
+    pass
+
+
+@dataclass
+class Element:
+    name: str
+    n1: str
+    n2: str
+    value: Fraction
+    c1: str | None = None
+    c2: str | None = None
+    vname: str | None = None
+
+    @property
+    def kind(self):
+        return self.name[0]
+
+    @property
+    def terminals(self):
+        if self.c1 is None:
+            return (self.n1, self.n2)
+        return (self.n1, self.n2, self.c1, self.c2)
+def parse_number(word):
+    multiplier = 1
+    for suffix, factor in SUFFIXES:
+        if word.endswith(suffix):
+            word = word.removesuffix(suffix)
+            multiplier = factor
+            break
+    sign = 1
+    if word.startswith("-"):
+        word = word[1:]
+        sign = -1
+    if not MANTISSA_PATTERN.fullmatch(word):
+        return None
+    try:
+        mantissa = Fraction(word)
+    except ZeroDivisionError:
+        return None
+    return sign * multiplier * mantissa
+
+
+def check_number(word):
+    value = parse_number(word)
+    if value is None:
+        raise CircuitError(f"invalid value {word}")
+    return value
+
+
+def format_decimal(x):
+    whole, fraction = divmod(math.floor(abs(x) * 1_000_000), 1_000_000)
+    sign = "-" if x < 0 else ""
+    return f"{sign}{whole}.{fraction:06d}"
+
+
+def format_value(x):
+    return f"{x} ({format_decimal(x)})"
+
+
+def circuit_nodes(elements):
+    return sorted({node for e in elements for node in e.terminals} - {GROUND})
+
+
+def reachable(start, links):
+    neighbors = defaultdict(list)
+    for u, v in links:
+        neighbors[u].append(v)
+        neighbors[v].append(u)
+    seen = {start}
+    pending = [start]
+    while pending:
+        node = pending.pop()
+        for neighbor in neighbors[node]:
+            if neighbor not in seen:
+                seen.add(neighbor)
+                pending.append(neighbor)
+    return seen
+
+
+def floating_nodes(elements):
+    links = [(e.n1, e.n2) for e in elements if e.kind in GROUNDING_TYPES]
+    grounded = reachable(GROUND, links)
+    return [node for node in circuit_nodes(elements) if node not in grounded]
+
+
+def voltage_loops(elements):
+    loops = []
+    links = []
+    for e in elements:
+        if e.kind in VOLTAGE_SOURCES:
+            if e.n2 in reachable(e.n1, links):
+                loops.append(e.name)
+            links.append((e.n1, e.n2))
+    return loops
+
+
+def check_structure(elements):
+    if not circuit_nodes(elements):
+        raise CircuitError("no nodes")
+    floating = floating_nodes(elements)
+    if floating:
+        raise CircuitError(f"floating node {floating[0]}")
+    loops = voltage_loops(elements)
+    if loops:
+        raise CircuitError(f"voltage source loop at {loops[0]}")
+
+
+def gauss_jordan(matrix, column):
+    size = len(matrix)
+    rows = [row + [value] for row, value in zip(matrix, column)]
+    for k in range(size):
+        pivot = next((r for r in range(k, size) if rows[r][k] != 0), None)
+        if pivot is None:
+            return None
+        rows[k], rows[pivot] = rows[pivot], rows[k]
+        divisor = rows[k][k]
+        rows[k] = [value / divisor for value in rows[k]]
+        for i in range(size):
+            factor = rows[i][k]
+            if i != k and factor != 0:
+                rows[i] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(rows[i], rows[k])
+                ]
+    return [row[size] for row in rows]
+
+
+def source_entries(source, value):
+    if source.kind == "I":
+        return [(source.n1, -value), (source.n2, value)]
+    return [(source.name, value)]
+class Solution:
+    def __init__(self, index, values):
+        self.index = index
+        self.values = values
+
+    def voltage(self, node):
+        if node == GROUND:
+            return Fraction(0)
+        return self.values[self.index[node]]
+class Equations:
+    def __init__(self, elements):
+        self.nodes = circuit_nodes(elements)
+        self.voltage_sources = [e for e in elements if e.kind in VOLTAGE_SOURCES]
+        self.unknowns = self.nodes + [e.name for e in self.voltage_sources]
+        self.index = {key: i for i, key in enumerate(self.unknowns)}
+        size = len(self.unknowns)
+        self.matrix = [[Fraction(0)] * size for _ in range(size)]
+        for element in elements:
+            self.stamp(element)
+        self.rhs = self.column(
+            entry
+            for e in elements
+            if e.kind in INDEPENDENT_SOURCES
+            for entry in source_entries(e, e.value)
+        )
+
+    def add(self, row, column, value):
+        if row != GROUND and column != GROUND:
+            self.matrix[self.index[row]][self.index[column]] += value
+
+    def stamp(self, element):
+        n1, n2, w = element.n1, element.n2, element.value
+        match element.kind:
+            case "R":
+                g = 1 / w
+                self.add(n1, n1, g)
+                self.add(n2, n2, g)
+                self.add(n1, n2, -g)
+                self.add(n2, n1, -g)
+            case "G":
+                self.add(n1, element.c1, w)
+                self.add(n2, element.c2, w)
+                self.add(n1, element.c2, -w)
+                self.add(n2, element.c1, -w)
+    def column(self, entries):
+        column = [Fraction(0)] * len(self.unknowns)
+        for key, value in entries:
+            if key != GROUND:
+                column[self.index[key]] += value
+        return column
+
+    def solve(self, column):
+        values = gauss_jordan(self.matrix, column)
+        if values is None:
+            return None
+        return Solution(self.index, values)
+class Circuit:
+    def __init__(self):
+        self.elements = []
+
+    def find(self, name):
+        return next((e for e in self.elements if e.name == name), None)
+
+    def check_element(self, name):
+        element = self.find(name)
+        if element is None:
+            raise CircuitError(f"unknown element {name}")
+        return element
+
+    def check_node(self, node):
+        if node != GROUND and node not in circuit_nodes(self.elements):
+            raise CircuitError(f"unknown node {node}")
+    def add_element(self, words):
+        name = words[0]
+        kind = name[0]
+        if kind not in FIELD_COUNTS:
+            raise CircuitError(f"unknown element type {name}")
+        if len(words) != FIELD_COUNTS[kind]:
+            raise CircuitError(f"wrong field count for {name}")
+        if self.find(name) is not None:
+            raise CircuitError(f"duplicate element {name}")
+        nodes = words[1:5] if kind in ("E", "G") else words[1:3]
+        for node in nodes:
+            if not NODE_PATTERN.fullmatch(node):
+                raise CircuitError(f"invalid node {node}")
+        vname = None
+        value = check_number(words[-1])
+        if kind == "R" and value <= 0:
+            raise CircuitError(f"nonpositive resistance {name}")
+        n1, n2, *controls = nodes
+        self.elements.append(Element(name, n1, n2, value, *controls, vname=vname))
+
+    def run_command(self, words):
+        command, *arguments = words
+        if command not in COMMANDS:
+            raise CircuitError(f"unknown command {command}")
+        handler, argument_count = COMMANDS[command]
+        if len(arguments) != argument_count:
+            raise CircuitError(f"wrong argument count for {command}")
+        return handler(self, *arguments)
+    def sweep(self, name, first_word, last_word, step_word, a):
+        element = self.check_element(name)
+        first = check_number(first_word)
+        last = check_number(last_word)
+        step = check_number(step_word)
+        self.check_node(a)
+        if step <= 0:
+            raise CircuitError("invalid sweep step")
+        if first > last:
+            raise CircuitError("invalid sweep range")
+        point_count = (last - first) // step + 1
+        if point_count > MAX_SWEEP_POINTS:
+            raise CircuitError("too many sweep points")
+        if element.kind == "R" and first <= 0:
+            raise CircuitError(f"nonpositive resistance {name}")
+        check_structure(self.elements)
+        lines = []
+        for k in range(point_count):
+            x = first + k * step
+            trial = [replace(e, value=x) if e is element else e for e in self.elements]
+            equations = Equations(trial)
+            solution = equations.solve(equations.rhs)
+            if solution is None:
+                lines.append(f"{name} = {x}: singular matrix")
+            else:
+                voltage = format_value(solution.voltage(a))
+                lines.append(f"{name} = {x}: V({a}) = {voltage}")
+        return lines
+COMMANDS = {
+    ".SWEEP": (Circuit.sweep, 5),
+}
+def main():
+    circuit = Circuit()
+    for number, line in enumerate(sys.stdin, start=1):
+        line = line.rstrip("\n")
+        if line == ".END":
+            break
+        if line.startswith("*"):
+            continue
+        words = line.split()
+        try:
+            if line.startswith("."):
+                output = circuit.run_command(words)
+            else:
+                circuit.add_element(words)
+                output = []
+        except CircuitError as error:
+            output = [f"error: line {number}: {error}"]
+        for text in output:
+            print(text)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+each_index.find stops at the first failed satisfies?; unless failed.nil? increments only @filter_dropped[failed] then next bypasses all class/flag work. A region failing the first filter is discarded and attributed only to that filter (index0 in zero-based implementations or index1 in one-based implementations); class and flags are not evaluated for it. A region passing every filter becomes kept, receives the first matching class or other if none matches, and receives every independently matching flag. Filter-discard storage/counting remains separate from class names, so later failures cannot receive this region’s discard count.
+
+find returns nil on no match, separate from index0. A newly built region starts kept=false. @classes.find selects the first rule whose conditions.all? succeeds; fallback is other. filter_map visits all flags and keeps each matching name.
+
+Evidence: main.rb: 40, 375, 379–389, 391–406. The selected complete lines contain the decision and its necessary data dependencies. The excerpt includes predicate/conjunction semantics, initial state, the entire classification decision and discard attribution. Pixel labels, feature measurements and nearest-neighbor work are outside this already-computed-features operation and were removed. Predicate comparison helpers are represented at their direct use sites; no numeric feature-extraction internals are required to explain their Boolean control flow.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 429 tokenizer tokens. The full selected source file(s) would be 10337 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.
+
+## Task A source conformity review
+
+Remove Ruby magic comment to meet no-source-comments rule; explicit freeze operations remain. No literal-freeze introspection or required literal-string identity was found; intended file outputs are unchanged by source review. Source line counts were preserved for excerpt provenance. The current excerpt contains 429 tokens; edited Task A sources were remeasured. These are source-review corrections, not a claim of compilation or execution verification.

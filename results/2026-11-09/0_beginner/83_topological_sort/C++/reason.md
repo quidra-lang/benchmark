@@ -1,0 +1,5 @@
+Selection scans untaken zero-indegree courses, starting with sentinel best=-1. If no candidate exists, break happens before any names[best] access or state update, even if cyclic untaken courses remain. The cycle block collects exactly !taken names, sorts them, then outputs them. In the all-taken case that vector is empty and range output emits none; no pop/remove from an empty collection occurs. Indegree construction and unrelated successful-selection output are unnecessary for this stopping block.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

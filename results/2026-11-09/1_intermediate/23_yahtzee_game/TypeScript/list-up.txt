@@ -1,0 +1,270 @@
+import { readFileSync } from 'node:fs';
+const FACES = [1, 2, 3, 4, 5, 6];
+const CATEGORIES = [
+  'ONES', 'TWOS', 'THREES', 'FOURS', 'FIVES', 'SIXES',
+  'THREEKIND', 'FOURKIND', 'FULLHOUSE', 'SMALL', 'LARGE', 'YAHTZEE', 'CHANCE'
+];
+const UPPER = CATEGORIES.slice(0, 6);
+const MODULUS = 2147483647;
+const MULTIPLIER = 48271;
+type Entry = {player: Player; category: string; points: number; bonus: number; joker: boolean; turn: Turn};
+class CommandError extends Error {}
+function check(condition: unknown, reason: string): asserts condition {
+  if (!condition) throw new CommandError(reason);
+}
+function integerWord(text: string, low: number, high: number): number {
+  check(/^-?(?:0|[1-9][0-9]*)$/.test(text) && text !== '-0', 'bad value ' + text);
+  const value = Number(text);
+  check(Number.isSafeInteger(value) && value >= low && value <= high, 'bad value ' + text);
+  return value;
+}
+function playerName(text: string): string {
+  check(/^[A-Z]{1,8}$/.test(text), 'bad name ' + text);
+  return text;
+}
+function holdPattern(text: string): boolean[] {
+  check(/^[01]{5}$/.test(text), 'bad pattern ' + text);
+  return [...text].map(mark => mark === '1');
+}
+function categoryName(text: string): string {
+  check(CATEGORIES.includes(text), 'bad category ' + text);
+  return text;
+function faceText(faces: number[]): string {
+  return faces.length ? faces.join(' ') : '-';
+}
+function patternText(holds: boolean[]): string {
+  return holds.map(hold => hold ? '1' : '0').join('');
+}
+function heldFaces(faces: number[], holds: boolean[]): number[] {
+  return faces.filter((_, i) => holds[i]);
+function isYahtzee(faces: number[]): boolean {
+  return faces.every(face => face === faces[0]);
+}
+function normalScore(category: string, faces: number[]): number {
+  const upper = UPPER.indexOf(category);
+  const counts = FACES.map(face => faces.filter(v => v === face).length);
+  if (upper !== -1) return (upper + 1) * counts[upper];
+class DiceRoller {
+  state: number;
+  loaded: number[] = [];
+  counts: number[] = Array(6).fill(0);
+
+  constructor(seed: number) {
+    this.state = seed;
+  }
+  rollDie(): number {
+    let face: number;
+    if (this.loaded.length) face = this.loaded.shift()!;
+    else {
+      this.state = MULTIPLIER * this.state % MODULUS;
+      face = this.state % 6 + 1;
+    }
+    ++this.counts[face - 1];
+    return face;
+  }
+}
+class Player {
+  name: string;
+  strategy: string;
+  boxes: Record<string, number | null>;
+  yahtzeeBonus = 0;
+
+  constructor(name: string, strategy = 'KIND') {
+    this.name = name;
+    this.strategy = strategy;
+    this.boxes = Object.fromEntries(CATEGORIES.map(c => [c, null]));
+  }
+  openCategories(): string[] { return CATEGORIES.filter(c => this.boxes[c] === null); }
+  usedCount(): number { return CATEGORIES.length - this.openCategories().length; }
+  round(): number { return this.usedCount() + 1; }
+  upperSubtotal(): number { return UPPER.reduce((sum, c) => sum + (this.boxes[c] ?? 0), 0); }
+  upperBonus(): number { return this.upperSubtotal() >= 63 ? 35 : 0; }
+  total(): number {
+    return Object.values(this.boxes).reduce<number>((sum, v) => sum + (v ?? 0), 0)
+      + this.upperBonus() + this.yahtzeeBonus;
+  }
+}
+class Turn {
+  seat: number;
+  rolls: number;
+  faces: number[];
+  holds: boolean[];
+
+  constructor(seat: number, rolls = 0, faces: number[] = [], holds: boolean[] = Array(5).fill(false)) {
+    this.seat = seat;
+    this.rolls = rolls;
+    this.faces = [...faces];
+    this.holds = [...holds];
+  }
+  copy(): Turn { return new Turn(this.seat, this.rolls, this.faces, this.holds); }
+}
+type Rules = {rolls: number; joker: string};
+
+class Game {
+  players: Player[];
+  rules: Rules;
+  roller: DiceRoller;
+  turn: Turn | null = new Turn(0);
+  entries: Entry[] = [];
+  redoList: [Turn | null, Entry][] = [];
+
+  constructor(players: Player[], rules: Rules, roller: DiceRoller) {
+    this.players = players;
+    this.rules = rules;
+    this.roller = roller;
+    this.turn = new Turn(0);
+  }
+  finished(): boolean { return this.turn === null; }
+  currentPlayer(): Player { return this.players[this.turn!.seat]; }
+  roll(): string {
+    const turn = this.turn!;
+    if (turn.rolls === 0) turn.faces = Array.from({ length: 5 }, () => this.roller.rollDie());
+    else for (let i = 0; i < 5; ++i) if (!turn.holds[i]) turn.faces[i] = this.roller.rollDie();
+    ++turn.rolls;
+    this.redoList.length = 0;
+    return `${this.currentPlayer().name} roll ${turn.rolls}: ${faceText(turn.faces)}`;
+  }
+  setHolds(holds: boolean[]): string {
+    this.turn!.holds = [...holds];
+    this.redoList.length = 0;
+    return `${this.currentPlayer().name} holds ${patternText(holds)}: ${faceText(heldFaces(this.turn!.faces, holds))}`;
+  }
+  jokerSituation(player: Player, faces: number[]): boolean {
+    return this.rules.joker !== 'OFF' && isYahtzee(faces) && player.boxes.YAHTZEE !== null;
+  }
+  allowedCategories(player: Player, faces: number[], joker: boolean): string[] {
+    const open = player.openCategories();
+    if (!joker || this.rules.joker === 'FREE') return open;
+  pointsToEnter(faces: number[], category: string, joker: boolean): number {
+    return joker && Object.hasOwn(JOKER_POINTS, category) ? JOKER_POINTS[category]
+      : normalScore(category, faces);
+  prepareEntry(category: string): Entry {
+    const player = this.currentPlayer(), faces = this.turn!.faces;
+    check(player.boxes[category] === null, `${category} already used`);
+    const joker = this.jokerSituation(player, faces);
+    if (!this.allowedCategories(player, faces, joker).includes(category)) {
+      const upper = UPPER[faces[0] - 1];
+      check(player.boxes[upper] !== null, 'joker requires ' + upper);
+      throw new CommandError('joker requires lower box');
+    }
+    const points = this.pointsToEnter(faces, category, joker);
+    const bonus = isYahtzee(faces) && player.boxes.YAHTZEE === 50 ? 100 : 0;
+    return { player, category, points, bonus, joker, turn: this.turn!.copy() };
+  }
+  scoreLine(entry: Entry, verb: string): string {
+    const player = entry.player;
+    const parts: (string | number)[] = [player.name, verb, entry.points, 'in', entry.category];
+    if (entry.joker) parts.push('joker');
+    if (entry.bonus) parts.push('ybonus', entry.bonus);
+    const subtotal = player.upperSubtotal() + (UPPER.includes(entry.category) ? entry.points : 0);
+    const gained = player.upperBonus() === 0 && subtotal >= 63 ? 35 : 0;
+    if (gained) parts.push('ubonus', gained);
+    parts.push('total', player.total() + entry.points + entry.bonus + gained);
+    return parts.join(' ');
+  }
+  enter(entry: Entry): void {
+    entry.player.boxes[entry.category] = entry.points;
+    entry.player.yahtzeeBonus += entry.bonus;
+    this.entries.push(entry);
+  }
+  score(category: string): string[] {
+    const entry = this.prepareEntry(category), line = this.scoreLine(entry, 'scores');
+    this.enter(entry);
+    this.redoList.length = 0;
+    if (this.players.every(player => player.usedCount() === 13)) {
+      this.turn = null;
+      return [line, 'game over'];
+    }
+    this.turn = new Turn((this.turn!.seat + 1) % this.players.length);
+    const player = this.currentPlayer();
+    return [line, `turn ${player.round()} ${player.name}`];
+  }
+  undo(): Entry {
+    const entry = this.entries.pop()!;
+    entry.player.boxes[entry.category] = null;
+    entry.player.yahtzeeBonus -= entry.bonus;
+    this.redoList.push([this.turn, entry]);
+    this.turn = entry.turn.copy();
+    return entry;
+  }
+  redo(): Entry {
+    const [turn, entry] = this.redoList.pop()!;
+    this.enter(entry);
+    this.turn = turn;
+    return entry;
+class YahtzeeTable {
+  rules: Rules = {rolls: 3, joker: 'FORCED'};
+  game: Game | null = null;
+  output: string[] = [];
+  handlers: Record<string, (args: string[]) => void>;
+
+  constructor() {
+
+    this.handlers = {
+      RULE: this.setRule, GAME: this.startGame, BOT: this.setBot, LOAD: this.load,
+      ROLL: this.roll, HOLD: this.hold, KEEP: this.keep, SCORE: this.score,
+      WHATIF: this.whatIf, UNDO: this.undo, REDO: this.redo, SUGGEST: this.suggest,
+  emit(line: string): void { this.output.push(line); }
+  requireNoGame(): void { check(this.game === null, 'game in progress'); }
+  requireGame(): Game { check(this.game !== null, 'no game'); return this.game; }
+  requireTurn(): Game { const game = this.requireGame(); check(!game.finished(), 'game over'); return game; }
+  requireRolled(): Game { const game = this.requireTurn(); check(game.turn!.rolls !== 0, 'not rolled'); return game; }
+  requireRollsLeft(): Game {
+    const game = this.requireRolled();
+    check(game.turn!.rolls !== this.rules.rolls, 'no rolls left');
+    return game;
+  startGame(args: string[]): void {
+    const seed = integerWord(args[0], 1, MODULUS - 1);
+    const names = args.slice(1).map(playerName);
+    check(names.length <= 6, 'too many players');
+    this.requireNoGame();
+    for (let i = 0; i < names.length; ++i)
+      check(!names.slice(0, i).includes(names[i]), 'duplicate name ' + names[i]);
+    this.game = new Game(names.map(name => new Player(name)), this.rules, new DiceRoller(seed));
+    this.emit(`game seed ${seed} players ${names.join(' ')}`);
+    this.emit(`turn 1 ${names[0]}`);
+  load(args: string[]): void {
+    const faces = args.map(text => integerWord(text, 1, 6));
+    const game = this.requireGame();
+    game.roller.loaded.push(...faces);
+    this.emit(`loaded ${game.roller.loaded.length}`);
+  }
+  roll(): void {
+    const game = this.requireTurn();
+    check(game.turn!.rolls !== this.rules.rolls, 'no rolls left');
+    check(!game.turn!.holds.every(Boolean), 'all dice held');
+    this.emit(game.roll());
+  }
+  hold(args: string[]): void {
+    const holds = holdPattern(args[0]);
+    const game = this.requireRollsLeft();
+    this.emit(game.setHolds(holds));
+  score(args: string[]): void {
+    const category = categoryName(args[0]), game = this.requireRolled();
+    this.output.push(...game.score(category));
+  undo(): void {
+    const game = this.requireGame();
+    check(game.entries.length > 0, 'nothing to undo');
+    const entry = game.undo();
+    this.emit(`undo ${entry.player.name} ${entry.category} ${entry.points}`);
+  }
+  redo(): void {
+    const game = this.requireGame();
+    check(game.redoList.length > 0, 'nothing to redo');
+    const entry = game.redo();
+    this.emit(`redo ${entry.player.name} ${entry.category} ${entry.points}`);
+  execute(line: string): void {
+    const [command, ...args] = line.split(' ');
+    try {
+      check(Object.hasOwn(this.handlers, command), 'unknown command ' + command);
+      this.handlers[command].call(this, args);
+    } catch (error) {
+      if (!(error instanceof CommandError)) throw error;
+      this.emit('error: ' + error.message);
+    }
+  }
+}
+const lines = readFileSync(0, 'utf8').trimEnd().split(/\r?\n/);
+const table = new YahtzeeTable();
+for (let i = 1; i <= Number(lines[0]); ++i) table.execute(lines[i]);
+process.stdout.write(table.output.join('\n') + '\n');

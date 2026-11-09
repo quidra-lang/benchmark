@@ -1,0 +1,440 @@
+pub fn stateKey(cell: usize, time: usize) u64 {
+    return @as(u64, time) * 1024 + cell;
+}
+pub fn moveKey(source: usize, destination: usize, time: usize) u64 {
+    return (@as(u64, time) * 1024 + source) * 1024 + destination;
+    pub fn forbidState(self: *Prohibitions, cell: usize, time: usize) void {
+        self.states.put(g.allocator, stateKey(cell, time), {}) catch @panic("allocation failed");
+    }
+    pub fn forbidMove(self: *Prohibitions, source: usize, destination: usize, time: usize) void {
+        self.moves.put(g.allocator, moveKey(source, destination, time), {}) catch @panic("allocation failed");
+    }
+    pub fn stateAllowed(self: *const Prohibitions, cell: usize, time: usize) bool {
+        return !self.states.contains(stateKey(cell, time)) and (if (self.permanent.get(cell)) |start| time < start else true);
+    }
+    pub fn actionAllowed(self: *const Prohibitions, source: usize, destination: usize, time: usize) bool {
+        return self.stateAllowed(destination, time) and (source == destination or !self.moves.contains(moveKey(source,
+             destination, time)));
+    }
+    pub fn arrivalAllowed(self: *const Prohibitions, goal: usize) usize {
+        var result: usize = 0;
+        var keys = self.states.keyIterator();
+        while (keys.next()) |key| if (key.* % 1024 == goal) {
+            result = @max(result, @as(usize, @intCast(key.* / 1024)) + 1);
+        };
+        return result;
+    }
+    pub fn reserve(self: *Prohibitions, path: g.Path, start: usize, permanent: bool) void {
+        for (path, 0..) |cell, time| {
+            self.forbidState(cell, start + time);
+            if (time > 0 and cell != path[time - 1]) self.forbidMove(cell, path[time - 1], start + time);
+        }
+        if (permanent) {
+            const cell = path[path.len - 1];
+            const time = start + path.len - 1;
+            self.permanent.put(g.allocator, cell, if (self.permanent.get(cell)) |old| @min(old,
+                 time) else time) catch @panic("allocation failed");
+        }
+    }
+pub fn search(grid: g.Grid, agent: g.Agent, distance: []const i64, start: usize, t0: usize,
+     prohibitions: *const Prohibitions, tmax: usize, budget: *Budget, window: bool, work_allocator: std.mem.Allocator) Result {
+    budget.searches += 1;
+    const beginning = budget.expansions;
+    const arrival = prohibitions.arrivalAllowed(agent.goal);
+    const cells = grid.size();
+    const parents = work_allocator.alloc(i32, (tmax - t0 + 1) * cells) catch @panic("allocation failed");
+    defer work_allocator.free(parents);
+    @memset(parents, -2);
+    parents[start] = -1;
+    var heap: Heap = .{ .allocator = work_allocator };
+    defer heap.items.deinit(work_allocator);
+    heap.push(.{ .cell = start, .time = t0, .f = distance[start], .steps = 0, .insertion = 0 });
+    var insertion: usize = 0;
+    while (heap.items.items.len > 0) {
+        const state = heap.pop();
+        budget.expansions += 1;
+        if (budget.limit) |limit| if (budget.expansions > limit) return .{ .status = .aborted,
+             .expansions = budget.expansions - beginning };
+        if ((state.cell == agent.goal and state.time >= arrival) or (window and state.time == tmax)) {
+            const path = g.alloc(usize, state.steps + 1);
+            var current = (state.time - t0) * cells + state.cell;
+            var position = path.len;
+            while (true) {
+                position -= 1;
+                path[position] = current % cells;
+                const parent = parents[current];
+                if (parent < 0) break;
+                current = @intCast(parent);
+            }
+            return .{ .status = .success, .path = path, .expansions = budget.expansions - beginning };
+        }
+        if (state.time == tmax) continue;
+        const destinations = grid.destinations(state.cell);
+        for (destinations.cells[0..destinations.count]) |destination| {
+            const time = state.time + 1;
+            const index = (time - t0) * cells + destination;
+            if (distance[destination] < 0 or parents[index] != -2 or !prohibitions.actionAllowed(state.cell,
+                 destination, time)) continue;
+            insertion += 1;
+            parents[index] = @intCast((state.time - t0) * cells + state.cell);
+            const steps = time - t0;
+            heap.push(.{ .cell = destination, .time = time, .f = g.n(steps) + distance[destination],
+                 .steps = steps, .insertion = insertion });
+        }
+    }
+    return .{ .status = .no_path, .expansions = budget.expansions - beginning };
+}
+pub fn read(io: std.Io) !Grid {
+    const lines = try readLines(io, "input/map.txt");
+    const dimensions = words(lines[0]);
+    return .{ .width = u(number(dimensions[0])), .height = u(number(dimensions[1])), .rows = lines[1..] };
+}
+pub fn readAgents(io: std.Io, grid: Grid) ![]const Agent {
+    const lines = try readLines(io, "input/agents.csv");
+    const agents = alloc(Agent, lines.len - 1);
+    for (lines[1..], agents) |line, *agent| {
+        const f = split(line, ',');
+        const id = u(number(f[0]));
+        agent.* = .{ .id = id, .start = u(number(f[2])) * grid.width + u(number(f[1])), .goal = u(number(f[4])) * grid.width + u(number(f[3])),
+             .name = 'A' + @as(u8, @intCast(id)) };
+    }
+    return agents;
+}
+fn readParameters(io: std.Io, count: usize) !Parameters {
+    var out: Parameters = .{};
+    var orders: std.ArrayList([]const usize) = .empty;
+    var runs: std.ArrayList(Definition) = .empty;
+    var delays: std.ArrayList(Delay) = .empty;
+    const number_order = g.alloc(usize, count);
+    for (number_order, 0..) |*id, i| id.* = i;
+    g.append([]const usize, &orders, number_order);
+    for (try g.readLines(io, "input/params.txt")) |line| {
+        const f = g.words(line);
+        if (g.eq(f[0], "HORIZON")) out.horizon = g.u(g.number(f[1])) else if (g.eq(f[0], "HL_BUDGET")) out.hl_budget = g.u(g.number(f[1])) else if (g.eq(f[0],
+             "LL_BUDGET")) out.ll_budget = g.number(f[1]) else if (g.eq(f[0], "WINDOW")) {
+            out.window = g.u(g.number(f[1]));
+            out.step = g.u(g.number(f[2]));
+        } else if (g.eq(f[0], "ORDER")) {
+            const order = g.alloc(usize, count);
+            for (f[1..], order) |value, *id| id.* = g.u(g.number(value));
+            g.append([]const usize, &orders, order);
+        } else if (g.eq(f[0], "RUN")) {
+            var solver: Solver = .pp;
+            for (solver_names, 0..) |name, index| if (g.eq(f[1], name)) {
+                solver = @enumFromInt(index);
+            };
+            g.append(Definition, &runs, .{ .name = g.fmt("{s}-{s}", .{ f[1], f[2] }), .solver = solver,
+                 .makespan = g.eq(f[2], "MAKESPAN") });
+        } else if (g.eq(f[0], "ANIMATE")) {
+            out.animate = f[1];
+            out.frames = g.u(g.number(f[2]));
+        } else g.append(Delay, &delays, .{ .agent = g.u(g.number(f[1])), .start = g.u(g.number(f[2])),
+             .duration = g.u(g.number(f[3])) });
+    }
+    out.orders = orders.items;
+    out.runs = runs.items;
+    out.delays = delays.items;
+    return out;
+}
+fn solvePp(run: *Run, grid: g.Grid, agents: []const g.Agent, distances: []const []const i64,
+     params: Parameters, work_allocator: std.mem.Allocator) void {
+    var answer_order: usize = 0;
+    for (params.orders, 1..) |order, number| {
+        run.high_level += 1;
+        const before = run.budget.expansions;
+        const result = pp.tryOrder(grid, agents, distances, params.horizon, order, &run.budget, work_allocator);
+        for (result.attempts) |attempt| if (attempt.path) |path| {
+            run.trace.add("order {d} agent {c} cost {d} expansions {d}", .{ number, r.agentName(attempt.agent),
+                 path.len - 1, attempt.expansions });
+        } else run.trace.add("order {d} agent {c} failed expansions {d}", .{ number, r.agentName(attempt.agent),
+             attempt.expansions });
+        if (result.aborted) {
+            run.reason = "ll_budget";
+            break;
+        }
+        const names = g.alloc(u8, order.len);
+        for (order, names) |id, *name| name.* = r.agentName(id);
+        const planned = result.attempts.len - @intFromBool(result.failed != null);
+        if (result.paths) |paths| {
+            run.specific.add("order {d} {s} planned {d} expansions {d} ok", .{ number, names,
+                 planned, run.budget.expansions - before });
+            run.ok = true;
+            run.paths = paths;
+            answer_order = number;
+            break;
+        } else run.specific.add("order {d} {s} planned {d} expansions {d} failed {c}", .{ number,
+             names, planned, run.budget.expansions - before, r.agentName(result.failed.?) });
+    }
+    if (run.ok) run.ending = g.fmt("end OK order {d}", .{answer_order}) else {
+        if (run.reason.len == 0) run.reason = "orders";
+        run.ending = g.fmt("end FAIL {s}", .{run.reason});
+    }
+}
+fn planStatistics(paths: g.Plan, agents: []const g.Agent, info: Overview, grid: g.Grid, makespan: bool) Metrics {
+    const per_agent = g.alloc(PathStats, agents.len);
+    const soc = c.planCost(paths, false);
+    const span = c.planCost(paths, true);
+    const cost = if (makespan) span else soc;
+    const traffic = g.zero(usize, grid.size(), 0);
+    const cell_waits = g.zero(usize, grid.size(), 0);
+    const arrivals = g.zero(usize, g.u(span) + 1, 0);
+    var out: Metrics = .{ .soc = soc, .makespan = span, .cost = cost, .ratio = r.fraction(cost,
+         if (makespan) info.makespan else info.soc), .agents = per_agent, .arrivals = arrivals,
+         .traffic = traffic, .cell_waits = cell_waits, .hotspots = &.{} };
+    for (paths, agents, 0..) |path, agent, id| {
+        var stats: PathStats = .{ .cost = path.len - 1, .extra = g.n(path.len - 1) - info.shortest[id],
+             .actions = r.actionString(path, grid) };
+        var arrived = false;
+        var previous: ?u8 = null;
+        var visited: [1024]bool = @splat(false);
+        for (path, 0..) |cell, time| {
+            visited[cell] = true;
+            if (!arrived and cell == agent.goal) {
+                stats.arrive = time;
+                arrived = true;
+            }
+            if (time == 0) continue;
+            const action = r.action(path[time - 1], cell, grid);
+            if (action == '.') {
+                stats.waits += 1;
+                cell_waits[cell] += 1;
+            } else {
+                if (previous) |direction| stats.turns += @intFromBool(direction != action);
+                previous = action;
+            }
+            stats.leave += @intFromBool(path[time - 1] == agent.goal and cell != agent.goal);
+        }
+        for (visited[0..grid.size()], traffic) |has, *count| count.* += @intFromBool(has);
+        for (arrivals[path.len - 1 ..]) |*count| count.* += 1;
+        per_agent[id] = stats;
+        out.sum_extra += stats.extra;
+        out.max_extra = @max(out.max_extra, stats.extra);
+        out.waits += stats.waits;
+        out.turns += stats.turns;
+    }
+    var hotspots: std.ArrayList(usize) = .empty;
+    for (traffic, 0..) |count, cell| if (count > 0) g.append(usize, &hotspots, cell);
+    std.mem.sort(usize, hotspots.items, traffic, struct {
+        fn less(counts: []usize, a: usize, b: usize) bool {
+            return if (counts[a] == counts[b]) a < b else counts[a] > counts[b];
+        }
+    }.less);
+    out.hotspots = hotspots.items[0..@min(5, hotspots.items.len)];
+    return out;
+}
+fn validatePlan(paths: g.Plan, agents: []const g.Agent, grid: g.Grid) Validation {
+    var out: Validation = .{};
+    for (paths, agents) |path, agent| {
+        out.start += @intFromBool(path[0] != agent.start);
+        out.goal += @intFromBool(path[path.len - 1] != agent.goal);
+        for (path[0 .. path.len - 1], path[1..]) |source, destination| {
+            const destinations = grid.destinations(source);
+            out.moves += @intFromBool(std.mem.indexOfScalar(usize, destinations.cells[0..destinations.count],
+                 destination) == null);
+        }
+    }
+    out.conflicts = c.conflicts(paths);
+    for (out.conflicts) |conflict| {
+        if (conflict.edge) out.edge += 1 else out.vertex += 1;
+    }
+    const maximum = g.u(c.planCost(paths, true));
+    for (1..maximum + 1) |time| for (paths, 0..) |first, a| {
+        const past_a = c.position(first, time - 1);
+        const next_a = c.position(first, time);
+        if (past_a == next_a) continue;
+        for (paths, 0..) |second, b| if (a != b and next_a == c.position(second, time - 1) and c.position(second,
+             time) != past_a) {
+            out.follows += 1;
+        };
+    };
+    return out;
+}
+fn validationLines(out: *g.Lines, name: []const u8, validation: Validation, grid: g.Grid, baseline: bool) void {
+    const valid = validation.start + validation.goal + validation.moves + validation.vertex + validation.edge == 0;
+    out.add("plan {s} verdict {s} start {d} goal {d} moves {d} vertex {d} edge {d} follows {d}",
+         .{ name, if (valid) "VALID" else "INVALID", validation.start, validation.goal, validation.moves,
+         validation.vertex, validation.edge, validation.follows });
+    for (validation.conflicts) |conflict| {
+        if (baseline) out.add("  {s} {s}", .{ r.conflictText(conflict, grid), class_names[conflict.category] }) else out.add("  {s}",
+             .{r.conflictText(conflict, grid)});
+    }
+}
+fn solutionBlock(run: Run, grid: g.Grid, metrics: ?Metrics, execution: ?Execution) g.Lines {
+    var out: g.Lines = .{};
+    const definition = run.definition;
+    const solver = solver_names[@intFromEnum(definition.solver)];
+    const cost_function = if (definition.makespan) "MAKESPAN" else "SOC";
+    if (run.ok) {
+        const m = metrics.?;
+        out.add("run {s} solver {s} cost_function {s} result OK cost {d} soc {d} makespan {d} ratio {s}",
+             .{ definition.name, solver, cost_function, m.cost, m.soc, m.makespan, m.ratio });
+    } else out.add("run {s} solver {s} cost_function {s} result FAIL reason {s}", .{ definition.name,
+         solver, cost_function, run.reason });
+    out.extend(run.specific);
+    if (!run.ok) return out;
+    const m = metrics.?;
+    const e = execution.?;
+    for (m.agents, 0..) |agent, id| out.add("agent {c} cost {d} extra {d} waits {d} turns {d} arrive {d} leave {d} moves {s}",
+         .{ r.agentName(id), agent.cost, agent.extra, agent.waits, agent.turns, agent.arrive,
+         agent.leave, agent.actions });
+    var arrivals: g.Text = .{};
+    arrivals.add("arrivals", .{});
+    for (m.arrivals) |count| arrivals.add(" {d}", .{count});
+    out.add("{s}", .{arrivals.value()});
+    var hotspots: g.Text = .{};
+    hotspots.add("hotspots", .{});
+    for (m.hotspots) |cell| hotspots.add(" {s}:{d}", .{ r.cellText(cell, grid), m.traffic[cell] });
+    out.add("{s}", .{hotspots.value()});
+    if (e.deadlock) |time| out.add("execution deadlock time {d}", .{time}) else {
+        var finish: g.Text = .{};
+        for (e.finish) |time| finish.add(" {d}", .{time});
+        out.add("execution soc {d} makespan {d} blocked {d} finish{s}", .{ e.soc, e.makespan,
+             e.blocked, finish.value() });
+    }
+    return out;
+}
+fn animation(run: Run, grid: g.Grid, agents: []const g.Agent, params: Parameters, metrics: ?Metrics) g.Lines {
+    var out: g.Lines = .{};
+    if (!run.ok) {
+        out.add("run {s} FAIL", .{run.definition.name});
+        return out;
+    }
+    out.add("run {s} frames {d}", .{ run.definition.name, params.frames });
+    const cells = g.alloc(u8, grid.size());
+    for (0..params.frames) |time| {
+        for (grid.rows, 0..) |row, y| @memcpy(cells[y * grid.width .. (y + 1) * grid.width], row);
+        for (agents) |agent| cells[agent.goal] = agent.name + 32;
+        var done: usize = 0;
+        var moving: usize = 0;
+        for (run.paths, agents) |path, agent| {
+            cells[c.position(path, time)] = agent.name;
+            if (time >= path.len - 1) done += 1 else if (time >= 1 and c.position(path, time) != c.position(path,
+                 time - 1)) moving += 1;
+        }
+        out.add("", .{});
+        out.add("frame {d} done {d} moving {d} waiting {d}", .{ time, done, moving, agents.len - done - moving });
+        pictureLines(&out, grid, cells);
+    }
+    const m = metrics.?;
+    for ([2][]const usize{ m.traffic, m.cell_waits }, [2][]const u8{ "traffic", "waits" }) |counts, name| {
+        out.add("", .{});
+        out.add("{s}", .{name});
+        for (0..grid.size()) |cell| {
+            const count = counts[cell];
+            cells[cell] = if (!grid.free(cell)) '@' else if (count == 0) '.' else if (count <= 9) '0' + @as(u8,
+                 @intCast(count)) else '+';
+        }
+        pictureLines(&out, grid, cells);
+    }
+    return out;
+}
+pub fn main(init: std.process.Init) !void {
+    var arena: std.heap.ArenaAllocator = .init(init.gpa);
+    defer arena.deinit();
+    g.allocator = arena.allocator();
+    const grid = try g.read(init.io);
+    const agents = try g.readAgents(init.io, grid);
+    const params = try readParameters(init.io, agents.len);
+    const distances = g.alloc([]const i64, agents.len);
+    for (agents, distances) |agent, *distance| distance.* = grid.distanceTable(agent.goal);
+    const baseline = g.alloc(g.Path, agents.len);
+    var independent_budget: ll.Budget = .{};
+    const unrestricted: ll.Prohibitions = .{};
+    for (agents, 0..) |agent, id| baseline[id] = ll.search(grid, agent, distances[id], agent.start,
+         0, &unrestricted, params.horizon, &independent_budget, false, init.gpa).path;
+    const info = overview(grid, agents, distances, baseline, init.gpa);
+    var solutions = instanceLines(grid, agents, info);
+    var validation: g.Lines = .{};
+    var baseline_validation = validatePlan(baseline, agents, grid);
+    baseline_validation.conflicts = info.conflicts;
+    validationLines(&validation, "INDEPENDENT", baseline_validation, grid, true);
+    var statistics: g.Lines = .{};
+    statistics.add("run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions",
+         .{});
+    var trace: g.Lines = .{};
+    var frames: g.Lines = .{};
+    const completed = g.alloc(Completed, params.runs.len);
+    for (params.runs, 0..) |definition, index| {
+        const persistent = g.allocator;
+        var work: std.heap.ArenaAllocator = .init(init.gpa);
+        defer work.deinit();
+        g.allocator = work.allocator();
+        var run: Run = .{ .definition = definition, .budget = .{ .limit = params.ll_budget } };
+        switch (definition.solver) {
+            .pp => solvePp(&run, grid, agents, distances, params, init.gpa),
+            .cbs, .icbs => solveCbs(&run, grid, agents, distances, params, init.gpa),
+            .whca => solveWhca(&run, grid, agents, distances, params, init.gpa),
+        }
+        const metrics: ?Metrics = if (run.ok) planStatistics(run.paths, agents, info, grid,
+             definition.makespan) else null;
+        const execution: ?Execution = if (run.ok) delayedExecution(run.paths, params) else null;
+        const block = solutionBlock(run, grid, metrics, execution);
+        const stats = statsLine(run, metrics, execution);
+        var checked: g.Lines = .{};
+        if (run.ok) validationLines(&checked, definition.name, validatePlan(run.paths, agents,
+             grid), grid, false) else checked.add("plan {s} verdict NONE", .{definition.name});
+        const selected = g.eq(definition.name, params.animate);
+        const animated = if (selected) animation(run, grid, agents, params, metrics) else g.Lines{};
+        g.allocator = persistent;
+        solutions.add("", .{});
+        solutions.extend(block);
+        statistics.add("{s}", .{stats});
+        validation.extend(checked);
+        if (index > 0) trace.add("", .{});
+        trace.add("run {s}", .{definition.name});
+        trace.extend(run.trace);
+        trace.add("{s}", .{run.ending});
+        if (selected) frames.extend(animated);
+        completed[index] = .{ .name = definition.name, .index = index, .ok = run.ok, .soc = if (metrics) |m| m.soc else 0,
+             .makespan = if (metrics) |m| m.makespan else 0 };
+    }
+    appendSummary(&solutions, completed);
+    try r.write(init.io, "solutions.txt", solutions);
+    try r.write(init.io, "stats.csv", statistics);
+    try r.write(init.io, "validation.txt", validation);
+    try r.write(init.io, "trace.txt", trace);
+    try r.write(init.io, "frames.txt", frames);
+}
+pub fn position(path: g.Path, time: usize) usize {
+    return path[@min(time, path.len - 1)];
+}
+pub fn conflicts(paths: g.Plan) []Conflict {
+    var maximum: usize = 0;
+    for (paths) |path| maximum = @max(maximum, path.len - 1);
+    var out: std.ArrayList(Conflict) = .empty;
+    for (1..maximum + 1) |time| for (0..paths.len) |a| for (a + 1..paths.len) |b| {
+        const current_a = position(paths[a], time);
+        const current_b = position(paths[b], time);
+        if (current_a == current_b) g.append(Conflict, &out, .{ .edge = false, .time = time,
+             .a = a, .b = b, .u = current_a, .v = current_a }) else if (current_a == position(paths[b],
+             time - 1) and current_b == position(paths[a], time - 1)) g.append(Conflict, &out,
+             .{ .edge = true, .time = time, .a = a, .b = b, .u = position(paths[a], time - 1),
+             .v = current_a });
+    };
+    return out.items;
+}
+pub fn planCost(paths: g.Plan, makespan: bool) i64 {
+    var result: i64 = 0;
+    for (paths) |path| {
+        const cost = g.n(path.len - 1);
+        result = if (makespan) @max(result, cost) else result + cost;
+    }
+    return result;
+}
+pub fn tryOrder(grid: g.Grid, agents: []const g.Agent, distances: []const []const i64, horizon: usize,
+     order: []const usize, budget: *ll.Budget, work_allocator: std.mem.Allocator) Result {
+    var prohibitions: ll.Prohibitions = .{};
+    const paths = g.alloc(g.Path, agents.len);
+    var attempts: std.ArrayList(Attempt) = .empty;
+    for (order) |id| {
+        const result = ll.search(grid, agents[id], distances[id], agents[id].start, 0, &prohibitions,
+             horizon, budget, false, work_allocator);
+        if (result.status == .aborted) return .{ .paths = null, .attempts = attempts.items, .aborted = true };
+        g.append(Attempt, &attempts, .{ .agent = id, .path = if (result.status == .success) result.path else null,
+             .expansions = result.expansions });
+        if (result.status == .no_path) return .{ .paths = null, .attempts = attempts.items, .failed = id };
+        paths[id] = result.path;
+        prohibitions.reserve(result.path, 0, true);
+    }
+    return .{ .paths = paths, .attempts = attempts.items };
+}

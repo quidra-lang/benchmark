@@ -1,0 +1,625 @@
+pub fn bestRoute(candidates: []const Route, network: *const t.Topology) Selection {
+    var remaining: [100]Route = undefined;
+    @memcpy(remaining[0..candidates.len], candidates);
+    var count = candidates.len;
+    if (count == 1) return .{ .route = remaining[0], .reason = "ONLY" };
+    const reasons = [_][]const u8{ "LOCALPREF", "ASPATH", "ORIGIN", "MED", "ROUTERID", "LINK" };
+    for (reasons, 0..) |reason, stage| {
+        var scores: [100]i64 = undefined;
+        var minimum: i64 = std.math.maxInt(i64);
+        for (remaining[0..count], 0..) |route, i| {
+            scores[i] = switch (stage) {
+                0 => -route.local_pref,
+                1 => t.n(route.attribute.path.len),
+                2 => t.n(@intFromEnum(route.attribute.origin)),
+                3 => 0,
+                4 => @intCast(network.ases[route.neighbor()].router_id),
+                else => t.n(route.link.?),
+            };
+            if (stage == 3) {
+                for (remaining[0..count]) |other| if (route.neighbor() == other.neighbor() and other.attribute.med < route.attribute.med) {
+                    scores[i] = 1;
+                    break;
+                };
+            }
+            minimum = @min(minimum, scores[i]);
+        }
+        var next: usize = 0;
+        for (0..count) |i| if (scores[i] == minimum) {
+            remaining[next] = remaining[i];
+            next += 1;
+        };
+        count = next;
+        if (count == 1) return .{ .route = remaining[0], .reason = reason };
+    }
+    unreachable;
+}
+    fn importRoute(self: *Simulation, session: *const Session, prefix: usize, attribute: *const d.Attribute) struct { route: ?d.Route,
+         rule: ?usize } {
+        const link = self.network.links[session.link];
+        const rule_index = self.policies.applied(.import_route, session.owner, link, self.prefixes[prefix],
+             attribute.path, attribute.communities);
+        const rule = if (rule_index) |index| &self.policies.rules[index] else null;
+        if (rule) |r| if (r.has(.deny)) return .{ .route = null, .rule = rule_index };
+        const default = self.params.defaults[@intFromEnum(link.role(session.owner))];
+        const edited = p.editCommunities(attribute.communities, rule);
+        defer edited.deinit();
+        const med = if (rule) |r| r.value(.med, attribute.med) else attribute.med;
+        const local_pref = if (rule) |r| r.value(.local_pref, default) else default;
+        return .{ .route = .{ .attribute = d.intern(attribute.path, attribute.origin, med,
+             edited.values), .local_pref = local_pref, .link = session.link }, .rule = rule_index };
+    }
+    fn candidates(self: *Simulation, owner: usize, prefix: usize, out: *[100]d.Route) []const d.Route {
+        var count: usize = 0;
+        for (self.routers[owner].sessions) |index| {
+            const session = &self.sessions[index];
+            if (session.incoming[prefix]) |attribute| if (self.importRoute(session, prefix, attribute).route) |route| {
+                out[count] = route;
+                count += 1;
+            };
+        }
+        return out[0..count];
+    }
+    fn advertised(self: *Simulation, session: *const Session, prefix: usize) struct { attribute: ?*const d.Attribute,
+         rule: ?usize } {
+        const route = self.routers[session.owner].rib[prefix] orelse return .{ .attribute = null, .rule = null };
+        const link = self.network.links[session.link];
+        const attribute = route.attribute;
+        if ((!route.local() and route.neighbor() == link.other(session.owner)) or std.mem.indexOfScalar(u32,
+             attribute.communities, p.no_export) != null) return .{ .attribute = null, .rule = null };
+        const rule_index = self.policies.applied(.export_route, session.owner, link, self.prefixes[prefix],
+             attribute.path, attribute.communities);
+        const rule = if (rule_index) |index| &self.policies.rules[index] else null;
+        if (rule) |r| if (r.has(.deny)) return .{ .attribute = null, .rule = rule_index };
+        const allowed = if (rule) |r| r.has(.allow) else false;
+        if (!allowed and !route.local() and self.network.links[route.link.?].role(session.owner) != .customer and link.role(session.owner) != .customer) return .{ .attribute = null,
+             .rule = rule_index };
+        const prepend: usize = t.u(1 + (if (rule) |r| r.value(.prepend, 0) else 0));
+        var path: [550]usize = undefined;
+        @memset(path[0..prepend], session.owner);
+        @memcpy(path[prepend .. prepend + attribute.path.len], attribute.path);
+        const edited = p.editCommunities(attribute.communities, rule);
+        defer edited.deinit();
+        const med = if (rule) |r| r.value(.med, 0) else 0;
+        return .{ .attribute = d.intern(path[0 .. prepend + attribute.path.len], attribute.origin,
+             med, edited.values), .rule = rule_index };
+    }
+    fn redecide(self: *Simulation, owner: usize, prefix: usize) void {
+        const router = &self.routers[owner];
+        var route = router.origination[prefix];
+        if (route == null) {
+            var storage: [100]d.Route = undefined;
+            const routes = self.candidates(owner, prefix, &storage);
+            if (routes.len > 0) route = d.bestRoute(routes, &self.network).route;
+        }
+        if (d.equal(router.rib[prefix], route)) return;
+        router.rib[prefix] = route;
+        router.changes += 1;
+        self.log("BEST {d} {s} {s}", .{ self.network.ases[owner].number, self.prefixes[prefix].text(),
+             report.routeText(route, &self.network) });
+        self.period.best_changes += 1;
+        const index = owner * self.prefixes.len + prefix;
+        self.period.exploration[index] += 1;
+        self.period.max_exploration = @max(self.period.max_exploration, self.period.exploration[index]);
+        t.append(BestLine, &self.period.best_lines, .{ .time = self.time, .owner = owner, .prefix = prefix,
+             .route = route });
+        self.changed[prefix] = true;
+        for (router.sessions) |session_index| {
+            const session = &self.sessions[session_index];
+            if (!self.network.links[session.link].up) continue;
+            session.pending[prefix] = true;
+            if (session.timer == null) self.processPending(session_index);
+        }
+    }
+    fn processPending(self: *Simulation, index: usize) void {
+        const session = &self.sessions[index];
+        var sent: usize = 0;
+        for (session.pending, 0..) |pending, prefix| {
+            if (!pending) continue;
+            const advertised_value = self.advertised(session, prefix);
+            const content = advertised_value.attribute;
+            if (session.outgoing[prefix] == content) continue;
+            session.outgoing[prefix] = content;
+            const message = self.messages.send(self.time, session.owner, self.network.links[session.link].other(session.owner),
+                 session.link, prefix, content, &self.network);
+            self.log("SEND {s} {s}", .{ self.messageText(message), if (content) |attribute| t.fmt("ANNOUNCE {s}",
+                 .{report.attributeText(attribute, &self.network)}) else "WITHDRAW" });
+            session.sent += 1;
+            sent += 1;
+            self.period.updates += 1;
+            if (content == null) self.period.withdrawals += 1;
+            if (advertised_value.rule) |rule| self.policies.rules[rule].hits += 1;
+        }
+        @memset(session.pending, false);
+        const mrai = self.network.links[session.link].mrai;
+        session.timer = if (sent > 0 and mrai >= 1) self.time + mrai else null;
+    }
+    fn receive(self: *Simulation, message: sim.Message) void {
+        const session = &self.sessions[self.by_session[message.receiver][message.link].?];
+        const prefix = message.prefix;
+        session.received += 1;
+        self.period.convergence_time = self.time - self.period.event.time;
+        var result: []const u8 = undefined;
+        if (message.content) |attribute| {
+            if (std.mem.indexOfScalar(usize, attribute.path, message.receiver) != null) {
+                session.incoming[prefix] = null;
+                result = "ANNOUNCE loop";
+            } else {
+                session.incoming[prefix] = attribute;
+                const evaluated = self.importRoute(session, prefix, attribute);
+                if (evaluated.rule) |rule| self.policies.rules[rule].hits += 1;
+                if (evaluated.route == null) result = t.fmt("ANNOUNCE deny {s}", .{self.policies.rules[evaluated.rule.?].name}) else if (evaluated.rule) |rule| result = t.fmt("ANNOUNCE accept {s}",
+                     .{self.policies.rules[rule].name}) else result = "ANNOUNCE accept";
+            }
+        } else {
+            session.incoming[prefix] = null;
+            result = "WITHDRAW";
+        }
+        self.log("RECV {s} {s}", .{ self.messageText(message), result });
+        self.redecide(message.receiver, prefix);
+    }
+    fn originate(self: *Simulation, owner: usize, prefix: usize, origin: t.Origin, communities: t.Names) void {
+        self.routers[owner].origination[prefix] = .{ .attribute = d.intern(&.{}, origin, 0,
+             p.parseCommunities(communities)) };
+        self.redecide(owner, prefix);
+    }
+    fn executeEvent(self: *Simulation, event: sim.Event) void {
+        self.log("EVENT {d} {s}", .{ self.period.number, event.text });
+        const f = event.fields;
+        if (t.eq(event.kind, "INITIAL")) for (self.network.initial) |initial| {
+            self.originate(initial.owner, self.prefixIndex(initial.prefix), initial.origin, initial.communities);
+        } else if (t.eq(event.kind, "ANNOUNCE")) self.originate(self.network.asIndex(t.number(f[1])),
+             self.prefixIndex(t.parsePrefix(f[2])), t.parseOrigin(f[3]), f[4..]) else if (t.eq(event.kind,
+             "WITHDRAW")) {
+            const owner = self.network.asIndex(t.number(f[1]));
+            const prefix = self.prefixIndex(t.parsePrefix(f[2]));
+            self.routers[owner].origination[prefix] = null;
+            self.redecide(owner, prefix);
+        } else if (t.eq(event.kind, "LINK_DOWN")) self.linkDown(t.indexOf(self.network.links,
+             f[2])) else if (t.eq(event.kind, "LINK_UP")) self.linkUp(t.indexOf(self.network.links,
+             f[2])) else self.changePolicy(t.indexOf(self.policies.rules, f[2]), t.eq(event.kind,
+             "POLICY_ON"));
+    }
+    fn runPeriod(self: *Simulation, number: usize, event: sim.Event, boundary: ?i64, work_allocator: std.mem.Allocator) void {
+        var state_arena: std.heap.ArenaAllocator = .init(work_allocator);
+        defer state_arena.deinit();
+        var states: std.StringHashMapUnmanaged(i64) = .empty;
+        var session_states: std.StringHashMapUnmanaged(u64) = .empty;
+        const pair_count = self.routers.len * self.prefixes.len;
+        const before = work_allocator.alloc(?d.Route, pair_count) catch @panic("allocation failed");
+        defer work_allocator.free(before);
+        for (self.routers, 0..) |router, owner| @memcpy(before[owner * self.prefixes.len .. (owner + 1) * self.prefixes.len],
+             router.rib);
+        self.period = t.create(Period, .{ .number = number, .event = event, .exploration = t.zero(i64,
+             pair_count, 0) });
+        t.append(*Period, &self.periods, self.period);
+        self.time = event.time;
+        @memset(self.changed, false);
+        self.executeEvent(event);
+        while (true) {
+            var delivered = false;
+            while (self.messages.nextTime() == self.time) {
+                self.receive(self.messages.take());
+                delivered = true;
+            }
+            for (self.sessions, 0..) |*session, index| if (session.timer == self.time) {
+                session.timer = null;
+                if (std.mem.indexOfScalar(bool, session.pending, true) != null) self.processPending(index);
+            };
+            if (std.mem.indexOfScalar(bool, self.changed, true) != null) self.forwardingChecks();
+            if (delivered) {
+                self.period.delivery_times += 1;
+                self.detectDivergence(&states, &session_states, state_arena.allocator());
+            }
+            if (boundary) |end| {
+                if (self.time == end) break;
+            } else if (self.quiet() or self.period.divergence != null or self.period.delivery_times >= self.params.stepcap) break;
+            var next: i64 = if (boundary) |end| end else std.math.maxInt(i64);
+            if (self.messages.nextTime()) |time| next = @min(next, time);
+            for (self.sessions) |session| if (session.timer) |time| {
+                next = @min(next, time);
+            };
+            self.time = next;
+            @memset(self.changed, false);
+        }
+        self.period.status = if (self.period.divergence != null) "DIVERGENT" else if (self.quiet()) "CONVERGED" else if (boundary == null) "CAPPED" else "UNSETTLED";
+        for (self.routers, 0..) |router, owner| for (router.rib, 0..) |route, prefix| if (!d.equal(route,
+             before[owner * self.prefixes.len + prefix])) {
+            self.period.routes_changed += 1;
+        };
+    }
+    fn trace(self: *const Simulation, source: usize, address: u64) Forwarding {
+        var out: Forwarding = .{ .result = .unreachable_result };
+        out.visits[0] = source;
+        out.visit_count = 1;
+        var visited: [50]bool = @splat(false);
+        visited[source] = true;
+        var owner = source;
+        while (true) {
+            var match: ?usize = null;
+            for (self.routers[owner].rib, self.prefixes, 0..) |route, prefix, index| if (route != null and prefix.contains(address) and (match == null or prefix.length > self.prefixes[match.?].length)) {
+                match = index;
+            };
+            if (match == null) {
+                out.result = if (out.hop_count == 0) .unreachable_result else .blackhole;
+                return out;
+            }
+            const prefix = match.?;
+            const route = self.routers[owner].rib[prefix].?;
+            out.hops[out.hop_count] = .{ .owner = owner, .prefix = prefix, .link = route.link };
+            out.hop_count += 1;
+            if (route.local()) {
+                out.result = .delivered;
+                out.arrival = owner;
+                return out;
+            }
+            out.count += 1;
+            owner = self.network.links[route.link.?].other(owner);
+            out.visits[out.visit_count] = owner;
+            out.visit_count += 1;
+            if (visited[owner]) {
+                out.result = .loop;
+                return out;
+            }
+            visited[owner] = true;
+        }
+    }
+    fn forwardingChecks(self: *Simulation) void {
+        for (self.changed, 0..) |changed, prefix| {
+            if (!changed) continue;
+            const loops = self.prefixLoops(prefix);
+            var position: usize = 0;
+            while (position < self.ongoing_rings.items.len) {
+                const index = self.ongoing_rings.items[position];
+                const record = &self.ring_records.items[index];
+                if (record.prefix != prefix) {
+                    position += 1;
+                    continue;
+                }
+                var found = false;
+                for (loops.items[0..loops.count]) |loop| found = found or record.path.same(loop);
+                if (!found) {
+                    record.end = self.time;
+                    _ = self.ongoing_rings.orderedRemove(position);
+                } else position += 1;
+            }
+            for (loops.items[0..loops.count]) |loop| {
+                var ongoing = false;
+                for (self.ongoing_rings.items) |index| {
+                    const record = self.ring_records.items[index];
+                    ongoing = ongoing or (record.prefix == prefix and record.path.same(loop));
+                }
+                if (!ongoing) {
+                    t.append(usize, &self.ongoing_rings, self.ring_records.items.len);
+                    t.append(RingRecord, &self.ring_records, .{ .prefix = prefix, .path = loop, .start = self.time });
+                }
+            }
+        }
+        for (self.params.traces, 0..) |spec, index| {
+            const path = self.trace(spec.source, spec.value);
+            const bad = path.result == .loop or path.result == .blackhole;
+            if (self.ongoing_traces[index]) |record_index| {
+                const record = &self.trace_records.items[record_index];
+                if (!bad or record.result != path.result or !std.mem.eql(usize, record.visits[0..record.visit_count],
+                     path.path())) {
+                    record.end = self.time;
+                    self.ongoing_traces[index] = null;
+                }
+            }
+            if (bad and self.ongoing_traces[index] == null) {
+                self.ongoing_traces[index] = self.trace_records.items.len;
+                t.append(TraceRecord, &self.trace_records, .{ .index = index, .result = path.result,
+                     .visits = path.visits, .visit_count = path.visit_count, .start = self.time });
+            }
+        }
+    }
+    fn ribLines(self: *Simulation) t.Lines {
+        var out: t.Lines = .{};
+        for (self.routers, 0..) |router, owner| {
+            var routes: usize = 0;
+            var local: usize = 0;
+            var sent: i64 = 0;
+            var received: i64 = 0;
+            for (router.rib) |route| if (route) |r| {
+                routes += 1;
+                local += @intFromBool(r.local());
+            };
+            for (router.sessions) |index| {
+                sent += self.sessions[index].sent;
+                received += self.sessions[index].received;
+            }
+            out.add("AS {d} routes {d} local {d} sent {d} received {d} changes {d}", .{ self.network.ases[owner].number,
+                 routes, local, sent, received, router.changes });
+            for (router.sessions) |index| {
+                const session = &self.sessions[index];
+                const link = self.network.links[session.link];
+                var incoming: usize = 0;
+                var accepted: usize = 0;
+                var outgoing: usize = 0;
+                for (session.incoming, 0..) |attribute, prefix| if (attribute) |a| {
+                    incoming += 1;
+                    accepted += @intFromBool(self.importRoute(session, prefix, a).route != null);
+                };
+                for (session.outgoing) |attribute| outgoing += @intFromBool(attribute != null);
+                out.add("SESSION {s} {d} {s} {s} in {d} accepted {d} out {d} sent {d} received {d} flaps {d}",
+                     .{ link.name, self.network.ases[link.other(owner)].number, t.role_names[@intFromEnum(link.role(owner))],
+                     if (link.up) "UP" else "DOWN", incoming, accepted, outgoing, session.sent,
+                     session.received, link.down_count });
+            }
+            for (router.rib, 0..) |maybe_route, prefix| if (maybe_route) |route| {
+                var storage: [100]d.Route = undefined;
+                const routes_candidates = self.candidates(owner, prefix, &storage);
+                if (route.local()) out.add("{s} {s} candidates {d}", .{ self.prefixes[prefix].text(),
+                     report.routeText(route, &self.network), routes_candidates.len }) else out.add("{s} {s} candidates {d} reason {s}",
+                     .{ self.prefixes[prefix].text(), report.routeText(route, &self.network),
+                     routes_candidates.len, d.bestRoute(routes_candidates, &self.network).reason });
+                var remaining: [100]d.Route = undefined;
+                var count: usize = 0;
+                for (routes_candidates) |candidate| if (!d.equal(candidate, route)) {
+                    remaining[count] = candidate;
+                    count += 1;
+                };
+                while (count > 0) {
+                    const alternate = d.bestRoute(remaining[0..count], &self.network).route;
+                    out.add("ALT {s}", .{report.routeText(alternate, &self.network)});
+                    var position: usize = 0;
+                    while (!d.equal(remaining[position], alternate)) position += 1;
+                    std.mem.copyForwards(d.Route, remaining[position .. count - 1], remaining[position + 1 .. count]);
+                    count -= 1;
+                }
+            };
+        }
+        return out;
+    }
+    fn pathLines(self: *const Simulation) t.Lines {
+        var out: t.Lines = .{};
+        for (self.params.traces) |spec| self.traceLines(&out, spec);
+        var originated: [100]bool = @splat(false);
+        for (self.routers) |router| for (router.origination, 0..) |route, prefix| if (route != null) {
+            originated[prefix] = true;
+        };
+        var names: std.ArrayList([]const u8) = .empty;
+        for (originated[0..self.prefixes.len], 0..) |present, prefix| if (present) t.append([]const u8,
+             &names, self.prefixes[prefix].text());
+        if (names.items.len > 0) out.add("PREFIXES {s}", .{t.join(names.items, ",")}) else out.add("PREFIXES", .{});
+        for (0..self.routers.len) |source| {
+            var symbols: t.Text = .{};
+            for (originated[0..self.prefixes.len], 0..) |present, prefix| if (present) {
+                const path = self.trace(source, self.prefixes[prefix].address);
+                const symbol: u8 = switch (path.result) {
+                    .delivered => if (path.count == 0) '*' else if (self.routers[path.arrival.?].origination[prefix] != null) '+' else 'X',
+
+                    .loop => 'L',
+                    .blackhole => 'B',
+                    .unreachable_result => 'U',
+                };
+                symbols.add("{c}", .{symbol});
+            };
+            if (symbols.value().len > 0) out.add("REACH {d} {s}", .{ self.network.ases[source].number,
+                 symbols.value() }) else out.add("REACH {d}", .{self.network.ases[source].number});
+        }
+        return out;
+    }
+    fn auditLines(self: *const Simulation) t.Lines {
+        var out: t.Lines = .{};
+        var loop_count: usize = 0;
+        var blackholes: usize = 0;
+        const traces = t.dupe(TraceRecord, self.trace_records.items);
+        std.mem.sort(TraceRecord, traces, {}, struct {
+            fn less(_: void, a: TraceRecord, b: TraceRecord) bool {
+                return if (a.start == b.start) a.index < b.index else a.start < b.start;
+            }
+        }.less);
+        for (traces) |record| {
+            const spec = self.params.traces[record.index];
+            const visits = record.visits[0..record.visit_count];
+            if (record.result == .loop) {
+                loop_count += 1;
+                out.add("LOOP {d} {s} from {d} to {s} path {s}", .{ self.network.ases[spec.source].number,
+                     spec.address, record.start, endText(record.end), report.pathText(visits,
+                     &self.network) });
+            } else {
+                blackholes += 1;
+                out.add("BLACKHOLE {d} {s} from {d} to {s} at {d} path {s}", .{ self.network.ases[spec.source].number,
+                     spec.address, record.start, endText(record.end), self.network.ases[visits[visits.len - 1]].number,
+                     report.pathText(visits, &self.network) });
+            }
+        }
+        const rings = t.dupe(RingRecord, self.ring_records.items);
+        std.mem.sort(RingRecord, rings, {}, struct {
+            fn less(_: void, a: RingRecord, b: RingRecord) bool {
+                if (a.start != b.start) return a.start < b.start;
+                if (a.prefix != b.prefix) return a.prefix < b.prefix;
+                return a.path.nodes[0] < b.path.nodes[0];
+            }
+        }.less);
+        for (rings) |record| out.add("RING {s} from {d} to {s} path {s}", .{ self.prefixes[record.prefix].text(),
+             record.start, endText(record.end), report.pathText(record.path.nodes[0..record.path.count],
+             &self.network) });
+        var routes: usize = 0;
+        var valleys: usize = 0;
+        for (self.routers, 0..) |router, owner| for (router.rib, 0..) |maybe_route, prefix| if (maybe_route) |route| {
+            if (route.local()) continue;
+            routes += 1;
+            var all: [551]usize = undefined;
+            all[0] = owner;
+            @memcpy(all[1 .. route.attribute.path.len + 1], route.attribute.path);
+            var collapsed: [551]usize = undefined;
+            const path = collapseRuns(all[0 .. route.attribute.path.len + 1], &collapsed);
+            var pattern: [50]u8 = undefined;
+            for (0..path.len - 1) |index| pattern[index] = self.network.links[self.network.connecting(path[index],
+                 path[index + 1])].direction(path[index]);
+            const symbols = pattern[0 .. path.len - 1];
+            const position = valleyPosition(symbols);
+            if (position != symbols.len) {
+                valleys += 1;
+                out.add("VALLEY {d} {s} path {s} pattern {s} leaker {d}", .{ self.network.ases[owner].number,
+                     self.prefixes[prefix].text(), report.pathText(route.attribute.path, &self.network),
+                     symbols, self.network.ases[path[position]].number });
+            }
+        };
+        for (self.policies.rules) |rule| out.add("RULE {s} {s} {s} hits {d}", .{ rule.name,
+             p.direction_names[@intFromEnum(rule.direction)], if (rule.active) "ON" else "OFF",
+             rule.hits });
+        var divergent: usize = 0;
+        for (self.periods.items) |period| if (period.divergence) |divergence| {
+            divergent += 1;
+            out.add("DIVERGENT event {d} first {d} repeat {d} period {d}", .{ period.number,
+                 divergence.first, divergence.repeat, divergence.repeat - divergence.first });
+            const oscillations = t.zero(i64, self.routers.len * self.prefixes.len, 0);
+            for (divergence.cycle) |line| {
+                out.add("CYCLE {d} {d} {s} {s}", .{ line.time, self.network.ases[line.owner].number,
+                     self.prefixes[line.prefix].text(), report.routeText(line.route, &self.network) });
+                oscillations[line.owner * self.prefixes.len + line.prefix] += 1;
+            }
+            for (0..self.routers.len) |owner| for (0..self.prefixes.len) |prefix| {
+                const count = oscillations[owner * self.prefixes.len + prefix];
+                if (count > 0) out.add("OSCILLATE {d} {s} changes {d}", .{ self.network.ases[owner].number,
+                     self.prefixes[prefix].text(), count });
+            };
+        };
+        out.add("SUMMARY loops {d} blackholes {d} rings {d} routes {d} valleys {d} divergent {d} end {d}",
+             .{ loop_count, blackholes, rings.len, routes, valleys, divergent, self.time });
+        return out;
+    }
+pub fn main(init: std.process.Init) !void {
+    var arena: std.heap.ArenaAllocator = .init(init.gpa);
+    defer arena.deinit();
+    t.allocator = arena.allocator();
+    d.work_allocator = init.gpa;
+    p.work_allocator = init.gpa;
+    sim.work_allocator = init.gpa;
+    var simulation = try Simulation.read(init.io);
+    try simulation.run(init.io, init.gpa);
+}
+pub fn read(io: std.Io) !Topology {
+    const lines = try readLines(io, "input/topology.txt");
+    var ases: std.ArrayList(AutonomousSystem) = .empty;
+    for (lines) |line| {
+        const f = words(line);
+        if (eq(f[0], "AS")) append(AutonomousSystem, &ases, .{ .number = number(f[1]), .router_id = addressValue(f[2]) });
+    }
+    std.mem.sort(AutonomousSystem, ases.items, {}, struct {
+        fn less(_: void, a: AutonomousSystem, b: AutonomousSystem) bool {
+            return a.number < b.number;
+        }
+    }.less);
+    var out: Topology = .{ .ases = ases.items, .links = &.{}, .initial = &.{} };
+    var links: std.ArrayList(Link) = .empty;
+    var initial: std.ArrayList(Initial) = .empty;
+    for (lines) |line| {
+        const f = words(line);
+        if (eq(f[0], "LINK")) append(Link, &links, .{ .name = f[1], .first = out.asIndex(number(f[2])),
+             .second = out.asIndex(number(f[3])), .peer = eq(f[4], "P2P"), .delay = number(f[5]),
+             .mrai = number(f[6]) }) else if (eq(f[0], "PREFIX")) append(Initial, &initial,
+             .{ .owner = out.asIndex(number(f[1])), .prefix = parsePrefix(f[2]), .origin = parseOrigin(f[3]),
+             .communities = f[4..] });
+    }
+    out.links = links.items;
+    out.initial = initial.items;
+    return out;
+}
+    pub fn applied(self: *Policies, direction: Direction, owner: usize, link: t.Link, prefix: t.Prefix,
+         path: []const usize, communities: []const u32) ?usize {
+        for (self.rules, 0..) |rule, index| if (rule.direction == direction and self.matches(rule,
+             owner, link, prefix, path, communities)) return index;
+        return null;
+    }
+pub fn read(io: std.Io, network: *const t.Topology) !Policies {
+    var lists: std.ArrayList(ListEntry) = .empty;
+    var rules: std.ArrayList(Rule) = .empty;
+    for (try t.readLines(io, "input/policies.txt")) |line| {
+        const f = t.words(line);
+        if (t.eq(f[0], "PLIST")) {
+            const prefix = t.parsePrefix(f[3]);
+            var low = prefix.length;
+            var high = prefix.length;
+            var i: usize = 4;
+            while (i < f.len) : (i += 2) {
+                if (t.eq(f[i], "GE")) {
+                    low = t.u(t.number(f[i + 1]));
+                    high = 32;
+                } else high = t.u(t.number(f[i + 1]));
+            }
+            t.append(ListEntry, &lists, .{ .name = f[1], .permit = t.eq(f[2], "PERMIT"), .prefix = prefix,
+                 .low = low, .high = high });
+            continue;
+        }
+        var conditions: std.ArrayList(Condition) = .empty;
+        var actions: std.ArrayList(Action) = .empty;
+        var i: usize = 6;
+        while (!t.eq(f[i], "THEN")) : (i += 2) {
+            var condition: Condition = .{ .kind = .prefix };
+            const kind = f[i];
+            const value = f[i + 1];
+            if (t.eq(kind, "PREFIX")) condition.name = value else if (t.eq(kind, "CONTAINS") or t.eq(kind,
+                 "ORIGINAS")) {
+                condition.kind = if (t.eq(kind, "CONTAINS")) .contains else .origin_as;
+                var owner_index = network.ases.len;
+                for (network.ases, 0..) |owner, index| if (owner.number == t.number(value)) {
+                    owner_index = index;
+                    break;
+                };
+                condition.value = t.n(owner_index);
+            } else if (t.eq(kind, "LENGTH")) {
+                const bounds = t.split(value, '-');
+                condition = .{ .kind = .length, .value = t.number(bounds[0]), .high = t.number(bounds[1]) };
+            } else condition = .{ .kind = .community, .value = parseCommunity(value) };
+            t.append(Condition, &conditions, condition);
+        }
+        i += 1;
+        while (i < f.len) {
+            const name = f[i];
+            i += 1;
+            var action: Action = .{ .kind = .deny };
+            if (t.eq(name, "DENY")) action.kind = .deny else if (t.eq(name, "ALLOW")) action.kind = .allow else {
+                const kinds = [_]@FieldType(Action, "kind"){ .local_pref, .med, .prepend, .add, .remove };
+                const names = [_][]const u8{ "LOCALPREF", "MED", "PREPEND", "ADD", "REMOVE" };
+                for (names, kinds) |word, kind| if (t.eq(name, word)) {
+                    action.kind = kind;
+                };
+                action.value = if (action.kind == .add or action.kind == .remove) parseCommunity(f[i]) else t.number(f[i]);
+                i += 1;
+            }
+            t.append(Action, &actions, action);
+        }
+        const target_neighbor: ?usize = if (f[5][0] >= '0' and f[5][0] <= '9') network.asIndex(t.number(f[5])) else null;
+        t.append(Rule, &rules, .{ .name = f[1], .active = t.eq(f[2], "ON"), .owner = network.asIndex(t.number(f[3])),
+             .direction = if (t.eq(f[4], "IMPORT")) .import_route else .export_route, .target = f[5],
+             .target_neighbor = target_neighbor, .conditions = conditions.items, .actions = actions.items });
+    }
+    return .{ .lists = lists.items, .rules = rules.items };
+}
+    pub fn send(self: *MessageQueue, time: i64, sender: usize, receiver: usize, index: usize,
+         prefix: usize, content: ?*const d.Attribute, network: *const t.Topology) Message {
+        self.serial += 1;
+        const message: Message = .{ .serial = self.serial, .sender = sender, .receiver = receiver,
+             .link = index, .prefix = prefix, .content = content, .arrival = time + network.links[index].delay };
+        self.push(message);
+        return message;
+    }
+pub fn readEvents(io: std.Io) ![]const Event {
+    var out: std.ArrayList(Event) = .empty;
+    t.append(Event, &out, .{ .time = 0, .text = "INITIAL", .fields = &.{"INITIAL"}, .kind = "INITIAL" });
+    for (try t.readLines(io, "input/events.txt")) |line| {
+        const separator = std.mem.indexOfScalar(u8, line, ' ') orelse unreachable;
+        const text = line[separator + 1 ..];
+        const fields = t.words(text);
+        const kind = if (t.eq(fields[0], "LINK") or t.eq(fields[0], "POLICY")) t.fmt("{s}_{s}",
+             .{ fields[0], fields[1] }) else fields[0];
+        t.append(Event, &out, .{ .time = t.number(line[0..separator]), .text = text, .fields = fields, .kind = kind });
+    }
+    return out.items;
+}
+pub fn readParams(io: std.Io, network: *const t.Topology) !Params {
+    const lines = try t.readLines(io, "input/params.txt");
+    const defaults = t.words(lines[0]);
+    var traces: std.ArrayList(Trace) = .empty;
+    for (lines[2..]) |line| {
+        const f = t.words(line);
+        t.append(Trace, &traces, .{ .source = network.asIndex(t.number(f[1])), .address = f[2],
+             .value = t.addressValue(f[2]) });
+    }
+    return .{ .defaults = .{ t.number(defaults[1]), t.number(defaults[2]), t.number(defaults[3]) },
+         .stepcap = t.number(t.words(lines[1])[1]), .traces = traces.items };
+}

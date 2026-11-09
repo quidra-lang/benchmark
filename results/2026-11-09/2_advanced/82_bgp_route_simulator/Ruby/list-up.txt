@@ -1,0 +1,436 @@
+  def self.best(candidates, router_ids)
+    remaining = candidates.dup
+    return [remaining.first, 'ONLY'] if remaining.length == 1
+
+    origin_order = { 'IGP' => 0, 'EGP' => 1, 'INCOMPLETE' => 2 }
+    stages = [
+      ['LOCALPREF', ->(route) { -route.local_pref }],
+      ['ASPATH', ->(route) { route.path.length }],
+      ['ORIGIN', ->(route) { origin_order.fetch(route.origin) }],
+      ['MED', nil],
+      ['ROUTERID', ->(route) { router_ids.fetch(route.neighbor) }],
+      ['LINK', ->(route) { route.link.number }]
+    ]
+    stages.each do |reason, key|
+      if reason == 'MED'
+        minima = remaining.group_by(&:neighbor).transform_values { |routes| routes.map(&:med).min }
+        remaining.select! { |route| route.med == minima.fetch(route.neighbor) }
+      else
+        minimum = remaining.map(&key).min
+        remaining.select! { |route| key.call(route) == minimum }
+      end
+      return [remaining.first, reason] if remaining.length == 1
+    end
+  end
+  def import_route(session, prefix, attribute)
+    rule = @policies.applied('IMPORT', session.owner, session.link, prefix, attribute.path, attribute.communities)
+    return [nil, rule] if rule&.has?('DENY')
+
+    local_pref = @defaults.fetch(session.link.role(session.owner))
+    med, communities = attribute.med, attribute.communities
+    if rule
+      local_pref = rule.value('LOCALPREF', local_pref)
+      med = rule.value('MED', med)
+      communities = Policy.edit(communities, rule)
+    end
+    [Decision::Route.new(attribute.path, attribute.origin, med, communities, local_pref, session.link), rule]
+  end
+  def candidates(owner, prefix)
+    @routers.fetch(owner).sessions.filter_map do |session|
+      import_route(session, prefix, session.incoming.fetch(prefix))[0] if session.incoming.key?(prefix)
+    end
+  end
+  def advertised(session, prefix)
+    owner, link = session.owner, session.link
+    route = @routers.fetch(owner).rib[prefix]
+    return [nil, nil] unless route
+    return [nil, nil] if !route.local? && route.neighbor == link.other(owner)
+    return [nil, nil] if route.communities.include?(Policy::NO_EXPORT)
+
+    rule = @policies.applied('EXPORT', owner, link, prefix, route.path, route.communities)
+    return [nil, rule] if rule&.has?('DENY')
+    if !rule&.has?('ALLOW') && !route.local? && route.link.role(owner) != 'customer' && link.role(owner) != 'customer'
+      return [nil, rule]
+    end
+    prepend = rule ? rule.value('PREPEND', 0) : 0
+    med = rule ? rule.value('MED', 0) : 0
+    communities = rule ? Policy.edit(route.communities, rule) : route.communities
+    [Decision::Attribute.new(([owner] * (1 + prepend) + route.path).freeze, route.origin, med, communities), rule]
+  end
+  def redecide(owner, prefix)
+    router = @routers.fetch(owner)
+    route = router.origination[prefix]
+    unless route
+      options = candidates(owner, prefix)
+      route = Decision.best(options, @network.router_ids)[0] unless options.empty?
+    end
+    return if router.rib[prefix] == route
+
+    if route
+      router.rib[prefix] = route
+    else
+      router.rib.delete(prefix)
+    end
+    log("BEST #{owner} #{Topology.prefix_text(prefix)} #{Report.route_text(route)}")
+    router.changes += 1
+    @period.counters[:best_changes] += 1
+    @period.exploration[[owner, prefix]] += 1
+    @period.best_lines << [@time, owner, prefix, route]
+    @changed_prefixes.add(prefix)
+    router.sessions.each do |session|
+      next unless session.link.up
+
+      session.pending.add(prefix)
+      process_pending(session) unless session.timer
+    end
+  end
+  def process_pending(session)
+    sent = 0
+    session.pending.sort.each do |prefix|
+      content, rule = advertised(session, prefix)
+      next if session.outgoing[prefix] == content
+
+      if content
+        session.outgoing[prefix] = content
+      else
+        session.outgoing.delete(prefix)
+      end
+      message = @messages.send(@time, session.owner, session.link.other(session.owner), session.link, prefix, content)
+      suffix = content ? "ANNOUNCE #{Report.attribute_text(content)}" : 'WITHDRAW'
+      log("SEND #{message_text(message)} #{suffix}")
+      session.sent += 1
+      sent += 1
+      @period.counters[:updates] += 1
+      @period.counters[:withdrawals] += 1 unless content
+      rule.hits += 1 if rule
+    end
+    session.pending.clear
+    session.timer = sent.positive? && session.link.mrai.positive? ? @time + session.link.mrai : nil
+  end
+  def receive(message)
+    session = @by_session.fetch([message.receiver, message.link.number])
+    prefix, content = message.prefix, message.content
+    session.received += 1
+    @period.convergence_time = @time - @period.event.time
+    if content.nil?
+      session.incoming.delete(prefix)
+      result = 'WITHDRAW'
+    elsif content.path.include?(message.receiver)
+      session.incoming.delete(prefix)
+      result = 'ANNOUNCE loop'
+    else
+      session.incoming[prefix] = content
+      route, rule = import_route(session, prefix, content)
+      rule.hits += 1 if rule
+      result = route ? 'ANNOUNCE accept' : 'ANNOUNCE deny'
+      result += " #{rule.name}" if rule
+    end
+    log("RECV #{message_text(message)} #{result}")
+    redecide(message.receiver, prefix)
+  end
+  def originate(owner, prefix, origin, communities)
+    @routers.fetch(owner).origination[prefix] = Decision::Route.originated(origin, Policy.communities(communities))
+    redecide(owner, prefix)
+  end
+  def execute_event(event)
+    log("EVENT #{@period.number} #{event.text}")
+    fields = event.fields
+    case event.kind
+    when 'INITIAL'
+      @network.initial.each { |entry| originate(*entry) }
+    when 'ANNOUNCE'
+      originate(fields[1].to_i, Topology.prefix(fields[2]), fields[3], fields.drop(4))
+    when 'WITHDRAW'
+      owner, prefix = fields[1].to_i, Topology.prefix(fields[2])
+      @routers.fetch(owner).origination.delete(prefix)
+      redecide(owner, prefix)
+    when 'LINK_DOWN' then link_down(@network.by_name.fetch(fields[2]))
+    when 'LINK_UP' then link_up(@network.by_name.fetch(fields[2]))
+    else change_policy(@policies.by_name.fetch(fields[2]), event.kind == 'POLICY_ON')
+    end
+  end
+  def run(events)
+    events.each_with_index do |event, number|
+      boundary = events[number + 1] ? events[number + 1].time - 1 : nil
+      @period = Period.new(number, event, @routers)
+      @periods << @period
+      @time = event.time
+      @changed_prefixes.clear
+      execute_event(event)
+      quiet = false
+      loop do
+        delivered = false
+        while @messages.next_time == @time
+          receive(@messages.take)
+          delivered = true
+        end
+        @sessions.each do |session|
+          next unless session.timer == @time
+
+          session.timer = nil
+          process_pending(session) unless session.pending.empty?
+        end
+        forwarding_checks unless @changed_prefixes.empty?
+        if delivered
+          @period.delivery_times += 1
+          detect_divergence
+        end
+        quiet = quiet?
+        break if boundary ? @time == boundary : quiet || @period.divergence || @period.delivery_times >= @stepcap
+
+        @time = ([@messages.next_time, boundary] + @sessions.map(&:timer)).compact.min
+        @changed_prefixes.clear
+      end
+      @period.status = if @period.divergence then 'DIVERGENT'
+                       elsif quiet then 'CONVERGED'
+                       elsif boundary then 'UNSETTLED'
+                       else 'CAPPED'
+                       end
+      @routers.each do |owner, router|
+        before = @period.before.fetch(owner)
+        @period.routes_changed += (before.keys | router.rib.keys).count { |prefix| before[prefix] != router.rib[prefix] }
+      end
+      @period.states.clear
+    end
+  end
+  def trace(source, address)
+    owner, visits, hops = source, [source], []
+    loop do
+      rib = @routers.fetch(owner).rib
+      prefix = rib.keys.select { |entry| Topology.contains?(entry, address) }.max_by { |entry| entry[1] }
+      return Forwarding.new(hops.empty? ? 'UNREACHABLE' : 'BLACKHOLE', visits, hops) unless prefix
+
+      route = rib.fetch(prefix)
+      if route.local?
+        hops << [owner, prefix, nil]
+        return Forwarding.new('DELIVERED', visits, hops)
+      end
+      hops << [owner, prefix, route.link]
+      owner = route.link.other(owner)
+      repeated = visits.include?(owner)
+      visits << owner
+      return Forwarding.new('LOOP', visits, hops) if repeated
+    end
+  end
+  def forwarding_checks
+    @changed_prefixes.sort.each do |prefix|
+      loops = prefix_loops(prefix)
+      @ongoing_rings.keys.each do |key|
+        next unless key[0] == prefix && !loops.include?(key[1])
+
+        @ongoing_rings.delete(key)[:end] = @time
+      end
+      loops.sort.each do |cycle|
+        key = [prefix, cycle]
+        next if @ongoing_rings.key?(key)
+
+        record = { prefix: prefix, path: cycle, start: @time, end: nil }
+        @ring_records << record
+        @ongoing_rings[key] = record
+      end
+    end
+    @traces.each_with_index do |(source, _, address), index|
+      path = trace(source, address)
+      status = ['LOOP', 'BLACKHOLE'].include?(path.result) ? [path.result, path.visits] : nil
+      record = @ongoing_traces[index]
+      @ongoing_traces.delete(index)[:end] = @time if record && record[:status] != status
+      next unless status && !@ongoing_traces.key?(index)
+
+      record = { index: index, status: status, start: @time, end: nil }
+      @trace_records << record
+      @ongoing_traces[index] = record
+    end
+  end
+  def rib_lines
+    lines = []
+    @routers.each do |owner, router|
+      local = router.rib.values.count(&:local?)
+      sent, received = router.sessions.sum(&:sent), router.sessions.sum(&:received)
+      lines << "AS #{owner} routes #{router.rib.length} local #{local} sent #{sent} received #{received} changes #{router.changes}"
+      router.sessions.each do |session|
+        accepted = session.incoming.count { |prefix, attribute| import_route(session, prefix, attribute)[0] }
+        link = session.link
+        lines << "SESSION #{link.name} #{link.other(owner)} #{link.role(owner)} #{link.up ? 'UP' : 'DOWN'} " \
+                 "in #{session.incoming.length} accepted #{accepted} out #{session.outgoing.length} " \
+                 "sent #{session.sent} received #{session.received} flaps #{link.down_count}"
+      end
+      router.rib.sort.each do |prefix, route|
+        options = candidates(owner, prefix)
+        line = "#{Topology.prefix_text(prefix)} #{Report.route_text(route)} candidates #{options.length}"
+        line += " reason #{Decision.best(options, @network.router_ids)[1]}" unless route.local?
+        lines << line
+        remaining = options.reject { |candidate| candidate == route }
+        until remaining.empty?
+          alternate, = Decision.best(remaining, @network.router_ids)
+          lines << "ALT #{Report.route_text(alternate)}"
+          remaining.delete(alternate)
+        end
+      end
+    end
+    lines
+  end
+  def path_lines
+    lines = @traces.flat_map { |entry| trace_lines(*entry) }
+    prefixes = @routers.values.flat_map { |router| router.origination.keys }.uniq.sort
+    names = prefixes.map { |prefix| Topology.prefix_text(prefix) }.join(',')
+    lines << (names.empty? ? 'PREFIXES' : "PREFIXES #{names}")
+    @network.ases.each do |source|
+      symbols = prefixes.map do |prefix|
+        path = trace(source, prefix[0])
+        if path.result == 'DELIVERED'
+          path.count.zero? ? '*' : (@routers.fetch(path.arrival).origination.key?(prefix) ? '+' : 'X')
+        else
+          { 'LOOP' => 'L', 'BLACKHOLE' => 'B', 'UNREACHABLE' => 'U' }.fetch(path.result)
+        end
+      end.join
+      lines << (symbols.empty? ? "REACH #{source}" : "REACH #{source} #{symbols}")
+    end
+    lines
+  end
+  def audit_lines
+    lines, totals = [], Hash.new(0)
+    @trace_records.sort_by { |record| [record[:start], record[:index]] }.each do |record|
+      source, address, = @traces.fetch(record[:index])
+      result, visits = record[:status]
+      totals[result] += 1
+      line = "#{result} #{source} #{address} from #{record[:start]} to #{record[:end] || 'END'}"
+      line += " at #{visits.last}" if result == 'BLACKHOLE'
+      lines << "#{line} path #{Report.path_text(visits)}"
+    end
+    @ring_records.sort_by { |record| [record[:start], record[:prefix], record[:path][0]] }.each do |record|
+      lines << "RING #{Topology.prefix_text(record[:prefix])} from #{record[:start]} to #{record[:end] || 'END'} " \
+               "path #{Report.path_text(record[:path])}"
+    end
+    routes, valleys = 0, 0
+    @routers.each do |owner, router|
+      router.rib.sort.each do |prefix, route|
+        next if route.local?
+
+        routes += 1
+        path = collapse_runs([owner] + route.path)
+        pattern = path.each_cons(2).map { |first, second| @network.connecting(first, second).first.direction(first) }.join
+        violation = valley_position(pattern)
+        next if violation == pattern.length
+
+        valleys += 1
+        lines << "VALLEY #{owner} #{Topology.prefix_text(prefix)} path #{Report.path_text(route.path)} " \
+                 "pattern #{pattern} leaker #{path[violation]}"
+      end
+    end
+    @policies.rules.each do |rule|
+      lines << "RULE #{rule.name} #{rule.direction} #{rule.active ? 'ON' : 'OFF'} hits #{rule.hits}"
+    end
+    divergent = 0
+    @periods.each do |period|
+      next unless period.divergence
+
+      divergent += 1
+      first, repeat, cycle = period.divergence
+      lines << "DIVERGENT event #{period.number} first #{first} repeat #{repeat} period #{repeat - first}"
+      oscillations = Hash.new(0)
+      cycle.each do |time, owner, prefix, route|
+        lines << "CYCLE #{time} #{owner} #{Topology.prefix_text(prefix)} #{Report.route_text(route)}"
+        oscillations[[owner, prefix]] += 1
+      end
+      oscillations.sort.each do |(owner, prefix), count|
+        lines << "OSCILLATE #{owner} #{Topology.prefix_text(prefix)} changes #{count}"
+      end
+    end
+    lines << "SUMMARY loops #{totals['LOOP']} blackholes #{totals['BLACKHOLE']} rings #{@ring_records.length} " \
+             "routes #{routes} valleys #{valleys} divergent #{divergent} end #{@time}"
+    lines
+  end
+  def write_outputs
+    convergence = @periods.map do |period|
+      [period.number, period.event.time, period.event.kind, period.status, period.convergence_time,
+       period.counters[:updates], period.counters[:withdrawals], period.counters[:drops],
+       period.counters[:best_changes], period.routes_changed, period.exploration.values.max || 0].join(',')
+    end
+    Report.write('updates.txt' => @logs, 'convergence.csv' => [CONVERGENCE_HEADER] + convergence,
+                 'ribs.txt' => rib_lines, 'paths.txt' => path_lines, 'audit.txt' => audit_lines)
+  end
+  def self.read
+    router_ids, links, initial = {}, [], []
+    File.foreach('input/topology.txt', chomp: true) do |line|
+      fields = line.split(' ')
+      case fields[0]
+      when 'AS'
+        router_ids[fields[1].to_i] = address(fields[2])
+      when 'LINK'
+        links << Link.new(links.length, fields[1], fields[2].to_i, fields[3].to_i,
+                          fields[4], fields[5].to_i, fields[6].to_i)
+      when 'PREFIX'
+        initial << [fields[1].to_i, prefix(fields[2]), fields[3], fields.drop(4)]
+      end
+    end
+    Network.new(router_ids, links, initial)
+  end
+    def applied(direction, owner, link, prefix, path, communities)
+      @by_direction.fetch([owner, direction], []).find do |rule|
+        matches?(rule, owner, link, prefix, path, communities)
+      end
+    end
+  def self.read
+    lists = Hash.new { |hash, key| hash[key] = [] }
+    rules = []
+    File.foreach('input/policies.txt', chomp: true) do |line|
+      fields = line.split(' ')
+      if fields[0] == 'PLIST'
+        base = Topology.prefix(fields[3])
+        bounds = fields.drop(4).each_slice(2).to_h
+        low = bounds.fetch('GE', base[1]).to_i
+        high = bounds.fetch('LE', bounds.key?('GE') ? 32 : base[1]).to_i
+        lists[fields[1]] << [fields[2] == 'PERMIT', base, low, high]
+        next
+      end
+      separator = fields.index('THEN')
+      conditions = fields[6...separator].each_slice(2).map do |condition, value|
+        value = case condition
+                when 'CONTAINS', 'ORIGINAS' then value.to_i
+                when 'LENGTH' then value.split('-').map(&:to_i)
+                when 'COMMUNITY' then community(value)
+                else value
+                end
+        [condition, value]
+      end
+      actions = []
+      index = separator + 1
+      while index < fields.length
+        action = fields[index]
+        index += 1
+        value = nil
+        unless ['DENY', 'ALLOW'].include?(action)
+          value = ['ADD', 'REMOVE'].include?(action) ? community(fields[index]) : fields[index].to_i
+          index += 1
+        end
+        actions << [action, value]
+      end
+      rules << Rule.new(fields[1], fields[2], fields[3].to_i, fields[4], fields[5], conditions, actions)
+    end
+    Policies.new(lists, rules)
+  end
+    def send(time, sender, receiver, link, prefix, content)
+      @serial += 1
+      message = Message.new(@serial, sender, receiver, link, prefix, content, time + link.delay)
+      @messages << message
+      @messages.sort_by!(&:key)
+      message
+    end
+  def self.read_events
+    events = [Event.new(0, 'INITIAL')]
+    File.foreach('input/events.txt', chomp: true) do |line|
+      time, text = line.split(' ', 2)
+      events << Event.new(time.to_i, text)
+    end
+    events
+  end
+  def self.read_params
+    lines = File.readlines('input/params.txt', chomp: true)
+    defaults = %w[customer peer provider].zip(lines[0].split.drop(1).map(&:to_i)).to_h
+    cap = lines[1].split[1].to_i
+    traces = lines.drop(2).map do |line|
+      _, source, address = line.split(' ')
+      [source.to_i, address, Topology.address(address)]
+    end
+    [defaults, cap, traces]
+  end

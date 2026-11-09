@@ -1,0 +1,9 @@
+The current question asks: Explain one monthly repayment operation from its incoming balance and payment limit to the month's interest, actual payment, principal portion, printed record and next balance. Use month 1 as a concrete calculation, then explain how the same operation caps a final partial payment. Identify the ordering of month-number advancement, total updates and record emission so the label and balance belong to the month just processed; do not trace the entire repayment schedule.
+
+Answer and source evidence: Month is incremented before interest/payment processing. Month 1 starts with balance 1000000, interest 10000, capped payment min(50000,1010000)=50000, principal 40000 and next balance 960000. Interest and actual payment enter their totals before emitting month 1 with its updated balance. The same min cap pays only balance+interest on a final partial month, so principal equals the remaining balance and next balance becomes zero.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14. The incoming state and one complete monthly block establish arithmetic, cap, state transition, totals and printed-record order. End-of-schedule summary printing is unrelated.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

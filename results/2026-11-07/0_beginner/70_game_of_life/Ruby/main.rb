@@ -1,0 +1,27 @@
+board = [
+  '.#......', '..#.....', '###.....', '........',
+  '........', '........', '.....###', '........'
+]
+(0..4).each do |generation|
+  puts "generation #{generation}"
+  puts board
+  break if generation == 4
+  next_board = Array.new(8) { '' }
+  8.times do |row|
+    8.times do |column|
+      neighbors = 0
+      (-1..1).each do |dr|
+        (-1..1).each do |dc|
+          r, c = row + dr, column + dc
+          if (dr != 0 || dc != 0) && r.between?(0, 7) && c.between?(0, 7) && board[r][c] == '#'
+            neighbors += 1
+          end
+        end
+      end
+      alive = neighbors == 3 || (board[row][column] == '#' && neighbors == 2)
+      next_board[row] += alive ? '#' : '.'
+    end
+  end
+  board = next_board
+end
+puts "alive: #{board.sum { |row| row.count('#') }}"

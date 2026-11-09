@@ -1,0 +1,204 @@
+function parseRegister(text) {
+    if (text === '-') return null;
+    return /^r(?:[0-9]|[12][0-9]|3[01])$/.test(text) ? Number(text.slice(1)) : undefined;
+function read() {
+    const config = {predictors: [], variants: []};
+    for (const line of readLines('config.txt')) {
+        const [keyword, ...words] = line.split(' ');
+        } else if (keyword === 'VARIANT') {
+            config.variants.push({name: words[0], forwarding: words[1] === 'ON',
+                resolution: words[2], latency: Number(words[3])});
+        } else if (keyword === 'PRIMARY') {
+            [config.primaryVariant, config.primaryPredictor] = words;
+        } else if (keyword === 'WINDOW') {
+            [config.start, config.end] = words.map(Number);
+    return {lines: readLines('trace.txt'), config};
+function attachSources(instructions) {
+    const lastWriter = Array(32).fill(null);
+    instructions.forEach((instruction, i) => {
+        instruction.sources = [];
+        for (const slot of ['rs1', 'rs2']) {
+            const register = instruction[slot];
+            if (register !== null && register !== 0) {
+                instruction.sources.push({slot, register, producer: lastWriter[register]});
+            }
+        }
+        if (instruction.rd !== null && instruction.rd !== 0) lastWriter[instruction.rd] = i;
+    });
+}
+
+function idResolved(instruction, variant) {
+    if (instruction.className === 'JUMP') return instruction.rs1 === null || variant.resolution === 'ID';
+    return instruction.className === 'BRANCH' && variant.resolution === 'ID';
+}
+
+function readyCycle(source, consumer, variant, instructions, times) {
+    if (source.producer === null) return null;
+    const producer = instructions[source.producer];
+    const time = times[source.producer];
+    if (!variant.forwarding) return time.W + 1;
+    return (producer.className === 'LOAD' ? time.W : time.M) + (idResolved(consumer, variant) ? 1 : 0);
+function simulate(instructions, variant, mispredictions) {
+    const times = [];
+    const records = [];
+    for (let i = 0; i < instructions.length; i++) {
+        const instruction = instructions[i];
+        let F = 1;
+        let D = 2;
+        let X = 3;
+        if (i > 0) {
+            const previous = times[i - 1];
+            F = mispredictions[i - 1]
+                ? previous.X + (hazards.idResolved(instructions[i - 1], variant) ? 0 : 1) : previous.D;
+            D = Math.max(F + 1, previous.X);
+            X = Math.max(D + 1, previous.M);
+            const base = previous.X + 1;
+            const bounds = [
+                {cause: 'control', value: D + 1, producer: null},
+                {cause: 'structural', value: previous.M, producer: null},
+                {cause: 'load_use', value: base, producer: null},
+                {cause: 'raw', value: base, producer: null}
+            ];
+            for (const source of instruction.sources) {
+                if (source.producer === null) continue;
+                const ready = hazards.readyCycle(source, instruction, variant, instructions, times);
+                X = Math.max(X, ready);
+                const bound = bounds[instructions[source.producer].className === 'LOAD' ? 2 : 3];
+                if (ready > bound.value) Object.assign(bound, {value: ready, producer: source.producer});
+            }
+            let current = base;
+            for (let cause = 0; cause < bounds.length; cause++) {
+                const bound = bounds[cause];
+                if (bound.value > current) {
+                    records.push({cause: bound.cause, cycles: bound.value - current,
+                        responsible: cause < 2 ? i - 1 : i, waiting: i, producer: bound.producer});
+                    current = bound.value;
+                }
+            }
+        }
+        const M = X + (instruction.className === 'MUL' ? variant.latency : 1);
+        times.push({F, D, X, M, W: M + 1});
+    }
+    return {times, records, cycles: times[last].W};
+function validate(line, statics) {
+    const fields = line.split(' ');
+    if (fields.length !== 8 || fields.includes('')) return {reason: 'fields'};
+    const [pcText, className, rdText, rs1Text, rs2Text, outcome, targetText, addressText] = fields;
+    const pc = traceIO.parseHex(pcText);
+    if (pc === null || pc % 4 !== 0) return {reason: 'pc'};
+    if (!CLASSES.includes(className)) return {reason: 'class'};
+    const registers = [rdText, rs1Text, rs2Text].map(traceIO.parseRegister);
+    const [rd, rs1, rs2] = registers;
+    return {instruction: {pc, className, rd, rs1, rs2, outcome, target, address, control,
+        nextPC: outcome === 'T' ? target : pc + 4}};
+function checkTrace(lines) {
+    const instructions = [];
+    const statics = new Map();
+    const rejected = [];
+    const gaps = [];
+    lines.forEach((line, index) => {
+        const result = validate(line, statics);
+        if (result.reason) {
+            rejected.push({line: index + 1, reason: result.reason});
+            return;
+        }
+        const instruction = {...result.instruction, line: index + 1, number: instructions.length + 1};
+        if (!statics.has(instruction.pc)) statics.set(instruction.pc, {...instruction, executions: []});
+        statics.get(instruction.pc).executions.push(instructions.length);
+        instructions.push(instruction);
+    });
+    hazards.attachSources(instructions);
+    return {lineCount: lines.length, instructions, statics, rejected, gaps};
+function aggregateTiming(timing) {
+    const stallCycles = zeros(CAUSES);
+    const stallEvents = zeros(CAUSES);
+    let totalStalls = 0;
+    for (const record of timing.records) {
+        stallCycles[record.cause] += record.cycles;
+        stallEvents[record.cause]++;
+        totalStalls += record.cycles;
+    }
+    return {stallCycles, stallEvents, totalStalls};
+}
+
+function allTimings(instructions, predictions, config) {
+    const combinations = [];
+    let primary;
+    for (const variant of config.variants) {
+        for (const prediction of predictions) {
+            const timing = pipeline.simulate(instructions, variant, prediction.flags);
+            const combination = {variant, prediction, cycles: timing.cycles, ...aggregateTiming(timing)};
+            combinations.push(combination);
+            if (variant.name === config.primaryVariant && prediction.specification.name === config.primaryPredictor) {
+                primary = {...combination, timing};
+            }
+        }
+    }
+    return {combinations, primary};
+function buildRows(instructions, primary) {
+    const waiting = instructions.map(() => []);
+    for (const record of primary.timing.records) {
+        if (record.waiting !== null) waiting[record.waiting].push(record);
+    }
+    const segment = (stage, from, to, first, rest = first) => ({stage, from, to, first, rest});
+    const rows = [];
+    let refetch = 0;
+    instructions.forEach((instruction, i) => {
+        const time = primary.timing.times[i];
+        const prediction = primary.prediction.results[i];
+        let annotation = waiting[i].map(record => ` ${record.cause} ${record.cycles}`).join('');
+        rows.push({number: i + 1, pc: instruction.pc, className: instruction.className, wrong: false,
+            segments: [segment(0, time.F, time.D - 1, 'F', '*'), segment(1, time.D, time.X - 1, 'D', '*'),
+                segment(2, time.X, time.M - 1, 'X'), segment(3, time.M, time.M, 'M'), segment(4, time.W, time.W, 'W')],
+            cancel: null, annotation});
+    const byPC = new Map();
+    const classStalls = zeros(CLASSES);
+    const dependencyMap = new Map();
+    for (const record of primary.timing.records) {
+        const responsible = instructions[record.responsible];
+        classStalls[responsible.className] += record.cycles;
+        if (!byPC.has(responsible.pc)) byPC.set(responsible.pc, {pc: responsible.pc, className: responsible.className, total: 0, ...zeros(CAUSES)});
+        const hotspot = byPC.get(responsible.pc);
+        hotspot.total += record.cycles;
+        hotspot[record.cause] += record.cycles;
+    parts.push([`timing variant=${primary.variant.name} predictor=${primary.prediction.specification.name}`,
+        `forwarding ${primary.variant.forwarding ? 'on' : 'off'} branch_stage ${primary.variant.resolution} mul_latency ${primary.variant.latency}`,
+        `cycles ${C}`, `cpi ${fraction(C, n)} ${decimal(C, n)}`, `ipc ${decimal(n, C)}`,
+        `stall_cycles total ${primary.totalStalls} ${namedCounts(CAUSES, primary.stallCycles)}`,
+        `stall_events ${namedCounts(CAUSES, primary.stallEvents)}`, `flushed ${diagram.refetch}`,
+        `cycle_check ${n} + 4 + ${primary.totalStalls} = ${n + 4 + primary.totalStalls}`,
+function segmentProfile(instructions, primary, top) {
+    const groups = new Map();
+    let start = 0;
+    for (let end = 0; end < instructions.length; end++) {
+        if (!instructions[end].control && end !== instructions.length - 1) continue;
+        const pc = instructions[start].pc;
+        if (!groups.has(pc)) groups.set(pc, {pc, instances: 0, instructions: 0, cycles: 0});
+        const group = groups.get(pc);
+        group.instances++;
+        group.instructions += end - start + 1;
+        group.cycles += primary.timing.times[end].W - (start === 0 ? 0 : primary.timing.times[start - 1].W);
+        start = end + 1;
+    }
+    const ranked = [...groups.values()].sort((a, b) => b.cycles - a.cycles || a.pc - b.pc);
+    return [`segments total ${groups.size}`, ...ranked.slice(0, top).map((group, i) =>
+        `${i + 1} ${hex(group.pc)} instances ${group.instances} instructions ${group.instructions} cycles ${group.cycles}`
+        + ` cpi ${decimal(group.cycles, group.instructions)}`)];
+        const stalls = analysis.byPC.get(instruction.pc)?.total ?? 0;
+        staticLines.push(`${hex(instruction.pc)} ${instruction.className} ${registerText(instruction.rd)}`
+            + ` ${registerText(instruction.rs1)} ${registerText(instruction.rs2)} executions ${instruction.executions.length} stall_cycles ${stalls}`);
+    }
+    parts.push(indirect, staticLines);
+    return parts.flatMap((part, i) => i === 0 ? part : ['', ...part]);
+function main() {
+    const {lines, config} = traceIO.read();
+    const trace = checkTrace(lines);
+    const instructions = trace.instructions;
+    const predictions = config.predictors.map(specification => predict(instructions, specification, config));
+    const {combinations, primary} = allTimings(instructions, predictions, config);
+    const summary = traceSummary(trace);
+    const analysis = analyzePrimary(instructions, primary, config);
+    const diagram = buildRows(instructions, primary);
+    write('pipeline.txt', diagramReport(primary, diagram, config));
+    write('stats.txt', statsReport(trace, config, predictions, combinations, primary, summary, analysis, diagram, whatifs));
+    write('profile.txt', profileReport(instructions, statics, predictions, primary, analysis, config));

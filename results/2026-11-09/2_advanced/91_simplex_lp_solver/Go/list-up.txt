@@ -1,0 +1,571 @@
+func makeModel(raw RawModel) *Model {
+	m := &Model{Name: raw.Name, Direction: raw.Direction, Constraints: raw.Constraints, Err: raw.Err}
+	if m.Err != nil {
+		return m
+	}
+	index := map[string]int{}
+	register := func(terms []Term) {
+		for _, term := range terms {
+			if _, exists := index[term.Name]; !exists {
+				index[term.Name] = len(m.Variables)
+				m.Variables = append(m.Variables, term.Name)
+			}
+		}
+	}
+	register(raw.Objective)
+	for _, c := range m.Constraints {
+		register(c.Terms)
+	}
+	n := len(m.Variables)
+	m.Cost = make([]Fraction, n)
+	m.Lower = make([]*Fraction, n)
+	m.Upper = make([]*Fraction, n)
+	m.Integer = make([]bool, n)
+	for j := range m.Lower {
+		m.Lower[j] = finite(integer(0))
+	}
+	for _, term := range raw.Objective {
+		j := index[term.Name]
+		m.Cost[j] = m.Cost[j].add(term.Coefficient)
+	}
+	for i := range m.Constraints {
+		c := &m.Constraints[i]
+		c.Coefficients = make([]Fraction, n)
+		for _, term := range c.Terms {
+			j := index[term.Name]
+			c.Coefficients[j] = c.Coefficients[j].add(term.Coefficient)
+		}
+	}
+	return m
+type VariableMap struct {
+	Kind     string
+	Offset   Fraction
+	Columns  []int
+	UpperRow int
+}
+type Standard struct {
+	Columns, Rows, Comparisons                        []string
+	ColumnVariable, Directions, Sigma, Initial, Slack []int
+	Artificial                                        []bool
+	Costs1, Costs2                                    []Fraction
+	Maps                                              []VariableMap
+	Constant                                          Fraction
+	Sign                                              int
+	Tableau                                           *Tableau
+}
+func standardForm(m *Model, lower, upper []*Fraction) *Standard {
+	s := &Standard{Sign: 1}
+	if m.Direction == "maximize" {
+		s.Sign = -1
+	}
+	addVariableColumn := func(name string, j, direction int) int {
+		index := len(s.Columns)
+		s.Columns = append(s.Columns, name)
+		s.ColumnVariable = append(s.ColumnVariable, j)
+		s.Directions = append(s.Directions, direction)
+		return index
+	}
+	for j, name := range m.Variables {
+		mapping := VariableMap{UpperRow: -1}
+		if lower[j] != nil {
+			mapping.Kind = "shift"
+			mapping.Offset = *lower[j]
+			mapping.Columns = []int{addVariableColumn(name, j, 1)}
+		}
+		s.Constant = s.Constant.add(m.Cost[j].mul(mapping.Offset))
+		s.Maps = append(s.Maps, mapping)
+	}
+	decisionColumns := len(s.Columns)
+	tableau := &Tableau{}
+	for _, c := range m.Constraints {
+		row := make([]Fraction, decisionColumns)
+		rhs := c.RHS
+		for j, mapping := range s.Maps {
+			rhs = rhs.sub(c.Coefficients[j].mul(mapping.Offset))
+			for _, k := range mapping.Columns {
+				row[k] = c.Coefficients[j].mul(integer(int64(s.Directions[k])))
+			}
+		}
+		tableau.T = append(tableau.T, row)
+		tableau.Beta = append(tableau.Beta, rhs)
+		s.Rows = append(s.Rows, c.Name)
+		s.Comparisons = append(s.Comparisons, c.Comparison)
+	}
+	for j, mapping := range s.Maps {
+		if mapping.Kind == "shift" && upper[j] != nil {
+	}
+	for i := range s.Rows {
+		sigma := 1
+		if tableau.Beta[i].N < 0 {
+		}
+		s.Sigma = append(s.Sigma, sigma)
+		s.Slack = append(s.Slack, -1)
+		s.Initial = append(s.Initial, -1)
+	}
+	addExtra := func(name string, row int, value Fraction, artificial bool) int {
+		k := len(s.Columns)
+		s.Columns = append(s.Columns, name)
+		s.ColumnVariable = append(s.ColumnVariable, -1)
+		s.Directions = append(s.Directions, 0)
+		for i := range tableau.T {
+			tableau.T[i] = append(tableau.T[i], integer(0))
+		}
+		tableau.T[row][k] = value
+		s.Artificial = append(s.Artificial, artificial)
+		return k
+	}
+	s.Artificial = make([]bool, decisionColumns)
+	for i, comparison := range s.Comparisons {
+		if comparison != "=" {
+	}
+	for i, comparison := range s.Comparisons {
+		if comparison != "<=" {
+			s.Initial[i] = addExtra("a:"+s.Rows[i], i, integer(1), true)
+		}
+	}
+	s.Costs1 = make([]Fraction, len(s.Columns))
+	s.Costs2 = make([]Fraction, len(s.Columns))
+	for k, j := range s.ColumnVariable {
+		if j >= 0 {
+			s.Costs2[k] = m.Cost[j].mul(integer(int64(s.Sign * s.Directions[k])))
+		}
+		if s.Artificial[k] {
+			s.Costs1[k] = integer(1)
+		}
+	}
+	tableau.Basis = append([]int{}, s.Initial...)
+	s.Tableau = tableau
+	return s
+}
+type LPResult struct {
+	Status                            string
+	Objective, W                      Fraction
+	Standard                          *Standard
+	Solution, Farkas, Ray             []Fraction
+	Rate                              Fraction
+	Phase1, Phase2, Drives, Redundant int
+	Log                               []string
+}
+
+func (r *LPResult) pivots() int { return r.Phase1 + r.Phase2 + r.Drives }
+func (s *Standard) originalValues(columns []Fraction, direction bool) []Fraction {
+	values := make([]Fraction, len(s.Maps))
+	for j, mapping := range s.Maps {
+		if !direction {
+			values[j] = mapping.Offset
+		}
+		for _, k := range mapping.Columns {
+			values[j] = values[j].add(columns[k].mul(integer(int64(s.Directions[k]))))
+		}
+	}
+	return values
+}
+func (s *Standard) solution() []Fraction {
+	columns := make([]Fraction, len(s.Columns))
+	for i, k := range s.Tableau.Basis {
+		columns[k] = s.Tableau.Beta[i]
+	}
+	return s.originalValues(columns, false)
+}
+func solveLP(m *Model, lower, upper []*Fraction, number, level int) *LPResult {
+	s := standardForm(m, lower, upper)
+	r := &LPResult{Standard: s}
+	artificials := 0
+	for _, art := range s.Artificial {
+		if art {
+			artificials++
+		}
+	}
+	emit := func(required int, line string) {
+		if required <= level {
+			r.Log = append(r.Log, line)
+		}
+	}
+	display := func(heading string, cost []Fraction, phase1 bool) {
+		if level < 2 {
+			return
+		}
+		constant, sign := s.Constant, s.Sign
+		if phase1 {
+			constant = integer(0)
+			sign = 1
+		}
+		r.Log = append(r.Log, s.Tableau.display(heading, s.Columns, s.Rows, cost, constant, sign)...)
+	}
+	emit(0, fmt.Sprintf("SOLVE node %d rows %d columns %d artificials %d", number, len(s.Rows), len(s.Columns), artificials))
+	for j, mapping := range s.Maps {
+		line := "MAP " + m.Variables[j] + " " + mapping.Kind
+		if mapping.Kind != "split" {
+			line += " " + mapping.Offset.String()
+		}
+		if mapping.Kind == "shift" && upper[j] != nil {
+			line += " upper " + upper[j].String()
+		}
+		emit(1, line)
+	}
+	for i, sigma := range s.Sigma {
+		if sigma < 0 {
+			emit(1, "FLIP "+s.Rows[i])
+		}
+	}
+	all := make([]bool, len(s.Columns))
+	real := make([]bool, len(s.Columns))
+	for k := range all {
+		all[k] = true
+		real[k] = !s.Artificial[k]
+	}
+	finish := func() *LPResult {
+		objective := "-"
+		if r.Status == "OPTIMAL" {
+			objective = r.Objective.String()
+		}
+		emit(0, fmt.Sprintf("RESULT %s objective %s phase1 %d phase2 %d drives %d redundant %d", r.Status, objective, r.Phase1, r.Phase2, r.Drives, r.Redundant))
+		return r
+	}
+	if artificials > 0 {
+		emit(1, "PHASE 1")
+		display("phase 1 start", s.Costs1, true)
+		p := phase(s.Tableau, s.Costs1, all, s.Columns, s.Rows, func(v Fraction) Fraction { return v })
+		r.Phase1 = p.Iterations
+		for _, line := range p.Lines {
+			emit(1, line)
+		}
+		reduced, w := s.Tableau.reduced(s.Costs1)
+		r.W = w
+		emit(1, fmt.Sprintf("PHASE 1 END objective %s iterations %d", w, r.Phase1))
+		if w.N > 0 {
+			r.Status = "INFEASIBLE"
+			for i, k := range s.Initial {
+				r.Farkas = append(r.Farkas, s.Costs1[k].sub(reduced[k]).mul(integer(int64(s.Sigma[i]))))
+			}
+			display("final", s.Costs1, true)
+			return finish()
+		}
+		for i, k := range s.Tableau.Basis {
+			if !s.Artificial[k] {
+				continue
+			}
+			q := -1
+			for column, value := range s.Tableau.T[i] {
+				if !s.Artificial[column] && value.N != 0 {
+					q = column
+					break
+				}
+			}
+			if q < 0 {
+				r.Redundant++
+				emit(1, "REDUNDANT row "+s.Rows[i])
+			} else {
+				emit(1, fmt.Sprintf("DRIVE row %s enter %s leave %s", s.Rows[i], s.Columns[q], s.Columns[k]))
+				s.Tableau.pivot(i, q)
+				r.Drives++
+			}
+		}
+	}
+	emit(1, "PHASE 2")
+	display("phase 2 start", s.Costs2, false)
+	objective := func(v Fraction) Fraction { return s.Constant.add(v.mul(integer(int64(s.Sign)))) }
+	p := phase(s.Tableau, s.Costs2, real, s.Columns, s.Rows, objective)
+	r.Phase2 = p.Iterations
+	for _, line := range p.Lines {
+		emit(1, line)
+	}
+	_, z := s.Tableau.reduced(s.Costs2)
+	r.Objective = objective(z)
+	r.Solution = s.solution()
+	r.Status = "OPTIMAL"
+	if p.Entering >= 0 {
+		r.Status = "UNBOUNDED"
+		emit(1, "UNBOUNDED enter "+s.Columns[p.Entering])
+		delta := make([]Fraction, len(s.Columns))
+		delta[p.Entering] = integer(1)
+		for i, k := range s.Tableau.Basis {
+			delta[k] = s.Tableau.T[i][p.Entering].neg()
+		}
+		r.Ray = s.originalValues(delta, true)
+		for j, v := range r.Ray {
+			r.Rate = r.Rate.add(m.Cost[j].mul(v))
+		}
+	}
+	emit(1, fmt.Sprintf("PHASE 2 END objective %s iterations %d", r.Objective, r.Phase2))
+	display("final", s.Costs2, false)
+	return finish()
+}
+func writeLines(path string, lines []string) {
+	value := ""
+	if len(lines) > 0 {
+		value = strings.Join(lines, "\n") + "\n"
+	}
+	if err := os.WriteFile("output/"+path, []byte(value), 0644); err != nil {
+		panic(err)
+	}
+}
+func main() {
+	settings := readSettings()
+	iterations, solutions, sensitivities, tree := []string{}, []string{}, []string{}, []string{}
+	summary := []string{"model,status,objective,approx,relaxation,nodes,pivots"}
+	statuses := map[string]int{}
+	solves, p1, p2, drives, analyzed, integerModels, integerNodes, integerLimits := 0, 0, 0, 0, 0, 0, 0, 0
+	models := readModels()
+	for _, raw := range models {
+		m := makeModel(raw)
+		level, limit := settings.Level, settings.Limit
+		if value, ok := settings.Logs[m.Name]; ok {
+			level = value
+		}
+		iterations = append(iterations, fmt.Sprintf("MODEL %s level %d", m.Name, level))
+		solve := func(lower, upper []*Fraction, number int) *LPResult { return solveLP(m, lower, upper, number, level) }
+		var result ModelResult
+		integerVariables := integerCount(m)
+		if integerVariables > 0 {
+		} else {
+			root := solve(m.Lower, m.Upper, 1)
+			result = ModelResult{Status: root.Status, Root: root, Solves: []*LPResult{root}}
+			if root.Status == "OPTIMAL" {
+				result.HasSolution = true
+				result.Objective = root.Objective
+				result.Solution = append([]Fraction{}, root.Solution...)
+			}
+		}
+		pivots := 0
+		for _, lp := range result.Solves {
+			iterations = append(iterations, lp.Log...)
+			solves++
+			p1 += lp.Phase1
+			p2 += lp.Phase2
+			drives += lp.Drives
+			pivots += lp.pivots()
+		}
+		statuses[result.Status]++
+		solutions = append(solutions, fmt.Sprintf("MODEL %s %s variables %d constraints %d integers %d", m.Name, m.Direction, len(m.Variables), len(m.Constraints), integerVariables), coefficientStats(m), "STATUS "+result.Status)
+		objective, approx, relaxation := "-", "-", "-"
+		if result.HasSolution {
+			objective = result.Objective.String()
+			approx = result.Objective.approx()
+			solutions = append(solutions, "OBJECTIVE "+objective+" approx "+approx)
+		}
+		root := result.Root
+		if root.Status == "OPTIMAL" {
+			relaxation = root.Objective.String()
+			if integerVariables > 0 {
+		if result.HasSolution || result.Status == "UNBOUNDED" {
+			values := result.Solution
+			if !result.HasSolution {
+				values = root.Solution
+			}
+			for j, value := range values {
+				solutions = append(solutions, "VALUE "+m.Variables[j]+" "+value.String())
+			}
+		}
+		solutions = append(solutions, fmt.Sprintf("PIVOTS %d", pivots))
+		summary = append(summary, fmt.Sprintf("%s,%s,%s,%s,%s,%d,%d", m.Name, result.Status, objective, approx, relaxation, len(result.Solves), pivots))
+	}
+	iterations = append(iterations, fmt.Sprintf("TOTAL solves %d phase1 %d phase2 %d drives %d pivots %d", solves, p1, p2, drives, p1+p2+drives))
+	if err := os.MkdirAll("output", 0755); err != nil {
+		panic(err)
+	}
+	writeLines("iterations.txt", iterations)
+	writeLines("solutions.txt", solutions)
+	writeLines("summary.csv", summary)
+func parseExpression(words []string) ([]Term, bool) {
+	out := []Term{}
+	position, sign := 0, int64(1)
+	if len(words) > 0 && words[0] == "-" {
+		position++
+		sign = -1
+	}
+	for position < len(words) {
+		coefficient, ok := readNumber(words[position], false)
+		name := ""
+		if ok {
+			if position+1 == len(words) || !isName(words[position+1]) {
+				return nil, false
+			}
+			name = words[position+1]
+			position += 2
+		} else if isName(words[position]) {
+			coefficient = integer(1)
+			name = words[position]
+			position++
+		} else {
+			return nil, false
+		}
+		out = append(out, Term{name, coefficient.mul(integer(sign))})
+		if position == len(words) {
+			return out, true
+		}
+		if words[position] != "+" && words[position] != "-" {
+			return nil, false
+		}
+		sign = 1
+		if words[position] == "-" {
+			sign = -1
+		}
+		position++
+	}
+	return nil, false
+}
+func namedExpression(words []string) (string, []Term, bool) {
+	if len(words) < 2 || !strings.HasSuffix(words[0], ":") {
+		return "", nil, false
+	}
+	name := strings.TrimSuffix(words[0], ":")
+	if !isName(name) {
+		return "", nil, false
+	}
+	terms, ok := parseExpression(words[1:])
+	return name, terms, ok
+}
+func parseConstraint(words []string, line int) (Constraint, bool) {
+	if len(words) < 4 || !wordIn("<= >= =", words[len(words)-2]) {
+		return Constraint{}, false
+	}
+	rhs, ok := readNumber(words[len(words)-1], true)
+	if !ok {
+		return Constraint{}, false
+	}
+	name, terms, ok := namedExpression(words[:len(words)-2])
+	return Constraint{Name: name, Comparison: words[len(words)-2], Line: line, Terms: terms, RHS: rhs}, ok
+}
+func parseBlock(name string, body []Record, endLine int) RawModel {
+	m := RawModel{Name: name}
+	state := "A"
+	for _, record := range body {
+		words := strings.Split(record.Text, " ")
+		accepted := false
+		switch state {
+		case "A":
+			if record.Text == "maximize" || record.Text == "minimize" {
+				m.Direction = record.Text
+				state = "B"
+				accepted = true
+			}
+		case "B":
+			_, terms, ok := namedExpression(words)
+			if ok {
+				m.Objective = terms
+				state = "C"
+				accepted = true
+			}
+		case "C":
+			if record.Text == "subject to" {
+				state = "D"
+				accepted = true
+			}
+		case "D", "E":
+			if state == "E" && wordIn("bounds integer binary", record.Text) {
+				state = map[string]string{"bounds": "F", "integer": "G", "binary": "H"}[record.Text]
+				accepted = true
+			} else if c, ok := parseConstraint(words, record.Line); ok {
+				m.Constraints = append(m.Constraints, c)
+				state = "E"
+				accepted = true
+			}
+		case "F":
+				}
+			}
+		}
+		if !accepted {
+			m.Err = &ModelError{record.Line, "syntax error"}
+			return m
+		}
+func readModels() []RawModel {
+	out := []RawModel{}
+	name := ""
+	body := []Record{}
+	for i, line := range readLines("input/models.lp") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if name == "" {
+			name = strings.Split(line, " ")[1]
+			body = nil
+		} else if line == "end" {
+			out = append(out, parseBlock(name, body, i+1))
+			name = ""
+		} else {
+			body = append(body, Record{i + 1, line})
+		}
+	}
+	return out
+}
+}
+
+func phase(tableau *Tableau, cost []Fraction, candidates []bool, columns, rows []string, objective func(Fraction) Fraction) PhaseResult {
+	result := PhaseResult{Entering: -1}
+	for {
+		reduced, _ := tableau.reduced(cost)
+		q := -1
+		for k, value := range reduced {
+			if candidates[k] && value.N < 0 {
+				q = k
+				break
+			}
+		}
+		if q < 0 {
+			return result
+		}
+		p := -1
+		ratio := integer(0)
+		for i, row := range tableau.T {
+			if row[q].N <= 0 {
+				continue
+			}
+			value := tableau.Beta[i].div(row[q])
+			if p < 0 || value.cmp(ratio) < 0 || value.cmp(ratio) == 0 && tableau.Basis[i] < tableau.Basis[p] {
+				p = i
+				ratio = value
+			}
+		}
+		if p < 0 {
+			result.Entering = q
+			return result
+		}
+		leave := tableau.Basis[p]
+		before := reduced[q]
+		tableau.pivot(p, q)
+		result.Iterations++
+		_, z := tableau.reduced(cost)
+		result.Lines = append(result.Lines, fmt.Sprintf("PIVOT %d enter %s reduced %s leave %s row %s ratio %s objective %s", result.Iterations, columns[q], before, columns[leave], rows[p], ratio, objective(z)))
+	}
+}
+import (
+	"fmt"
+	"strings"
+)
+
+type Tableau struct {
+	T     [][]Fraction
+	Beta  []Fraction
+	Basis []int
+}
+
+func (t *Tableau) reduced(cost []Fraction) ([]Fraction, Fraction) {
+	r := append([]Fraction{}, cost...)
+	z := integer(0)
+	for i, basic := range t.Basis {
+		z = z.add(cost[basic].mul(t.Beta[i]))
+		for k := range r {
+			r[k] = r[k].sub(cost[basic].mul(t.T[i][k]))
+		}
+	}
+	return r, z
+}
+func (t *Tableau) pivot(p, q int) {
+	factor := t.T[p][q]
+	for k := range t.T[p] {
+		t.T[p][k] = t.T[p][k].div(factor)
+	}
+	t.Beta[p] = t.Beta[p].div(factor)
+	for i := range t.T {
+		if i == p {
+			continue
+		}
+		f := t.T[i][q]
+		for k := range t.T[i] {
+			t.T[i][k] = t.T[i][k].sub(f.mul(t.T[p][k]))
+		}
+		t.Beta[i] = t.Beta[i].sub(f.mul(t.Beta[p]))
+	}
+	t.Basis[p] = q
+}

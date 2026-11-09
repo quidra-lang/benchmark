@@ -1,0 +1,213 @@
+function M.register(text)
+    local digits = text:match('^r(%d+)$')
+    if digits and (#digits == 1 or digits:sub(1, 1) ~= '0') then
+        local value = tonumber(digits)
+        if value <= 31 then return value end
+    end
+end
+    local config = {predictors = {}, variants = {}}
+    for _, line in ipairs(lines('input/config.txt')) do
+        local t = {}
+        for token in line:gmatch('%S+') do t[#t + 1] = token end
+        local key = t[1]
+        elseif key == 'VARIANT' then
+            config.variants[#config.variants + 1] = {name = t[2], forwarding = t[3] == 'ON', stage = t[4], latency = tonumber(t[5])}
+        elseif key == 'PRIMARY' then config.primary = {t[2], t[3]}
+        elseif key == 'WINDOW' then config.window = {tonumber(t[2]), tonumber(t[3])}
+    return lines('input/trace.txt'), config
+function M.dependencies(instructions)
+    local last, result = {}, {}
+    for i, instruction in ipairs(instructions) do
+        local operands = {}
+        for _, field in ipairs({'rs1', 'rs2'}) do
+            local register = instruction[field]
+            if register and register ~= 0 then
+                operands[#operands + 1] = {register = register, producer = last[register]}
+            end
+        end
+        result[i] = operands
+        if instruction.rd and instruction.rd ~= 0 then last[instruction.rd] = i end
+    end
+    return result
+end
+function M.id_resolved(instruction, variant)
+    return instruction.class == 'JUMP' and not instruction.rs1
+        or (instruction.class == 'BRANCH' or instruction.class == 'JUMP') and variant.stage == 'ID'
+end
+function M.ready(instruction, producer, timing, variant)
+    if not variant.forwarding then return timing.W + 1 end
+    local result = producer.class == 'LOAD' and timing.W or timing.M
+    return result + (M.id_resolved(instruction, variant) and 1 or 0)
+end
+local M = {causes = {'control', 'structural', 'load_use', 'raw'}, stages = {'IF', 'ID', 'EX', 'MEM', 'WB'}}
+function M.simulate(instructions, sources, variant, missed)
+    local timings, records, delays = {}, {}, {}
+    for i, instruction in ipairs(instructions) do
+        local length = instruction.class == 'MUL' and variant.latency or 1
+        local fetch, decode, start = 1, 2, 3
+        if i > 1 then
+            local previous = timings[i - 1]
+            fetch = missed[i - 1] and previous.X + (hazards.id_resolved(instructions[i - 1], variant) and 0 or 1) or previous.D
+            decode = math.max(fetch + 1, previous.X)
+            local ideal = previous.X + 1
+            local ready = {ideal, ideal}
+            local producers = {}
+            for _, source in ipairs(sources[i]) do
+                local p = source.producer
+                if p then
+                    local cycle = hazards.ready(instruction, instructions[p], timings[p], variant)
+                    local slot = instructions[p].class == 'LOAD' and 1 or 2
+                    if cycle > ready[slot] then ready[slot], producers[slot] = cycle, p end
+                end
+            end
+            local bounds = {decode + 1, previous.M, ready[1], ready[2]}
+            start = ideal
+            for c, bound in ipairs(bounds) do
+                if bound > start then
+                    records[#records + 1] = {cause = M.causes[c], cycles = bound - start,
+                        responsible = c <= 2 and i - 1 or i, waiting = i, producer = producers[c - 2]}
+                    start = bound
+                end
+            end
+            delays[#delays + 1] = start - ideal
+        end
+        timings[i] = {F = fetch, D = decode, X = start, M = start + length, W = start + length + 1}
+    end
+    return {timings = timings, records = records, delays = delays, cycles = timings[#timings].W}
+end
+local function increment(values, key, amount)
+    values[key] = (values[key] or 0) + (amount or 1)
+end
+local function value(values, key) return values[key] or 0 end
+local function control(instruction) return instruction.class == 'BRANCH' or instruction.class == 'JUMP' end
+local function check(line, static)
+    local fields = {}
+    for token in (line .. ' '):gmatch('(.-) ') do fields[#fields + 1] = token end
+    local pc = trace_io.hex(fields[1])
+    local kind = fields[2]
+    local registers = {}
+    for i = 1, 3 do
+        registers[i] = trace_io.register(fields[i + 2])
+    local result = {pc = pc, class = kind, rd = registers[1], rs1 = registers[2], rs2 = registers[3],
+        outcome = outcome, target = target, address = address, next_pc = outcome == 'T' and target or pc + 4}
+    return result
+local function validate(lines)
+    local result = {lines = #lines, instructions = {}, rejected = {}, gaps = {}, static = {}}
+    for line_number, line in ipairs(lines) do
+        local instruction, reason = check(line, result.static)
+        if reason then result.rejected[#result.rejected + 1] = {line_number, reason}
+        else
+            instruction.number = #result.instructions + 1
+            result.instructions[#result.instructions + 1] = instruction
+            if not result.static[instruction.pc] then result.static[instruction.pc] = instruction end
+        end
+    end
+    return result
+end
+local function totals(records)
+    local cycles, events = {}, {}
+    for _, record in ipairs(records) do
+        increment(cycles, record.cause, record.cycles)
+        increment(events, record.cause)
+    end
+    return cycles, events
+end
+local function combinations(instructions, sources, predictions, config)
+    local result, primary = {}, nil
+    for _, variant in ipairs(config.variants) do
+        for _, definition in ipairs(config.predictors) do
+            local simulation = pipeline.simulate(instructions, sources, variant, predictions[definition.name].flags)
+            simulation.stalls, simulation.events = totals(simulation.records)
+            simulation.variant, simulation.predictor = variant, definition.name
+            result[#result + 1] = simulation
+            if variant.name == config.primary[1] and definition.name == config.primary[2] then primary = simulation end
+        end
+    end
+    return result, primary
+end
+local function build_rows(instructions, primary, prediction)
+    local annotations, rows = {}, {}
+    for _, record in ipairs(primary.records) do
+        if record.waiting then
+            annotations[record.waiting] = (annotations[record.waiting] or '') .. ' ' .. record.cause .. ' ' .. record.cycles
+        end
+    end
+    for i, instruction in ipairs(instructions) do
+        local t, annotation = primary.timings[i], annotations[i] or ''
+        rows[#rows + 1] = {number = i, pc = instruction.pc, class = instruction.class, annotation = annotation,
+            characters = {{t.F, t.F, 'F'}, {t.F + 1, t.D - 1, '*'}, {t.D, t.D, 'D'}, {t.D + 1, t.X - 1, '*'},
+                {t.X, t.M - 1, 'X'}, {t.M, t.M, 'M'}, {t.W, t.W, 'W'}},
+            stages = {{1, t.F, t.D - 1}, {2, t.D, t.X - 1}, {3, t.X, t.M - 1}, {4, t.M, t.M}, {5, t.W, t.W}}}
+    end
+    return rows
+end
+    local width = last - first + 1
+    local lines = {'pipeline variant=' .. primary.variant.name .. ' predictor=' .. primary.predictor .. ' cycles ' .. first .. '-' .. last,
+        report.heading(first, last)}
+    local contents = {}
+    for i = 1, width do contents[i] = {'.', '.', '.', '.', '.'} end
+    local visible, stalled, flushed = 0, 0, 0
+    for _, row in ipairs(rows) do
+        local characters, nonempty = {}, false
+        for i = 1, width do characters[i] = '.' end
+        for _, span in ipairs(row.characters) do
+            for cycle = math.max(first, span[1]), math.min(last, span[2]) do characters[cycle - first + 1] = span[3] end
+        end
+        for _, character in ipairs(characters) do
+            if character ~= '.' then nonempty = true end
+            if character == '*' then stalled = stalled + 1 end
+            if character == 'x' then flushed = flushed + 1 end
+        end
+        if nonempty then
+            visible = visible + 1
+            lines[#lines + 1] = report.row(row.number, row.pc, row.class, table.concat(characters), row.annotation)
+        end
+    local stalls = 0
+    for _, cause in ipairs(causes) do stalls = stalls + value(primary.stalls, cause) end
+    local timing = {'timing variant=' .. primary.variant.name .. ' predictor=' .. primary.predictor,
+        'forwarding ' .. (primary.variant.forwarding and 'on' or 'off') .. ' branch_stage ' .. primary.variant.stage .. ' mul_latency ' .. primary.variant.latency,
+        'cycles ' .. primary.cycles, 'cpi ' .. report.fraction(primary.cycles, n) .. ' ' .. report.decimal(primary.cycles, n),
+        'ipc ' .. report.decimal(n, primary.cycles), 'stall_cycles total ' .. stalls .. ' ' .. cause_values(primary.stalls),
+        'stall_events ' .. cause_values(primary.events), 'flushed ' .. flushed,
+        'cycle_check ' .. n .. ' + 4 + ' .. stalls .. ' = ' .. n + 4 + stalls,
+local function profile_lines(instructions, groups, pcs, predictions, primary, config)
+    local branches, loops, indirect, static = {'branches'}, {'loops'}, {'indirect'}, {'instructions'}
+    local stalled = {}
+    for _, record in ipairs(primary.records) do increment(stalled, instructions[record.responsible].pc, record.cycles) end
+    for _, pc in ipairs(pcs) do
+        local indices = groups[pc]
+        local instruction = instructions[indices[1]]
+        static[#static + 1] = report.hex(pc) .. ' ' .. instruction.class .. ' ' .. report.register(instruction.rd) .. ' ' .. report.register(instruction.rs1)
+            .. ' ' .. report.register(instruction.rs2) .. ' executions ' .. #indices .. ' stall_cycles ' .. value(stalled, pc)
+    end
+    local segments, first = {}, 1
+    for last, instruction in ipairs(instructions) do
+        if control(instruction) or last == #instructions then
+            local pc = instructions[first].pc
+            local group = segments[pc] or {instances = 0, instructions = 0, cycles = 0}
+            group.instances = group.instances + 1
+            group.instructions = group.instructions + last - first + 1
+            group.cycles = group.cycles + primary.timings[last].W - (first > 1 and primary.timings[first - 1].W or 0)
+            segments[pc], first = group, last + 1
+        end
+    end
+    local ranked = ordered_keys(segments)
+    table.sort(ranked, function(a, b) if segments[a].cycles ~= segments[b].cycles then return segments[a].cycles > segments[b].cycles end return a < b end)
+    local segment_lines = {'segments total ' .. #ranked}
+    for rank = 1, math.min(config.top, #ranked) do
+        local pc = ranked[rank]
+        local group = segments[pc]
+        segment_lines[#segment_lines + 1] = rank .. ' ' .. report.hex(pc) .. ' instances ' .. group.instances .. ' instructions ' .. group.instructions
+            .. ' cycles ' .. group.cycles .. ' cpi ' .. report.decimal(group.cycles, group.instructions)
+    end
+    return report.join({branches, loops, segment_lines, indirect, static})
+local lines, config = trace_io.read()
+local trace = validate(lines)
+local instructions = trace.instructions
+local sources = hazards.dependencies(instructions)
+local pairs, primary = combinations(instructions, sources, predictions, config)
+local rows = build_rows(instructions, primary, predictions[primary.predictor])
+local groups, pcs = group_instructions(instructions)
+report.write('pipeline.txt', pipeline_lines(rows, primary, config))
+report.write('stats.txt', statistics_lines(trace, sources, predictions, pairs, primary, rows, config))
+report.write('profile.txt', profile_lines(instructions, groups, pcs, predictions, primary, config))

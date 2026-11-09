@@ -1,0 +1,288 @@
+    def initialize(states = Set.new, moves = Set.new, permanent = Set.new)
+      @states, @moves, @permanent = states.dup, moves.dup, permanent.dup
+    end
+    def allowed?(source, destination, time)
+      !states.include?([destination, time]) &&
+        !permanent.any? { |cell, from| cell == destination && from <= time } &&
+        (source == destination || !moves.include?([source, destination, time]))
+    end
+    def arrival_allowed(goal)
+      times = states.filter_map { |cell, time| time if cell == goal }
+      times.empty? ? 0 : times.max + 1
+    end
+    def reserve(path, start_time: 0, forever: false)
+      path.each_with_index do |cell, step|
+        time = start_time + step
+        states.add([cell, time])
+        moves.add([cell, path[step - 1], time]) if step.positive? && cell != path[step - 1]
+      end
+      permanent.add([path.last, start_time + path.length - 1]) if forever
+    end
+  def self.search(grid, agent, distances, start, t0, restrictions, tmax, budget, window: false)
+    budget.start_search
+    before = budget.expansions
+    arrival = restrictions.arrival_allowed(agent.goal)
+    beginning = [start, t0]
+    parents = { beginning => nil }
+    insertion = 0
+    open = MinHeap.new
+    open.push([distances.fetch(start), 0, 0], beginning)
+    until open.empty?
+      state = open.pop
+      budget.expand
+      cell, time = state
+      if (cell == agent.goal && time >= arrival) || (window && time == tmax)
+        path = []
+        while state
+          path << state[0]
+          state = parents.fetch(state)
+        end
+        return [path.reverse, budget.expansions - before]
+      end
+      next if time == tmax
+
+      grid.destinations(cell).each do |destination, _|
+        next_time = time + 1
+        next_state = [destination, next_time]
+        next unless distances.key?(destination) && !parents.key?(next_state) && restrictions.allowed?(cell, destination, next_time)
+
+        insertion += 1
+        parents[next_state] = state
+        g = next_time - t0
+        open.push([g + distances.fetch(destination), -g, insertion], next_state)
+      end
+    end
+    [nil, budget.expansions - before]
+  end
+  def self.read_grid
+    lines = File.readlines('input/map.txt', chomp: true)
+    width, height = lines.shift.split.map(&:to_i)
+    Grid.new(width, height, lines)
+  end
+  def self.read_agents
+    File.readlines('input/agents.csv', chomp: true).drop(1).map do |line|
+      id, sx, sy, gx, gy = line.split(',').map(&:to_i)
+      Agent.new(id, [sx, sy].freeze, [gx, gy].freeze)
+    end
+  end
+  def initialize
+    @grid, @agents = GridMap.read_grid, GridMap.read_agents
+    @settings = read_parameters
+    @distances = @agents.map { |agent| @grid.distances(agent.goal) }
+  end
+  def read_parameters
+    settings = { orders: [(0...@agents.length).to_a], runs: [], delays: [] }
+    File.foreach('input/params.txt', chomp: true) do |line|
+      kind, *args = line.split(' ')
+      case kind
+      when 'HORIZON' then settings[:horizon] = args[0].to_i
+      when 'HL_BUDGET' then settings[:hl_budget] = args[0].to_i
+      when 'LL_BUDGET' then settings[:ll_budget] = args[0].to_i
+      when 'WINDOW' then settings[:window], settings[:step] = args.map(&:to_i)
+      when 'ORDER' then settings[:orders] << args.map(&:to_i)
+      when 'RUN' then settings[:runs] << { name: args.join('-'), solver: args[0], cost_function: args[1] }
+      when 'ANIMATE' then settings[:animate], settings[:frames] = args[0], args[1].to_i
+      when 'DELAY' then settings[:delays] << args.map(&:to_i)
+      end
+    end
+    settings
+  end
+  def solve_pp(run)
+    budget = run[:budget]
+    @settings[:orders].each_with_index do |order, index|
+      number = index + 1
+      run[:high_level] += 1
+      before = budget.expansions
+      paths, attempts, failure = Prioritized.try_order(@grid, @agents, @distances, @settings[:horizon], order, budget)
+      attempts.each do |attempt|
+        prefix = "order #{number} agent #{Report.agent(attempt[:agent])}"
+        result = attempt[:path] ? "cost #{attempt[:path].length - 1}" : 'failed'
+        run[:trace] << "#{prefix} #{result} expansions #{attempt[:expansions]}"
+      end
+      if failure == 'll_budget'
+        run[:reason] = failure
+        break
+      end
+      planned = attempts.length - (failure.nil? ? 0 : 1)
+      summary = "order #{number} #{order.map { |id| Report.agent(id) }.join} planned #{planned} expansions #{budget.expansions - before}"
+      if failure.nil?
+        run[:specific] << "#{summary} ok"
+        run[:status], run[:paths], run[:end] = 'OK', paths, "end OK order #{number}"
+        return
+      end
+      run[:specific] << "#{summary} failed #{Report.agent(failure)}"
+    end
+    run[:reason] ||= 'orders'
+    run[:end] = "end FAIL #{run[:reason]}"
+  end
+  def validate(paths)
+    start = @agents.each_index.count { |id| paths[id].first != @agents[id].start }
+    goal = @agents.each_index.count { |id| paths[id].last != @agents[id].goal }
+    moves = paths.sum do |path|
+      path.each_cons(2).count { |source, destination| !@grid.destinations(source).any? { |cell, _| cell == destination } }
+    end
+    conflicts = CBS.conflicts(paths)
+    vertex = conflicts.count { |conflict| conflict.kind == 'vertex' }
+    edge = conflicts.length - vertex
+    follows = 0
+    1.upto(paths.map { |path| path.length - 1 }.max) do |time|
+      @agents.each_index do |a|
+        past_a, next_a = CBS.position(paths[a], time - 1), CBS.position(paths[a], time)
+        next if next_a == past_a
+
+        @agents.each_index do |b|
+          follows += 1 if a != b && next_a == CBS.position(paths[b], time - 1) && CBS.position(paths[b], time) != past_a
+        end
+      end
+    end
+    { verdict: [start, goal, moves, vertex, edge].all?(&:zero?) ? 'VALID' : 'INVALID',
+      start: start, goal: goal, moves: moves, vertex: vertex, edge: edge, follows: follows, conflicts: conflicts }
+  end
+  def plan_statistics(paths, cost_function)
+    per_agent = paths.each_with_index.map do |path, id|
+      actions = Report.actions(path)
+      moves = actions.delete('.')
+      { cost: path.length - 1, extra: path.length - 1 - @shortest[id], waits: actions.count('.'),
+        turns: moves.chars.each_cons(2).count { |a, b| a != b }, arrive: path.index(@agents[id].goal),
+        leave: path.each_cons(2).count { |a, b| a == @agents[id].goal && b != a }, actions: actions }
+    end
+    lengths = per_agent.map { |record| record[:cost] }
+    soc, makespan = lengths.sum, lengths.max
+    cost, lower = cost_function == 'SOC' ? [soc, @soc_lower] : [makespan, @makespan_lower]
+    traffic, waits = Hash.new(0), Hash.new(0)
+    paths.each do |path|
+      path.uniq.each { |cell| traffic[cell] += 1 }
+      path.each_cons(2) { |a, b| waits[a] += 1 if a == b }
+    end
+    { agents: per_agent, cost: cost, soc: soc, makespan: makespan, ratio: Report.fraction(cost, lower),
+      sum_extra: per_agent.sum { |record| record[:extra] }, max_extra: per_agent.map { |record| record[:extra] }.max,
+      waits: per_agent.sum { |record| record[:waits] }, turns: per_agent.sum { |record| record[:turns] },
+      arrivals: (0..makespan).map { |time| lengths.count { |length| length <= time } }, traffic: traffic,
+      cell_waits: waits, hotspots: traffic.keys.sort_by { |x, y| [-traffic[[x, y]], y, x] }.take(5) }
+  end
+  def run_lines(run)
+    prefix = "run #{run[:name]} solver #{run[:solver]} cost_function #{run[:cost_function]} result"
+    return ["#{prefix} FAIL reason #{run[:reason]}"] + run[:specific] unless run[:status] == 'OK'
+
+    metrics, execution = run.values_at(:metrics, :execution)
+    lines = ["#{prefix} OK cost #{metrics[:cost]} soc #{metrics[:soc]} makespan #{metrics[:makespan]} ratio #{metrics[:ratio]}"] + run[:specific]
+    metrics[:agents].each_with_index do |record, id|
+      lines << "agent #{Report.agent(id)} cost #{record[:cost]} extra #{record[:extra]} waits #{record[:waits]} " \
+               "turns #{record[:turns]} arrive #{record[:arrive]} leave #{record[:leave]} moves #{record[:actions]}"
+    end
+    lines << "arrivals #{metrics[:arrivals].join(' ')}"
+    lines << "hotspots #{metrics[:hotspots].map { |cell| "#{Report.cell(cell)}:#{metrics[:traffic].fetch(cell)}" }.join(' ')}"
+    if execution[:deadlock]
+      lines << "execution deadlock time #{execution[:deadlock]}"
+    else
+      lines << "execution soc #{execution[:soc]} makespan #{execution[:makespan]} blocked #{execution[:blocked]} finish #{execution[:finish].join(' ')}"
+    end
+    lines
+  end
+  def validation_lines
+    baseline = validate(@independent)
+    baseline[:conflicts] = @independent_conflicts
+    plans = [['INDEPENDENT', baseline]] + @results.map { |run| [run[:name], run[:validation]] }
+    plans.flat_map do |name, validation|
+      next ["plan #{name} verdict NONE"] unless validation
+
+      counters = [:start, :goal, :moves, :vertex, :edge, :follows].map { |key| "#{key} #{validation[key]}" }.join(' ')
+      lines = ["plan #{name} verdict #{validation[:verdict]} #{counters}"]
+      validation[:conflicts].each_with_index do |conflict, index|
+        text = "  #{Report.conflict(conflict)}"
+        text += " #{@independent_classes[index]}" if name == 'INDEPENDENT'
+        lines << text
+      end
+      lines
+    end
+  end
+  def animation_lines
+    run = @results.find { |result| result[:name] == @settings[:animate] }
+    return ["run #{run[:name]} FAIL"] unless run[:status] == 'OK'
+
+    paths, frames = run[:paths], @settings[:frames]
+    lines = ["run #{run[:name]} frames #{frames}"]
+    frames.times do |time|
+      done, moving, waiting = 0, 0, 0
+      placements = @agents.to_h { |agent| [agent.goal, agent.name.downcase] }
+      paths.each_with_index do |path, id|
+        if time >= path.length - 1
+          done += 1
+        elsif time.positive? && CBS.position(path, time) != CBS.position(path, time - 1)
+          moving += 1
+        else
+          waiting += 1
+        end
+        placements[CBS.position(path, time)] = Report.agent(id)
+      end
+      lines << '' << "frame #{time} done #{done} moving #{moving} waiting #{waiting}"
+      lines.concat(picture(placements))
+    end
+    [['traffic', :traffic], ['waits', :cell_waits]].each do |label, key|
+      placements = run[:metrics][key].to_h { |cell, count| [cell, count >= 10 ? '+' : count.to_s] }
+      lines << '' << label
+      lines.concat(picture(placements))
+    end
+    lines
+  end
+  def run
+    @independent = independent_plan
+    @overview = overview
+    @results = @settings[:runs].each_with_index.map do |definition, index|
+      result = definition.merge(index: index, status: 'FAIL', reason: nil, high_level: 0,
+                                generated: nil, budget: LowLevel::Budget.new(@settings[:ll_budget]), specific: [], trace: [])
+      case result[:solver]
+      when 'PP' then solve_pp(result)
+      when 'CBS', 'ICBS' then solve_cbs(result)
+      when 'WHCA' then solve_whca(result)
+      end
+      if result[:status] == 'OK'
+        result[:metrics] = plan_statistics(result[:paths], result[:cost_function])
+        result[:validation] = validate(result[:paths])
+        result[:execution] = delayed_execution(result[:paths])
+      end
+      result
+    end
+    trace = @results.each_with_index.flat_map do |result, index|
+      (index.zero? ? [] : ['']) + ["run #{result[:name]}"] + result[:trace] + [result[:end]]
+    end
+    Report.write('solutions.txt', solution_lines)
+    Report.write('stats.csv', stats_lines)
+    Report.write('validation.txt', validation_lines)
+    Report.write('trace.txt', trace)
+    Report.write('frames.txt', animation_lines)
+  end
+  def self.position(path, time) = path[[time, path.length - 1].min]
+  def self.conflicts(paths)
+    result = []
+    1.upto(paths.map { |path| path.length - 1 }.max) do |time|
+      paths.length.times do |a|
+        ((a + 1)...paths.length).each do |b|
+          current_a, current_b = position(paths[a], time), position(paths[b], time)
+          if current_a == current_b
+            result << Conflict.new('vertex', time, a, b, current_a, current_a)
+          elsif current_a == position(paths[b], time - 1) && current_b == position(paths[a], time - 1)
+            result << Conflict.new('edge', time, a, b, position(paths[a], time - 1), current_a)
+          end
+        end
+      end
+    end
+    result
+  end
+  def self.try_order(grid, agents, distances, horizon, order, budget)
+    restrictions, paths, attempts = LowLevel::Prohibitions.new, {}, []
+    order.each do |id|
+      begin
+        path, expansions = LowLevel.search(grid, agents[id], distances[id], agents[id].start,
+                                           0, restrictions, horizon, budget)
+      rescue LowLevel::BudgetExceeded
+        return [nil, attempts, 'll_budget']
+      end
+      attempts << { agent: id, path: path, expansions: expansions }
+      return [nil, attempts, id] unless path
+
+      paths[id] = path
+      restrictions.reserve(path, forever: true)
+    end
+    [agents.each_index.map { |id| paths.fetch(id) }, attempts, nil]
+  end

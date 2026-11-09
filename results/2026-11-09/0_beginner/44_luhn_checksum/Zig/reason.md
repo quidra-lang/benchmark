@@ -1,0 +1,5 @@
+The input remains a digit string `0128469655154`; no whole-number conversion removes its leading zero, and output uses the same string. The rightmost digit is the undoubled check digit; every second position moving left is doubled and reduced by 9 when above 9. The transformed sum is 42, so checksum mod 10 is 2 and the number is invalid. Removing current check digit 4 leaves 38, requiring check digit 2. The full line is `0128469655154: invalid (expected check digit 2)` plus LF. The retained parity, transform, sum and invalid-output path support every stage.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

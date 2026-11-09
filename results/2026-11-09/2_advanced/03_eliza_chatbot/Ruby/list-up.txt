@@ -1,0 +1,451 @@
+module ScriptLoader
+  WORD = /\A[a-z0-9](?:[a-z0-9']*[a-z0-9])?\z/
+  REFERENCE = /\A\([0-9]\)\z/
+  GLOBALS = %w[INITIAL FINAL QUIT STOP DEFAULT QUESTION REPEAT MEMSIZE PERSIST PRE POST SYNON].freeze
+  ITEMS = %w[REASM GOTO NEWKEY RESTATE].freeze
+  RULES = %w[DECOMP MEMORY].freeze
+  TEXTS = %w[INITIAL FINAL DEFAULT QUESTION REPEAT REASM].freeze
+  DIRECTIVES = (GLOBALS + ITEMS + RULES + ['KEY']).freeze
+  def self.word?(text)
+    WORD.match?(text)
+  end
+  def self.pattern_element?(text)
+    text == '*' || text == '#' || word?(text) || text.start_with?('@') && word?(text[1..])
+  end
+  def self.valid_arguments?(name, arguments)
+    return !arguments.empty? if TEXTS.include?(name)
+    case name
+    when 'QUIT', 'STOP'
+      !arguments.empty? && arguments.all? { |word| word?(word) }
+    when 'KEY'
+      arguments.length == 2 && word?(arguments.first) && /\A[0-9]{1,2}\z/.match?(arguments.last)
+    when 'DECOMP', 'MEMORY'
+      !arguments.empty? && arguments.all? { |element| pattern_element?(element) }
+    end
+  end
+  def self.load(path)
+    script = { lists: %w[INITIAL FINAL DEFAULT QUESTION REPEAT].to_h { |name| [name, []] },
+               keywords: {}, groups: {}, pre: {}, post: {}, quit: Set.new, stop: Set.new,
+               persist: Set.new, capacity: 3, diagnostics: [] }
+    current_keyword = nil
+    current_rule = nil
+    persistence_lines = {}
+    capacity_line = nil
+    File.foreach(path, chomp: true).with_index(1) do |line, number|
+      next if line.empty? || line.start_with?('#')
+      name, *arguments = line.split(' ')
+      text = line.partition(' ')[2]
+      if GLOBALS.include?(name) || name == 'KEY'
+        current_keyword = nil
+        current_rule = nil
+      elsif RULES.include?(name)
+        next if current_keyword == :ignoring
+        current_rule = nil
+      elsif ITEMS.include?(name)
+        next if current_keyword == :ignoring
+      end
+      code = message = nil
+      if !DIRECTIVES.include?(name)
+        code, message = 'SYNTAX', "unknown directive #{name}"
+      elsif !valid_arguments?(name, arguments)
+        code, message = 'SYNTAX', "bad arguments for #{name}"
+      elsif RULES.include?(name) && current_keyword.nil?
+        code, message = 'ORPHAN', "#{name} without KEY"
+      elsif name == 'REASM' && current_rule.nil?
+        code, message = 'ORPHAN', 'REASM without DECOMP or MEMORY'
+      elsif %w[GOTO NEWKEY RESTATE].include?(name) && (current_rule.nil? || current_rule[:kind] == 'memory')
+        code, message = 'ORPHAN', "#{name} without DECOMP"
+      else
+        collection = case name
+                     when 'KEY' then script[:keywords]
+                     when 'SYNON' then script[:groups]
+                     when 'PRE' then script[:pre]
+                     when 'POST' then script[:post]
+                     end
+        old_line = collection&.dig(arguments.first, :line)
+        old_line = persistence_lines[arguments.first] if name == 'PERSIST'
+        old_line = capacity_line if name == 'MEMSIZE'
+        if old_line
+          code = 'DUPLICATE'
+          subject = name == 'MEMSIZE' ? name : "#{name} #{arguments.first}"
+          message = "#{subject} first defined at line #{old_line}"
+          current_keyword = :ignoring if name == 'KEY'
+        end
+      end
+      if code
+        script[:diagnostics] << { line: number, code: code, message: message }
+        next
+      end
+      case name
+      when 'INITIAL', 'FINAL', 'DEFAULT', 'QUESTION', 'REPEAT'
+        script[:lists][name] << text
+      when 'QUIT', 'STOP'
+        script[name.downcase.to_sym].merge(arguments)
+      when 'KEY'
+        current_keyword = { word: arguments.first, rank: arguments.last.to_i, line: number,
+                            text: line, memory: [], decomp: [] }
+        script[:keywords][arguments.first] = current_keyword
+      when 'DECOMP', 'MEMORY'
+        kind = name.downcase
+        rules = current_keyword[kind.to_sym]
+        current_rule = { kind: kind, number: rules.length + 1, pattern: arguments,
+                         line: number, text: line, items: [] }
+        rules << current_rule
+      when 'REASM', 'GOTO', 'NEWKEY', 'RESTATE'
+        current_rule[:items] << { kind: name, line: number, text: line, template: text,
+                                  arguments: arguments, number: current_rule[:items].length + 1 }
+      end
+    end
+    script
+  end
+end
+class Memory
+  attr_reader :queue, :log, :capacity
+  def initialize(capacity)
+    @capacity = capacity
+    @queue = []
+    @log = []
+  end
+  def store(session, keyword, text)
+    prefix = "#{session[:name]} #{session[:turns]}"
+    if @queue.include?(text)
+      @log << "#{prefix} SKIP #{keyword} #{text}"
+      return
+    end
+    @log << "#{prefix} DROP #{@queue.shift}" if @queue.length == @capacity
+    @queue << text
+    @log << "#{prefix} STORE #{keyword} #{text}"
+    session[:stores] += 1
+  end
+  def clear(name, turn)
+    count = @queue.length
+    unless count.zero?
+      @queue.clear
+      @log << "#{name} #{turn} CLEAR #{count}"
+    end
+    count
+  end
+end
+  def self.build(template, bindings, substitutions)
+    text = template.gsub(/\(([0-9])\)/) do
+      reflect(binding(bindings, Regexp.last_match(1).to_i), substitutions).join(' ')
+    end
+    text = text.split(' ').join(' ')
+    text[0] = text[0].upcase if /\A[a-z]/.match?(text)
+    text
+  end
+  def self.wrap(text)
+    words = text.split(' ')
+    lines = ["ELIZA: #{words.first}"]
+    words.drop(1).each do |word|
+      if lines.last.length + 1 + word.length <= 72
+        lines[-1] += " #{word}"
+      else
+        lines << "       #{word}"
+      end
+    end
+    lines
+  end
+  def self.wildcard?(element)
+    element == '*' || element == '#' || element.start_with?('@')
+  end
+  def self.match(pattern, words, groups)
+    memo = {}
+    search = lambda do |element_index, word_index|
+      key = [element_index, word_index]
+      return memo[key] if memo.key?(key)
+      if element_index == pattern.length
+        return memo[key] = word_index == words.length ? [] : nil
+      end
+      element = pattern[element_index]
+      if element == '*'
+      elsif word_index < words.length
+        accepts = if element == '#'
+                    true
+                  elsif element.start_with?('@')
+                    groups[element[1..]]&.dig(:members)&.include?(words[word_index])
+                  else
+                    element == words[word_index]
+                  end
+        if accepts
+          tail = search.call(element_index + 1, word_index + 1)
+          unless tail.nil?
+            return memo[key] = wildcard?(element) ? [[words[word_index]]] + tail : tail
+          end
+        end
+      end
+      memo[key] = nil
+    end
+    search.call(0, 0)
+  end
+class Eliza
+  SOURCES = %w[keyword memory question default repeat].freeze
+  NO_ARGUMENTS = %w[:keys :why :history :memory :forget :reset :unused :stats :undo].freeze
+  TEXT_ARGUMENT = %w[:prepare :reflect :say :explain].freeze
+  ONE_ARGUMENT = %w[:groups :find :script :cycles :coverage].freeze
+  KEYWORD_ARGUMENT = %w[:script :cycles :coverage :test].freeze
+  COMMANDS = (NO_ARGUMENTS + TEXT_ARGUMENT + ONE_ARGUMENT + %w[:trace :test]).freeze
+  def initialize(script)
+    @script = script
+    @keywords = script[:keywords]
+    @rules = @keywords.values.flat_map { |keyword| keyword[:memory] + keyword[:decomp] }
+    @transcript = []
+    @state = { cycles: Hash.new(0), list_cycles: Hash.new(0), keyword_uses: Hash.new(0),
+               keyword_replies: Hash.new(0), rule_hits: Hash.new(0), item_uses: Hash.new(0),
+               memory: Memory.new(script[:capacity]), session: nil, sessions: 0,
+               total_turns: 0, total_sources: SOURCES.to_h { |source| [source, 0] } }
+  end
+  def session
+    @state[:session]
+  end
+  def memory
+    @state[:memory]
+  end
+  def copy_state
+    Marshal.load(Marshal.dump(@state))
+  end
+  def normalize(text)
+    text.tr('A-Z', 'a-z').split(/[,.?!;]/).filter_map do |part|
+      words = part.gsub(/[^a-z0-9']/, ' ').split(' ').filter_map do |word|
+        cleaned = word.sub(/\A'+/, '').sub(/'+\z/, '')
+        cleaned unless cleaned.empty?
+      end
+      words unless words.empty?
+    end
+  end
+  def prepare(text)
+    normalize(text).map do |clause|
+      clause.flat_map { |word| @script[:pre].key?(word) ? @script[:pre][word][:replacement] : [word] }
+    end
+  end
+  def quit?(text)
+    words = normalize(text).flatten
+    words.length == 1 && @script[:quit].include?(words.first)
+  end
+  def select_clause(clauses)
+    clauses.each_with_index do |clause, index|
+      positions = {}
+      clause.each_with_index do |word, position|
+        positions[word] = position if @keywords.key?(word) && !positions.key?(word)
+      end
+      next if positions.empty?
+      keys = positions.keys.sort_by { |word| [-@keywords[word][:rank], positions[word]] }
+      return [index + 1, clause, keys]
+    end
+    nil
+  end
+  def reset_cycles
+    @rules.each { |rule| @state[:cycles][rule[:line]] = 0 }
+    %w[DEFAULT QUESTION REPEAT].each { |name| @state[:list_cycles][name] = 0 }
+  end
+  def take_item(rule)
+    index = @state[:cycles][rule[:line]]
+    item = rule[:items][index]
+    @state[:item_uses][item[:line]] += 1
+    @state[:cycles][rule[:line]] = (index + 1) % rule[:items].length
+    item
+  end
+  def apply_memory(word, words, trace)
+    @keywords[word][:memory].each do |rule|
+      bindings = Matcher.match(rule[:pattern], words, @script[:groups])
+      next if bindings.nil?
+      trace << "MEMORY #{word} #{rule[:number]}"
+      @state[:rule_hits][rule[:line]] += 1
+      unless rule[:items].empty?
+        item = take_item(rule)
+        text = Responder.build(item[:template], bindings, @script[:post])
+        memory.store(session, word, text)
+      end
+      break
+    end
+  end
+  def keyword_reply(clauses, trace)
+    selected = select_clause(clauses)
+    unless selected
+      trace << 'CLAUSE none'
+      return nil
+    end
+    number, words, keys = selected
+    trace << "CLAUSE #{number} #{words.join(' ')}"
+    trace << "KEYS #{keys.join(' ')}"
+    apply_memory(keys.first, words, trace)
+    entered = Set.new
+    keys.each do |initial|
+      next if entered.include?(initial)
+      trace << "ENTER #{initial}"
+      current = initial
+      current_words = words
+      loop do
+        entered.add(current)
+        @state[:keyword_uses][current] += 1
+        bindings = nil
+        rule = @keywords[current][:decomp].find do |candidate|
+          bindings = Matcher.match(candidate[:pattern], current_words, @script[:groups])
+          !bindings.nil?
+        end
+        unless rule
+          trace << "NOMATCH #{current}"
+          break
+        end
+        @state[:rule_hits][rule[:line]] += 1
+        if rule[:items].empty?
+          trace << "DECOMP #{current} #{rule[:number]} 0"
+          break
+        end
+        item = take_item(rule)
+        trace << "DECOMP #{current} #{rule[:number]} #{item[:number]}"
+        case item[:kind]
+        when 'REASM'
+          reply = Responder.build(item[:template], bindings, @script[:post])
+          @state[:keyword_replies][current] += 1
+          session[:topics][current] += 1
+          return reply
+        end
+      end
+    end
+    nil
+  end
+  def decide(text)
+    clauses = normalize(text)
+    trace = []
+    if !@script[:lists]['REPEAT'].empty? && !clauses.empty? && clauses == session[:previous]
+      trace << 'REPEAT'
+      reply = take_text('REPEAT')
+      source = 'repeat'
+    else
+      reply = keyword_reply(prepare(text), trace)
+      if !reply.nil?
+        source = 'keyword'
+      elsif !memory.queue.empty?
+        reply = memory.recall(session)
+        source = 'memory'
+      elsif text.end_with?('?') && !@script[:lists]['QUESTION'].empty?
+        reply = take_text('QUESTION')
+        source = 'question'
+      else
+        reply = take_text('DEFAULT')
+        source = 'default'
+      end
+    end
+    trace << "REPLY #{source}"
+    session[:previous] = clauses
+    session[:sources][source] += 1
+    session[:unrecognized] << session[:turns] if %w[question default].include?(source)
+    [reply, trace]
+  end
+  def counts_line
+    "turns=#{session[:turns]} " + SOURCES.map { |source| "#{source}=#{session[:sources][source]}" }.join(' ')
+  end
+  def leading_counts(counts)
+    values = counts.select { |_, count| count.positive? }.sort_by { |word, count| [-count, word] }.first(5)
+    values.empty? ? 'none' : values.map { |word, count| "#{word} #{count}" }.join(', ')
+  end
+  def start_session(name)
+    @transcript << '' if @state[:sessions].positive?
+    reset_cycles unless @script[:persist].include?('cycles')
+    memory.clear(name, 0) unless @script[:persist].include?('memory')
+    @state[:sessions] += 1
+    @state[:session] = { name: name, turns: 0, sources: SOURCES.to_h { |source| [source, 0] },
+                        previous: nil, history: [], last_trace: nil, trace_on: false,
+                        topics: Hash.new(0), words: Hash.new(0), stores: 0, recalls: 0,
+                        unrecognized: [], undo: nil }
+    @transcript << "SESSION #{name}"
+    greetings = @script[:lists]['INITIAL']
+    @transcript.concat(Responder.wrap(greetings[(@state[:sessions] - 1) % greetings.length]))
+  end
+  def finish_session
+    unknown = session[:unrecognized].empty? ? 'none' : session[:unrecognized].join(' ')
+    @transcript.concat(["NOTES #{session[:name]}", "  #{counts_line}",
+                        "  topics: #{leading_counts(session[:topics])}",
+                        "  words: #{leading_counts(session[:words])}",
+                        "  memory: stored=#{session[:stores]} recalled=#{session[:recalls]} pending=#{memory.queue.length}",
+                        "  unrecognized: #{unknown}"])
+    @state[:total_turns] += session[:turns]
+    SOURCES.each { |source| @state[:total_sources][source] += session[:sources][source] }
+  end
+  def utterance(text)
+    @transcript << "YOU: #{text}"
+    if quit?(text)
+      greetings = @script[:lists]['FINAL']
+      @transcript.concat(Responder.wrap(greetings[(@state[:sessions] - 1) % greetings.length]))
+      finish_session
+      return
+    end
+    snapshot = copy_state
+    snapshot[:session][:undo] = nil
+    session[:undo] = snapshot
+    session[:turns] += 1
+    normalize(text).flatten.each { |word| session[:words][word] += 1 unless @script[:stop].include?(word) }
+    session[:history] << "#{session[:turns]}: #{text}"
+    reply, trace = decide(text)
+    @transcript.concat(Responder.wrap(reply))
+    session[:last_trace] = trace
+    @transcript.concat(trace.map { |line| "  #{line}" }) if session[:trace_on]
+  end
+  def simulate_command(name, text)
+    return ['would quit'] if quit?(text)
+    saved = copy_state
+    begin
+      reply, trace = decide(text)
+    ensure
+      @state = saved
+    end
+    name == ':say' ? [reply] : trace
+  end
+  def command(line)
+    name, _, argument_string = line.partition(' ')
+    arguments = argument_string.split(' ')
+    return ["unknown command #{name}"] unless COMMANDS.include?(name)
+    bad = NO_ARGUMENTS.include?(name) && !arguments.empty?
+    bad ||= TEXT_ARGUMENT.include?(name) && argument_string.empty?
+    bad ||= ONE_ARGUMENT.include?(name) && arguments.length != 1
+    bad ||= name == ':trace' && !(arguments.length == 1 && %w[on off].include?(arguments.first))
+    bad ||= name == ':test' && arguments.length < 2
+    return ['bad arguments'] if bad
+    if KEYWORD_ARGUMENT.include?(name) && !@keywords.key?(arguments.first)
+      return ["unknown keyword #{arguments.first}"]
+    end
+    case name
+    when ':say', ':explain'
+      simulate_command(name, argument_string)
+    when ':undo'
+      if session[:undo].nil?
+        ['nothing to undo']
+      else
+        @state = session[:undo]
+        ["undone turn #{session[:turns] + 1}"]
+      end
+    end
+  end
+  def keyword_statistics
+    lines = ['keyword,rank,uses,replies,decomposition_hits']
+    @keywords.values.sort_by { |keyword| [-@state[:keyword_uses][keyword[:word]], keyword[:word]] }.each do |keyword|
+      word = keyword[:word]
+      hits = keyword[:decomp].map { |rule| @state[:rule_hits][rule[:line]] }
+      lines << [word, keyword[:rank], @state[:keyword_uses][word], @state[:keyword_replies][word],
+                hits.empty? ? '-' : hits.join('/')].join(',')
+    end
+    lines
+  end
+  def run(path)
+    File.foreach(path, chomp: true) do |line|
+      if line.start_with?('SESSION ')
+        start_session(line.delete_prefix('SESSION '))
+      elsif line.start_with?(':')
+        @transcript << line
+        @transcript.concat(command(line).map { |output| "  #{output}" })
+      else
+        utterance(line)
+      end
+    end
+    summary = "SUMMARY sessions=#{@state[:sessions]} turns=#{@state[:total_turns]} " +
+              SOURCES.map { |source| "#{source}=#{@state[:total_sources][source]}" }.join(' ')
+    @transcript.concat(['', summary])
+    { 'transcript.txt' => @transcript, 'keyword_stats.csv' => keyword_statistics, 'memory_log.txt' => memory.log }
+  end
+end
+script = ScriptLoader.load('input/script.txt')
+Dir.mkdir('output') unless Dir.exist?('output')
+Eliza.new(script).run('input/dialogue.txt').each do |name, lines|
+  File.write("output/#{name}", lines.empty? ? '' : lines.join("\n") + "\n")
+end

@@ -1,0 +1,747 @@
+from pathlib import Path
+import re
+DEFAULTS = {
+    "layering": "longest", "width": 4, "promotion": "off",
+    "heuristic": "barycenter", "sweeps": 12, "node_sep": 2,
+    "dummy_sep": 1, "layer_gap": 3, "direction": "TB",
+    "sifting": "off", "reduce": "off", "restarts": 0, "seed": 1,
+}
+CHOICES = {
+    "layering": ("longest", "coffman"), "promotion": ("on", "off"),
+    "heuristic": ("barycenter", "median"),
+    "direction": ("TB", "BT", "LR", "RL"),
+    "sifting": ("on", "off"), "reduce": ("on", "off"),
+}
+RANGES = {
+    "width": (1, 40), "sweeps": (0, 50), "node_sep": (1, 9),
+    "dummy_sep": (1, 9), "layer_gap": (2, 9),
+    "restarts": (0, 9), "seed": (1, 2147483646),
+}
+INTEGER = re.compile(r"[0-9]{1,10}\Z")
+def setting_value(name, word):
+    if name in CHOICES:
+        return word if word in CHOICES[name] else None
+    if name in RANGES and INTEGER.fullmatch(word):
+        value = int(word)
+        low, high = RANGES[name]
+        if low <= value <= high:
+            return value
+    return None
+def input_lines(filename):
+    contents = Path("input", filename).read_bytes().decode("ascii")
+    for number, line in enumerate(contents.split("\n"), 1):
+        if line and not line.startswith("#"):
+            yield number, line.split(" ")
+def read_defaults():
+    settings = DEFAULTS.copy()
+    for _, (name, word) in input_lines("params.txt"):
+        settings[name] = setting_value(name, word)
+    return settings
+class Graph:
+    def __init__(self, name, defaults):
+        self.name = name
+        self.settings = defaults.copy()
+        self.nodes = {}
+        self.edges = []
+        self.edge_set = set()
+        self.path = None
+        self.self_loops = 0
+        self.duplicates = 0
+        self.error = None
+    def accept(self, fields):
+        kind = fields[0]
+        if kind == "OPTION":
+            name, word = fields[1:]
+            value = setting_value(name, word)
+            if value is None:
+                return "bad_option"
+            self.settings[name] = value
+        elif kind == "NODE":
+            node = int(fields[1])
+            if node in self.nodes:
+                return "duplicate_node"
+            if len(self.nodes) == 40:
+                return "too_many_nodes"
+            self.nodes[node] = fields[2]
+        else:
+            first, second = map(int, fields[1:])
+            if first not in self.nodes or second not in self.nodes:
+                return "unknown_node"
+            if kind == "PATH":
+                self.path = first, second
+            elif first == second:
+                self.self_loops += 1
+            elif (first, second) in self.edge_set:
+                self.duplicates += 1
+            else:
+                self.edge_set.add((first, second))
+                self.edges.append((first, second))
+        return None
+def read_graphs(defaults):
+    graphs = []
+    for number, fields in input_lines("graphs.txt"):
+        if fields[0] == "GRAPH":
+            graph = Graph(fields[1], defaults)
+            graphs.append(graph)
+        elif fields[0] == "END":
+            if graph.error is None and not graph.nodes:
+                graph.error = "no_nodes", number
+        elif graph.error is None:
+            error = graph.accept(fields)
+            if error is not None:
+                graph.error = error, number
+    return graphs
+from functools import cmp_to_key
+from pathlib import Path
+import acyclic_layering
+import canvas
+import coordinates
+import crossing
+import graph_io
+class Edge:
+    def __init__(self, number, source, target):
+        self.number = number
+        self.source = source
+        self.target = target
+        self.upper = source
+        self.lower = target
+        self.reversed = False
+        self.transitive = False
+        self.chain = []
+        self.span = 0
+        self.crossings = 0
+        self.route = []
+        self.bends = 0
+        self.length = 0
+def order_snapshot(orders):
+    return tuple(tuple(layer) for layer in orders)
+def copy_order(orders):
+    return [list(layer) for layer in orders]
+class GraphLayout:
+    def __init__(self, graph):
+        self.graph = graph
+        self.name = graph.name
+        self.settings = graph.settings
+        self.ids = sorted(graph.nodes)
+        self.node_number = {node: number for number, node in enumerate(self.ids)}
+        self.labels = [graph.nodes[node] for node in self.ids]
+        self.node_count = len(self.ids)
+        self.edges = [Edge(number, self.node_number[source], self.node_number[target])
+                      for number, (source, target) in enumerate(graph.edges)]
+        self.names = list(map(str, self.ids))
+        self.widths = [len(label) + 2 for label in self.labels]
+        self.drawn = []
+        self.sweep_records = []
+        self.sift_records = []
+        self.random_state = self.settings["seed"]
+        self.best_run = None
+        self.best_sweep = None
+        self.best_crossings = None
+        self.path = None
+    def process(self):
+        self.analyze_graph()
+        self.prepare_dag()
+        self.assign_layers()
+        self.insert_dummies()
+        self.make_initial_order()
+        self.reduce_crossings()
+        self.finish_crossing_counts()
+        self.coordinates = coordinates.assign(self.orders, self.upper, self.lower,
+                                               self.widths, self.node_count, self.settings)
+        self.x = self.coordinates.x
+        self.route_geometry()
+        self.draw_lines_and_arrows()
+        self.build_routes()
+        self.find_path()
+        self.draw_highlights_and_boxes()
+    def prepare_dag(self):
+        original = [(edge.source, edge.target) for edge in self.edges]
+        self.acyclic = acyclic_layering.acyclic_order(self.node_count, original)
+        position = {vertex: index for index, vertex in enumerate(self.acyclic)}
+        for edge in self.edges:
+            if position[edge.source] > position[edge.target]:
+                edge.reversed = True
+                edge.upper, edge.lower = edge.target, edge.source
+        dag = [(edge.upper, edge.lower) for edge in self.edges]
+        _, lower = acyclic_layering.neighbors(self.node_count, dag)
+        if self.settings["reduce"] == "on":
+            closure = [reachable(vertex, lower) for vertex in range(self.node_count)]
+            for edge in self.edges:
+                if not edge.reversed:
+                    edge.transitive = any(following != edge.lower and edge.lower in closure[following]
+                                          for following in lower[edge.upper])
+        self.drawn = [edge for edge in self.edges if not edge.transitive]
+    def assign_layers(self):
+        dag = [(edge.upper, edge.lower) for edge in self.drawn]
+        result = acyclic_layering.assign_heights(self.node_count, dag, self.settings)
+        heights, self.coffman_labels, self.dummies_before, self.promotion_rounds, self.promotions = result
+        highest = max(heights)
+        levels = [highest - height for height in heights]
+        used = set(levels)
+        for edge in self.drawn:
+            used.update(range(levels[edge.upper] + 1, levels[edge.lower]))
+        number = {level: index for index, level in enumerate(sorted(used))}
+        self.vertex_layer = [number[level] for level in levels]
+        self.layer_count = len(used)
+    def insert_dummies(self):
+        for edge in self.drawn:
+            first = self.vertex_layer[edge.upper]
+            last = self.vertex_layer[edge.lower]
+            edge.span = last - first
+            edge.chain = [edge.upper]
+            for layer in range(first + 1, last):
+                vertex = len(self.vertex_layer)
+                self.vertex_layer.append(layer)
+                self.names.append(f"d{vertex - self.node_count + 1}")
+                self.widths.append(1)
+                edge.chain.append(vertex)
+            edge.chain.append(edge.lower)
+        self.vertex_count = len(self.vertex_layer)
+        self.upper = [[] for _ in range(self.vertex_count)]
+        self.lower = [[] for _ in range(self.vertex_count)]
+        self.gaps = [[] for _ in range(self.layer_count - 1)]
+        for edge in self.drawn:
+            for first, second in zip(edge.chain, edge.chain[1:]):
+                self.gaps[self.vertex_layer[first]].append((first, second, edge.number))
+                self.lower[first].append(second)
+                self.upper[second].append(first)
+    def make_initial_order(self):
+        self.initial_order = [[] for _ in range(self.layer_count)]
+        visited = set()
+        def visit(vertex):
+            if vertex in visited:
+                return
+            visited.add(vertex)
+            self.initial_order[self.vertex_layer[vertex]].append(vertex)
+            for following in self.lower[vertex]:
+                visit(following)
+        for vertex in range(self.node_count):
+            visit(vertex)
+        self.initial_crossings = crossing.total(self.gaps, self.initial_order)
+    def next_random(self):
+        self.random_state = 48271 * self.random_state % 2147483647
+        return self.random_state
+    def starting_order(self, run):
+        orders = copy_order(self.initial_order)
+        if run > 0:
+            for layer in orders:
+                for last in range(len(layer) - 1, 0, -1):
+                    chosen = self.next_random() % (last + 1)
+                    layer[last], layer[chosen] = layer[chosen], layer[last]
+        return orders
+    def reorder_layer(self, orders, layer, reference):
+        position = crossing.positions(orders)
+        current = orders[layer]
+        movable = [vertex for vertex in current if reference[vertex]]
+        keys = {}
+        for vertex in movable:
+            neighbors = sorted(position[neighbor] for neighbor in reference[vertex])
+            if self.settings["heuristic"] == "barycenter":
+                keys[vertex] = sum(neighbors), len(neighbors)
+            else:
+                size = len(neighbors)
+                keys[vertex] = neighbors[(size - 1) // 2] + neighbors[size // 2], 1
+        def compare(first, second):
+            a, b = keys[first]
+            c, d = keys[second]
+            difference = a * d - c * b
+            return (difference > 0) - (difference < 0)
+        reordered = iter(sorted(movable, key=cmp_to_key(compare)))
+        orders[layer] = [next(reordered) if reference[vertex] else vertex for vertex in current]
+    def adjacent_exchanges(self, orders):
+        swaps = 0
+        position = crossing.positions(orders)
+        while True:
+            changed = False
+            for layer in orders:
+                for index in range(len(layer) - 1):
+                    first, second = layer[index:index + 2]
+                    before = crossing.adjacent_cost(first, second, self.upper, self.lower, position)
+                    after = crossing.adjacent_cost(second, first, self.upper, self.lower, position)
+                    if before > after:
+                        layer[index], layer[index + 1] = second, first
+                        position[first], position[second] = index + 1, index
+                        swaps += 1
+                        changed = True
+            if not changed:
+                return swaps
+    def perform_sweep(self, orders, sweep):
+        before = crossing.positions(orders)
+        if sweep % 2:
+            layers = range(1, self.layer_count)
+            reference = self.upper
+        else:
+            layers = range(self.layer_count - 2, -1, -1)
+            reference = self.lower
+        for layer in layers:
+            self.reorder_layer(orders, layer, reference)
+        after = crossing.positions(orders)
+        moved = sum(before[vertex] != after[vertex] for vertex in range(self.vertex_count))
+        swaps = self.adjacent_exchanges(orders)
+        return moved, swaps, crossing.total(self.gaps, orders)
+    def run_sweeps(self, run):
+        orders = self.starting_order(run)
+        count = crossing.total(self.gaps, orders)
+        self.sweep_records.append((run, 0, "initial", 0, 0, count))
+        history = [order_snapshot(orders)]
+        best_order = history[0]
+        best_count = count
+        best_sweep = 0
+        sweep = 1
+        while True:
+            if count == 0 or sweep - 1 == self.settings["sweeps"]:
+                break
+            if sweep - 1 >= 2 and history[-1] == history[-3]:
+                break
+            moved, swaps, count = self.perform_sweep(orders, sweep)
+            direction = "down" if sweep % 2 else "up"
+            self.sweep_records.append((run, sweep, direction, moved, swaps, count))
+            snapshot = order_snapshot(orders)
+            history.append(snapshot)
+            if count < best_count:
+                best_count = count
+                best_order = snapshot
+                best_sweep = sweep
+            sweep += 1
+        if self.best_crossings is None or best_count < self.best_crossings:
+            self.best_crossings = best_count
+            self.best_run = run
+            self.best_sweep = best_sweep
+            self.orders = copy_order(best_order)
+    def sift(self):
+        round_number = 0
+        while True:
+            round_number += 1
+            moves = 0
+            for vertex in range(self.vertex_count):
+                layer = self.vertex_layer[vertex]
+                original = self.orders[layer].index(vertex)
+                remaining = [other for other in self.orders[layer] if other != vertex]
+                costs = []
+                for position in range(len(remaining) + 1):
+                    self.orders[layer] = remaining[:position] + [vertex] + remaining[position:]
+                    costs.append(crossing.local_cost(self.gaps, self.orders, layer))
+                minimum = min(costs)
+                chosen = original if costs[original] == minimum else costs.index(minimum)
+                self.orders[layer] = remaining[:chosen] + [vertex] + remaining[chosen:]
+                moves += chosen != original
+            count = crossing.total(self.gaps, self.orders)
+            self.sift_records.append((round_number, moves, count))
+            if moves == 0:
+                break
+    def reduce_crossings(self):
+        for run in range(self.settings["restarts"] + 1):
+            self.run_sweeps(run)
+        if self.settings["sifting"] == "on":
+            self.sift()
+    def finish_crossing_counts(self):
+        self.position = crossing.positions(self.orders)
+        self.crossings_by_gap = crossing.gap_counts(self.gaps, self.orders)
+        self.final_crossings = sum(self.crossings_by_gap)
+        self.brute_crossings = sum(crossing.brute_force(segments, self.position) for segments in self.gaps)
+        for segments in self.gaps:
+            for index, (p1, q1, first_edge) in enumerate(segments):
+                for p2, q2, second_edge in segments[index + 1:]:
+                    upper_difference = self.position[p1] - self.position[p2]
+                    lower_difference = self.position[q1] - self.position[q2]
+                    if upper_difference * lower_difference < 0:
+                        self.edges[first_edge].crossings += 1
+                        self.edges[second_edge].crossings += 1
+    def assign_tracks(self, segments):
+        bent = [(p, q, edge) for p, q, edge in segments if self.x[p] != self.x[q]]
+        upper_counts = Counter(p for p, q, edge in bent)
+        buses = {}
+        for segment in bent:
+            p, q, _ = segment
+            key = ("upper", p) if upper_counts[p] >= 2 else ("lower", q)
+            buses.setdefault(key, []).append(segment)
+        bus_details = []
+        for (kind, vertex), members in buses.items():
+            values = [self.x[endpoint] for p, q, edge in members for endpoint in (p, q)]
+            bus_details.append((min(values), max(values), 0 if kind == "upper" else 1,
+                                self.x[vertex], members))
+        bus_details.sort(key=lambda bus: bus[:4])
+        ends = []
+        tracks = {}
+        for low, high, kind, coordinate, members in bus_details:
+            chosen = next((index for index, end in enumerate(ends) if end + 1 < low), len(ends))
+            if chosen == len(ends):
+                ends.append(high)
+            else:
+                ends[chosen] = high
+            for p, q, _ in members:
+                tracks[p, q] = chosen + 1
+        total = len(ends)
+        gap = max(self.settings["layer_gap"], total + 2)
+        offsets = {segment: track + (gap - 2 - total) // 2 for segment, track in tracks.items()}
+        return total, gap, offsets
+    def route_geometry(self):
+        self.track_counts = []
+        self.gap_widths = []
+        self.segment_offsets = {}
+        for segments in self.gaps:
+            tracks, gap, offsets = self.assign_tracks(segments)
+            self.track_counts.append(tracks)
+            self.gap_widths.append(gap)
+            self.segment_offsets.update(offsets)
+        vertical = self.settings["direction"] in ("TB", "BT")
+        self.thickness = [1 if vertical else max(self.widths[v] for v in layer)
+                          for layer in self.orders]
+        self.band_starts = [0]
+        for layer in range(self.layer_count - 1):
+            self.band_starts.append(self.band_starts[-1] + self.thickness[layer] + self.gap_widths[layer])
+        self.main_length = self.band_starts[-1] + self.thickness[-1]
+        self.secondary_length = max(value + extent for value, extent in zip(self.x, self.coordinates.right)) + 1
+        self.canvas = canvas.Canvas(self.settings["direction"], self.main_length, self.secondary_length)
+        for edge in self.drawn:
+            size = 1 if vertical else self.widths[edge.upper]
+            upper_band = self.band_starts[self.vertex_layer[edge.upper]]
+            lower_band = self.band_starts[self.vertex_layer[edge.lower]]
+            edge.upper_endpoint = upper_band + size, self.x[edge.upper]
+            edge.lower_endpoint = lower_band - 1, self.x[edge.lower]
+    def draw_lines_and_arrows(self):
+        vertical = self.settings["direction"] in ("TB", "BT")
+        for vertex in range(self.vertex_count):
+            layer = self.vertex_layer[vertex]
+            beginning = self.band_starts[layer]
+            end = beginning + self.thickness[layer] - 1
+            if vertex >= self.node_count:
+                self.canvas.main_line(beginning, end, self.x[vertex])
+            elif not vertical and self.lower[vertex]:
+                self.canvas.main_line(beginning + self.widths[vertex], end, self.x[vertex])
+        for layer, segments in enumerate(self.gaps):
+            beginning = self.band_starts[layer] + self.thickness[layer]
+            gap = self.gap_widths[layer]
+            for first, second, _ in segments:
+                offset = self.segment_offsets.get((first, second))
+                self.canvas.segment(beginning, gap, self.x[first], self.x[second], offset)
+        for edge in self.drawn:
+            endpoint = edge.upper_endpoint if edge.reversed else edge.lower_endpoint
+            self.canvas.arrow(endpoint, edge.reversed)
+    def build_routes(self):
+        for edge in self.drawn:
+            points = [edge.upper_endpoint]
+            bent = 0
+            for first, second in zip(edge.chain, edge.chain[1:]):
+                if self.x[first] == self.x[second]:
+                    continue
+                layer = self.vertex_layer[first]
+                main = self.band_starts[layer] + self.thickness[layer] + self.segment_offsets[first, second]
+                points.append((main, self.x[first]))
+                points.append((main, self.x[second]))
+                bent += 1
+            points.append(edge.lower_endpoint)
+            edge.route = [self.canvas.cell(*point) for point in points]
+            if edge.reversed:
+                edge.route.reverse()
+            edge.bends = 2 * bent
+            edge.length = 1 + sum(abs(row2 - row1) + abs(column2 - column1)
+                                  for (row1, column1), (row2, column2) in zip(edge.route, edge.route[1:]))
+    def find_path(self):
+        if self.graph.path is None:
+            return
+    def draw_highlights_and_boxes(self):
+        on_path = set(self.path or ())
+        for vertex in range(self.node_count):
+            band = self.band_starts[self.vertex_layer[vertex]]
+            self.canvas.box(self.labels[vertex], band, self.x[vertex],
+                            self.coordinates.left[vertex], vertex in on_path)
+    def edge_name(self, edge):
+        return f"{self.ids[edge.source]}->{self.ids[edge.target]}"
+    def display_sequence(self, vertices):
+        return " ".join(self.names[vertex] for vertex in vertices)
+    def band_extent(self, layer):
+        first = self.band_starts[layer]
+        last = first + self.thickness[layer] - 1
+        if self.settings["direction"] in ("BT", "RL"):
+            return self.main_length - 1 - last, self.main_length - 1 - first
+        return first, last
+    def layer_line(self, layer):
+        vertices = self.orders[layer]
+        first, last = self.band_extent(layer)
+        low = min(self.x[v] - self.coordinates.left[v] for v in vertices)
+        high = max(self.x[v] + self.coordinates.right[v] for v in vertices)
+        positions = " ".join(f"{self.names[v]}@{self.x[v]}" for v in vertices)
+        return f"layer {layer} band {first} {last} extent {low} {high} : {positions}"
+    def vertex_line(self, vertex):
+        aligned = " ".join(f"{variant} {self.coordinates.aligned[variant][vertex]}"
+                           for variant in coordinates.VARIANTS)
+        return (f"vertex {self.names[vertex]} layer {self.vertex_layer[vertex]} pos {self.position[vertex]} "
+                f"{aligned} x {self.x[vertex]}")
+    def edge_line(self, edge):
+        beginning = f"edge {self.ids[edge.source]} {self.ids[edge.target]}"
+        if edge.transitive:
+            return beginning + " transitive"
+        if edge.reversed:
+            beginning += " reversed"
+        chain = list(reversed(edge.chain)) if edge.reversed else edge.chain
+        path = " ".join(str(self.x[vertex]) for vertex in chain)
+        route = " ".join(f"{row},{column}" for row, column in edge.route)
+        return (f"{beginning} span {edge.span} crossings {edge.crossings} bends {edge.bends} "
+                f"path {path} route {route}")
+    def layout_lines(self):
+        lines = [f"graph {self.name}"]
+        settings = " ".join(f"{name}={self.settings[name]}" for name in graph_io.DEFAULTS)
+        lines.append("settings " + settings)
+        lines.append("acyclic " + self.display_sequence(self.acyclic))
+        for run, sweep, direction, moved, swaps, count in self.sweep_records:
+            line = f"sweep {run} {sweep} {direction}"
+            if sweep:
+                line += f" moved {moved} swaps {swaps}"
+            lines.append(line + f" crossings {count}")
+        lines.append(f"best run {self.best_run} sweep {self.best_sweep} crossings {self.best_crossings}")
+        for round_number, moves, count in self.sift_records:
+            lines.append(f"sift {round_number} moves {moves} crossings {count}")
+        for layer in range(self.layer_count):
+            lines.append(self.layer_line(layer))
+        for gap, segments in enumerate(self.gaps):
+            lines.append(f"between {gap} {gap + 1} segments {len(segments)} "
+                         f"crossings {self.crossings_by_gap[gap]} tracks {self.track_counts[gap]} "
+                         f"gap {self.gap_widths[gap]}")
+        variants = " ".join(f"{variant}={self.coordinates.blocks[variant]}/{self.coordinates.widths[variant]}"
+                            for variant in coordinates.VARIANTS)
+        lines.append(f"bk conflicts {len(self.coordinates.conflicts)} {variants} smallest {self.coordinates.smallest}")
+        for layer in self.orders:
+            for vertex in layer:
+                lines.append(self.vertex_line(vertex))
+        lines.extend(self.edge_line(edge) for edge in self.edges)
+        lines.append("end")
+        return lines
+    def statistics_lines(self):
+        lines = [f"graph {self.name}"]
+        maximum_nodes = max(sum(vertex < self.node_count for vertex in layer) for layer in self.orders)
+        maximum_vertices = max(map(len, self.orders))
+        lines.append(f"layers {self.layer_count} max_nodes {maximum_nodes} max_vertices {maximum_vertices}")
+        if self.settings["promotion"] == "on":
+            lines.append(f"promotion rounds {self.promotion_rounds} accepted {len(self.promotions)} "
+                         f"dummies_before {self.dummies_before}")
+        else:
+            lines.append("promotion off")
+        lines.append(f"crossings initial {self.initial_crossings} swept {self.best_crossings} "
+                     f"best_run {self.best_run} best_sweep {self.best_sweep} "
+                     f"final {self.final_crossings} brute {self.brute_crossings}")
+        lines.append(f"canvas width {self.canvas.columns} height {self.canvas.rows} "
+                     f"crossing_cells {self.canvas.crossing_cells()}")
+        lines.append("end")
+        return lines
+    def csv_lines(self):
+        return [f"{self.name},{run},{sweep},{count}"
+                for run, sweep, direction, moved, swaps, count in self.sweep_records]
+    def drawing_lines(self):
+        return [f"graph {self.name} {self.canvas.columns}x{self.canvas.rows}"] + self.canvas.drawing_lines()
+def main():
+    defaults = graph_io.read_defaults()
+    graphs = graph_io.read_graphs(defaults)
+    layouts = []
+    statistics = []
+    crossings = ["graph,run,sweep,crossings"]
+    drawings = []
+    for graph in graphs:
+        if graph.error is not None:
+            continue
+        layout = GraphLayout(graph)
+        layout.process()
+        layouts.extend(layout.layout_lines())
+        statistics.extend(layout.statistics_lines())
+        crossings.extend(layout.csv_lines())
+        drawings.append(layout.drawing_lines())
+    output = Path("output")
+    output.mkdir(exist_ok=True)
+    for filename, lines in (("layout.txt", layouts), ("stats.txt", statistics), ("crossings.csv", crossings)):
+        (output / filename).write_text("".join(line + "\n" for line in lines), encoding="ascii", newline="\n")
+    drawing_text = "\n\n".join("\n".join(block) for block in drawings)
+    (output / "drawings.txt").write_text(drawing_text + ("\n" if drawings else ""), encoding="ascii", newline="\n")
+if __name__ == "__main__":
+    main()
+def neighbors(count, edges):
+    upper = [[] for _ in range(count)]
+    lower = [[] for _ in range(count)]
+    for first, second in edges:
+        lower[first].append(second)
+        upper[second].append(first)
+    return upper, lower
+def acyclic_order(count, edges):
+    upper, lower = neighbors(count, edges)
+    remaining = set(range(count))
+    head, tail = [], []
+    while remaining:
+        indegree = {v: sum(u in remaining for u in upper[v]) for v in remaining}
+        outdegree = {v: sum(w in remaining for w in lower[v]) for v in remaining}
+        sinks = [v for v in remaining if outdegree[v] == 0]
+        sources = [v for v in remaining if indegree[v] == 0]
+        if sinks:
+            chosen = min(sinks)
+            tail.insert(0, chosen)
+        elif sources:
+            chosen = min(sources)
+            head.append(chosen)
+        else:
+            chosen = min(remaining, key=lambda v: (indegree[v] - outdegree[v], v))
+            head.append(chosen)
+        remaining.remove(chosen)
+    return head + tail
+def initial_heights(count, upper, lower, method, width):
+    heights = [None] * count
+    labels = None
+    if method == "coffman":
+    else:
+        for _ in range(count):
+            chosen = next(v for v in range(count)
+                          if heights[v] is None and all(heights[w] is not None for w in lower[v]))
+            heights[chosen] = max((heights[w] + 1 for w in lower[chosen]), default=0)
+    return heights, labels
+def assign_heights(count, edges, settings):
+    upper, lower = neighbors(count, edges)
+    heights, labels = initial_heights(count, upper, lower, settings["layering"], settings["width"])
+    dummies_before = sum(heights[a] - heights[b] - 1 for a, b in edges)
+    record = []
+    rounds = 0
+    if settings["promotion"] == "on":
+    return heights, labels, dummies_before, rounds, record
+from collections import namedtuple
+import crossing
+VARIANTS = ("ul", "ur", "dl", "dr")
+Result = namedtuple("Result", "x left right aligned blocks widths smallest conflicts")
+def assign(orders, upper, lower, widths, node_count, settings):
+    count = len(widths)
+    if settings["direction"] in ("TB", "BT"):
+        left = [(width - 1) // 2 for width in widths]
+        right = [width - 1 - extent for width, extent in zip(widths, left)]
+    else:
+        left = [0] * count
+        right = [0] * count
+    position = crossing.positions(orders)
+    conflicts = mark_conflicts(orders, upper, node_count, position)
+    layouts, blocks, bounds, spans = {}, {}, {}, {}
+    for variant in VARIANTS:
+        root, scan = alignment(variant, orders, upper, lower, conflicts, count)
+        layout, block_count = compact(root, scan, variant, left, right, node_count, settings)
+        low = min(value - extent for value, extent in zip(layout, left))
+        high = max(value + extent for value, extent in zip(layout, right))
+        layouts[variant] = layout
+        blocks[variant] = block_count
+        bounds[variant] = low, high
+        spans[variant] = high - low + 1
+    smallest = min(VARIANTS, key=spans.get)
+    aligned = {}
+    for variant in VARIANTS:
+        side = 0 if variant[1] == "l" else 1
+        shift = bounds[smallest][side] - bounds[variant][side]
+        aligned[variant] = [value + shift for value in layouts[variant]]
+    x = []
+    for vertex in range(count):
+        values = sorted(aligned[variant][vertex] for variant in VARIANTS)
+        x.append((values[1] + values[2]) // 2)
+    low = min(value - extent for value, extent in zip(x, left))
+    x = [value - low for value in x]
+    return Result(x, left, right, aligned, blocks, spans, smallest, conflicts)
+def positions(orders):
+    return {vertex: position for layer in orders for position, vertex in enumerate(layer)}
+def accumulator(segments, position, lower_size):
+    capacity = 1
+    while capacity < lower_size:
+        capacity *= 2
+    tree = [0] * (2 * capacity - 1)
+    count = 0
+    pairs = sorted((position[p], position[q]) for p, q, edge in segments)
+    for _, lower in pairs:
+        index = lower + capacity - 1
+        tree[index] += 1
+        while index > 0:
+            if index % 2 == 1:
+                count += tree[index + 1]
+            index = (index - 1) // 2
+            tree[index] += 1
+    return count
+def brute_force(segments, position):
+    count = 0
+    for index, (p1, q1, _) in enumerate(segments):
+        for p2, q2, _ in segments[index + 1:]:
+            if (position[p1] - position[p2]) * (position[q1] - position[q2]) < 0:
+                count += 1
+    return count
+def gap_counts(gaps, orders):
+    position = positions(orders)
+    return [accumulator(segments, position, len(orders[index + 1]))
+            for index, segments in enumerate(gaps)]
+def total(gaps, orders):
+    return sum(gap_counts(gaps, orders))
+def local_cost(gaps, orders, layer):
+    position = positions(orders)
+    count = 0
+    for gap in (layer - 1, layer):
+        if 0 <= gap < len(gaps):
+            count += accumulator(gaps[gap], position, len(orders[gap + 1]))
+    return count
+def adjacent_cost(first, second, upper, lower, position):
+    count = 0
+    for neighbors in (upper, lower):
+        for a in neighbors[first]:
+            for b in neighbors[second]:
+                count += position[a] > position[b]
+    return count
+class Canvas:
+    def __init__(self, direction, main_length, secondary_length):
+        self.direction = direction
+        self.main_length = main_length
+        self.vertical = direction in ("TB", "BT")
+        self.rows = main_length if self.vertical else secondary_length
+        self.columns = secondary_length if self.vertical else main_length
+        self.line_bits = {}
+        self.arrows = {}
+        self.boxes = {}
+        self.highlighted = set()
+        self.main_character = "|" if self.vertical else "-"
+        self.secondary_character = "-" if self.vertical else "|"
+    def cell(self, main, secondary):
+        if self.direction in ("BT", "RL"):
+            main = self.main_length - 1 - main
+        return (main, secondary) if self.vertical else (secondary, main)
+    def add_line(self, main, secondary, character):
+        cell = self.cell(main, secondary)
+        bit = {"|": 1, "-": 2, "+": 4}[character]
+        self.line_bits[cell] = self.line_bits.get(cell, 0) | bit
+    def main_line(self, start, end, secondary):
+        for main in range(start, end + 1):
+            self.add_line(main, secondary, self.main_character)
+    def segment(self, start, gap, first, second, offset):
+        if first == second:
+            self.main_line(start, start + gap - 1, first)
+            return
+        self.main_line(start, start + offset - 1, first)
+        self.add_line(start + offset, first, "+")
+        self.add_line(start + offset, second, "+")
+        for secondary in range(min(first, second) + 1, max(first, second)):
+            self.add_line(start + offset, secondary, self.secondary_character)
+        self.main_line(start + offset + 1, start + gap - 1, second)
+    def arrow(self, point, reversed_edge):
+        forward = {"TB": "v", "BT": "^", "LR": ">", "RL": "<"}
+        backward = {"TB": "^", "BT": "v", "LR": "<", "RL": ">"}
+        self.arrows[self.cell(*point)] = (backward if reversed_edge else forward)[self.direction]
+    def box(self, label, band_start, coordinate, left, on_path):
+        text = "{" + label + "}" if on_path else "[" + label + "]"
+        if self.vertical:
+            row, column = self.cell(band_start, coordinate - left)
+        elif self.direction == "LR":
+            row, column = coordinate, band_start
+        else:
+            row, column = coordinate, self.main_length - band_start - len(text)
+        for offset, character in enumerate(text):
+            self.boxes[row, column + offset] = character
+    def character(self, row, column):
+        cell = row, column
+        if cell in self.boxes:
+            return self.boxes[cell]
+        if cell in self.arrows:
+            return self.arrows[cell]
+        if cell in self.highlighted:
+            return "#"
+        return {0: " ", 1: "|", 2: "-", 4: "+"}.get(self.line_bits.get(cell, 0), "+")
+    def crossing_cells(self):
+        return sum(bits & 3 == 3 for bits in self.line_bits.values())
+    def drawing_lines(self):
+        lines = ["    " + "".join(str(column % 10) for column in range(self.columns))]
+        for row in range(self.rows):
+            characters = "".join(self.character(row, column) for column in range(self.columns))
+            lines.append((f"{row:3d} " + characters).rstrip())
+        return lines

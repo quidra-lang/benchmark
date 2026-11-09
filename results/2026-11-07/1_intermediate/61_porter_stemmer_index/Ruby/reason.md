@@ -1,0 +1,23 @@
+# Task B selection — Ruby
+
+## Answer requirements shared across languages
+
+1. Load an initial stopword set and a document with multiple body lines, retaining maximal ASCII-letter tokens in original order, one-based document-wide positions and one-based line numbers.
+2. Explain lowercase query/document forms, stemming and index inclusion without discarding original tokens; an active stopword is not indexed but still occupies its original position.
+3. Trace PHRASE argument validation, normalization into stems and one-token stopword wildcards, matching consecutive original tokens across a line boundary, numeric document/reference ordering and output of starting references.
+4. Change the stopword set and query again; prove the original token positions are unchanged and explain the distinct all-stopword query error and printed STOP/UNSTOP counts.
+5. Use the same concrete short-word scenario in every language, allowing the no-suffix stemming base case to supply sufficient evidence without unrelated Porter suffix rules.
+
+## Selected source locations
+
+- `main.rb`: 2, 109, 110, 111, 117, 118, 121, 123, 127, 128, 129, 130, 142, 143, 144, 145, 146, 147, 177, 178, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 205, 287, 293, 305, 306, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 338, 339, 340, 341, 342, 343, 344, 345, 346, 362, 363, 364, 365, 366, 367, 368, 369, 376, 377, 378, 379, 380, 381, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 626, 627, 628, 629, 630, 631, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644
+
+## Evidence and language semantics
+
+Trace STOPWORDS a; DOC 1; body lines "Ox a," and "ox"; ENDDOC; PHRASE A ox; UNSTOP a; PHRASE A ox; STOP ox; PHRASE ox ox; END. Original tokens are (ox,line1,pos1), (a,line1,pos2), (ox,line2,pos3). The initial index contains ox at positions1,3. The first PHRASE normalizes to "? ox", matches across the line boundary starting at 1:1:2, and prints PHRASE "? ox" matches=1 1:1:2. UNSTOP a prints indexed=1 and makes the next phrase "a ox", again matches=1 1:1:2. STOP ox prints unindexed=2; the final query raises ERROR STOPWORDS ONLY before matching. Every chosen form has at most two letters, so the selected early-return/no-step stemming branch proves the actual stems without needing suffix rules. Ruby Data token records are immutable; adding body lines appends records with document-wide positions and current line numbers. Set changes only affect indexed? and the newly built occurrence map. The window zip/all? test consumes one original token for each target, including wildcard; the complete document token array permits the boundary match. Hash values sorted by document number and ascending starts determine output order; Set and String operations require no additional implementation.
+
+## Minimization and alternatives
+
+The common scenario is fixed before language selection. Keeping all raw-token storage and the active-stopword filter, rather than selecting unrelated INDEX/SEARCH command implementations, is the smaller evidence set for why positions survive. The phrase loop and custom matching/reference/format helpers are necessary: names alone cannot prove wildcard width, cross-line matching or start-reference semantics. Only the short-word stemming branch is relevant; long-word suffix rules, KWIC, ranking, similarity, deletion and append are excluded. STOP and UNSTOP are both retained to show a changed subsequent query and the separate all-stopword error. Alternative long-word examples would require a larger Porter rule closure; an INDEX command trace would duplicate the already visible index storage/filter. Individual selected statements were reviewed for the input-to-output chain, and the final excerpt was independently checked against the common trace. The short-word path retains the boundary after the long-word-only condition, so its unchanged-word return is visibly reachable when the guard is false. Necessary selected loop, match and error-handler endings separate repeated token/index contributions from later query results and input processing. Python and Quidra use the unchanged indentation for these boundaries. Outer declaration framing remains unnecessary for this source-evidence excerpt.
+
+The excerpt contains 1758 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

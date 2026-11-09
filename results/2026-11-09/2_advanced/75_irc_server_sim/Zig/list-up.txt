@@ -1,0 +1,252 @@
+    fn readInputs(self: *Server, io: std.Io) !void {
+        const lines = try p.readLines(io, "input/server.txt");
+        var motd: std.ArrayList([]const u8) = .empty;
+        for (lines[13..]) |line| p.append([]const u8, &motd, value(line));
+        self.settings = .{ .name = value(lines[0]), .version = value(lines[1]), .created = value(lines[2]),
+             .description = value(lines[3]), .nicklen = p.u(p.number(value(lines[4]))), .channellen = p.u(p.number(value(lines[5]))),
+             .topiclen = p.u(p.number(value(lines[6]))), .maxchannels = p.u(p.number(value(lines[7]))),
+             .bucket = p.number(value(lines[8])), .refill = p.number(value(lines[9])), .queue = p.u(p.number(value(lines[10]))),
+             .pingfreq = p.number(value(lines[11])), .timeout = p.number(value(lines[12])),
+             .motd = motd.items };
+        for (try p.readLines(io, "input/traffic.txt")) |line| {
+            const first = std.mem.indexOfScalar(u8, line, ' ').?;
+            const second = first + 1 + std.mem.indexOfScalar(u8, line[first + 1 ..], ' ').?;
+            const body = line[second + 1 ..];
+            var kind: TrafficKind = .message;
+            if (p.eq(body, "DISCONNECT")) kind = .disconnect else if (std.mem.startsWith(u8, body, "CONNECT ")) {
+                const host = body[8..];
+                var valid = host.len >= 1 and host.len <= 63;
+                for (host) |c| if (!p.letter(c) and !(c >= '0' and c <= '9') and c != '.' and c != '-') {
+                    valid = false;
+                };
+                if (valid) kind = .connect;
+            }
+            self.line_counts[@intFromEnum(kind)] += 1;
+            p.append(Traffic, &self.traffic, .{ .time = p.number(line[0..first]), .identifier = line[first + 1 .. second],
+                 .body = body, .kind = kind });
+        }
+        self.end = self.traffic.items[self.traffic.items.len - 1].time;
+    }
+    fn send(self: *Server, client: *Client, text: []const u8) void {
+        self.sent.add("{d} {s} {s}", .{ self.time, client.identifier, text });
+        client.sent += 1;
+    }
+    fn disconnect(self: *Server, client: *Client, reason: []const u8, kind: DisconnectKind) void {
+        if (kind != .closed) {
+            self.send(client, p.fmt("ERROR :Closing Link: {s}[{s}] ({s})", .{ client.addressee(),
+                 client.hostname, reason }));
+            self.statistics.errors += 1;
+        }
+        if (client.registered) self.sendPeers(client, p.fmt(":{s} QUIT :{s}", .{ client.prefix(), reason }));
+        while (client.channels.items.len > 0) self.removeMember(client, self.channels.items[client.channels.items[0]]);
+        self.statistics.discarded += p.n(client.queue.items.len);
+        client.queue.clearRetainingCapacity();
+        client.active = false;
+        p.append(Gone, &self.gone, .{ .time = self.time, .identifier = client.identifier, .addressee = client.addressee(),
+             .reason = reason });
+        self.disconnections[@intFromEnum(kind)] += 1;
+    }
+    fn process(self: *Server, client: *Client, raw: []const u8) void {
+        self.statistics.processed += 1;
+        const parsed = p.parse(raw);
+        const command = parsed.command;
+        const params = parsed.params();
+        if (command.len == 0) {
+            self.statistics.empty += 1;
+            return;
+        }
+        var counted = false;
+        for (self.commands.items) |*entry| if (p.eq(entry.command, command)) {
+            entry.count += 1;
+            counted = true;
+            break;
+        };
+        if (!counted) p.append(CommandCount, &self.commands, .{ .command = command });
+        if (!client.registered and !p.eq(command, "NICK") and !p.eq(command, "USER") and !p.eq(command,
+             "PING") and !p.eq(command, "PONG") and !p.eq(command, "QUIT")) {
+            self.err(client, 451, "");
+            return;
+        }
+        if (p.eq(command, "NICK")) self.nick(client, params) else if (p.eq(command, "USER")) self.user(client,
+             params) else if (p.eq(command, "PING")) {
+            if (params.len == 0 or params[0].len == 0) self.err(client, 409, "") else self.send(client,
+                 p.fmt(":{s} PONG {s} :{s}", .{ self.settings.name, self.settings.name, params[0] }));
+        } else if (p.eq(command, "PONG")) return else if (p.eq(command, "QUIT")) self.disconnect(client,
+             if (params.len == 0 or params[0].len == 0) "Client Quit" else p.fmt("Quit: {s}",
+             .{params[0]}), .quit) else if (p.eq(command, "JOIN")) self.joinChannels(client,
+             params) else if (p.eq(command, "PART")) self.part(client, params) else if (p.eq(command,
+             "PRIVMSG") or p.eq(command, "NOTICE")) self.message(client, params, command) else if (p.eq(command,
+             "TOPIC")) self.topic(client, params) else if (p.eq(command, "NAMES")) self.names(client,
+             params) else if (p.eq(command, "WHOIS")) self.whois(client, params) else if (p.eq(command,
+             "AWAY")) {
+            client.away = if (params.len == 0) "" else params[0];
+            self.numeric(client, if (client.away.len == 0) 305 else 306, if (client.away.len == 0) ":You are no longer marked as being away" else ":You have been marked as being away");
+        } else if (p.eq(command, "INVITE")) self.invite(client, params) else if (p.eq(command,
+             "KICK")) self.kick(client, params) else if (p.eq(command, "MODE")) {
+            if (self.require(client, params, 1, "MODE")) {
+                if (params[0].len > 0 and params[0][0] == '#') self.channelMode(client, params) else self.userMode(client,
+                     params);
+            }
+        } else self.err(client, 421, command);
+    }
+    fn arrival(self: *Server, record: Traffic) void {
+        if (record.kind == .connect) {
+            p.append(*Client, &self.clients, p.create(Client, .{ .identifier = record.identifier,
+                 .hostname = record.body[8..], .connection_time = self.time, .last_received = self.time,
+                 .tokens = self.settings.bucket }));
+            var count: i64 = 0;
+            for (self.clients.items) |client| if (client.active) {
+                count += 1;
+            };
+            if (count > self.peak_connections.count) self.peak_connections = .{ .count = count, .time = self.time };
+            return;
+        }
+        const found = self.findConnection(record.identifier);
+        if (record.kind == .disconnect) {
+            if (found) |client| self.disconnect(client, "Remote host closed the connection", .closed);
+            return;
+        }
+        const client = found orelse {
+            self.statistics.dropped += 1;
+            return;
+        };
+        client.received += 1;
+        client.last_received = self.time;
+        client.ping_sent = null;
+        if (client.queue.items.len == 0 and client.tokens >= 1) {
+            client.useToken(self.time, self.settings.bucket, self.settings.refill);
+            self.process(client, record.body);
+        } else if (client.queue.items.len >= self.settings.queue) {
+            self.statistics.discarded += 1;
+            self.disconnect(client, "Excess Flood", .flood);
+        } else {
+            p.append([]const u8, &client.queue, record.body);
+            self.statistics.queued += 1;
+        }
+    }
+    fn clientReport(self: *Server) p.Lines {
+        var out: p.Lines = .{};
+        var count: usize = 0;
+        var registered: usize = 0;
+        var invisible: usize = 0;
+        var away: usize = 0;
+        for (self.clients.items) |client| if (client.active) {
+            count += 1;
+            registered += @intFromBool(client.registered);
+            invisible += @intFromBool(client.invisible);
+            away += @intFromBool(client.away.len > 0);
+            const joined = self.joinedChannels(client, ",");
+            var invites: std.ArrayList([]const u8) = .empty;
+            for (client.invites.items) |index| p.append([]const u8, &invites, self.channels.items[index].name);
+            out.add("CLIENT {s} {s} {s} {s} {s} connected {d} signon {s} received {d} sent {d} tokens {d} queue {d} channels {s} invites {s}",
+                 .{ client.identifier, client.addressee(), client.username orelse "*", client.hostname,
+                 client.mode(), client.connection_time, if (client.registered) p.fmt("{d}",
+                 .{client.registration_time.?}) else "-", client.received, client.sent, client.tokens,
+                 client.queue.items.len, if (joined.len > 0) joined else "none", if (invites.items.len > 0) p.join(invites.items,
+                 ",") else "none" });
+            if (client.away.len > 0) out.add("AWAY {s} {s}", .{ client.identifier, client.away });
+        };
+        out.add("TOTAL clients {d} registered {d} invisible {d} away {d}", .{ count, registered, invisible, away });
+        return out;
+    }
+    fn statisticsReport(self: *Server) p.Lines {
+        var out: p.Lines = .{};
+        var pending: usize = 0;
+        var numerics: i64 = 0;
+        for (self.clients.items) |client| if (client.active) {
+            pending += client.queue.items.len;
+        };
+        for (self.numeric_counts) |count| numerics += count;
+        out.add("END {d}", .{self.end});
+        out.add("LINES total {d} connect {d} disconnect {d} messages {d}", .{ self.traffic.items.len,
+             self.line_counts[0], self.line_counts[1], self.line_counts[2] });
+        const s = self.statistics;
+        out.add("MESSAGES dropped {d} queued {d} processed {d} discarded {d} pending {d} empty {d}",
+             .{ s.dropped, s.queued, s.processed, s.discarded, pending, s.empty });
+        out.add("SENT lines {d} numerics {d} pings {d} errors {d}", .{ self.sent.data.items.len,
+             numerics, s.pings, s.errors });
+        std.mem.sort(CommandCount, self.commands.items, {}, struct {
+            fn less(_: void, a: CommandCount, b: CommandCount) bool {
+                return std.mem.lessThan(u8, a.command, b.command);
+            }
+        }.less);
+        for (self.commands.items) |entry| out.add("COMMAND {s} {d}", .{ entry.command, entry.count });
+        for (self.numeric_counts, 0..) |count, code| if (count > 0) out.add("NUMERIC {s} {d}",
+             .{ number3(code), count });
+        out.add("PEAK connections {d} at {d}", .{ self.peak_connections.count, self.peak_connections.time });
+        out.add("PEAK registered {d} at {d}", .{ self.peak_registered.count, self.peak_registered.time });
+        out.add("DISCONNECTS quit {d} closed {d} flood {d} timeout {d}", .{ self.disconnections[0],
+             self.disconnections[1], self.disconnections[2], self.disconnections[3] });
+        for (self.gone.items) |record| out.add("GONE {d} {s} {s} {s}", .{ record.time, record.identifier,
+             record.addressee, record.reason });
+        return out;
+    }
+    fn run(self: *Server, io: std.Io) !void {
+        try self.readInputs(io);
+        var position: usize = 0;
+        while (self.time <= self.end) : (self.time += 1) {
+            for (self.clients.items) |client| if (client.active) {
+                client.refill(self.time, self.settings.bucket, self.settings.refill);
+                while (client.active and client.queue.items.len > 0 and client.tokens >= 1) {
+                    client.useToken(self.time, self.settings.bucket, self.settings.refill);
+                    const raw = client.queue.orderedRemove(0);
+                    self.process(client, raw);
+                }
+            };
+            while (position < self.traffic.items.len and self.traffic.items[position].time == self.time) : (position += 1) self.arrival(self.traffic.items[position]);
+            for (self.clients.items) |client| if (client.active) {
+                if (client.ping_sent) |sent_time| {
+                    if (self.time - sent_time >= self.settings.timeout) self.disconnect(client,
+                         p.fmt("Ping timeout: {d} seconds", .{self.time - client.last_received}),
+                         .timeout);
+                } else if (self.time - client.last_received >= self.settings.pingfreq) {
+                    self.send(client, p.fmt("PING :{s}", .{self.settings.name}));
+                    self.statistics.pings += 1;
+                    client.ping_sent = self.time;
+                }
+            };
+        }
+        try std.Io.Dir.cwd().createDirPath(io, "output");
+        try write(io, "sent.txt", self.sent);
+        try write(io, "channels.txt", self.channelReport());
+        try write(io, "clients.txt", self.clientReport());
+        try write(io, "stats.txt", self.statisticsReport());
+    }
+    pub fn useToken(self: *Client, time: i64, capacity: i64, interval: i64) void {
+        if (self.tokens == capacity) self.refill_time = time + interval;
+        self.tokens -= 1;
+    }
+    pub fn refill(self: *Client, time: i64, capacity: i64, interval: i64) void {
+        if (self.refill_time == time) {
+            self.tokens += 1;
+            self.refill_time = if (self.tokens < capacity) time + interval else null;
+        }
+    }
+pub fn parse(raw: []const u8) Parsed {
+    var out: Parsed = .{};
+    var pos: usize = 0;
+    if (raw.len > 0 and raw[0] == ':') pos = std.mem.indexOfScalar(u8, raw, ' ') orelse return out;
+    while (pos < raw.len and raw[pos] == ' ') : (pos += 1) {}
+    var start = pos;
+    while (pos < raw.len and raw[pos] != ' ') : (pos += 1) {}
+    const command = dupe(u8, raw[start..pos]);
+    for (command) |*c| if (c.* >= 'a' and c.* <= 'z') {
+        c.* = c.* - 'a' + 'A';
+    };
+    out.command = command;
+    if (command.len == 0) return out;
+    while (pos < raw.len) {
+        while (pos < raw.len and raw[pos] == ' ') : (pos += 1) {}
+        if (pos == raw.len) break;
+        if (raw[pos] == ':' or out.count == 14) {
+            out.parameters[out.count] = raw[pos + @intFromBool(raw[pos] == ':') ..];
+            out.count += 1;
+            break;
+        }
+        start = pos;
+        while (pos < raw.len and raw[pos] != ' ') : (pos += 1) {}
+        out.parameters[out.count] = raw[start..pos];
+        out.count += 1;
+    }
+    return out;
+}

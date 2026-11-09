@@ -1,0 +1,177 @@
+const A = std.heap.page_allocator;
+const S = []const u8;
+fn eq(a: S, b: S) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn fmt(comptime f: S, a: anytype) !S {
+    return std.fmt.allocPrint(A, f, a);
+}
+
+fn fail(comptime f: S, a: anytype) anyerror {
+    why = fmt(f, a) catch unreachable;
+    return error.Invalid;
+}
+fn put(s: S) !void {
+    try output.appendSlice(A, s);
+}
+
+fn line(s: S) !void {
+    try put(s);
+    try put("\n");
+}
+const Type = enum { nil, int, text };
+const Value = struct { t: Type = .nil, n: i64 = 0, s: S = "" };
+fn compatible(a: Type, b: Type) bool {
+    return a == b or a == .nil or b == .nil;
+}
+
+fn cmp(a: Value, b: Value) i32 {
+    if (a.t == .nil) return if (b.t == .nil) 0 else -1;
+    if (b.t == .nil) return 1;
+    if (a.t == .int) return if (a.n < b.n) -1 else if (a.n > b.n) 1 else 0;
+    const o = std.mem.order(u8, a.s, b.s);
+    return if (o == .lt) -1 else if (o == .gt) 1 else 0;
+}
+
+fn truth(v: Value) bool {
+    return v.t != .nil and v.n != 0;
+}
+
+fn text(v: Value) !S {
+    return switch (v.t) {
+        .nil => "NULL",
+        .int => fmt("{d}", .{v.n}),
+        .text => v.s,
+    };
+}
+const Column = struct { name: S, t: Type, notnull: bool = false, pk: usize = 0 };
+const Table = struct { name: S, cols: []Column, rows: []const []Value = &.{} };
+var tables: std.ArrayList(Table) = .empty;
+
+fn findTable(s: S) ?usize {
+    for (tables.items, 0..) |t, i| if (eq(t.name, s)) return i;
+    return null;
+}
+
+fn tableId(s: S) !usize {
+    return findTable(s) orelse fail("unknown table {s}", .{s});
+}
+
+        } else if (p.accept("UPDATE")) {
+            s.k = .update;
+            s.name = try p.name();
+            try p.expect("SET");
+            var assignments: std.ArrayList(Assignment) = .empty;
+            while (true) {
+                const n = try p.name();
+                try p.expect("=");
+                try assignments.append(A, .{ .name = n, .e = try p.parse(1) });
+                if (!p.accept(",")) break;
+            }
+            s.assigns = try assignments.toOwnedSlice(A);
+            if (p.accept("WHERE")) s.where = try p.parse(1);
+const Scope = struct { name: S, table: usize, offset: usize };
+
+fn written(n: *Expr) !S {
+    return if (n.qual.len == 0) n.s else fmt("{s}.{s}", .{ n.qual, n.s });
+}
+
+fn resolve(n: *Expr, scope: []const Scope) !Type {
+    var found: ?struct { index: usize, t: Type } = null;
+    var has_table = false;
+    for (scope) |s| {
+        if (n.qual.len > 0 and !eq(n.qual, s.name)) continue;
+        has_table = true;
+        for (tables.items[s.table].cols, 0..) |c, i| if (eq(c.name, n.s)) {
+            if (found != null) return fail("ambiguous column {s}", .{n.s});
+            found = .{ .index = s.offset + i, .t = c.t };
+        };
+    }
+    if (!has_table and n.qual.len > 0) return fail("unknown table {s}", .{n.qual});
+    const f = found orelse return fail("unknown column {s}", .{try written(n)});
+    n.index = f.index;
+    return f.t;
+}
+
+fn checked(n: *Expr, scope: []const Scope, aggregates: bool, grouping: bool, groups: []const usize, inside: bool) anyerror!Type {
+    var t: Type = .int;
+    switch (n.k) {
+        .value => t = n.v.t,
+        .col => {
+            t = try resolve(n, scope);
+            if (grouping and !inside) {
+                var found = false;
+                for (groups) |i| if (i == n.index) {
+                    found = true;
+                };
+                if (!found) return fail("column {s} is not grouped", .{try written(n)});
+            }
+        },
+        .aggregate => {
+            if (!aggregates or inside) return fail("misuse of aggregate {s}", .{n.s});
+    n.t = t;
+    return t;
+}
+
+fn condition(n: *Expr, scope: []const Scope, ag: bool, grouping: bool, groups: []const usize, kind: S) !void {
+    const t = try checked(n, scope, ag, grouping, groups, false);
+    if (!compatible(t, .int)) return fail("type mismatch for {s}", .{kind});
+}
+fn eval(n: *Expr, row: []const Value, group: []const []Value) anyerror!Value {
+    switch (n.k) {
+        .value => return n.v,
+        .col => return row[n.index],
+        .paren => return eval(n.args[0], row, group),
+fn column(t: Table, s: S) !usize {
+    for (t.cols, 0..) |c, i| if (eq(c.name, s)) return i;
+    return fail("unknown column {s}", .{s});
+}
+
+fn constraints(t: Table, rows: []const []Value, targets: []const bool) !void {
+    var pk: ?usize = null;
+    for (t.cols, 0..) |c, i| if (c.pk > 0) {
+        pk = i;
+    };
+    for (rows, 0..) |r, i| {
+        if (!targets[i]) continue;
+        for (t.cols, 0..) |c, j| if (c.notnull and r[j].t == .nil) return fail("NULL value in column {s}", .{c.name});
+        if (pk) |k| for (rows, 0..) |s, j| {
+            if (i != j and cmp(r[k], s[k]) == 0) return fail("duplicate primary key {s}", .{try text(r[k])});
+        };
+    }
+}
+        .update, .delete => {
+            const ti = try tableId(s.name);
+            const t = tables.items[ti];
+            const scope = [_]Scope{.{ .name = t.name, .table = ti, .offset = 0 }};
+            const targets = try A.alloc(usize, s.assigns.len);
+            for (s.assigns, 0..) |assignment, j| {
+                const i = try column(t, assignment.name);
+                for (targets[0..j]) |old| if (old == i) return fail("duplicate column {s}", .{assignment.name});
+                targets[j] = i;
+            }
+            for (s.assigns, targets) |assignment, i| {
+                const ty = try checked(assignment.e, &scope, false, false, &.{}, false);
+                if (!compatible(ty, t.cols[i].t)) return fail("type mismatch for column {s}", .{t.cols[i].name});
+            }
+            if (s.where) |w| try condition(w, &scope, false, false, &.{}, "WHERE");
+            var rows: std.ArrayList([]Value) = .empty;
+            const changed = try A.alloc(bool, t.rows.len);
+            @memset(changed, false);
+            var count: usize = 0;
+            for (t.rows, 0..) |row, j| {
+                const match = if (s.where) |w| truth(try eval(w, row, &.{})) else true;
+                if (match) {
+                    count += 1;
+                    changed[j] = true;
+                    if (s.k == .delete) continue;
+                    const r = try A.dupe(Value, row);
+                    for (s.assigns, targets) |assignment, i| r[i] = try eval(assignment.e, row, &.{});
+                    try rows.append(A, r);
+                } else try rows.append(A, row);
+            }
+            if (s.k == .update) try constraints(t, rows.items, changed);
+            tables.items[ti].rows = try rows.toOwnedSlice(A);
+            try line(try fmt("{d} {s} {s}.", .{ count, if (count == 1) @as(S, "row") else "rows", if (s.k == .update) @as(S, "updated") else "deleted" }));
+        },

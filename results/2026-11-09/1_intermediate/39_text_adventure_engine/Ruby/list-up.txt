@@ -1,0 +1,268 @@
+require "set"
+DIRECTIONS = %w[north south east west up down].freeze
+VERBS = {
+  use: %w[use apply],
+  light: %w[light ignite],
+  score: %w[score],
+  restore: %w[restore load],
+}.flat_map { |verb, aliases| aliases.map { |word| [word, verb] } }.to_h.freeze
+NO_ARGUMENTS = %i[look inventory wait score save restore verbose brief].freeze
+ACTIONS = %i[go take drop put open close unlock lock use light extinguish wait].freeze
+ARTICLES = %w[the a an].freeze
+Place = Data.define(:kind, :id)
+PLAYER = Place.new(:player, nil)
+NOWHERE = Place.new(:nowhere, nil)
+Trigger = Data.define(:kind, :first, :second)
+Condition = Data.define(:flag, :on)
+Message = Data.define(:text)
+MoveItem = Data.define(:item, :place)
+Rule = Data.define(:trigger, :condition, :effect)
+RuleResult = Data.define(:executed, :message)
+Treasures = Data.define(:points, :stored, :total)
+Room = Struct.new(:name, :dark, :description)
+Item = Struct.new(
+  :name,
+  :nouns,
+  :name_words,
+  :details,
+  :weight,
+  :treasure,
+  :light,
+  :capacity,
+  :key,
+  :fixed,
+  keyword_init: true
+class CommandFailure < StandardError
+class State
+  attr_accessor :room, :bonus, :moves, :darkness, :ended
+  attr_reader :places, :containers, :fuel, :lit, :exits, :flags, :visited
+  def initialize
+    @room = nil
+    @bonus = @moves = @darkness = 0
+    @ended = nil
+    @places = {}
+    @containers = {}
+    @fuel = {}
+    @lit = {}
+    @flags = Set.new
+class Adventure
+  attr_reader :state
+  def initialize(definitions)
+    @rooms = {}
+    @items = {}
+    @rules = []
+    @state = State.new
+    @saved = @pronoun = @previous = nil
+    @verbose = false
+    @output = []
+    definitions.each { |words| define(words) }
+    @ids = @items.keys.sort.freeze
+    @vocabulary = @items
+      .values
+      .each_with_object(Set.new) { |item, set| set.merge(item.nouns).merge(item.name_words) }
+      .freeze
+  def direction(word) = DIRECTIONS.index { |name| word == name || word == name[0] }
+  def words(line) = line.downcase.split.reject { |word| ARTICLES.include?(word) }
+  def tail(words, at) = words[at..].join(" ").freeze
+  def inside(item) = Place.new(:inside, item)
+  def floor = Place.new(:floor, @state.room)
+  def say(text) = @output << text
+  def failure(message) = raise CommandFailure, message
+  def read_rule(words, at, trigger)
+    condition = nil
+    if %w[IF UNLESS].include?(words[at])
+      condition = Condition.new(words[at + 1], words[at] == "IF")
+      at += 2
+    effect = case words[at]
+    when "MESSAGE"
+      Message.new(tail(words, at + 1))
+    when "ADD"
+      MoveItem.new(words[at + 1], Place.new(:floor, words[at + 2]))
+    Rule.new(trigger, condition, effect)
+  def define(w)
+    id = w[1]
+    case w[0]
+    when "ROOM"
+      dark = w[2] == "DARK"
+      @rooms[id] = Room.new(tail(w, dark ? 3 : 2), dark, [])
+    when "ITEM"
+      @state.places[id] = case w[2]
+      when "PLAYER"
+        PLAYER
+      when "NOWHERE"
+        NOWHERE
+      else
+        Place.new(:floor, w[2])
+      @state.containers[id] = :open
+      @state.fuel[id] = 0
+      @state.lit[id] = false
+      item = Item.new(
+        name: "",
+        nouns: Set[id],
+        name_words: Set.new,
+        details: [],
+        weight: w[3].to_i(10),
+        treasure: nil,
+        light: false,
+        capacity: nil,
+        key: nil,
+        fixed: false
+      at = 4
+      if w[at] == "TREASURE"
+        item.treasure = w[at + 1].to_i(10)
+        at += 2
+      if w[at] == "LIGHT"
+        item.light = true
+        @state.fuel[id] = w[at + 1].to_i(10)
+        at += 2
+      item.name = tail(w, at)
+      item.name_words.merge(w[at..])
+      @items[id] = item
+    when "RULE"
+      @rules << read_rule(w, 3, Trigger.new(:use, id, w[2]))
+    when "TROPHY"
+      @trophy = id
+    when "START"
+      @state.room = id
+  def reachable?(id, root)
+    place = @state.places[id]
+    while place.kind == :inside
+      return false unless @state.containers[place.id] == :open
+      place = @state.places[place.id]
+    place == root
+  def carried?(id) = reachable?(id, PLAYER)
+  def room_item?(id) = reachable?(id, floor)
+  def lit? = !@rooms[@state.room].dark || @ids.any? { |id| @state.lit[id] && (carried?(id) || room_item?(id)) }
+  def stored?(id)
+    place = @state.places[id]
+    place = @state.places[place.id] while place.kind == :inside
+    place == Place.new(:floor, @trophy)
+  def treasures
+    points = stored = total = 0
+    @ids.each do |id|
+      next unless @items[id].treasure
+      total += 1
+      if stored?(id)
+        stored += 1
+        points += @items[id].treasure
+    Treasures.new(points, stored, total)
+  def score = treasures.points + @state.bonus
+  def names(ids) = ids.map { |id| @items[id].name }.join(", ")
+  def resolve(phrase)
+    lit = lit?
+    phrase.each { |word| failure("I don't know the word \"#{word}\".") unless @vocabulary.include?(word) }
+    matches = @ids.select do |id|
+      (carried?(id) || lit && room_item?(id)) &&
+        @items[id].nouns.include?(phrase.last) &&
+        phrase[0...-1].all? { |word| @items[id].name_words.include?(word) }
+    failure("You can't see any such thing.") if matches.empty?
+    failure("Which do you mean: #{names(matches)}?") if matches.size > 1
+    @pronoun = matches.first
+  def run_rules(trigger)
+    executed = 0
+    message = false
+    @rules.each do |rule|
+      condition = rule.condition
+      next unless rule.trigger == trigger
+      next if condition && @state.flags.include?(condition.flag) != condition.on
+      executed += 1
+      effect = rule.effect
+      case effect
+      when Message
+        say(effect.text)
+        message = true
+      when MoveItem
+        @state.places[effect.item] = effect.place
+    RuleResult.new(executed, message)
+  def turn(baseline)
+    @state.moves += 1
+    nearby = @ids.to_h { |id| [id, carried?(id) || room_item?(id)] }
+    @ids.each do |id|
+      next unless @state.lit[id]
+      @state.fuel[id] -= 1
+      next unless @state.fuel[id].zero?
+      @state.lit[id] = false
+      say("The #{@items[id].name} goes out.") if nearby[id]
+    lit = lit?
+    if baseline && !lit
+      say("It is now pitch dark.")
+    elsif !baseline && lit
+      describe(true)
+    @state.darkness = lit ? 0 : @state.darkness + 1
+    say("You hear something moving in the dark.") if @state.darkness == 2
+    @state.ended = :dead if @state.darkness == 3
+    treasure = treasures
+    @state.ended = :won if !@state.ended && treasure.total.positive? && treasure.stored == treasure.total
+    return unless @state.ended
+    say(@state.ended == :dead ? "*** You have died ***" : "*** You have won ***")
+    say("You scored #{treasure.points + @state.bonus} points in #{@state.moves} moves.")
+  def execute(verb, first, second, d)
+    baseline = lit?
+    success = true
+    case verb
+    when :go
+    when :use
+      a = resolve(first)
+      b = resolve(second)
+      failure("You aren't carrying the #{@items[a].name}.") unless carried?(a)
+      result = run_rules(Trigger.new(:use, a, b))
+      failure("Nothing happens.") if result.executed.zero?
+      say("Done.") unless result.message
+    when :score
+      treasure = treasures
+      say(
+        "You have scored #{treasure.points + @state.bonus} points (treasure #{treasure.points}, bonus #{@state.bonus}) in #{@state.moves} moves."
+      say("Treasures stored: #{treasure.stored} of #{treasure.total}.")
+    turn(baseline) if success && ACTIONS.include?(verb)
+  def interpret(input)
+    failure("I beg your pardon?") if input.empty?
+    direction_word = !direction(input.first).nil?
+    verb = direction_word ? :go : VERBS[input.first]
+    failure("I don't know the verb \"#{input.first}\".") unless verb
+    failure("The game is over.") if @state.ended && verb != :restore
+    first = input.drop(direction_word ? 0 : 1)
+    second = []
+    d = nil
+    if NO_ARGUMENTS.include?(verb)
+      failure("I don't understand that.") unless first.empty?
+    else
+      failure(verb == :go ? "Which way do you want to go?" : "What do you want to #{verb}?") if first.empty?
+      if verb == :go
+      else
+        split = first.index do |word|
+          case verb
+          when :use
+            %w[on with].include?(word)
+          else
+            false
+        if split
+          failure("I don't understand that.") if split.zero? || split + 1 == first.size
+          second = first.drop(split + 1)
+          first = first.take(split)
+        elsif verb == :put || verb == :use
+          failure("I don't understand that.")
+    execute(verb, first, second, d)
+  def process(line)
+    say("> #{line}")
+    input = words(line)
+    else
+      @previous = line.freeze
+    interpret(input)
+  rescue CommandFailure => error
+    say(error.message)
+  def flush
+    @output.each { |line| puts(line) }
+    @output.clear
+definitions = []
+while (raw = STDIN.gets)
+  line = raw.chomp
+  break if line == "BEGIN"
+  definitions << line.split(" ").map(&:freeze).freeze
+game = Adventure.new(definitions)
+while (raw = STDIN.gets)
+  line = raw.chomp
+  break if line == "QUIT"
+  game.process(line)
+  game.flush
+game.say("Final score: #{game.score} points in #{game.state.moves} moves.")
+game.flush

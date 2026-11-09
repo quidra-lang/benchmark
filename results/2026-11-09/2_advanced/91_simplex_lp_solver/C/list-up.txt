@@ -1,0 +1,582 @@
+const char *status_name(Status status) {
+    static const char *names[] = {"OPTIMAL", "INFEASIBLE", "UNBOUNDED", "NODE_LIMIT", "ERROR"};
+    return names[status];
+}
+const char *comparison_name(Comparison comparison) {
+    static const char *names[] = {"<=", ">=", "="};
+    return names[comparison];
+}
+static int variable_index(const Model *model, const char *name) {
+    for (int i = 0; i < model->variable_count; ++i)
+        if (!strcmp(model->variables[i], name))
+            return i;
+    return -1;
+}
+static void register_terms(Model *model, const Terms *terms) {
+    for (int i = 0; i < terms->count; ++i)
+        if (variable_index(model, terms->data[i].name) < 0) {
+            if (model->variable_count == model->variable_capacity) {
+                model->variable_capacity =
+                    model->variable_capacity ? model->variable_capacity * 2 : 16;
+                model->variables = resize(model->variables, (size_t)model->variable_capacity *
+                                                                sizeof *model->variables);
+            }
+            strcpy(model->variables[model->variable_count++], terms->data[i].name);
+        }
+}
+static Model make_model(const RawModel *raw) {
+    Model out = {0};
+    strcpy(out.name, raw->name);
+    out.maximize = raw->maximize;
+    if (raw->error.message) {
+        out.error = (ModelError){raw->error.line, copy_text(raw->error.message)};
+        return out;
+    }
+    register_terms(&out, &raw->objective);
+    for (int i = 0; i < raw->constraint_count; ++i)
+        register_terms(&out, &raw->constraints[i].terms);
+    int count = out.variable_count;
+    out.cost = allocate((size_t)count * sizeof *out.cost);
+    out.lower = allocate((size_t)count * sizeof *out.lower);
+    out.upper = allocate((size_t)count * sizeof *out.upper);
+    out.integer = allocate((size_t)count * sizeof *out.integer);
+    for (int j = 0; j < count; ++j)
+        out.lower[j] = (Bound){true, {0, 1}};
+    for (int i = 0; i < raw->objective.count; ++i) {
+        const Term *term = &raw->objective.data[i];
+        int j = variable_index(&out, term->name);
+        out.cost[j] = rat_add(out.cost[j], term->coefficient);
+    }
+    out.constraint_count = raw->constraint_count;
+    out.constraints = allocate((size_t)out.constraint_count * sizeof *out.constraints);
+    for (int i = 0; i < out.constraint_count; ++i) {
+        const RawConstraint *source = &raw->constraints[i];
+        Constraint *row = &out.constraints[i];
+        strcpy(row->name, source->name);
+        row->comparison = source->comparison;
+        row->rhs = source->rhs;
+        row->coefficients = allocate((size_t)count * sizeof *row->coefficients);
+        for (int t = 0; t < source->terms.count; ++t) {
+            const Term *term = &source->terms.data[t];
+            int j = variable_index(&out, term->name);
+            row->coefficients[j] = rat_add(row->coefficients[j], term->coefficient);
+        }
+    }
+    return out;
+static int add_variable(Standard *standard, const char *name, int variable, int direction) {
+    int column = standard->tableau.columns++;
+    strcpy(standard->columns[column], name);
+    standard->column_variable[column] = variable;
+    standard->directions[column] = direction;
+    return column;
+}
+static int add_extra(Standard *standard, const char *name, int row, Rational value,
+                     bool artificial) {
+    int column = standard->tableau.columns++;
+    strcpy(standard->columns[column], name);
+    standard->column_variable[column] = -1;
+    standard->artificial[column] = artificial;
+    standard->tableau.values[row][column] = value;
+    return column;
+}
+static void standard_form(Standard *standard, const Model *model, const Bound *lower,
+                          const Bound *upper) {
+    standard->sign = model->maximize ? -1 : 1;
+    standard->map_count = model->variable_count;
+    Tableau *tableau = &standard->tableau;
+    for (int j = 0; j < model->variable_count; ++j) {
+        VariableMap *mapping = &standard->maps[j];
+        mapping->upper_row = -1;
+        if (lower[j].finite) {
+            mapping->kind = MAP_SHIFT;
+            mapping->offset = lower[j].value;
+            mapping->column_count = 1;
+            mapping->columns[0] = add_variable(standard, model->variables[j], j, 1);
+        standard->constant = rat_add(standard->constant, rat_mul(model->cost[j], mapping->offset));
+    }
+    for (int i = 0; i < model->constraint_count; ++i) {
+        const Constraint *constraint = &model->constraints[i];
+        int row = tableau->rows++;
+        strcpy(standard->rows[row], constraint->name);
+        standard->comparisons[row] = constraint->comparison;
+        Rational rhs = constraint->rhs;
+        for (int j = 0; j < model->variable_count; ++j) {
+            const VariableMap *mapping = &standard->maps[j];
+            rhs = rat_sub(rhs, rat_mul(constraint->coefficients[j], mapping->offset));
+            for (int c = 0; c < mapping->column_count; ++c) {
+                int column = mapping->columns[c];
+                tableau->values[row][column] =
+                    rat_mul(constraint->coefficients[j], integer(standard->directions[column]));
+            }
+        }
+        tableau->beta[row] = rhs;
+    }
+    for (int row = 0; row < tableau->rows; ++row) {
+        standard->sigma[row] = 1;
+        standard->slack[row] = standard->initial[row] = -1;
+        if (tableau->beta[row].numerator < 0) {
+    for (int row = 0; row < tableau->rows; ++row)
+        if (standard->comparisons[row] != COMP_EQ) {
+    for (int row = 0; row < tableau->rows; ++row)
+        if (standard->comparisons[row] != COMP_LE) {
+            char *name = format_text("a:%s", standard->rows[row]);
+            standard->initial[row] = add_extra(standard, name, row, integer(1), true);
+            free(name);
+        }
+    for (int column = 0; column < tableau->columns; ++column) {
+        int variable = standard->column_variable[column];
+        if (variable >= 0)
+            standard->costs2[column] = rat_mul(
+                model->cost[variable], integer(standard->sign * standard->directions[column]));
+        if (standard->artificial[column])
+            standard->costs1[column] = integer(1);
+    }
+    for (int row = 0; row < tableau->rows; ++row)
+        tableau->basis[row] = standard->initial[row];
+}
+static void original_values(const Standard *standard, const Rational *columns, bool direction,
+                            Rational *out) {
+    for (int j = 0; j < standard->map_count; ++j) {
+        const VariableMap *mapping = &standard->maps[j];
+        out[j] = direction ? integer(0) : mapping->offset;
+        for (int c = 0; c < mapping->column_count; ++c) {
+            int column = mapping->columns[c];
+            out[j] =
+                rat_add(out[j], rat_mul(columns[column], integer(standard->directions[column])));
+        }
+    }
+}
+static void lp_solution(const Standard *standard, Rational *out) {
+    Rational columns[90] = {0};
+    for (int row = 0; row < standard->tableau.rows; ++row)
+        columns[standard->tableau.basis[row]] = standard->tableau.beta[row];
+    original_values(standard, columns, false, out);
+}
+int lp_pivots(const LPResult *result) { return result->phase1 + result->phase2 + result->drives; }
+static void emit(LPResult *result, int required, int level, char *line) {
+    if (required <= level)
+        lines_push(&result->log, line);
+    else
+        free(line);
+}
+static void finish(LPResult *result, int level) {
+    emit(result, 0, level,
+         format_text("RESULT %s objective %s phase1 %d phase2 %d drives %d redundant %d",
+                     status_name(result->status),
+                     result->status == OPTIMAL ? rat_text(result->objective).value : "-",
+                     result->phase1, result->phase2, result->drives, result->redundant));
+}
+static void phase_log(LPResult *result, PhaseResult *phase, int level) {
+    if (level >= 1)
+        append_owned(&result->log, &phase->lines);
+    else
+        lines_free(&phase->lines);
+}
+LPResult *solve_lp(const Model *model, const Bound *lower, const Bound *upper, int number,
+                   int level) {
+    LPResult *out = allocate(sizeof *out);
+    Standard *standard = &out->standard;
+    standard_form(standard, model, lower, upper);
+    Tableau *tableau = &standard->tableau;
+    int artificials = 0;
+    for (int k = 0; k < tableau->columns; ++k)
+        if (standard->artificial[k])
+            ++artificials;
+    emit(out, 0, level,
+         format_text("SOLVE node %d rows %d columns %d artificials %d", number, tableau->rows,
+                     tableau->columns, artificials));
+    for (int j = 0; j < model->variable_count; ++j) {
+        const VariableMap *mapping = &standard->maps[j];
+        const char *kind = mapping->kind == MAP_SHIFT     ? "shift"
+                           : mapping->kind == MAP_REFLECT ? "reflect"
+                                                          : "split";
+        char *line;
+        if (mapping->kind == MAP_SPLIT)
+            line = format_text("MAP %s %s", model->variables[j], kind);
+        else if (mapping->kind == MAP_SHIFT && upper[j].finite)
+            line = format_text("MAP %s %s %s upper %s", model->variables[j], kind,
+                               rat_text(mapping->offset).value, rat_text(upper[j].value).value);
+        else
+            line = format_text("MAP %s %s %s", model->variables[j], kind,
+                               rat_text(mapping->offset).value);
+        emit(out, 1, level, line);
+    }
+    for (int row = 0; row < tableau->rows; ++row)
+        if (standard->sigma[row] < 0)
+            emit(out, 1, level, format_text("FLIP %s", standard->rows[row]));
+    bool all[90] = {0}, real[90] = {0};
+    for (int k = 0; k < tableau->columns; ++k) {
+        all[k] = true;
+        real[k] = !standard->artificial[k];
+    }
+    if (artificials) {
+        emit(out, 1, level, copy_text("PHASE 1"));
+        display(out, level, "phase 1 start", standard->costs1, true);
+        PhaseResult first = phase(tableau, standard->costs1, all, standard, integer(0), 1);
+        out->phase1 = first.iterations;
+        phase_log(out, &first, level);
+        Rational reduced[90], w;
+        tableau_reduced(tableau, standard->costs1, reduced, &w);
+        out->w = w;
+        emit(out, 1, level,
+             format_text("PHASE 1 END objective %s iterations %d", rat_text(w).value, out->phase1));
+        if (w.numerator > 0) {
+            out->status = INFEASIBLE;
+            for (int row = 0; row < tableau->rows; ++row) {
+                int column = standard->initial[row];
+                out->farkas[row] = rat_mul(rat_sub(standard->costs1[column], reduced[column]),
+                                           integer(standard->sigma[row]));
+            }
+            display(out, level, "final", standard->costs1, true);
+            finish(out, level);
+            return out;
+        }
+        for (int row = 0; row < tableau->rows; ++row) {
+            int previous = tableau->basis[row];
+            if (!standard->artificial[previous])
+                continue;
+            int column = -1;
+            for (int k = 0; k < tableau->columns; ++k)
+                if (!standard->artificial[k] && tableau->values[row][k].numerator) {
+                    column = k;
+                    break;
+                }
+            if (column < 0) {
+                ++out->redundant;
+                emit(out, 1, level, format_text("REDUNDANT row %s", standard->rows[row]));
+            } else {
+                emit(out, 1, level,
+                     format_text("DRIVE row %s enter %s leave %s", standard->rows[row],
+                                 standard->columns[column], standard->columns[previous]));
+                tableau_pivot(tableau, row, column);
+                ++out->drives;
+            }
+        }
+    }
+    emit(out, 1, level, copy_text("PHASE 2"));
+    display(out, level, "phase 2 start", standard->costs2, false);
+    PhaseResult second =
+        phase(tableau, standard->costs2, real, standard, standard->constant, standard->sign);
+    out->phase2 = second.iterations;
+    phase_log(out, &second, level);
+    Rational reduced[90], z;
+    tableau_reduced(tableau, standard->costs2, reduced, &z);
+    out->objective = rat_add(standard->constant, rat_mul(integer(standard->sign), z));
+    lp_solution(standard, out->solution);
+    out->status = OPTIMAL;
+    if (second.entering >= 0) {
+        out->status = UNBOUNDED;
+        emit(out, 1, level, format_text("UNBOUNDED enter %s", standard->columns[second.entering]));
+        Rational delta[90] = {0};
+        delta[second.entering] = integer(1);
+        for (int row = 0; row < tableau->rows; ++row)
+            delta[tableau->basis[row]] = rat_neg(tableau->values[row][second.entering]);
+        original_values(standard, delta, true, out->ray);
+        for (int j = 0; j < model->variable_count; ++j)
+            out->rate = rat_add(out->rate, rat_mul(model->cost[j], out->ray[j]));
+    }
+    emit(out, 1, level,
+         format_text("PHASE 2 END objective %s iterations %d", rat_text(out->objective).value,
+                     out->phase2));
+    display(out, level, "final", standard->costs2, false);
+    finish(out, level);
+    return out;
+static void write_lines(const char *name, const TextLines *lines) {
+    char *path = format_text("output/%s", name);
+    FILE *output = fopen(path, "wb");
+    free(path);
+    if (!output)
+        exit(EXIT_FAILURE);
+    for (int i = 0; i < lines->count; ++i)
+        if (fputs(lines->data[i], output) == EOF || fputc('\n', output) == EOF)
+            exit(EXIT_FAILURE);
+    if (fclose(output))
+        exit(EXIT_FAILURE);
+}
+int main(void) {
+    Settings settings = read_settings();
+    int model_count;
+    RawModel *raw = read_models(&model_count);
+    TextLines iterations = {0}, solutions = {0}, sensitivities = {0}, tree = {0}, summary = {0};
+    lines_add(&summary, "model,status,objective,approx,relaxation,nodes,pivots");
+    int statuses[5] = {0}, solves = 0, phase1 = 0, phase2 = 0, drives = 0, analyzed = 0,
+        integer_models = 0, integer_nodes = 0, integer_limits = 0;
+    for (int i = 0; i < model_count; ++i) {
+        Model model = make_model(&raw[i]);
+        int level = settings.level, limit = settings.limit;
+        for (int j = 0; j < settings.log_count; ++j)
+            if (!strcmp(model.name, settings.logs[j].name))
+                level = settings.logs[j].value;
+        lines_push(&iterations, format_text("MODEL %s level %d", model.name, level));
+        int integers = integer_count(&model);
+        ModelResult result = {0};
+        if (integers) {
+        } else {
+            LPResult *root = solve_lp(&model, model.lower, model.upper, 1, level);
+            result.status = root->status;
+            result_push(&result, root);
+            if (root->status == OPTIMAL) {
+                result.has_solution = true;
+                result.objective = root->objective;
+                memcpy(result.solution, root->solution,
+                       (size_t)model.variable_count * sizeof *result.solution);
+            }
+        }
+        int pivots = 0;
+        for (int j = 0; j < result.solve_count; ++j) {
+            const LPResult *lp = result.solves[j];
+            lines_append(&iterations, &lp->log);
+            ++solves;
+            phase1 += lp->phase1;
+            phase2 += lp->phase2;
+            drives += lp->drives;
+            pivots += lp_pivots(lp);
+        }
+        ++statuses[result.status];
+        lines_push(&solutions, format_text("MODEL %s %s variables %d constraints %d integers %d",
+                                           model.name, model.maximize ? "maximize" : "minimize",
+                                           model.variable_count, model.constraint_count, integers));
+        lines_push(&solutions, format_text("STATUS %s", status_name(result.status)));
+        FractionText objective, approx, relaxation;
+        strcpy(objective.value, "-");
+        strcpy(approx.value, "-");
+        strcpy(relaxation.value, "-");
+        if (result.has_solution) {
+            objective = rat_text(result.objective);
+            approx = rat_approx(result.objective);
+            lines_push(&solutions,
+                       format_text("OBJECTIVE %s approx %s", objective.value, approx.value));
+        }
+        const LPResult *root = result.solves[0];
+        if (root->status == OPTIMAL) {
+            relaxation = rat_text(root->objective);
+        if (result.has_solution || result.status == UNBOUNDED) {
+            const Rational *values = result.has_solution ? result.solution : root->solution;
+            for (int j = 0; j < model.variable_count; ++j)
+                lines_push(&solutions, format_text("VALUE %s %s", model.variables[j],
+                                                   rat_text(values[j]).value));
+        }
+        lines_push(&solutions, format_text("PIVOTS %d", pivots));
+        lines_push(&summary, format_text("%s,%s,%s,%s,%s,%d,%d", model.name,
+                                         status_name(result.status), objective.value, approx.value,
+                                         relaxation.value, result.solve_count, pivots));
+    }
+    lines_push(&iterations, format_text("TOTAL solves %d phase1 %d phase2 %d drives %d pivots %d",
+                                        solves, phase1, phase2, drives, phase1 + phase2 + drives));
+    mkdir("output", 0755);
+    write_lines("iterations.txt", &iterations);
+    write_lines("solutions.txt", &solutions);
+    write_lines("summary.csv", &summary);
+void *allocate(size_t size) {
+    void *data = calloc(1, size ? size : 1);
+    if (!data)
+        exit(EXIT_FAILURE);
+    return data;
+}
+static bool expression(const TextLines *items, int first, int end, Terms *terms) {
+    Terms out = {0};
+    int sign = 1;
+    if (first < end && !strcmp(items->data[first], "-")) {
+        ++first;
+        sign = -1;
+    }
+    while (first < end) {
+        Rational coefficient;
+        const char *name;
+        if (read_number(items->data[first], false, &coefficient)) {
+            if (first + 1 >= end || !is_name(items->data[first + 1]))
+                break;
+            name = items->data[first + 1];
+            first += 2;
+        } else if (is_name(items->data[first])) {
+            name = items->data[first++];
+            coefficient = integer(1);
+        } else
+            break;
+        Term term = {0};
+        strcpy(term.name, name);
+        term.coefficient = rat_mul(coefficient, integer(sign));
+        term_push(&out, term);
+        if (first == end) {
+            *terms = out;
+            return true;
+        }
+        if (strcmp(items->data[first], "+") && strcmp(items->data[first], "-"))
+            break;
+        sign = !strcmp(items->data[first++], "-") ? -1 : 1;
+    }
+    free(out.data);
+    return false;
+}
+static bool named_expression(const TextLines *items, int end, char *name, Terms *terms) {
+    if (end < 2)
+        return false;
+    const char *first = items->data[0];
+    size_t length = strlen(first);
+    if (!length || first[length - 1] != ':')
+        return false;
+    char *label = copy_text(first);
+    label[length - 1] = 0;
+    bool valid = is_name(label);
+    if (valid)
+        strcpy(name, label);
+    free(label);
+    return valid && expression(items, 1, end, terms);
+}
+static bool parse_constraint(const TextLines *items, int line, RawConstraint *out) {
+    int count = items->count;
+    if (count < 4 || !word_in("<= >= =", items->data[count - 2]) ||
+        !read_number(items->data[count - 1], true, &out->rhs))
+        return false;
+    if (!named_expression(items, count - 2, out->name, &out->terms))
+        return false;
+    out->line = line;
+    out->comparison = !strcmp(items->data[count - 2], "<=")   ? COMP_LE
+                      : !strcmp(items->data[count - 2], ">=") ? COMP_GE
+                                                              : COMP_EQ;
+    return true;
+}
+static RawModel parse_block(const char *name, const Record *records, int count, int end_line) {
+    RawModel out = {0};
+    strcpy(out.name, name);
+    char state = 'A';
+    for (int i = 0; i < count; ++i) {
+        const Record *record = &records[i];
+        TextLines items = split_words(record->text);
+        bool accepted = false;
+        if (state == 'A') {
+            if (!strcmp(record->text, "maximize") || !strcmp(record->text, "minimize")) {
+                out.maximize = !strcmp(record->text, "maximize");
+                state = 'B';
+                accepted = true;
+            }
+        } else if (state == 'B') {
+            char label[17];
+            if (named_expression(&items, items.count, label, &out.objective)) {
+                state = 'C';
+                accepted = true;
+            }
+        } else if (state == 'C') {
+            if (!strcmp(record->text, "subject to")) {
+                state = 'D';
+                accepted = true;
+            }
+        } else if (state == 'D' || state == 'E') {
+            if (state == 'E' && word_in("bounds integer binary", record->text)) {
+                state = !strcmp(record->text, "bounds")    ? 'F'
+                        : !strcmp(record->text, "integer") ? 'G'
+                                                           : 'H';
+                accepted = true;
+            } else {
+                RawConstraint row = {0};
+                if (parse_constraint(&items, record->line, &row)) {
+                    constraint_push(&out, row);
+                    state = 'E';
+                    accepted = true;
+                }
+            }
+        lines_free(&items);
+        if (!accepted) {
+            out.error = (ModelError){record->line, copy_text("syntax error")};
+            return out;
+        }
+    }
+    if (state <= 'D')
+        out.error = (ModelError){end_line, copy_text("syntax error")};
+    return out;
+}
+RawModel *read_models(int *count) {
+    RawModel *out = allocate(30 * sizeof *out);
+    *count = 0;
+    TextLines lines = read_lines("input/models.lp");
+    char name[17] = {0};
+    Record *records = allocate((size_t)lines.count * sizeof *records);
+    int record_count = 0;
+    for (int i = 0; i < lines.count; ++i) {
+        const char *line = lines.data[i];
+        if (!*line || *line == '#')
+            continue;
+        if (!*name) {
+            strcpy(name, line + 6);
+            record_count = 0;
+        } else if (!strcmp(line, "end")) {
+            out[(*count)++] = parse_block(name, records, record_count, i + 1);
+            *name = 0;
+        } else
+            records[record_count++] = (Record){i + 1, line};
+    }
+    free(records);
+    lines_free(&lines);
+    return out;
+}
+PhaseResult phase(Tableau *tableau, const Rational *cost, const bool *candidates,
+                  const Standard *standard, Rational constant, int sign) {
+    PhaseResult out = {0};
+    out.entering = -1;
+    for (;;) {
+        Rational reduced[90], value;
+        tableau_reduced(tableau, cost, reduced, &value);
+        int entering = -1;
+        for (int k = 0; k < tableau->columns; ++k)
+            if (candidates[k] && reduced[k].numerator < 0) {
+                entering = k;
+                break;
+            }
+        if (entering < 0)
+            return out;
+        int leaving = -1;
+        Rational ratio = integer(0);
+        for (int row = 0; row < tableau->rows; ++row)
+            if (tableau->values[row][entering].numerator > 0) {
+                Rational candidate = rat_div(tableau->beta[row], tableau->values[row][entering]);
+                int comparison = rat_compare(candidate, ratio);
+                if (leaving < 0 || comparison < 0 ||
+                    (!comparison && tableau->basis[row] < tableau->basis[leaving])) {
+                    leaving = row;
+                    ratio = candidate;
+                }
+            }
+        if (leaving < 0) {
+            out.entering = entering;
+            return out;
+        }
+        int previous = tableau->basis[leaving];
+        Rational before = reduced[entering];
+        tableau_pivot(tableau, leaving, entering);
+        ++out.iterations;
+        tableau_reduced(tableau, cost, reduced, &value);
+        lines_push(&out.lines,
+                   format_text("PIVOT %d enter %s reduced %s leave %s row %s ratio %s objective %s",
+                               out.iterations, standard->columns[entering], rat_text(before).value,
+                               standard->columns[previous], standard->rows[leaving],
+                               rat_text(ratio).value,
+                               rat_text(rat_add(constant, rat_mul(integer(sign), value))).value));
+    }
+}
+void tableau_reduced(const Tableau *tableau, const Rational *cost, Rational *reduced,
+                     Rational *value) {
+    *value = integer(0);
+    for (int k = 0; k < tableau->columns; ++k)
+        reduced[k] = cost[k];
+    for (int row = 0; row < tableau->rows; ++row) {
+        Rational basic = cost[tableau->basis[row]];
+        *value = rat_add(*value, rat_mul(basic, tableau->beta[row]));
+        for (int k = 0; k < tableau->columns; ++k)
+            reduced[k] = rat_sub(reduced[k], rat_mul(basic, tableau->values[row][k]));
+    }
+}
+void tableau_pivot(Tableau *tableau, int row, int column) {
+    Rational factor = tableau->values[row][column];
+    for (int k = 0; k < tableau->columns; ++k)
+        tableau->values[row][k] = rat_div(tableau->values[row][k], factor);
+    tableau->beta[row] = rat_div(tableau->beta[row], factor);
+    for (int other = 0; other < tableau->rows; ++other)
+        if (other != row) {
+            Rational f = tableau->values[other][column];
+            for (int k = 0; k < tableau->columns; ++k)
+                tableau->values[other][k] =
+                    rat_sub(tableau->values[other][k], rat_mul(f, tableau->values[row][k]));
+            tableau->beta[other] = rat_sub(tableau->beta[other], rat_mul(f, tableau->beta[row]));
+        }
+    tableau->basis[row] = column;
+}

@@ -1,0 +1,346 @@
+List<String> readLines(String path) => File(path).readAsLinesSync();
+List<int> readECG() => readLines(
+  'input/ecg.csv',
+).skip(1).map((line) => int.parse(line.split(',')[1])).toList();
+
+class Annotation {
+  final int sample;
+  final String label;
+  Beat? beat;
+  Annotation(this.sample, this.label);
+}
+
+List<Annotation> readAnnotations() {
+  final annotations = <Annotation>[];
+  for (final line in readLines('input/annotations.csv').skip(1)) {
+    final fields = line.split(',');
+    annotations.add(Annotation(int.parse(fields[0]), fields[1]));
+  }
+  return annotations;
+}
+
+Map<String, int> readParams() {
+  final params = <String, int>{};
+  for (final line in readLines('input/params.txt')) {
+    final fields = line.split(' ');
+    params[fields[0]] = int.parse(fields[1]);
+  }
+  return params;
+}
+class Beat {
+  final int number, sample, rr, hr, width;
+  final Peak peak;
+  final String label, method;
+  Annotation? annotation;
+  int offset = 0;
+  Beat(
+    this.number,
+    this.sample,
+    this.peak,
+    this.rr,
+    this.hr,
+    this.width,
+    this.label,
+    this.method,
+  );
+}
+List<Beat> buildBeatList(
+  List<Peak> registered,
+  List<int> band,
+  Map<String, int> p,
+) {
+  final beats = <Beat>[];
+  for (final peak in registered) {
+    final number = beats.length + 1,
+        sample = math.max(0, peak.r - 21),
+        rr = beats.isEmpty ? 0 : 5 * (sample - beats.last.sample),
+        width = widthMS(band, peak.r);
+    var label = 'N';
+    if (number >= 10) {
+      var preceding = 0;
+      for (var k = number - 8; k < number; k++) {
+        preceding += beats[k - 1].rr;
+      }
+      if (800 * rr < p['premature_percent']! * preceding)
+        label = width > p['qrs_width_ms']! ? 'V' : 'A';
+    }
+    beats.add(
+      Beat(
+        number,
+        sample,
+        peak,
+        rr,
+        rr == 0 ? 0 : rdiv(6000000, rr),
+        width,
+        label,
+        peak.category == 'qrs' ? 'threshold' : 'searchback',
+      ),
+    );
+  }
+  return beats;
+}
+
+void matchAnnotations(
+  List<Beat> beats,
+  List<Annotation> refs,
+  Map<String, int> p,
+) {
+  final tolerance = p['match_ms']! ~/ 5;
+  for (final b in beats) {
+    Annotation? chosen;
+    var best = 0;
+    for (final ref in refs) {
+      final distance = (ref.sample - b.sample).abs();
+      if (ref.beat == null &&
+          distance <= tolerance &&
+          (chosen == null || distance < best)) {
+        chosen = ref;
+        best = distance;
+      }
+    }
+    if (chosen != null) {
+      chosen.beat = b;
+      b.annotation = chosen;
+      b.offset = 5 * (b.sample - chosen.sample);
+    }
+  }
+}
+
+List<String> beatLines(List<Beat> beats) => [
+  'beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label',
+  for (final b in beats)
+    '${b.number},${b.sample},${5 * b.sample},${optional(b.rr)},${b.rr == 0 ? '-' : two(b.hr)},${b.width},${b.label},${b.method},${b.annotation?.sample ?? '-'},${b.annotation?.label ?? '-'}',
+];
+List<String> orderedTexts(List<(int, int, String)> records) {
+  records.sort(
+    (a, b) => a.$1 != b.$1 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2),
+  );
+  return records.map((r) => r.$3).toList();
+}
+
+List<String> matchingLines(List<Beat> beats, List<Annotation> refs) {
+  final records = <(int, int, String)>[];
+  for (final ref in refs) {
+    final b = ref.beat;
+    records.add((
+      ref.sample,
+      0,
+      b == null
+          ? '${ref.sample},${ref.label},-,-,-,-,FN,-'
+          : '${ref.sample},${ref.label},${b.number},${b.sample},${b.label},${b.offset},TP,${ref.label == b.label ? 'yes' : 'no'}',
+    ));
+  }
+  for (final b in beats) {
+    if (b.annotation == null)
+      records.add((
+        b.sample,
+        1,
+        '-,-,${b.number},${b.sample},${b.label},-,FP,-',
+      ));
+  }
+  return [
+    'ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree',
+    ...orderedTexts(records),
+  ];
+}
+class Segment {
+  final int startMS, endMS;
+  int refs = 0, tp = 0, fp = 0, fn = 0, noisePeaks = 0, beats = 0;
+  final rr = <int>[];
+  Segment(this.startMS, this.endMS);
+}
+
+List<Segment> segmentRows(
+  List<Beat> beats,
+  List<Annotation> refs,
+  List<Peak> peaks,
+  int count,
+  Map<String, int> p,
+) {
+  final g = p['segment_ms']! ~/ 5, segments = <Segment>[];
+  for (var start = 0; start < count; start += g) {
+    final stop = math.min(start + g, count), s = Segment(5 * start, 5 * stop);
+    for (final ref in refs) {
+      if (start <= ref.sample && ref.sample < stop) {
+        s.refs++;
+        if (ref.beat != null) s.tp++;
+      }
+    }
+    s.fn = s.refs - s.tp;
+    for (final b in beats) {
+      if (start <= b.sample && b.sample < stop) {
+        s.beats++;
+        if (b.annotation == null) s.fp++;
+        if (b.rr > 0) s.rr.add(b.rr);
+      }
+    }
+    for (final peak in peaks) {
+      if (peak.category == 'noise' && start <= peak.time && peak.time < stop)
+        s.noisePeaks++;
+    }
+    segments.add(s);
+  }
+  return segments;
+}
+
+List<String> matchingErrors(
+  List<Beat> beats,
+  List<Annotation> refs,
+) => orderedTexts([
+  for (final b in beats)
+    if (b.annotation == null)
+      (
+        b.sample,
+        0,
+        'false_positive beat=${b.number} sample=${b.sample} time_ms=${5 * b.sample} label=${b.label}',
+      ),
+  for (final ref in refs)
+    if (ref.beat == null)
+      (
+        ref.sample,
+        1,
+        'false_negative sample=${ref.sample} time_ms=${5 * ref.sample} label=${ref.label}',
+      ),
+]);
+List<String> performanceLines(
+  List<Beat> beats,
+  List<Annotation> refs,
+  List<Peak> peaks,
+  Detection d,
+  Map<String, int> p,
+  List<Segment> segments,
+  int count,
+) {
+  final classes = <String, int>{},
+      referenceTypes = <String, int>{},
+      detectedTypes = <String, int>{},
+      confusion = <(String, String), int>{},
+      offsets = <int>[];
+  var tp = 0, fp = 0;
+  for (final ref in refs) {
+    referenceTypes[ref.label] = (referenceTypes[ref.label] ?? 0) + 1;
+    final label = ref.beat?.label ?? 'miss';
+    if (ref.beat != null) tp++;
+    final key = (ref.label, label);
+    confusion[key] = (confusion[key] ?? 0) + 1;
+  }
+  for (final b in beats) {
+    detectedTypes[b.label] = (detectedTypes[b.label] ?? 0) + 1;
+    if (b.annotation == null) {
+      fp++;
+      final key = ('extra', b.label);
+      confusion[key] = (confusion[key] ?? 0) + 1;
+    } else {
+      offsets.add(b.offset);
+    }
+  }
+  final fn = refs.length - tp;
+    'true_positives $tp',
+    'false_positives $fp',
+    'false_negatives $fn',
+    'sensitivity ${ratio(tp, tp + fn)}',
+    'positive_predictivity ${ratio(tp, tp + fp)}',
+    'detection_error_rate ${ratio(fp + fn, refs.length)}',
+  ];
+  final methods = <String>[];
+  for (final method in ['threshold', 'searchback']) {
+    final selected = beats.where((b) => b.method == method).toList();
+    methods.add(
+      '$method=${selected.where((b) => b.annotation != null).length}/${selected.length}',
+    );
+  }
+  lines.add('by_method ${methods.join(' ')}');
+  if (offsets.isEmpty) {
+    lines.add('offset_ms none');
+  } else {
+    final absolute = offsets.map((v) => v.abs()).toList();
+    lines.add(
+      'offset_ms mean=${two(rdiv(100 * sum(offsets), offsets.length))} mean_abs=${two(rdiv(100 * sum(absolute), offsets.length))} max_abs=${absolute.reduce(math.max)}',
+    );
+  }
+  lines.addAll([
+    'CONFUSION',
+    'ref  ${labels.map((label) => label.padLeft(6)).join()}  miss',
+  ]);
+  for (final refLabel in labels) {
+    lines.add(
+      '$refLabel    ${[...labels, 'miss'].map((label) => '${confusion[(refLabel, label)] ?? 0}'.padLeft(6)).join()}',
+    );
+  }
+  lines.add(
+    'extra${labels.map((label) => '${confusion[('extra', label)] ?? 0}'.padLeft(6)).join()}',
+  );
+  for (final (label, prefix) in [('V', 'veb'), ('A', 'sveb')]) {
+    final correct = confusion[(label, label)] ?? 0;
+    lines.addAll([
+      '${prefix}_sensitivity ${ratio(correct, referenceTypes[label] ?? 0)}',
+      '${prefix}_positive_predictivity ${ratio(correct, detectedTypes[label] ?? 0)}',
+    ]);
+  }
+  lines.add(
+    'SEGMENTS segment_ms=${p['segment_ms']} segments=${segments.length}',
+  );
+  for (final s in segments) {
+    lines.add(
+      '${s.startMS.toString().padLeft(6)}-${s.endMS.toString().padLeft(6)} refs=${s.refs} tp=${s.tp} fp=${s.fp} fn=${s.fn} noise_peaks=${s.noisePeaks}',
+    );
+  }
+  lines.add('ERRORS count=${fp + fn}');
+  lines.addAll(matchingErrors(beats, refs));
+  return lines;
+) {
+  final start = p['strip_start_ms']! ~/ 5,
+      count = p['strip_ms']! ~/ 5,
+      columns = count ~/ 10,
+  final beatMarkers = List.filled(columns, ' '),
+      refMarkers = List.filled(columns, ' ');
+  for (final b in beats) {
+    if (start <= b.sample && b.sample < end)
+      beatMarkers[(b.sample - start) ~/ 10] = b.label;
+  }
+  for (final ref in refs) {
+    if (start <= ref.sample && ref.sample < end)
+      refMarkers[(ref.sample - start) ~/ 10] = ref.label;
+  }
+  lines.addAll([
+    ' beats |${beatMarkers.join()}|',
+    '  refs |${refMarkers.join()}|',
+  ]);
+  return lines;
+  final samples = readECG(),
+      refs = readAnnotations(),
+      p = readParams(),
+      signals = filterECG(samples),
+      peaks = findPeaks(signals),
+      detection = detectBeats(peaks, signals, p),
+      beats = buildBeatList(detection.registered, signals.bandpass, p);
+  matchAnnotations(beats, refs, p);
+  final segments = segmentRows(beats, refs, peaks, samples.length, p);
+  Directory('output').createSync(recursive: true);
+  writeLines('beats.csv', beatLines(beats));
+  writeLines('matching.csv', matchingLines(beats, refs));
+  writeLines(
+    'performance.txt',
+    performanceLines(
+      beats,
+      refs,
+      peaks,
+      detection,
+      p,
+      segments,
+      samples.length,
+    ),
+  );
+  writeLines('rhythm_strip.txt', rhythmStripLines(samples, beats, refs, p));
+int floorDiv(int a, int b) => a ~/ b - (a < 0 && a.remainder(b) != 0 ? 1 : 0);
+int rdiv(int a, int b) => floorDiv(2 * a + b, 2 * b);
+String two(int v) =>
+    '${v < 0 ? '-' : ''}${v.abs() ~/ 100}.${(v.abs() % 100).toString().padLeft(2, '0')}';
+String fraction(int a, int b) {
+  final divisor = a.gcd(b);
+  return '${a ~/ divisor}/${b ~/ divisor}';
+}
+
+String ratio(int a, int b) => b == 0
+    ? '$a/0 none'
+    : '$a/$b reduced=${fraction(a, b)} percent=${two(rdiv(10000 * a, b))}';

@@ -1,0 +1,575 @@
+Prohibitions prohibitions_new(const Grid *g, int max_time) {
+    Prohibitions b = {.cells = g->width * g->height, .width = g->width, .max_time = max_time};
+    size_t size = (size_t)(max_time + 1) * b.cells;
+    b.states = allocate(size);
+    b.moves = allocate(size);
+    memset(b.states, 0, size);
+    memset(b.moves, 0, size);
+    for (int i = 0; i < b.cells; ++i)
+        b.permanent[i] = -1;
+    return b;
+}
+bool allowed(const Prohibitions *b, int u, int v, int time) {
+    if (b->states[(size_t)time * b->cells + v])
+        return false;
+    if (b->permanent[v] >= 0 && b->permanent[v] <= time)
+        return false;
+    return u == v || !(b->moves[(size_t)time * b->cells + u] & move_bit(b, u, v));
+}
+int arrival_allowed(const Prohibitions *b, int goal) {
+    int result = 0;
+    for (int t = 0; t <= b->max_time; ++t)
+        if (b->states[(size_t)t * b->cells + goal])
+            result = t + 1;
+    return result;
+}
+void reserve_path(Prohibitions *b, const Path *path, int start, bool permanent) {
+    for (int k = 0; k < path->count; ++k) {
+        int c = path->cells[k], time = start + k;
+        b->states[(size_t)time * b->cells + c] = 1;
+        if (k && c != path->cells[k - 1])
+            b->moves[(size_t)time * b->cells + c] |= move_bit(b, c, path->cells[k - 1]);
+    }
+    if (permanent) {
+        int goal = path->cells[path->count - 1], time = start + path->count - 1;
+        if (b->permanent[goal] < 0 || time < b->permanent[goal])
+            b->permanent[goal] = time;
+    }
+}
+Path *low_level(const Grid *g, int agent, int start, int t0, int tmax, const Prohibitions *b,
+                bool window, Counters *counter) {
+    ++counter->searches;
+    int cells = g->width * g->height, maximum = (tmax - t0 + 1) * cells,
+        arrival = arrival_allowed(b, g->agents[agent].goal);
+    SearchState *states = allocate((size_t)maximum * sizeof(SearchState));
+    int *heap = allocate((size_t)maximum * sizeof(int));
+    uint8_t *generated = allocate((size_t)maximum);
+    memset(generated, 0, (size_t)maximum);
+    states[0] = (SearchState){start, t0, g->distance[agent][start], 0, -1};
+    generated[start] = 1;
+    heap[0] = 0;
+    int state_count = 1, open_count = 1;
+    Path *result = NULL;
+    while (open_count) {
+        int index = heap_pop(heap, &open_count, states);
+        SearchState state = states[index];
+        if (++counter->expansions > counter->limit) {
+            counter->aborted = true;
+            break;
+        }
+        if ((state.cell == g->agents[agent].goal && state.time >= arrival) ||
+            (window && state.time == tmax)) {
+            result = path_new();
+            while (index >= 0) {
+                path_append(result, states[index].cell);
+                index = states[index].parent;
+            }
+            for (int i = 0, j = result->count - 1; i < j; ++i, --j) {
+                int value = result->cells[i];
+                result->cells[i] = result->cells[j];
+                result->cells[j] = value;
+            }
+            break;
+        }
+        if (state.time == tmax)
+            continue;
+        Destinations next = destinations(g, state.cell);
+        for (int i = 0; i < next.count; ++i) {
+            int v = next.items[i], distance = state.time + 1 - t0, key = distance * cells + v;
+            if (g->distance[agent][v] < 0 || generated[key] ||
+                !allowed(b, state.cell, v, state.time + 1))
+                continue;
+            generated[key] = 1;
+            int serial = state_count++;
+            states[serial] =
+                (SearchState){v, state.time + 1, distance + g->distance[agent][v], distance, index};
+            heap_push(heap, &open_count, serial, states);
+        }
+    }
+    free(states);
+    free(heap);
+    free(generated);
+    return result;
+}
+void read_grid(Grid *g) {
+    memset(g, 0, sizeof(*g));
+    FILE *file = open_file("input/map.txt", "r");
+    char *line = read_line(file);
+    sscanf(line, "%d %d", &g->width, &g->height);
+    free(line);
+    for (int y = 0; y < g->height; ++y) {
+        line = read_line(file);
+        strcpy(g->rows[y], line);
+        free(line);
+    }
+    fclose(file);
+    file = open_file("input/agents.csv", "r");
+    free(read_line(file));
+    while ((line = read_line(file))) {
+        int id, sx, sy, gx, gy;
+        sscanf(line, "%d,%d,%d,%d,%d", &id, &sx, &sy, &gx, &gy);
+        g->agents[g->agent_count++] = (Agent){sy * g->width + sx, gy * g->width + gx};
+        free(line);
+    }
+    fclose(file);
+    for (int i = 0; i < g->agent_count; ++i)
+        distances(g, g->agents[i].goal, g->distance[i]);
+}
+static void read_parameters(Parameters *p, int n) {
+    memset(p, 0, sizeof(*p));
+    p->order_count = 1;
+    for (int i = 0; i < n; ++i)
+        p->orders[0][i] = i;
+    FILE *file = open_file("input/params.txt", "r");
+    char *line;
+    while ((line = read_line(file))) {
+        Words a = split_words(line);
+        if (strcmp(a.items[0], "HORIZON") == 0)
+            p->horizon = atoi(a.items[1]);
+        else if (strcmp(a.items[0], "HL_BUDGET") == 0)
+            p->high_budget = atoi(a.items[1]);
+        else if (strcmp(a.items[0], "LL_BUDGET") == 0)
+            p->low_budget = atoi(a.items[1]);
+        else if (strcmp(a.items[0], "WINDOW") == 0) {
+            p->window = atoi(a.items[1]);
+            p->step = atoi(a.items[2]);
+        } else if (strcmp(a.items[0], "ORDER") == 0) {
+            int *order = p->orders[p->order_count++];
+            for (int i = 0; i < n; ++i)
+                order[i] = atoi(a.items[i + 1]);
+        } else if (strcmp(a.items[0], "RUN") == 0) {
+            RunDefinition *d = &p->runs[p->run_count++];
+            d->solver = strcmp(a.items[1], "PP") == 0     ? SOLVER_PP
+                        : strcmp(a.items[1], "CBS") == 0  ? SOLVER_CBS
+                        : strcmp(a.items[1], "ICBS") == 0 ? SOLVER_ICBS
+                                                          : SOLVER_WHCA;
+            d->makespan = strcmp(a.items[2], "MAKESPAN") == 0;
+            snprintf(d->name, sizeof(d->name), "%s-%s", a.items[1], a.items[2]);
+        } else if (strcmp(a.items[0], "ANIMATE") == 0) {
+            strcpy(p->animate, a.items[1]);
+            p->frames = atoi(a.items[2]);
+        } else
+            p->delays[p->delay_count++] =
+                (Delay){atoi(a.items[1]), atoi(a.items[2]), atoi(a.items[3])};
+        free(a.items);
+        free(line);
+    }
+    fclose(file);
+}
+static void solve_pp(const Grid *g, const Parameters *p, Run *r) {
+    for (int k = 0; k < p->order_count; ++k) {
+        ++r->high;
+        int before = r->counter.expansions;
+        PriorityResult result = prioritized(g, p, p->orders[k], k + 1, r);
+        if (r->counter.aborted) {
+            r->reason = "ll_budget";
+            return;
+        }
+        char order[21];
+        for (int i = 0; i < g->agent_count; ++i)
+            order[i] = (char)('A' + p->orders[k][i]);
+        order[g->agent_count] = 0;
+        if (result.paths.count) {
+            r->paths = result.paths;
+            lines_add(&r->specific,
+                      format_text("order %d %s planned %d expansions %d ok", k + 1, order,
+                                  result.planned, r->counter.expansions - before));
+            r->end = format_text("end OK order %d", k + 1);
+            return;
+        }
+        lines_add(&r->specific,
+                  format_text("order %d %s planned %d expansions %d failed %c", k + 1, order,
+                              result.planned, r->counter.expansions - before, 'A' + result.failed));
+    }
+    r->reason = "orders";
+}
+static void metrics(const Grid *g, const Plan *paths, PlanMetrics *m) {
+    memset(m, 0, sizeof(*m));
+    plan_costs(paths, &m->soc, &m->makespan);
+    m->arrivals = allocate((size_t)(m->makespan + 1) * sizeof(int));
+    memset(m->arrivals, 0, (size_t)(m->makespan + 1) * sizeof(int));
+    for (int i = 0; i < paths->count; ++i) {
+        Path *path = paths->paths[i];
+        AgentMetrics *a = &m->agents[i];
+        a->cost = path->count - 1;
+        a->extra = a->cost - g->distance[i][g->agents[i].start];
+        a->arrival = -1;
+        a->actions = actions(g, path);
+        bool seen[1024] = {0};
+        char last = 0;
+        for (int t = 0; t < path->count; ++t) {
+            int c = path->cells[t];
+            seen[c] = true;
+            if (c == g->agents[i].goal && a->arrival < 0)
+                a->arrival = t;
+            if (!t)
+                continue;
+            if (c == path->cells[t - 1]) {
+                ++a->waits;
+                ++m->cell_waits[c];
+            } else {
+                char direction = action(g, path->cells[t - 1], c);
+                if (last && last != direction)
+                    ++a->turns;
+                last = direction;
+            }
+            if (path->cells[t - 1] == g->agents[i].goal && c != g->agents[i].goal)
+                ++a->leave;
+        }
+        for (int c = 0; c < g->width * g->height; ++c)
+            if (seen[c])
+                ++m->traffic[c];
+        for (int t = a->cost; t <= m->makespan; ++t)
+            ++m->arrivals[t];
+        m->sum_extra += a->extra;
+        if (a->extra > m->max_extra)
+            m->max_extra = a->extra;
+        m->waits += a->waits;
+        m->turns += a->turns;
+    }
+    for (int c = 0; c < g->width * g->height; ++c)
+        if (m->traffic[c]) {
+            int at = 0;
+            while (at < m->hotspot_count &&
+                   (m->traffic[m->hotspots[at]] > m->traffic[c] ||
+                    (m->traffic[m->hotspots[at]] == m->traffic[c] && m->hotspots[at] < c)))
+                ++at;
+            if (at >= 5)
+                continue;
+            int end = m->hotspot_count < 5 ? m->hotspot_count : 4;
+            for (int i = end; i > at; --i)
+                m->hotspots[i] = m->hotspots[i - 1];
+            m->hotspots[at] = c;
+            if (m->hotspot_count < 5)
+                ++m->hotspot_count;
+        }
+}
+static Lines validation(const Grid *g, const char *name, const Plan *paths, bool independent) {
+    int start = 0, goal = 0, moves = 0, follows = 0, vertex = 0, edge = 0;
+    for (int i = 0; i < paths->count; ++i) {
+        Path *path = paths->paths[i];
+        start += path->cells[0] != g->agents[i].start;
+        goal += path->cells[path->count - 1] != g->agents[i].goal;
+        for (int t = 1; t < path->count; ++t) {
+            Destinations next = destinations(g, path->cells[t - 1]);
+            bool valid = false;
+            for (int j = 0; j < next.count; ++j)
+                if (next.items[j] == path->cells[t])
+                    valid = true;
+            if (!valid)
+                ++moves;
+        }
+    }
+    Conflicts sequence = conflicts(paths);
+    for (size_t i = 0; i < sequence.count; ++i)
+        if (sequence.items[i].edge)
+            ++edge;
+        else
+            ++vertex;
+    int soc, last;
+    plan_costs(paths, &soc, &last);
+    for (int t = 1; t <= last; ++t)
+        for (int a = 0; a < paths->count; ++a)
+            for (int b = 0; b < paths->count; ++b)
+                if (a != b && position(paths->paths[a], t) != position(paths->paths[a], t - 1) &&
+                    position(paths->paths[a], t) == position(paths->paths[b], t - 1) &&
+                    position(paths->paths[b], t) != position(paths->paths[a], t - 1))
+                    ++follows;
+    Lines result = {0};
+    lines_add(
+        &result,
+        format_text("plan %s verdict %s start %d goal %d moves %d vertex %d edge %d follows %d",
+                    name, start + goal + moves + vertex + edge ? "INVALID" : "VALID", start, goal,
+                    moves, vertex, edge, follows));
+    int *cache[20] = {0};
+    ConstraintList *constraints[20] = {0};
+    for (size_t i = 0; i < sequence.count; ++i) {
+        Conflict c = sequence.items[i];
+        char *text = conflict_text(g, c);
+        lines_add(
+            &result,
+            format_text("  %s%s%s", text, independent ? " " : "",
+                        independent ? class_names[classify(g, c, paths, constraints, cache)] : ""));
+        free(text);
+    }
+    cache_free(cache);
+    free(sequence.items);
+    return result;
+}
+static Lines frames(const Grid *g, const Parameters *p, const Run *r) {
+    Lines result = {0};
+    if (!r->paths.count) {
+        lines_add(&result, format_text("run %s FAIL", p->animate));
+        return result;
+    }
+    lines_add(&result, format_text("run %s frames %d", p->animate, p->frames));
+    for (int t = 0; t < p->frames; ++t) {
+        char picture[32][33];
+        memcpy(picture, g->rows, sizeof(picture));
+        for (int i = 0; i < g->agent_count; ++i)
+            picture[g->agents[i].goal / g->width][g->agents[i].goal % g->width] = (char)('a' + i);
+        int done = 0, moving = 0, waiting = 0;
+        for (int i = 0; i < r->paths.count; ++i) {
+            Path *path = r->paths.paths[i];
+            int c = position(path, t);
+            picture[c / g->width][c % g->width] = (char)('A' + i);
+            if (t >= path->count - 1)
+                ++done;
+            else if (t >= 1 && position(path, t) != position(path, t - 1))
+                ++moving;
+            else
+                ++waiting;
+        }
+        lines_add(&result, copy_text(""));
+        lines_add(&result,
+                  format_text("frame %d done %d moving %d waiting %d", t, done, moving, waiting));
+        for (int y = 0; y < g->height; ++y)
+            lines_add(&result, copy_text(picture[y]));
+    }
+    lines_add(&result, copy_text(""));
+    lines_add(&result, copy_text("traffic"));
+    count_picture(&result, g, r->metrics.traffic);
+    lines_add(&result, copy_text(""));
+    lines_add(&result, copy_text("waits"));
+    count_picture(&result, g, r->metrics.cell_waits);
+    return result;
+}
+static Lines run_block(const Grid *g, const Run *r) {
+    Lines result = {0};
+    const RunDefinition *d = &r->definition;
+    if (!r->paths.count) {
+        lines_add(&result,
+                  format_text("run %s solver %s cost_function %s result FAIL reason %s", d->name,
+                              solver_name(d->solver), cost_function(d->makespan), r->reason));
+        lines_copy(&result, &r->specific);
+        return result;
+    }
+    const PlanMetrics *m = &r->metrics;
+    int cost = d->makespan ? m->makespan : m->soc, lower = 0;
+    for (int i = 0; i < g->agent_count; ++i) {
+        int distance = g->distance[i][g->agents[i].start];
+        if (!d->makespan)
+            lower += distance;
+        else if (distance > lower)
+            lower = distance;
+    }
+    char *ratio = fraction(cost, lower);
+    lines_add(&result,
+              format_text(
+                  "run %s solver %s cost_function %s result OK cost %d soc %d makespan %d ratio %s",
+                  d->name, solver_name(d->solver), cost_function(d->makespan), cost, m->soc,
+                  m->makespan, ratio));
+    free(ratio);
+    lines_copy(&result, &r->specific);
+    for (int i = 0; i < g->agent_count; ++i) {
+        const AgentMetrics *a = &m->agents[i];
+        lines_add(
+            &result,
+            format_text("agent %c cost %d extra %d waits %d turns %d arrive %d leave %d moves %s",
+                        'A' + i, a->cost, a->extra, a->waits, a->turns, a->arrival, a->leave,
+                        a->actions));
+    }
+    char *arrivals = integers(m->arrivals, m->makespan + 1);
+    lines_add(&result, format_text("arrivals %s", arrivals));
+    free(arrivals);
+    Text hotspots = {0};
+    text_add(&hotspots, "hotspots");
+    for (int i = 0; i < m->hotspot_count; ++i) {
+        int c = m->hotspots[i];
+        char *notation = cell_text(g, c);
+        text_format(&hotspots, " %s:%d", notation, m->traffic[c]);
+        free(notation);
+    }
+    lines_add(&result, text_take(&hotspots));
+    const Execution *e = &r->execution;
+    if (e->deadlock)
+        lines_add(&result, format_text("execution deadlock time %d", e->time));
+    else {
+        char *finish = integers(e->finish, g->agent_count);
+        lines_add(&result, format_text("execution soc %d makespan %d blocked %d finish %s", e->soc,
+                                       e->makespan, e->blocked, finish));
+        free(finish);
+    }
+    return result;
+}
+int main(void) {
+    Grid *g = allocate(sizeof(*g));
+    read_grid(g);
+    Parameters p;
+    read_parameters(&p, g->agent_count);
+    Plan independent = {.count = g->agent_count};
+    Counters counter = {.limit = INT_MAX};
+    Prohibitions empty = prohibitions_new(g, p.horizon);
+    for (int i = 0; i < g->agent_count; ++i)
+        independent.paths[i] =
+            low_level(g, i, g->agents[i].start, 0, p.horizon, &empty, false, &counter);
+    prohibitions_free(&empty);
+    Lines solutions = overview(g, &p, &independent),
+          validations = validation(g, "INDEPENDENT", &independent, true), stats = {0}, trace = {0};
+    lines_add(
+        &stats,
+        copy_text(
+            "run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions"));
+    Run *runs = allocate((size_t)p.run_count * sizeof(Run));
+    memset(runs, 0, (size_t)p.run_count * sizeof(Run));
+    int successful[10], success_count = 0, animated = 0;
+    for (int i = 0; i < p.run_count; ++i) {
+        Run *r = &runs[i];
+        r->definition = p.runs[i];
+        r->counter.limit = p.low_budget;
+        if (r->definition.solver == SOLVER_PP)
+            solve_pp(g, &p, r);
+        else if (r->definition.solver == SOLVER_WHCA)
+            solve_whca(g, &p, r);
+        else
+            solve_cbs(g, &p, r);
+        if (r->paths.count) {
+            metrics(g, &r->paths, &r->metrics);
+            r->execution = delayed(&r->paths, &p);
+            successful[success_count++] = i;
+            append_owned(&validations, validation(g, r->definition.name, &r->paths, false));
+        } else {
+            lines_add(&validations, format_text("plan %s verdict NONE", r->definition.name));
+            r->end = format_text("end FAIL %s", r->reason);
+        }
+        lines_add(&solutions, copy_text(""));
+        append_owned(&solutions, run_block(g, r));
+        lines_add(&stats, stats_line(r));
+        if (i)
+            lines_add(&trace, copy_text(""));
+        lines_add(&trace, format_text("run %s", r->definition.name));
+        lines_copy(&trace, &r->trace);
+        lines_add(&trace, copy_text(r->end));
+        if (strcmp(r->definition.name, p.animate) == 0)
+            animated = i;
+    }
+    lines_add(&solutions, copy_text(""));
+    lines_add(&solutions,
+              format_text("summary ok %d failed %d", success_count, p.run_count - success_count));
+    if (success_count) {
+        int best_soc = runs[successful[0]].metrics.soc,
+            best_max = runs[successful[0]].metrics.makespan;
+        for (int i = 1; i < success_count; ++i) {
+            Run *r = &runs[successful[i]];
+            if (r->metrics.soc < best_soc)
+                best_soc = r->metrics.soc;
+            if (r->metrics.makespan < best_max)
+                best_max = r->metrics.makespan;
+        }
+        Text soc = {0}, maximum = {0};
+        text_format(&soc, "best_soc %d", best_soc);
+        text_format(&maximum, "best_makespan %d", best_max);
+        for (int i = 0; i < success_count; ++i) {
+            Run *r = &runs[successful[i]];
+            if (r->metrics.soc == best_soc)
+                text_format(&soc, " %s", r->definition.name);
+            if (r->metrics.makespan == best_max)
+                text_format(&maximum, " %s", r->definition.name);
+        }
+        lines_add(&solutions, text_take(&soc));
+        lines_add(&solutions, text_take(&maximum));
+        for (int i = 1; i < success_count; ++i) {
+            int current = successful[i], j = i;
+            while (j > 0) {
+                int previous = successful[j - 1];
+                PlanMetrics *a = &runs[current].metrics, *b = &runs[previous].metrics;
+                bool less = a->soc != b->soc             ? a->soc < b->soc
+                            : a->makespan != b->makespan ? a->makespan < b->makespan
+                                                         : current < previous;
+                if (!less)
+                    break;
+                successful[j] = previous;
+                --j;
+            }
+            successful[j] = current;
+        }
+        Text ranking = {0};
+        text_add(&ranking, "ranking");
+        for (int i = 0; i < success_count; ++i)
+            text_format(&ranking, " %s", runs[successful[i]].definition.name);
+        lines_add(&solutions, text_take(&ranking));
+    }
+    Lines animation = frames(g, &p, &runs[animated]);
+    if (mkdir("output", 0777) != 0 && errno != EEXIST) {
+        perror("output");
+        exit(EXIT_FAILURE);
+    }
+    write_lines("solutions.txt", &solutions);
+    write_lines("stats.csv", &stats);
+    write_lines("validation.txt", &validations);
+    write_lines("trace.txt", &trace);
+    write_lines("frames.txt", &animation);
+    lines_free(&solutions);
+    lines_free(&stats);
+    lines_free(&validations);
+    lines_free(&trace);
+    lines_free(&animation);
+    for (int i = 0; i < p.run_count; ++i)
+        run_free(&runs[i]);
+    free(runs);
+    plan_release(&independent);
+    free(g);
+    return EXIT_SUCCESS;
+}
+int position(const Path *path, int time) {
+    return path->cells[time < path->count ? time : path->count - 1];
+}
+void plan_costs(const Plan *paths, int *soc, int *makespan) {
+    *soc = *makespan = 0;
+    for (int i = 0; i < paths->count; ++i) {
+        int cost = paths->paths[i]->count - 1;
+        *soc += cost;
+        if (cost > *makespan)
+            *makespan = cost;
+    }
+}
+Conflicts conflicts(const Plan *paths) {
+    Conflicts result = {0};
+    int soc, last;
+    plan_costs(paths, &soc, &last);
+    for (int t = 1; t <= last; ++t)
+        for (int a = 0; a < paths->count; ++a)
+            for (int b = a + 1; b < paths->count; ++b) {
+                int u = position(paths->paths[a], t - 1), v = position(paths->paths[a], t),
+                    bu = position(paths->paths[b], t - 1), bv = position(paths->paths[b], t);
+                bool vertex = v == bv, edge = !vertex && v == bu && bv == u;
+                if (!vertex && !edge)
+                    continue;
+                if (result.count == result.capacity) {
+                    result.capacity = result.capacity ? result.capacity * 2 : 32;
+                    result.items = resize(result.items, result.capacity * sizeof(Conflict));
+                }
+                result.items[result.count++] = (Conflict){t, a, b, vertex ? v : u, v, edge};
+            }
+    return result;
+}
+PriorityResult prioritized(const Grid *g, const Parameters *p, const int *order, int number,
+                           Run *r) {
+    Prohibitions b = prohibitions_new(g, p->horizon);
+    PriorityResult result = {.paths = {.count = g->agent_count}, .failed = -1};
+    for (int i = 0; i < g->agent_count; ++i) {
+        int agent = order[i], before = r->counter.expansions;
+        Path *path =
+            low_level(g, agent, g->agents[agent].start, 0, p->horizon, &b, false, &r->counter);
+        if (r->counter.aborted) {
+            result.failed = agent;
+            plan_release(&result.paths);
+            break;
+        }
+        if (!path) {
+            lines_add(&r->trace, format_text("order %d agent %c failed expansions %d", number,
+                                             'A' + agent, r->counter.expansions - before));
+            result.failed = agent;
+            plan_release(&result.paths);
+            break;
+        }
+        lines_add(&r->trace,
+                  format_text("order %d agent %c cost %d expansions %d", number, 'A' + agent,
+                              path->count - 1, r->counter.expansions - before));
+        result.paths.paths[agent] = path;
+        ++result.planned;
+        reserve_path(&b, path, 0, true);
+    }
+    prohibitions_free(&b);
+    return result;
+}

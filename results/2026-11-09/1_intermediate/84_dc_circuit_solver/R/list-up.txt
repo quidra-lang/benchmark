@@ -1,0 +1,282 @@
+options(scipen = 999)
+
+circuit_error <- function(message) {
+  stop(structure(list(message = message, call = NULL), class = c("circuit_error", "error", "condition")))
+}
+positive_divmod <- function(a, b) {
+  q <- floor(a / b)
+  r <- a - q * b
+  if (r < 0) {
+    q <- q - 1
+    r <- r + b
+  } else if (r >= b) {
+    q <- q + 1
+    r <- r - b
+  }
+  c(q, r)
+}
+rational <- function(p = 0, q = 1) {
+  if (p == 0) return(c(0, 1))
+  if (q < 0) {
+    p <- -p
+    q <- -q
+  }
+  a <- abs(p)
+  b <- q
+  while (b != 0) {
+    remainder <- positive_divmod(a, b)[[2]]
+    a <- b
+    b <- remainder
+  }
+  c(p / a, q / a)
+}
+add <- function(x, y) rational(x[[1]] * y[[2]] + y[[1]] * x[[2]], x[[2]] * y[[2]])
+subtract <- function(x, y) rational(x[[1]] * y[[2]] - y[[1]] * x[[2]], x[[2]] * y[[2]])
+multiply <- function(x, y) rational(x[[1]] * y[[1]], x[[2]] * y[[2]])
+divide <- function(x, y) rational(x[[1]] * y[[2]], x[[2]] * y[[1]])
+negate <- function(x) c(-x[[1]], x[[2]])
+compare <- function(x, y) sign(x[[1]] * y[[2]] - y[[1]] * x[[2]])
+integer_text <- function(value) sprintf("%.0f", value)
+fraction <- function(value) {
+  if (value[[2]] == 1) integer_text(value[[1]]) else paste0(integer_text(value[[1]]), "/", integer_text(value[[2]]))
+}
+formatted <- function(value) {
+  scaled <- positive_divmod(abs(value[[1]]) * 1000000, value[[2]])[[1]]
+  parts <- positive_divmod(scaled, 1000000)
+  decimal <- paste0(if (value[[1]] < 0) "-" else "", integer_text(parts[[1]]), ".", sprintf("%06.0f", parts[[2]]))
+  paste0(fraction(value), " (", decimal, ")")
+}
+rational_number <- function(text) {
+  multiplier <- rational(1)
+  suffixes <- list(meg = rational(1000000), k = rational(1000), m = rational(1, 1000), u = rational(1, 1000000))
+  for (suffix in names(suffixes)) {
+    if (endsWith(text, suffix)) {
+      text <- substr(text, 1L, nchar(text) - nchar(suffix))
+      multiplier <- suffixes[[suffix]]
+      break
+    }
+  }
+  if (!grepl("^-?[0-9]+([.][0-9]+|/[0-9]+)?$", text)) return(NULL)
+  if (grepl("/", text, fixed = TRUE)) {
+    parts <- strsplit(text, "/", fixed = TRUE)[[1]]
+    q <- as.numeric(parts[[2]])
+    if (q == 0) return(NULL)
+    value <- rational(as.numeric(parts[[1]]), q)
+  } else if (grepl(".", text, fixed = TRUE)) {
+    parts <- strsplit(text, ".", fixed = TRUE)[[1]]
+    q <- 10 ^ nchar(parts[[2]])
+    p <- abs(as.numeric(parts[[1]])) * q + as.numeric(parts[[2]])
+    value <- rational(if (startsWith(text, "-")) -p else p, q)
+  } else {
+    value <- rational(as.numeric(text))
+  }
+  multiply(value, multiplier)
+}
+zeros <- function(n) replicate(n, rational(), simplify = FALSE)
+solve_system <- function(matrix, rhs) {
+  n <- length(rhs)
+  rows <- lapply(seq_len(n), function(i) c(matrix[[i]], list(rhs[[i]])))
+  for (k in seq_len(n)) {
+    pivot <- NULL
+    for (i in seq.int(k, n)) {
+      if (rows[[i]][[k]][[1]] != 0) {
+        pivot <- i
+        break
+      }
+    }
+    if (is.null(pivot)) return(NULL)
+    if (pivot != k) {
+      row <- rows[[k]]
+      rows[[k]] <- rows[[pivot]]
+      rows[[pivot]] <- row
+    }
+    divisor <- rows[[k]][[k]]
+    rows[[k]] <- lapply(rows[[k]], function(entry) divide(entry, divisor))
+    for (i in seq_len(n)) {
+      if (i == k || rows[[i]][[k]][[1]] == 0) next
+      factor <- rows[[i]][[k]]
+      for (j in seq_len(n + 1L)) rows[[i]][[j]] <- subtract(rows[[i]][[j]], multiply(factor, rows[[k]][[j]]))
+    }
+  }
+  lapply(rows, function(row) row[[n + 1L]])
+}
+reachable <- function(start, edges) {
+  seen <- start
+  queue <- start
+  while (length(queue) != 0L) {
+    node <- queue[[1]]
+    queue <- queue[-1L]
+    for (edge in edges) {
+      a <- edge[[1]]
+      b <- edge[[2]]
+      if (a != node && b != node) next
+      other <- if (a == node) b else a
+      if (!(other %in% seen)) {
+        seen <- c(seen, other)
+        queue <- c(queue, other)
+      }
+    }
+  }
+  seen
+}
+new_groups <- function(nodes) {
+  parent <- setNames(as.list(nodes), nodes)
+  find <- function(node) {
+    if (parent[[node]] != node) parent[[node]] <<- find(parent[[node]])
+    parent[[node]]
+  }
+  join <- function(a, b) {
+    roots <- sort(c(find(a), find(b)), method = "radix")
+    parent[[roots[[2]]]] <<- roots[[1]]
+  }
+  list(find = find, join = join)
+}
+circuit <- function() {
+  counts <- c(".OP" = 0L, ".CURRENT" = 1L, ".VOLTAGE" = 2L, ".POWER" = 0L, ".KCL" = 1L, ".THEVENIN" = 2L, ".NORTON" = 2L, ".MAXPOWER" = 2L, ".TF" = 2L, ".SENS" = 1L, ".ZPARAM" = 4L, ".SUPERPOSITION" = 1L, ".SWEEP" = 5L, ".MATRIX" = 0L, ".REQ" = 2L, ".REDUCE" = 2L, ".CHECK" = 0L, ".ALTER" = 2L, ".DELETE" = 1L, ".CLEAR" = 0L, ".NODES" = 0L, ".PRINT" = 0L)
+  state <- new.env(parent = emptyenv())
+  state$elements <- list()
+  nodes <- function() {
+    all <- unlist(lapply(state$elements, function(item) item$nodes), use.names = FALSE)
+    sort(setdiff(unique(all), "0"), method = "radix")
+  }
+  sources <- function() Filter(function(item) item$type %in% c("V", "E", "H"), state$elements)
+  element_index <- function(name) {
+    for (i in seq_along(state$elements)) if (state$elements[[i]]$name == name) return(i)
+    circuit_error(paste0("unknown element ", name))
+  }
+  element <- function(name) state$elements[[element_index(name)]]
+  node <- function(name) {
+    if (name != "0" && !(name %in% nodes())) circuit_error(paste0("unknown node ", name))
+  }
+  number <- function(text) {
+    value <- rational_number(text)
+    if (is.null(value)) circuit_error(paste0("invalid value ", text))
+    value
+  }
+  add_element <- function(words) {
+    name <- words[[1]]
+    type <- substr(name, 1L, 1L)
+    if (!(type %in% c("R", "V", "I", "E", "G", "F", "H"))) circuit_error(paste0("unknown element type ", name))
+    count <- if (type %in% c("E", "G")) 6L else if (type %in% c("F", "H")) 5L else 4L
+    if (length(words) != count) circuit_error(paste0("wrong field count for ", name))
+    if (any(vapply(state$elements, function(item) item$name == name, logical(1)))) circuit_error(paste0("duplicate element ", name))
+    terminals <- words[seq.int(2L, if (type %in% c("E", "G")) 5L else 3L)]
+    for (terminal in terminals) if (!grepl("^(0|[a-z][a-z0-9]{0,7})$", terminal)) circuit_error(paste0("invalid node ", terminal))
+    reference <- if (type %in% c("F", "H")) words[[4]] else NULL
+    value <- number(tail(words, 1L))
+    if (type == "R" && value[[1]] <= 0) circuit_error(paste0("nonpositive resistance ", name))
+    state$elements[[length(state$elements) + 1L]] <- list(name = name, type = type, nodes = terminals, value = value, reference = reference)
+    character()
+  }
+  grounding <- function() {
+    reachable("0", lapply(Filter(function(item) item$type %in% c("R", "V", "E", "H"), state$elements), function(item) item$nodes[1:2]))
+  }
+  voltage_loops <- function() {
+    groups <- new_groups(c("0", nodes()))
+    result <- character()
+    for (item in sources()) {
+      a <- item$nodes[[1]]
+      b <- item$nodes[[2]]
+      if (groups$find(a) == groups$find(b)) result <- c(result, item$name)
+      groups$join(a, b)
+    }
+    result
+  }
+  structure_check <- function() {
+    names <- nodes()
+    if (length(names) == 0L) circuit_error("no nodes")
+    grounded <- grounding()
+    for (name in names) if (!(name %in% grounded)) circuit_error(paste0("floating node ", name))
+    loops <- voltage_loops()
+    if (length(loops) != 0L) circuit_error(paste0("voltage source loop at ", loops[[1]]))
+  }
+  equations <- function(overrides = list()) {
+    labels <- c(nodes(), vapply(sources(), function(item) item$name, character(1)))
+    index <- setNames(as.list(seq_along(labels)), labels)
+    n <- length(labels)
+    matrix <- replicate(n, zeros(n), simplify = FALSE)
+    rhs <- zeros(n)
+    put <- function(row, column, value) {
+      if (row != "0" && column != "0") {
+        i <- index[[row]]
+        j <- index[[column]]
+        matrix[[i]][[j]] <<- add(matrix[[i]][[j]], value)
+      }
+    }
+    put_rhs <- function(row, value) {
+      if (row != "0") rhs[[index[[row]]]] <<- add(rhs[[index[[row]]]], value)
+    }
+    for (item in state$elements) {
+      a <- item$nodes[[1]]
+      b <- item$nodes[[2]]
+      c <- if (length(item$nodes) == 4L) item$nodes[[3]] else NULL
+      d <- if (length(item$nodes) == 4L) item$nodes[[4]] else NULL
+      value <- if (is.null(overrides[[item$name]])) item$value else overrides[[item$name]]
+      if (item$type == "R") {
+        g <- divide(rational(1), value)
+        put(a, a, g)
+        put(b, b, g)
+        put(a, b, negate(g))
+        put(b, a, negate(g))
+      } else if (item$type == "I") {
+        put_rhs(a, negate(value))
+        put_rhs(b, value)
+      } else if (item$type == "G") {
+        put(a, c, value)
+        put(b, d, value)
+        put(a, d, negate(value))
+        put(b, c, negate(value))
+      }
+    }
+    list(matrix = matrix, rhs = rhs, labels = labels, index = index)
+  }
+  potential <- function(solution, index, name) {
+    if (name == "0") rational() else solution[[index[[name]]]]
+  }
+  command <- function(words) {
+    cmd <- words[[1]]
+    args <- words[-1L]
+    if (!(cmd %in% names(counts))) circuit_error(paste0("unknown command ", cmd))
+    if (length(args) != counts[[cmd]]) circuit_error(paste0("wrong argument count for ", cmd))
+    if (cmd == ".SWEEP") {
+      item <- element(args[[1]])
+      from <- number(args[[2]])
+      to <- number(args[[3]])
+      step <- number(args[[4]])
+      node(args[[5]])
+      if (step[[1]] <= 0) circuit_error("invalid sweep step")
+      if (compare(from, to) > 0) circuit_error("invalid sweep range")
+      range <- divide(subtract(to, from), step)
+      count <- positive_divmod(range[[1]], range[[2]])[[1]] + 1L
+      if (count > 20L) circuit_error("too many sweep points")
+      if (item$type == "R" && from[[1]] <= 0) circuit_error(paste0("nonpositive resistance ", item$name))
+      structure_check()
+      lines <- character()
+      for (k in seq_len(count) - 1L) {
+        x <- add(from, multiply(rational(k), step))
+        system <- equations(setNames(list(x), item$name))
+        solution <- solve_system(system$matrix, system$rhs)
+        text <- if (is.null(solution)) "singular matrix" else paste0("V(", args[[5]], ") = ", formatted(potential(solution, system$index, args[[5]])))
+        lines <- c(lines, paste0(item$name, " = ", fraction(x), ": ", text))
+      }
+      return(lines)
+    }
+  }
+  input <- file("stdin", open = "r")
+  on.exit(close(input))
+  number_line <- 0L
+  repeat {
+    lines <- readLines(input, n = 1L, warn = FALSE)
+    if (length(lines) == 0L || lines[[1]] == ".END") break
+    number_line <- number_line + 1L
+    line <- lines[[1]]
+    if (startsWith(line, "*")) next
+    output <- tryCatch({
+      words <- strsplit(line, " ", fixed = TRUE)[[1]]
+      if (startsWith(line, ".")) command(words) else add_element(words)
+    }, circuit_error = function(error) paste0("error: line ", number_line, ": ", error$message))
+    for (text in output) cat(text, "\n", sep = "")
+  }
+}
+
+circuit()

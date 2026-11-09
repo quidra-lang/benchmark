@@ -1,0 +1,9 @@
+The current question asks: Suppose the original inorder result must be retained across deletion of 27 and printed later. Locate the expression that emits or records each inorder item, and explain where and how to capture its key value for later output rather than retaining a live node reference whose key can be replaced. If values are already retained independently, explain why no capture change is needed. Focus on that item expression; do not copy the whole tree.
+
+Answer and source evidence: The inorder item expression reads the numeric key, not the node itself. Go/Rust currently emit that key immediately; retain it by appending the int/i32 value to an independent result collection at this site before deletion, then print the saved values later. Swift already appends node.key to an inout [Int] result, so preserving that resulting array beyond deletion needs no per-item capture change. Value-copy integer keys do not track a live node whose key later changes.
+
+Selection: `main.rs` lines 2, 34, 35. The key type, inorder-mode item operation and Swift result parameter establish capture semantics. Tree construction, traversal recursion and deletion implementation are not needed to replace a live reference with the already read scalar.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,617 @@
+    static Selection best(List<Route> candidates, Map<Integer, Long> routerIds) {
+        List<Route> remaining = new ArrayList<>(candidates);
+        if (remaining.size() == 1)
+            return new Selection(remaining.getFirst(), "ONLY");
+        for (String reason : List.of("LOCALPREF", "ASPATH", "ORIGIN", "MED", "ROUTERID", "LINK")) {
+            if (reason.equals("MED")) {
+                Map<Integer, Integer> minimum = new HashMap<>();
+                for (Route route : remaining)
+                    minimum.merge(route.neighbor(), route.med(), Math::min);
+                remaining.removeIf(route -> route.med() != minimum.get(route.neighbor()));
+            } else {
+                ToLongFunction<Route> key = switch (reason) {
+                    case "LOCALPREF" -> route -> - ((long)route.localPref());
+                    case "ASPATH" -> route -> route.path().size();
+                    case "ORIGIN" ->
+                        route
+                            -> route.origin().equals("IGP")   ? 0
+                               : route.origin().equals("EGP") ? 1
+                                                              : 2;
+                    case "ROUTERID" -> route -> routerIds.get(route.neighbor());
+                    default -> route -> route.link().number;
+                };
+                long minimum = remaining.stream().mapToLong(key).min().orElseThrow();
+                remaining.removeIf(route -> key.applyAsLong(route) != minimum);
+            }
+            if (remaining.size() == 1)
+                return new Selection(remaining.getFirst(), reason);
+        }
+        throw new IllegalStateException();
+    }
+        Imported importRoute(Session session, Topology.Prefix prefix,
+                             Decision.Attribute attribute) {
+            Policy.Rule rule = policies.applied("IMPORT", session.owner, session.link, prefix,
+                                                attribute.path(), attribute.communities());
+            int localPref = defaults.get(session.link.role(session.owner));
+            if (rule != null && rule.has("DENY"))
+                return new Imported(null, rule);
+            int med = attribute.med();
+            List<Policy.Community> communities = attribute.communities();
+            if (rule != null) {
+                localPref = rule.value("LOCALPREF", localPref);
+                med = rule.value("MED", med);
+                communities = Policy.edit(communities, rule);
+            }
+            return new Imported(new Decision.Route(attribute.path(), attribute.origin(), med,
+                                                   communities, localPref, session.link),
+                                rule);
+        }
+        List<Decision.Route> candidates(int owner, Topology.Prefix prefix) {
+            List<Decision.Route> routes = new ArrayList<>();
+            for (Session session : routers.get(owner).sessions) {
+                Decision.Attribute attribute = session.incoming.get(prefix);
+                if (attribute != null) {
+                    Decision.Route route = importRoute(session, prefix, attribute).route();
+                    if (route != null)
+                        routes.add(route);
+                }
+            }
+            return routes;
+        }
+        Advertised advertised(Session session, Topology.Prefix prefix) {
+            int owner = session.owner;
+            Topology.Link link = session.link;
+            Decision.Route route = routers.get(owner).rib.get(prefix);
+            if (route == null || !route.local() && route.neighbor() == link.other(owner) ||
+                route.communities().contains(Policy.NO_EXPORT))
+                return new Advertised(null, null);
+            Policy.Rule rule =
+                policies.applied("EXPORT", owner, link, prefix, route.path(), route.communities());
+            if (rule != null && rule.has("DENY"))
+                return new Advertised(null, rule);
+            boolean allowed = rule != null && rule.has("ALLOW");
+            if (!allowed && !route.local() && !route.link().role(owner).equals("customer") &&
+                !link.role(owner).equals("customer"))
+                return new Advertised(null, rule);
+            int prepend = rule == null ? 0 : rule.value("PREPEND", 0),
+                med = rule == null ? 0 : rule.value("MED", 0);
+            List<Policy.Community> communities =
+                rule == null ? route.communities() : Policy.edit(route.communities(), rule);
+            List<Integer> path = new ArrayList<>(Collections.nCopies(1 + prepend, owner));
+            path.addAll(route.path());
+            return new Advertised(new Decision.Attribute(path, route.origin(), med, communities),
+                                  rule);
+        }
+        void redecide(int owner, Topology.Prefix prefix) {
+            Router router = routers.get(owner);
+            Decision.Route route = router.origination.get(prefix);
+            if (route == null) {
+                List<Decision.Route> candidates = candidates(owner, prefix);
+                if (!candidates.isEmpty())
+                    route = Decision.best(candidates, network.routerIds).route();
+            }
+            if (Objects.equals(router.rib.get(prefix), route))
+                return;
+            if (route == null)
+                router.rib.remove(prefix);
+            else
+                router.rib.put(prefix, route);
+            log("BEST " + owner + " " + prefix + " " + Report.route(route));
+            router.changes++;
+            period.bestChanges++;
+            period.exploration.merge(new OwnerPrefix(owner, prefix), 1, Integer::sum);
+            period.bestLines.add(new BestLine(time, owner, prefix, route));
+            changedPrefixes.add(prefix);
+            for (Session session : router.sessions)
+                if (session.link.up) {
+                    session.pending.add(prefix);
+                    if (session.timer == null)
+                        processPending(session);
+                }
+        }
+        void processPending(Session session) {
+            int sent = 0;
+            for (Topology.Prefix prefix : session.pending) {
+                Advertised advertised = advertised(session, prefix);
+                Decision.Attribute content = advertised.content();
+                if (Objects.equals(session.outgoing.get(prefix), content))
+                    continue;
+                if (content == null)
+                    session.outgoing.remove(prefix);
+                else
+                    session.outgoing.put(prefix, content);
+                Simulator.Message message =
+                    messages.send(time, session.owner, session.link.other(session.owner),
+                                  session.link, prefix, content);
+                String suffix =
+                    content == null ? "WITHDRAW" : "ANNOUNCE " + Report.attribute(content);
+                log("SEND " + messageText(message) + " " + suffix);
+                session.sent++;
+                sent++;
+                period.updates++;
+                if (content == null)
+                    period.withdrawals++;
+                if (advertised.rule() != null)
+                    advertised.rule().hits++;
+            }
+            session.pending.clear();
+            session.timer = sent > 0 && session.link.mrai >= 1 ? time + session.link.mrai : null;
+        }
+        void receive(Simulator.Message message) {
+            Session session =
+                bySession.get(new SessionKey(message.receiver(), message.link().number));
+            Topology.Prefix prefix = message.prefix();
+            Decision.Attribute content = message.content();
+            session.received++;
+            period.convergenceTime = time - period.event.time();
+            String result;
+            if (content == null) {
+                session.incoming.remove(prefix);
+                result = "WITHDRAW";
+            } else if (content.path().contains(message.receiver())) {
+                session.incoming.remove(prefix);
+                result = "ANNOUNCE loop";
+            } else {
+                session.incoming.put(prefix, content);
+                Imported imported = importRoute(session, prefix, content);
+                Policy.Rule rule = imported.rule();
+                if (rule != null)
+                    rule.hits++;
+                result = imported.route() == null ? "ANNOUNCE deny " + rule.name
+                         : rule == null           ? "ANNOUNCE accept"
+                                                  : "ANNOUNCE accept " + rule.name;
+            }
+            log("RECV " + messageText(message) + " " + result);
+            redecide(message.receiver(), prefix);
+        }
+        void originate(int owner, Topology.Prefix prefix, String origin,
+                       List<Policy.Community> communities) {
+            routers.get(owner).origination.put(prefix,
+                                               Decision.Route.originated(origin, communities));
+            redecide(owner, prefix);
+        }
+        void executeEvent(Simulator.Event event) {
+            log("EVENT " + period.number + " " + event.text());
+            String[] f = event.fields();
+            switch (event.kind()) {
+            case "INITIAL":
+                for (Topology.Initial initial : network.initial)
+                    originate(initial.owner(), initial.prefix(), initial.origin(),
+                              initial.communities());
+                break;
+            case "ANNOUNCE":
+                originate(Integer.parseInt(f[1]), Topology.prefix(f[2]), f[3],
+                          Policy.communities(Arrays.asList(f).subList(4, f.length)));
+                break;
+            case "WITHDRAW": {
+                int owner = Integer.parseInt(f[1]);
+                Topology.Prefix prefix = Topology.prefix(f[2]);
+                routers.get(owner).origination.remove(prefix);
+                redecide(owner, prefix);
+                break;
+            }
+            case "LINK_DOWN":
+                linkDown(network.byName.get(f[2]));
+                break;
+            case "LINK_UP":
+                linkUp(network.byName.get(f[2]));
+                break;
+            default:
+                changePolicy(policies.byName.get(f[2]), event.kind().equals("POLICY_ON"));
+                break;
+            }
+        }
+        void runPeriod(int number, Simulator.Event event, Integer boundary) {
+            period = new Period(number, event, routers);
+            periods.add(period);
+            time = event.time();
+            changedPrefixes.clear();
+            executeEvent(event);
+            boolean quiet;
+            while (true) {
+                boolean delivered = false;
+                while (Objects.equals(messages.nextTime(), time)) {
+                    receive(messages.take());
+                    delivered = true;
+                }
+                for (Session session : sessions)
+                    if (Objects.equals(session.timer, time)) {
+                        session.timer = null;
+                        if (!session.pending.isEmpty())
+                            processPending(session);
+                    }
+                if (!changedPrefixes.isEmpty())
+                    forwardingChecks();
+                if (delivered) {
+                    period.deliveryTimes++;
+                    detectDivergence();
+                }
+                quiet = quiet();
+                if (boundary == null) {
+                    if (quiet || period.divergence != null || period.deliveryTimes >= stepcap)
+                        break;
+                } else if (time == boundary)
+                    break;
+                time = nextMoment(boundary);
+                changedPrefixes.clear();
+            }
+            period.status = period.divergence != null ? "DIVERGENT"
+                            : quiet                   ? "CONVERGED"
+                            : boundary == null        ? "CAPPED"
+                                                      : "UNSETTLED";
+            period.finish(routers);
+            period.states.clear();
+        }
+        Forwarding trace(int source, long address) {
+            List<Integer> visits = new ArrayList<>();
+            visits.add(source);
+            Set<Integer> visited = new HashSet<>(visits);
+            List<Hop> hops = new ArrayList<>();
+            int owner = source;
+            while (true) {
+                Topology.Prefix selected = null;
+                for (Topology.Prefix prefix : routers.get(owner).rib.keySet())
+                    if (prefix.contains(address) &&
+                        (selected == null || prefix.length() > selected.length()))
+                        selected = prefix;
+                if (selected == null)
+                    return new Forwarding(hops.isEmpty() ? "UNREACHABLE" : "BLACKHOLE", visits,
+                                          hops);
+                Decision.Route route = routers.get(owner).rib.get(selected);
+                hops.add(new Hop(owner, selected, route.link()));
+                if (route.local())
+                    return new Forwarding("DELIVERED", visits, hops);
+                owner = route.link().other(owner);
+                visits.add(owner);
+                if (!visited.add(owner))
+                    return new Forwarding("LOOP", visits, hops);
+            }
+        }
+        void forwardingChecks() {
+            for (Topology.Prefix prefix : changedPrefixes) {
+                Set<List<Integer>> loops = prefixLoops(prefix);
+                Iterator<Map.Entry<RingKey, RingRecord>> iterator =
+                    ongoingRings.entrySet().iterator();
+                while (iterator.hasNext()) {
+                    var entry = iterator.next();
+                    if (entry.getKey().prefix().equals(prefix) &&
+                        !loops.contains(entry.getKey().path())) {
+                        entry.getValue().end = time;
+                        iterator.remove();
+                    }
+                }
+                List<List<Integer>> ordered = new ArrayList<>(loops);
+                ordered.sort(Comparator.comparingInt(path -> path.getFirst()));
+                for (List<Integer> loop : ordered) {
+                    RingKey key = new RingKey(prefix, loop);
+                    if (!ongoingRings.containsKey(key)) {
+                        RingRecord record = new RingRecord(prefix, loop, time);
+                        ringRecords.add(record);
+                        ongoingRings.put(key, record);
+                    }
+                }
+            }
+            for (int index = 0; index < traces.size(); index++) {
+                Simulator.Trace trace = traces.get(index);
+                Forwarding path = trace(trace.source(), trace.value());
+                TraceStatus status =
+                    path.result().equals("LOOP") || path.result().equals("BLACKHOLE")
+                        ? new TraceStatus(path.result(), List.copyOf(path.visits()))
+                        : null;
+                TraceRecord record = ongoingTraces.get(index);
+                if (record != null && !record.status.equals(status)) {
+                    record.end
+                    = time;
+                    ongoingTraces.remove(index);
+                }
+                if (status != null && !ongoingTraces.containsKey(index)) {
+                    TraceRecord created = new TraceRecord(index, time, status);
+                    traceRecords.add(created);
+                    ongoingTraces.put(index, created);
+                }
+            }
+        }
+        List<String> ribLines() {
+            List<String> lines = new ArrayList<>();
+            for (Router router : routers.values()) {
+                int local = (int)router.rib.values().stream().filter(Decision.Route::local).count(),
+                    sent = router.sessions.stream().mapToInt(session -> session.sent).sum(),
+                    received = router.sessions.stream().mapToInt(session -> session.received).sum();
+                lines.add("AS " + router.owner + " routes " + router.rib.size() + " local " +
+                          local + " sent " + sent + " received " + received + " changes " +
+                          router.changes);
+                for (Session session : router.sessions) {
+                    int accepted = 0;
+                    for (var entry : session.incoming.entrySet())
+                        if (importRoute(session, entry.getKey(), entry.getValue()).route() != null)
+                            accepted++;
+                    Topology.Link link = session.link;
+                    lines.add("SESSION " + link.name + " " + link.other(router.owner) + " " +
+                              link.role(router.owner) + " " + (link.up ? "UP" : "DOWN") + " in " +
+                              session.incoming.size() + " accepted " + accepted + " out " +
+                              session.outgoing.size() + " sent " + session.sent + " received " +
+                              session.received + " flaps " + link.downCount);
+                }
+                for (var entry : router.rib.entrySet()) {
+                    Topology.Prefix prefix = entry.getKey();
+                    Decision.Route route = entry.getValue();
+                    List<Decision.Route> candidates = candidates(router.owner, prefix);
+                    String line =
+                        prefix + " " + Report.route(route) + " candidates " + candidates.size();
+                    if (!route.local())
+                        line += " reason " + Decision.best(candidates, network.routerIds).reason();
+                    lines.add(line);
+                    candidates.removeIf(route::equals);
+                    while (!candidates.isEmpty()) {
+                        Decision.Route alternate =
+                            Decision.best(candidates, network.routerIds).route();
+                        lines.add("ALT " + Report.route(alternate));
+                        candidates.remove(alternate);
+                    }
+                }
+            }
+            return lines;
+        }
+        List<String> pathLines() {
+            List<String> lines = new ArrayList<>();
+            for (Simulator.Trace trace : traces)
+                lines.addAll(traceLines(trace));
+            Set<Topology.Prefix> prefixes = new TreeSet<>();
+            for (Router router : routers.values())
+                prefixes.addAll(router.origination.keySet());
+            String names = String.join(",", prefixes.stream().map(Object::toString).toList());
+            lines.add("PREFIXES" + (names.isEmpty() ? "" : " " + names));
+            for (int source : network.routerIds.keySet()) {
+                StringBuilder symbols = new StringBuilder();
+                for (Topology.Prefix prefix : prefixes) {
+                    Forwarding path = trace(source, prefix.address());
+                    char symbol;
+                    if (path.result().equals("DELIVERED"))
+                        symbol = path.count() == 0 ? '*'
+                                 : routers.get(path.arrival()).origination.containsKey(prefix)
+                                     ? '+'
+                                     : 'X';
+                    else
+                        symbol = switch (path.result()) {
+                            case "LOOP" -> 'L';
+                            case "BLACKHOLE" -> 'B';
+                            default -> 'U';
+                        };
+                    symbols.append(symbol);
+                }
+                lines.add("REACH " + source + (symbols.isEmpty() ? "" : " " + symbols));
+            }
+            return lines;
+        }
+        List<String> auditLines() {
+            List<String> lines = new ArrayList<>();
+            int loops = 0, blackholes = 0;
+            traceRecords.sort(Comparator.comparingInt((TraceRecord record) -> record.start)
+                                  .thenComparingInt(record -> record.index));
+            for (TraceRecord record : traceRecords) {
+                Simulator.Trace trace = traces.get(record.index);
+                String result = record.status.result();
+                List<Integer> visits = record.status.visits();
+                if (result.equals("LOOP"))
+                    loops++;
+                else
+                    blackholes++;
+                String line = result + " " + trace.source() + " " + trace.address() + " from " +
+                              record.start + " to " + (record.end == null ? "END" : record.end);
+                if (result.equals("BLACKHOLE"))
+                    line += " at " + visits.getLast();
+                lines.add(line + " path " + Report.path(visits));
+            }
+            ringRecords.sort(Comparator.comparingInt((RingRecord record) -> record.start)
+                                 .thenComparing(record -> record.prefix)
+                                 .thenComparingInt(record -> record.path.getFirst()));
+            for (RingRecord record : ringRecords)
+                lines.add("RING " + record.prefix + " from " + record.start + " to " +
+                          (record.end == null ? "END" : record.end) + " path " +
+                          Report.path(record.path));
+            int routes = 0, valleys = 0;
+            for (Router router : routers.values())
+                for (var entry : router.rib.entrySet()) {
+                    Decision.Route route = entry.getValue();
+                    if (route.local())
+                        continue;
+                    routes++;
+                    List<Integer> full = new ArrayList<>();
+                    full.add(router.owner);
+                    full.addAll(route.path());
+                    List<Integer> path = collapse(full);
+                    StringBuilder pattern = new StringBuilder();
+                    for (int i = 0; i + 1 < path.size(); i++)
+                        pattern.append(network.connecting(path.get(i), path.get(i + 1))
+                                           .direction(path.get(i)));
+                    String word = pattern.toString();
+                    int violation = valleyPosition(word);
+                    if (violation != word.length()) {
+                        valleys++;
+                        lines.add("VALLEY " + router.owner + " " + entry.getKey() + " path " +
+                                  Report.path(route.path()) + " pattern " + word + " leaker " +
+                                  path.get(violation));
+                    }
+                }
+            for (Policy.Rule rule : policies.rules)
+                lines.add("RULE " + rule.name + " " + rule.direction + " " +
+                          (rule.active ? "ON" : "OFF") + " hits " + rule.hits);
+            int divergent = 0;
+            for (Period period : periods) {
+                if (period.divergence == null)
+                    continue;
+                divergent++;
+                Divergence divergence = period.divergence;
+                lines.add("DIVERGENT event " + period.number + " first " + divergence.first() +
+                          " repeat " + divergence.repeat() + " period " +
+                          (divergence.repeat() - divergence.first()));
+                Map<OwnerPrefix, Integer> oscillations = new TreeMap<>();
+                for (BestLine line : divergence.cycle()) {
+                    lines.add("CYCLE " + line.time() + " " + line.owner() + " " + line.prefix() +
+                              " " + Report.route(line.route()));
+                    oscillations.merge(new OwnerPrefix(line.owner(), line.prefix()), 1,
+                                       Integer::sum);
+                }
+                for (var entry : oscillations.entrySet())
+                    lines.add("OSCILLATE " + entry.getKey().owner() + " " +
+                              entry.getKey().prefix() + " changes " + entry.getValue());
+            }
+            lines.add("SUMMARY loops " + loops + " blackholes " + blackholes + " rings " +
+                      ringRecords.size() + " routes " + routes + " valleys " + valleys +
+                      " divergent " + divergent + " end " + time);
+            return lines;
+        }
+        void writeOutputs() throws Exception {
+            Report.write("updates.txt", logs);
+            List<String> csv = new ArrayList<>();
+            csv.add(HEADER);
+            for (Period period : periods)
+                csv.add(period.csv());
+            Report.write("convergence.csv", csv);
+            Report.write("ribs.txt", ribLines());
+            Report.write("paths.txt", pathLines());
+            Report.write("audit.txt", auditLines());
+        }
+    public static void main(String[] args) throws Exception {
+        Topology network = new Topology();
+        Policy policies = new Policy();
+        Simulation simulation = new Simulation(network, policies, Simulator.params());
+        simulation.run(Simulator.events());
+        simulation.writeOutputs();
+    }
+    Topology() throws Exception {
+        for (String line :
+             Files.readAllLines(Path.of("input/topology.txt"), StandardCharsets.US_ASCII)) {
+            String[] f = line.split(" ");
+            if (f[0].equals("AS"))
+                routerIds.put(Integer.parseInt(f[1]), addressValue(f[2]));
+            else if (f[0].equals("LINK")) {
+                Link link = new Link(links.size(), f);
+                links.add(link);
+                byName.put(link.name, link);
+            } else
+                initial.add(new Initial(Integer.parseInt(f[1]), prefix(f[2]), f[3],
+                                        Policy.communities(Arrays.asList(f).subList(4, f.length))));
+        }
+        for (int owner : routerIds.keySet())
+            atAs.put(owner, new ArrayList<>());
+        for (Link link : links) {
+            atAs.get(link.first).add(link);
+            atAs.get(link.second).add(link);
+        }
+    }
+    Policy() throws Exception {
+        for (String line :
+             Files.readAllLines(Path.of("input/policies.txt"), StandardCharsets.US_ASCII)) {
+            String[] f = line.split(" ");
+            if (f[0].equals("PLIST")) {
+                Topology.Prefix p = Topology.prefix(f[3]);
+                int low = p.length(), high = p.length();
+                    for (int i = 4; i < f.length; i += 2)
+                    if (f[i].equals("GE")) {
+                        low = Integer.parseInt(f[i + 1]);
+                            high = 32;
+                    }
+                for (int i = 4; i < f.length; i += 2)
+                    if (f[i].equals("LE"))
+                        high = Integer.parseInt(f[i + 1]);
+                lists.computeIfAbsent(f[1], k -> new ArrayList<>())
+                    .add(new Entry(f[2].equals("PERMIT"), p, low, high));
+                continue;
+            }
+            int separator = Arrays.asList(f).indexOf("THEN");
+            List<Condition> conditions = new ArrayList<>();
+            for (int i = 6; i < separator; i += 2) {
+                String kind = f[i], value = f[i + 1];
+                int low = 0, high = 0;
+                Community comm = null;
+                if (kind.equals("CONTAINS") || kind.equals("ORIGINAS"))
+                    low = Integer.parseInt(value);
+                else if (kind.equals("LENGTH")) {
+                    String[] bounds = value.split("-");
+                    low = Integer.parseInt(bounds[0]);
+                    high = Integer.parseInt(bounds[1]);
+                } else if (kind.equals("COMMUNITY"))
+                    comm = community(value);
+                conditions.add(new Condition(kind, value, low, high, comm));
+            }
+            List<Action> actions = new ArrayList<>();
+            for (int i = separator + 1; i < f.length;) {
+                String kind = f[i++];
+                int value = 0;
+                Community comm = null;
+                if (!kind.equals("DENY") && !kind.equals("ALLOW")) {
+                    String text = f[i++];
+                    if (kind.equals("ADD") || kind.equals("REMOVE"))
+                        comm = community(text);
+                    else
+                        value = Integer.parseInt(text);
+                }
+                actions.add(new Action(kind, value, comm));
+            }
+            Rule rule = new Rule(f, conditions, actions);
+            rules.add(rule);
+            byName.put(rule.name, rule);
+        }
+    }
+    boolean matches(Rule rule, int owner, Topology.Link link, Topology.Prefix prefix,
+                    List<Integer> path, List<Community> communities) {
+        if (!rule.active || rule.owner != owner)
+            return false;
+        if (!rule.target.equals("*") && !rule.target.equals(Integer.toString(link.other(owner))) &&
+            !rule.target.equals(link.name))
+            return false;
+        for (Condition c : rule.conditions) {
+            boolean match = switch (c.kind()) {
+                case "PREFIX" -> permitted(c.text(), prefix);
+                case "CONTAINS" -> path.contains(c.low());
+                case "ORIGINAS" -> (path.isEmpty() ? owner : path.getLast()) == c.low();
+                case "LENGTH" -> c.low() <= path.size() && path.size() <= c.high();
+                default -> communities.contains(c.community());
+            };
+            if (!match)
+                return false;
+        }
+        return true;
+    }
+    Rule applied(String direction, int owner, Topology.Link link, Topology.Prefix prefix,
+                 List<Integer> path, List<Community> communities) {
+        for (Rule rule : rules)
+            if (rule.direction.equals(direction) &&
+                matches(rule, owner, link, prefix, path, communities))
+                return rule;
+        return null;
+    }
+        Message send(int time, int sender, int receiver, Topology.Link link, Topology.Prefix prefix,
+                     Decision.Attribute content) {
+            Message message =
+                new Message(++serial, sender, receiver, link, prefix, content, time + link.delay);
+            queue.add(message);
+            return message;
+        }
+    static List<Event> events() throws Exception {
+        List<Event> events = new ArrayList<>();
+        events.add(new Event(0, "INITIAL"));
+        for (String line :
+             Files.readAllLines(Path.of("input/events.txt"), StandardCharsets.US_ASCII)) {
+            int separator = line.indexOf(' ');
+            events.add(new Event(Integer.parseInt(line.substring(0, separator)),
+                                 line.substring(separator + 1)));
+        }
+        return events;
+    }
+    static Params params() throws Exception {
+        List<String> lines =
+            Files.readAllLines(Path.of("input/params.txt"), StandardCharsets.US_ASCII);
+        String[] f = lines.get(0).split(" ");
+        Map<String, Integer> defaults =
+            Map.of("customer", Integer.parseInt(f[1]), "peer", Integer.parseInt(f[2]), "provider",
+                   Integer.parseInt(f[3]));
+        int stepcap = Integer.parseInt(lines.get(1).split(" ")[1]);
+        List<Trace> traces = new ArrayList<>();
+        for (String line : lines.subList(2, lines.size())) {
+            String[] t = line.split(" ");
+            traces.add(new Trace(Integer.parseInt(t[1]), t[2], Topology.addressValue(t[2])));
+        }
+        return new Params(defaults, stepcap, traces);
+    }

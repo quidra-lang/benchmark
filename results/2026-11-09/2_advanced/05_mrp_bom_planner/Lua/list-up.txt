@@ -1,0 +1,237 @@
+function M.rows(name)
+    local rows={}; local number=0
+    for line in io.lines("input/"..name) do number=number+1; if number>1 then local fields={}; for field in (line..","):gmatch("(.-),") do fields[#fields+1]=field end; rows[#rows+1]={line=number,fields=fields} end end
+    return rows
+end
+function M.error(errors,file,line,message) errors[#errors+1]=file.." line "..line..": "..message end
+function M.keys(map) local result={}; for key in pairs(map) do result[#result+1]=key end; table.sort(result); return result end
+function M.read(errors)
+    local items={}; local valid={LFL=true,FOQ=true,POQ=true,MIN=true}
+    for _,row in ipairs(M.rows("items.csv")) do
+        local f=row.fields; local rule=f[3]; local first,second=f[4]:match("^(%d+)/(%d+)$"); if not first then first=f[4]:match("^%d+$") end
+        local a,b=tonumber(first),tonumber(second)
+        local fits=(rule == "LFL" and a == 0 and not b) or ((rule == "FOQ" or rule == "POQ") and a and a>=1 and not b) or (rule == "MIN" and a and b and a>=1 and b>=1)
+        local message
+        if items[f[1]] then message="duplicate item "..f[1]
+        elseif not valid[rule] then message="unknown lot rule "..rule
+        elseif not fits then message="bad lot parameter "..f[4].." for "..rule end
+        if message then M.error(errors,"items.csv",row.line,message)
+        else items[f[1]]={id=f[1],lead=tonumber(f[2]),rule=rule,a=a,b=b,safety=tonumber(f[5]),on_hand=tonumber(f[6]),material=tonumber(f[7]),labor=tonumber(f[8]),description=f[9]} end
+    end
+    return items
+end
+function M.lot_label(item)
+    if item.rule == "MIN" then return "MIN "..item.a.."/"..item.b end
+    if item.rule == "LFL" then return "LFL" end
+    return item.rule.." "..item.a
+end
+function M.need(row,quantity) return (quantity*row.quantity*(100+row.scrap)+99)//100 end
+function M.read(items,errors)
+    local bom={children={},parents={}}
+    for id in pairs(items) do bom.children[id]={}; bom.parents[id]={} end
+    for _,input in ipairs(items_module.rows("bom.csv")) do
+        local f=input.fields; local quantity,scrap=tonumber(f[3]),tonumber(f[4]); local message
+        if not items[f[1]] then message="unknown item "..f[1]
+        elseif not items[f[2]] then message="unknown item "..f[2]
+        elseif quantity<1 then message="bad quantity "..quantity
+        elseif scrap>50 then message="bad scrap "..scrap
+        elseif f[1] == f[2] then message="cycle "..f[1].." -> "..f[1]
+        else
+            for _,row in ipairs(bom.children[f[1]]) do if row.child == f[2] then message="duplicate "..f[1].." -> "..f[2]; break end end
+            if not message then local found=path(f[2],f[1],{}); if found then message="cycle "..f[1].." -> "..table.concat(found," -> ") end end
+        end
+        if message then items_module.error(errors,"bom.csv",input.line,message)
+        else
+            local row={parent=f[1],child=f[2],quantity=quantity,scrap=scrap}
+            table.insert(bom.children[row.parent],row); table.sort(bom.children[row.parent],function(a,b) return a.child<b.child end)
+            table.insert(bom.parents[row.child],row); table.sort(bom.parents[row.child],function(a,b) return a.parent<b.parent end)
+        end
+    end
+    return bom
+end
+function M.structure(items,bom)
+    local codes,cumulative={},{}
+    local function code(id)
+        if codes[id] ~= nil then return codes[id] end
+        local value=0; for _,row in ipairs(bom.parents[id]) do value=math.max(value,code(row.parent)+1) end
+        codes[id]=value; return value
+    end
+    local function lead(id)
+        if cumulative[id] then return cumulative[id] end
+        local value=0; for _,row in ipairs(bom.children[id]) do value=math.max(value,lead(row.child)) end
+        cumulative[id]=items[id].lead+value; return cumulative[id]
+    end
+    local order=items_module.keys(items); for _,id in ipairs(order) do code(id); lead(id) end
+    table.sort(order,function(a,b) return codes[a] == codes[b] and a<b or codes[a]<codes[b] end)
+    return codes,cumulative,order
+end
+function M.read_centers(errors)
+    local centers={}
+    for _,row in ipairs(item_module.rows("workcenters.csv")) do
+        local f=row.fields; local efficiency=tonumber(f[3]); local message
+        if centers[f[1]] then message="duplicate center "..f[1]
+        elseif efficiency<50 or efficiency>150 then message="bad efficiency "..efficiency end
+        if message then item_module.error(errors,"workcenters.csv",row.line,message)
+        else centers[f[1]]={id=f[1],minutes=tonumber(f[2]),efficiency=efficiency,available=tonumber(f[2])*efficiency//100,description=f[4]} end
+    end
+    return centers
+end
+function M.read_routings(items,centers,bom,errors)
+    local routings={}
+    for _,row in ipairs(item_module.rows("routings.csv")) do
+        local f=row.fields; local number,run=tonumber(f[2]),tonumber(f[5]); local message
+        if not items[f[1]] then message="unknown item "..f[1]
+        elseif not centers[f[3]] then message="unknown center "..f[3]
+        elseif #bom.children[f[1]] == 0 then message="purchased item "..f[1]
+        elseif run<1 then message="bad run time "..run
+        else for _,operation in ipairs(routings[f[1]] or {}) do if operation.number == number then message="duplicate "..f[1].." operation "..number; break end end end
+        if message then item_module.error(errors,"routings.csv",row.line,message)
+        else routings[f[1]]=routings[f[1]] or {}; table.insert(routings[f[1]],{number=number,center=f[3],setup=tonumber(f[4]),run=run}) end
+    end
+    for _,operations in pairs(routings) do table.sort(operations,function(a,b) return a.number<b.number end) end
+    return routings
+end
+function M.week(receipt,lead,index,count) return math.max(receipt-lead+(index*lead)//count,1) end
+function M.size(item,week,projected,receipts,gross,horizon)
+    local net=item.safety-projected
+    if item.rule == "LFL" then return net end
+local function zeros(count) local result={}; for i=1,count do result[i]=0 end; return result end
+local function sum(values) local total=0; for _,value in ipairs(values) do total=total+value end; return total end
+local data={errors={}}
+for line in io.lines("input/params.txt") do
+    local words={}; for word in line:gmatch("[^ ]+") do words[#words+1]=word end
+    if words[1] == "horizon" then data.horizon=tonumber(words[2])
+    elseif words[1] == "tree_quantity" then data.tree_quantity=tonumber(words[2])
+    else data.peg={}; for i=2,#words do data.peg[#data.peg+1]=words[i] end end
+end
+data.items=item_module.read(data.errors); data.bom=bom_module.read(data.items,data.errors)
+data.centers=capacity.read_centers(data.errors); data.routings=capacity.read_routings(data.items,data.centers,data.bom,data.errors)
+data.codes,data.cumulative,data.order=bom_module.structure(data.items,data.bom)
+data.item_order=item_module.keys(data.items); data.center_order=item_module.keys(data.centers); data.weeks={}; for w=1,data.horizon do data.weeks[w]=w end
+local function schedule_error(id,week,quantity)
+    if not data.items[id] then return "unknown item "..id end
+    if week<1 or week>data.horizon then return "week "..week.." outside horizon" end
+    if quantity<1 then return "bad quantity "..quantity end
+end
+local function read_schedule(name,unique)
+    local result,seen={},{}
+    for _,row in ipairs(item_module.rows(name)) do
+        local f=row.fields; local week,quantity=tonumber(f[2]),tonumber(f[3]); local message=schedule_error(f[1],week,quantity)
+        local key=f[1].." "..week
+        if not message and unique and seen[key] then message="duplicate "..f[1].." week "..week end
+        if message then item_module.error(data.errors,name,row.line,message)
+        else result[#result+1]={item=f[1],week=week,quantity=quantity,line=row.line}; seen[key]=true end
+    end
+    return result
+end
+data.mps=read_schedule("mps.csv",true); local receipts=read_schedule("receipts.csv",false); data.inquiries={}; local inquiry_ids={}
+for _,row in ipairs(item_module.rows("orders.csv")) do
+    local f=row.fields; local quantity,week=tonumber(f[3]),tonumber(f[4]); local message
+    if inquiry_ids[f[1]] then message="duplicate order "..f[1] else message=schedule_error(f[2],week,quantity) end
+    if message then item_module.error(data.errors,"orders.csv",row.line,message)
+    else data.inquiries[#data.inquiries+1]={id=f[1],item=f[2],quantity=quantity,week=week,line=row.line}; inquiry_ids[f[1]]=true end
+end
+data.receipts,data.scheduled={},{}
+for id in pairs(data.items) do data.receipts[id]={}; data.scheduled[id]=zeros(data.horizon) end
+table.sort(receipts,function(a,b) return a.week == b.week and a.line<b.line or a.week<b.week end)
+for _,receipt in ipairs(receipts) do table.insert(data.receipts[receipt.item],receipt); data.scheduled[receipt.item][receipt.week]=data.scheduled[receipt.item][receipt.week]+receipt.quantity end
+local function run_mrp(promised,extra)
+    local plan={items={},loads={},overloads={}}
+    for _,id in ipairs(data.order) do plan.items[id]={demands={},gross=zeros(data.horizon),on_hand=zeros(data.horizon),net=zeros(data.horizon),pr=zeros(data.horizon),pl=zeros(data.horizon),orders={},past_due=0} end
+    for _,row in ipairs(data.mps) do table.insert(plan.items[row.item].demands,{item=row.item,kind="MPS",week=row.week,quantity=row.quantity,line=row.line}) end
+    for _,demand in ipairs(promised) do table.insert(plan.items[demand.item].demands,demand) end
+    if extra then table.insert(plan.items[extra.item].demands,extra) end
+    for _,id in ipairs(data.order) do
+        local p,item=plan.items[id],data.items[id]
+        for _,demand in ipairs(p.demands) do p.gross[demand.week]=p.gross[demand.week]+demand.quantity end
+        local projected=item.on_hand
+        for week=1,data.horizon do
+            local available=projected+data.scheduled[id][week]-p.gross[week]; projected=available
+            if available<item.safety then
+                local quantity=lot.size(item,week,available,data.scheduled[id],p.gross,data.horizon)
+                local original=week-item.lead; local order={item=id,number=#p.orders+1,receipt=week,quantity=quantity,original=original,release=math.max(1,original)}
+                p.orders[#p.orders+1]=order; p.net[week]=item.safety-available; p.pr[week]=quantity; p.pl[order.release]=p.pl[order.release]+quantity; projected=available+quantity
+                if original<1 then p.past_due=p.past_due+quantity end
+            end
+            p.on_hand[week]=projected
+        end
+        for _,order in ipairs(p.orders) do for _,row in ipairs(data.bom.children[id]) do
+            table.insert(plan.items[row.child].demands,{item=row.child,kind="DEPENDENT",week=order.release,quantity=bom_module.need(row,order.quantity),parent=id,parent_number=order.number})
+        end end
+    end
+    for _,center in ipairs(data.center_order) do plan.loads[center]=zeros(data.horizon); plan.overloads[center]=zeros(data.horizon) end
+    for _,id in ipairs(data.order) do
+        local operations=data.routings[id] or {}
+        for _,order in ipairs(plan.items[id].orders) do for index,operation in ipairs(operations) do
+            local week=capacity.week(order.receipt,data.items[id].lead,index-1,#operations)
+            plan.loads[operation.center][week]=plan.loads[operation.center][week]+operation.setup+order.quantity*operation.run
+        end end
+    end
+    for _,id in ipairs(data.center_order) do for w=1,data.horizon do plan.overloads[id][w]=math.max(0,plan.loads[id][w]-data.centers[id].available) end end
+    return plan
+end
+local base=run_mrp({}); local current=base; local promised,promises={},{}
+for _,inquiry in ipairs(data.inquiries) do
+    local promise={inquiry=inquiry,week=0,material=0,reason=""}
+    for week=inquiry.week,data.horizon do
+        local demand={item=inquiry.item,kind="ORDER",week=week,quantity=inquiry.quantity,order_id=inquiry.id,line=inquiry.line}
+        local trial=run_mrp(promised,demand); local reason
+        for _,id in ipairs(data.order) do if trial.items[id].past_due>current.items[id].past_due then reason=id; break end end
+        if not reason then
+            if promise.material == 0 then promise.material=week end
+            for _,id in ipairs(data.center_order) do
+                for w=1,data.horizon do if trial.overloads[id][w]>current.overloads[id][w] then reason=id.." week "..w; break end end
+                if reason then break end
+            end
+        end
+        if not reason then promise.week=week; promised[#promised+1]=demand; current=trial; break end
+        if week == inquiry.week then promise.reason=reason end
+    end
+    promises[#promises+1]=promise
+end
+local final=current
+local grid={}
+for _,id in ipairs(data.order) do
+    local p,item=final.items[id],data.items[id]
+    grid[#grid+1]="ITEM "..id.." LLC "..data.codes[id].." LT "..item.lead.." LOT "..item_module.lot_label(item).." SS "..item.safety.." OH "..item.on_hand.." "..item.description
+    for _,entry in ipairs({{"WEEK",data.weeks},{"GROSS",p.gross},{"RECEIPTS",data.scheduled[id]},{"ON_HAND",p.on_hand},{"NET",p.net},{"PLAN_RCPT",p.pr},{"PLAN_REL",p.pl}}) do grid[#grid+1]=report.row(entry[1],entry[2],6) end
+    grid[#grid+1]="TOTAL gross "..sum(p.gross).." receipts "..sum(data.scheduled[id]).." planned "..sum(p.pr).." orders "..#p.orders.." ending "..p.on_hand[data.horizon]
+end
+local pegging={}
+local capacity_lines,totals={},{}
+for _,id in ipairs(data.center_order) do
+    local center=data.centers[id]; local loads,overloads=final.loads[id],final.overloads[id]; local leveled=capacity.level(loads,center.available,data.horizon); local total=sum(loads); totals[id]=total
+    local utilization,overloaded,peak={},0,0
+    for w=1,data.horizon do utilization[w]=report.percent(loads[w],center.available); if overloads[w]>0 then overloaded=overloaded+1 end; if total>0 and (peak == 0 or loads[w]>loads[peak]) then peak=w end end
+    capacity_lines[#capacity_lines+1]="CENTER "..id.." minutes "..center.minutes.." efficiency "..center.efficiency.." available "..center.available.." "..center.description
+    for _,entry in ipairs({{"WEEK",data.weeks},{"LOAD",loads},{"UTIL",utilization},{"OVER",overloads},{"LEVELED",leveled}}) do capacity_lines[#capacity_lines+1]=report.row(entry[1],entry[2],7) end
+    capacity_lines[#capacity_lines+1]="TOTAL load "..total.." available "..(center.available*data.horizon).." utilization "..report.percent(total,center.available*data.horizon).." overloaded "..overloaded.." peak "..peak.." backlog "..math.max(0,leveled[1]-center.available)
+end
+local promise_lines={}; local promise_counts={on_time=0,late=0,rejected=0}
+for _,promise in ipairs(promises) do
+    local q=promise.inquiry; local head="ORDER "..q.id.." "..q.item.." quantity "..q.quantity.." requested "..q.week
+    local status=promise.week == 0 and "rejected" or promise.week == q.week and "on_time" or "late"; promise_counts[status]=promise_counts[status]+1
+    local material=promise.material>0 and tostring(promise.material) or "none"
+    if status == "rejected" then promise_lines[#promise_lines+1]=head.." rejected material "..material.." reason "..promise.reason
+    else
+        head=head.." promised "..promise.week
+        if status == "late" then head=head.." late "..(promise.week-q.week).." material "..material.." reason "..promise.reason end
+        promise_lines[#promise_lines+1]=head
+        for _,id in ipairs(data.order) do for _,s in ipairs(final.items[id].order_supplies) do
+            local serves=false; for _,root in ipairs(s.roots) do if root.kind == "ORDER" and root.order_id == q.id then serves=true; break end end
+            if serves then local o=s.order; promise_lines[#promise_lines+1]="  SUPPLY "..id.." order "..o.number.." receipt "..o.receipt.." release "..o.release.." quantity "..o.quantity end
+        end end
+    end
+end
+for _,id in ipairs(data.order) do
+    local before,after=base.items[id],final.items[id]
+    for w=1,data.horizon do if before.pr[w] ~= after.pr[w] then promise_lines[#promise_lines+1]="CHANGE "..id.." from "..w.." planned "..sum(before.pr).." -> "..sum(after.pr).." orders "..#before.orders.." -> "..#after.orders; break end end
+end
+promise_lines[#promise_lines+1]="SUMMARY orders "..#promises.." on_time "..promise_counts.on_time.." late "..promise_counts.late.." rejected "..promise_counts.rejected
+report.write("mrp_grid.txt",grid); report.write("pegging.txt",pegging); report.write("bom_tree.txt",tree); report.write("cost_rollup.csv",cost_lines); report.write("exceptions.txt",exceptions); report.write("capacity.txt",capacity_lines); report.write("promises.txt",promise_lines); report.write("releases.txt",releases); report.write("value_plan.csv",values_output)
+function M.row(label,values,width)
+    local parts={string.format("%-10s",label)}; for _,value in ipairs(values) do parts[#parts+1]=string.format("%"..width.."d",value) end; return table.concat(parts)
+end
+function M.write(name,lines)
+    local file=assert(io.open("output/"..name,"w")); for _,line in ipairs(lines) do file:write(line,"\n") end; file:close()
+end

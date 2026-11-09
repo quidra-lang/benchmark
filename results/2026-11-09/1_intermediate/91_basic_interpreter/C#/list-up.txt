@@ -1,0 +1,339 @@
+sealed record Token(string Kind, string Text, object Value);
+
+sealed class Expr {
+    public string Kind;
+    public string Type;
+    public object Value;
+    public List<Expr> Args;
+    public Expr(string kind, string type, object value, List<Expr>? args = null) {
+        Kind = kind;
+        Type = type;
+        Value = value;
+        Args = args ?? new();
+    }
+}
+sealed record PrintItem(string Kind, Expr? Expr);
+sealed class Statement {
+    public string Kind;
+    public int Line;
+    public Statement? Next;
+    public List<PrintItem> Items = new();
+    public Statement(string kind) {
+        Kind = kind;
+    }
+    public static readonly Dictionary<string, string[]> Signatures =
+        new() { ["ABS"] = ["I"],          ["SGN"] = ["I"],    ["INT"] = ["I"],
+                ["SQR"] = ["I"],          ["RND"] = ["I"],    ["LEN"] = ["S"],
+    public static readonly string[][] Ops = [
+        ["OR"], ["AND"], [], ["=", "<>", "<", ">", "<=", ">="], ["+", "-"], ["*", "/", "MOD"], [],
+        ["^"]
+    ];
+
+    public static void Syntax() => throw new SyntaxFault();
+    public static void Fault(string reason) => throw new BasicFault(reason);
+    public static string NameType(string name) => name.EndsWith('$') ? "S" : "I";
+    public static List<Token> Tokenize(string text) {
+        List<Token> tokens = [];
+        for (int p = 0; p < text.Length;) {
+            char ch = text[p];
+            if (ch == ' ') {
+                p++;
+                continue;
+            }
+            if (ch == '"') {
+                int end = text.IndexOf('"', p + 1);
+                if (end < 0)
+                    Syntax();
+                tokens.Add(new("S", text[p..(end + 1)], text[(p + 1)..end]));
+                p = end + 1;
+            } else if (ch is >= '0' and <= '9') {
+                int start = p;
+                while (p < text.Length && text[p] is >= '0' and <= '9')
+                    p++;
+                string word = text[start..p];
+                if (!int.TryParse(word, out int value) || value > 32767)
+                    Syntax();
+                tokens.Add(new("I", word, value));
+            } else if (ch is >= 'A' and <= 'Z') {
+                int start = p;
+                while (p < text.Length && (text[p] is >= 'A' and <= 'Z' or >= '0' and <= '9'))
+                    p++;
+                if (p < text.Length && text[p] == '$')
+                    p++;
+                string word = text[start..p];
+                tokens.Add(new("W", word, word));
+            } else {
+                if (!"+-*/^=<>() ,;:".Contains(ch))
+                    Syntax();
+                string word = p + 1 < text.Length ? text.Substring(p, 2) : ch.ToString();
+                if (word is not("<>" or "<=" or ">="))
+                    word = ch.ToString();
+                tokens.Add(new("P", word, word));
+                p += word.Length;
+            }
+        }
+        tokens.Add(new("E", "", ""));
+        return tokens;
+    }
+}
+
+sealed class Parser {
+    readonly List<Token> tokens;
+    int position;
+    public Parser(List<Token> tokens) {
+        this.tokens = tokens;
+    }
+    Token Current => tokens[position];
+    bool At(string word) => (Current.Kind is "P" or "W") && Current.Text == word;
+    bool Take(string word) {
+        if (!At(word))
+            return false;
+        position++;
+        return true;
+    }
+    void Expect(string word) {
+        if (!Take(word))
+            Basic.Syntax();
+    }
+    Expr Integer(int level = 0) {
+        Expr result = Expression(level);
+        if (result.Type != "I")
+            Basic.Syntax();
+        return result;
+    }
+    Expr Primary() {
+        Token token = Current;
+        if (token.Kind is "I" or "S") {
+            position++;
+            return new("constant", token.Kind, token.Value);
+        }
+        if (Take("(")) {
+            Expr value = Expression();
+            Expect(")");
+            return value;
+        }
+        if (token.Kind == "W" && Basic.Signatures.ContainsKey(token.Text)) {
+            position++;
+            Expect("(");
+            List<Expr> args = [Expression()];
+            while (Take(","))
+                args.Add(Expression());
+            Expect(")");
+            if (!Basic.Signatures[token.Text].Contains(string.Concat(args.Select(e => e.Type))))
+                Basic.Syntax();
+            return new("call", Basic.NameType(token.Text), token.Text, args);
+        }
+        Basic.Syntax();
+        throw new InvalidOperationException();
+    }
+    Expr Expression(int level = 0) {
+        if (level == 2 && Take("NOT"))
+            return new("unary", "I", "NOT", [Integer(2)]);
+        if (level == 6 && Take("-"))
+            return new("unary", "I", "-", [Integer(6)]);
+        if (level == 8)
+            return Primary();
+        Expr left = Expression(level + 1);
+        while (Basic.Ops[level].Contains(Current.Text)) {
+            string op = Current.Text;
+            position++;
+            Expr right = Expression(level == 7 ? 6 : level + 1);
+            if (left.Type != right.Type || (left.Type == "S" && level != 3 && op != "+"))
+                Basic.Syntax();
+            left = new("binary", level == 3 ? "I" : left.Type, op, [left, right]);
+            if (level == 7)
+                break;
+        }
+        return left;
+    }
+    List<Statement> Listing(bool inside = false) {
+        List<Statement> body = [ParseStatement(inside)];
+        while (Take(":"))
+            body.Add(ParseStatement(inside));
+        return body;
+    }
+    Statement ParseStatement(bool inside) {
+        string word = Current.Text;
+        if (inside && new[] { "IF", "FOR", "NEXT", "WHILE", "WEND", "DATA" }.Contains(word))
+            Basic.Syntax();
+        Statement s = new(word);
+        if (Take("PRINT")) {
+            bool lastValue = false;
+            while (Current.Kind != "E" && !At(":") && !At("ELSE")) {
+                if (Take(";")) {
+                    s.Items.Add(new(";", null));
+                    lastValue = false;
+                } else if (Take(",")) {
+                    s.Items.Add(new(",", null));
+                    lastValue = false;
+                } else {
+                    string kind = At("TAB") ? "TAB" : At("SPC") ? "SPC" : "value";
+                    if (kind == "value" && lastValue)
+                        Basic.Syntax();
+                    Expr expr;
+                    if (kind == "value")
+                        expr = Expression();
+                    s.Items.Add(new(kind, expr));
+                    lastValue = kind == "value";
+                }
+            }
+            return s;
+        }
+    public List<Statement> Parse() {
+        List<Statement> result = Listing();
+        if (Current.Kind != "E")
+            Basic.Syntax();
+        return result;
+    }
+    readonly List<string> output = new();
+    int dataPosition, inputPosition, random = 1, handler, err, erl;
+    bool handling;
+    Statement? remembered;
+    string buffer = "";
+    void EndLine() {
+        output.Add(buffer.TrimEnd(' '));
+        buffer = "";
+    }
+    void Message(string line) {
+        if (buffer.Length > 0)
+            EndLine();
+        output.Add(line);
+    }
+    static int Checked(long value) {
+        if (value is < -32768 or > 32767)
+            Basic.Fault("OVERFLOW");
+        return (int)value;
+    }
+    object Evaluate(Expr e) {
+        object op = e.Value;
+        if (e.Kind == "constant")
+            return op;
+        if (e.Kind == "unary") {
+            int a = (int)Evaluate(e.Args[0]);
+            return (string)op == "NOT" ? ~a : Checked(-(long)a);
+        }
+        object[] values = e.Args.Select(Evaluate).ToArray();
+        if (e.Kind == "call")
+            return Call((string)op, values);
+        object a0 = values[0], b0 = values[1];
+        int a = (int)a0, b = (int)b0;
+        switch ((string)op) {
+        case "/":
+            if (b == 0)
+                Basic.Fault("DIVISION BY ZERO");
+            return Checked(a / b);
+        case "MOD":
+            if (b == 0)
+                Basic.Fault("DIVISION BY ZERO");
+            return a - b * (a / b);
+        case "AND":
+            return a & b;
+        case "OR":
+            return a | b;
+        }
+        Basic.Fault("ILLEGAL FUNCTION CALL");
+        return 0;
+    }
+    object Call(string name, object[] args) {
+        object first = args[0];
+        object? second = args.Length > 1 ? args[1] : null;
+        object? third = args.Length > 2 ? args[2] : null;
+        switch (name) {
+        case "RND":
+            int n = (int)first;
+            if (n < 1)
+                Basic.Fault("ILLEGAL FUNCTION CALL");
+            random = (int)(48271L * random % 2147483647);
+            return random % n + 1;
+    Statement? Execute(Statement s) {
+        Statement? following = s.Next;
+        switch (s.Kind) {
+        case "PRINT":
+            foreach (PrintItem item in s.Items) {
+                if (item.Kind == ",") {
+                    buffer += new string(' ', 10 - buffer.Length % 10);
+                } else if (item.Kind != ";") {
+                    object value = Evaluate(item.Expr!);
+                    if (item.Kind == "value")
+                        buffer += value.ToString();
+                }
+            }
+            if (s.Items.Count == 0 || s.Items[^1].Kind is not(";" or ","))
+                EndLine();
+            break;
+        return following;
+    void Connect(List<Statement> body, Statement? after, int number) {
+        Statement? following = after;
+        for (int i = body.Count - 1; i >= 0; i--) {
+            Statement s = body[i];
+            s.Line = number;
+            s.Next = following;
+            following = s;
+        }
+    }
+    List<string> Finish() {
+        if (buffer.Length > 0)
+            EndLine();
+        output.Add("READY");
+        return output;
+    }
+    public List<string> Run(Dictionary<int, string> source) {
+        List<ProgramLine> parsed = [];
+        foreach (int number in source.Keys.Order()) {
+            try {
+                parsed.Add(new(number, new Parser(Basic.Tokenize(source[number])).Parse()));
+            } catch (SyntaxFault) {
+                Message("ERROR IN LINE " + number + ": SYNTAX ERROR");
+                return Finish();
+            }
+        }
+        Statement? after = null;
+        for (int i = parsed.Count - 1; i >= 0; i--) {
+            ProgramLine e = parsed[i];
+            Connect(e.Body, after, e.Number);
+            entries[e.Number] = e.Body[0];
+            after = e.Body[0];
+        }
+        Statement? position = after;
+        while (position != null) {
+            Statement current = position;
+            try {
+                position = Execute(current);
+            } catch (BasicFault error) {
+                if (handler != 0 && !handling) {
+                } else {
+                    Message("ERROR IN LINE " + current.Line + ": " + error.Message);
+                    position = null;
+                }
+            }
+        }
+        return Finish();
+    }
+static class Program {
+    public static void Main() {
+        int count = int.Parse(Console.ReadLine()!);
+        for (int k = 0; k < count; k++) {
+            Dictionary<int, string> source = new();
+            while (true) {
+                string line = Console.ReadLine()!;
+                if (line == "RUN")
+                    break;
+                Match match = Regex.Match(line, @"\A([0-9]+)(?: +(.*))?\z");
+                int number = int.Parse(match.Groups[1].Value);
+                if (match.Groups[2].Success)
+                    source[number] = match.Groups[2].Value;
+                else
+                    source.Remove(number);
+            }
+            List<string> inputs = [];
+            while (true) {
+                string word = Console.ReadLine()!;
+                if (word == "END")
+                    break;
+                inputs.Add(word);
+            }
+            foreach (string line in new Machine(inputs).Run(source))
+                Console.WriteLine(line);
+        }
+    }
+}

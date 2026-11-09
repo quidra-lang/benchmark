@@ -1,0 +1,9 @@
+import java.util.List;
+
+public class Main {
+    public static void main(String[] args) {
+        String sentence = "every program starts with a single line";
+        System.out.println(new StringBuilder(sentence).reverse());
+        System.out.println(String.join(" ", List.of(sentence.split(" ")).reversed()));
+    }
+}

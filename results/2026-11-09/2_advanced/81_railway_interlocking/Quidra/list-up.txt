@@ -1,0 +1,123 @@
+void start_throw(Simulation &sim, int point_index, string target)
+    &point := &sim.network.points[point_index]
+    point.moving = true
+    point.target = target
+    point.completion = sim.tick + sim.params.throw_time
+    append_log(&sim, "MOVE {point.name} {target} until {point.completion}")
+void add_request(Simulation &sim, int route_index, string requester)
+    sim.request_count += 1
+    sim.queue = sim.queue.append(Request(sim.request_count, route_index, sim.tick))
+    sim.locking.routes[route_index].requests += 1
+    append_log(&sim, "REQUEST q{sim.request_count} {sim.locking.routes[route_index].name} {requester}")
+void cancel_route(Simulation &sim, int route_index)
+    removed := false
+    Request[] retained := []
+    string name := sim.locking.routes[route_index].name
+    for request := sim.queue[]
+        if request.route == route_index
+            removed = true
+            sim.dropped += 1
+            append_log(&sim, "DROP q{request.number} {name}")
+        else
+            retained = retained.append(request)
+    if removed
+        sim.queue = retained
+        return
+    &route := &sim.locking.routes[route_index]
+    if route.state == "LOCKED"
+        route.cancels += 1
+        layout.Signal signal := sim.network.signals[route.start]
+        if signal.aspect != "RED" and layout.track_occupied(sim.network, signal.section)
+            route.state = "APPROACH"
+            route.release_time = sim.tick + route.approach_time
+            append_log(&sim, "CANCEL {name} approach until {route.release_time}")
+        else
+            interlocking.release_route(&sim.locking, sim.network, route_index)
+            append_log(&sim, "CANCEL {name} released")
+    else
+        append_log(&sim, "CANCEL {name} " + (if route.state == "none" then "none" else "refused"))
+string request_reason(Simulation sim, int route_index)
+    interlocking.Route route := sim.locking.routes[route_index]
+    if route.state != "none"
+        return "busy"
+    for other := route.conflicts[]
+        string state := sim.locking.routes[other].state
+        if state == "LOCKED" or state == "APPROACH"
+            return "conflict " + sim.locking.routes[other].name
+    for section := route.sections[]
+        string name := sim.network.sections[section].name
+        if layout.track_occupied(sim.network, section)
+            return "occupied " + name
+        if sim.locking.route_locks[section] >= 0 or has_opposite_lock(sim.locking, sim.locking.overlap_locks[section], route.direction)
+            return "locked " + name
+    for section := route.overlap[]
+        string name := sim.network.sections[section].name
+        if layout.track_occupied(sim.network, section)
+            return "occupied " + name
+        owners := sim.locking.overlap_locks[section]
+        if sim.locking.route_locks[section] >= 0
+            owners = owners.append(sim.locking.route_locks[section])
+        if has_opposite_lock(sim.locking, owners, route.direction)
+            return "locked " + name
+    for requirement := route.requirements[]
+        layout.Point point := sim.network.points[requirement.point]
+        for held := sim.locking.point_locks[requirement.point][]
+            if held.position != requirement.position
+                return "point {point.name} locked"
+        if (not point.moving and point.position == requirement.position) or (point.moving and point.target == requirement.position)
+            continue
+        if point.failed
+            return "point {point.name} failed"
+        if point.moving
+            return "point {point.name} moving"
+        if layout.track_occupied(sim.network, point.common)
+            return "point {point.name} occupied"
+    return ""
+void judge_requests(Simulation &sim)
+    Request[] retained := []
+    for original := sim.queue[]
+        request := original
+        r := request.route
+        string name := sim.locking.routes[r].name
+        reason := request_reason(sim, r)
+        if reason != ""
+            if reason != request.reason
+                append_log(&sim, "WAIT q{request.number} {name} {reason}")
+                request.reason = reason
+            retained = retained.append(request)
+            continue
+        interlocking.lock_route(&sim.locking, r)
+        delay := sim.tick - request.tick
+        append_log(&sim, "GRANT q{request.number} {name} wait {delay}")
+        sim.locking.routes[r].grants += 1
+        sim.locking.routes[r].wait += delay
+        if delay > sim.locking.routes[r].maxwait
+            sim.locking.routes[r].maxwait = delay
+        for requirement := sim.locking.routes[r].requirements[]
+            layout.Point point := sim.network.points[requirement.point]
+            if not point.moving and point.position != requirement.position
+                start_throw(&sim, requirement.point, requirement.position)
+    sim.queue = retained
+        for request := sim.plans.requests[]
+            if request.tick == tick
+                add_request(&sim, request.route, sim.items[request.train].name)
+        execute_events(&sim)
+        judge_requests(&sim)
+void lock_route(State &state, int route_index)
+    &route := &state.routes[route_index]
+    route.state = "LOCKED"
+    route.release_time = -1
+    route.passed = distinct<int>()
+    route.overlap_locked = true
+    route.overlap_counter = 0
+    for section := route.sections[]
+        state.route_locks[section] = route_index
+    for section := route.overlap[]
+        state.overlap_locks[section] = state.overlap_locks[section].append(route_index)
+    for requirement := route.requirements[]
+        exists := false
+        for held := state.point_locks[requirement.point][]
+            if held.route == route_index and held.position == requirement.position
+                exists = true
+        if not exists
+            state.point_locks[requirement.point] = state.point_locks[requirement.point].append(PointLock(route_index, requirement.position))

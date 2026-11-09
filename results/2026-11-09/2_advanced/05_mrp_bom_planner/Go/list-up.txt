@@ -1,0 +1,176 @@
+type Row struct { Line int; Fields []string }
+type Item struct { ID,Rule,Description string; Lead int; A,B,Safety,OnHand,Material,Labor int64 }
+func readLines(name string) []string { data,err:=os.ReadFile("input/"+name); if err!=nil { panic(err) }; if len(data)==0 { return nil }; return strings.Split(strings.TrimSuffix(string(data),"\n"),"\n") }
+func readRows(name string) []Row { var rows []Row; for i,line:=range readLines(name) { if i>0 { rows=append(rows,Row{i+1,strings.Split(line,",")}) } }; return rows }
+func integer(text string) int64 { value,err:=strconv.ParseInt(text,10,64); if err!=nil { panic(err) }; return value }
+func sortedKeys[T any](values map[string]T) []string { keys:=make([]string,0,len(values)); for key:=range values { keys=append(keys,key) }; sort.Strings(keys); return keys }
+func lotValues(rule,text string) (int64,int64,bool) {
+    parts:=strings.Split(text,"/"); a:=integer(parts[0]); b:=int64(0); if len(parts)==2 { b=integer(parts[1]) }
+    switch rule { case "LFL": return a,b,len(parts)==1 && a==0; case "FOQ","POQ": return a,b,len(parts)==1 && a>=1; case "MIN": return a,b,len(parts)==2 && a>=1 && b>=1 }
+    return a,b,false
+}
+func readItems(errors *[]string) map[string]*Item {
+    items:=map[string]*Item{}
+    for _,row:=range readRows("items.csv") {
+        f:=row.Fields; reason:=""; a,b,fits:=lotValues(f[2],f[3])
+        if items[f[0]]!=nil { reason="duplicate item "+f[0] } else if f[2]!="LFL" && f[2]!="FOQ" && f[2]!="POQ" && f[2]!="MIN" { reason="unknown lot rule "+f[2] } else if !fits { reason="bad lot parameter "+f[3]+" for "+f[2] }
+        if reason!="" { recordError(errors,"items.csv",row.Line,reason); continue }
+        items[f[0]]=&Item{ID:f[0],Lead:int(integer(f[1])),Rule:f[2],A:a,B:b,Safety:integer(f[4]),OnHand:integer(f[5]),Material:integer(f[6]),Labor:integer(f[7]),Description:f[8]}
+    }
+    return items
+}
+func (item *Item) lotLabel() string { if item.Rule=="LFL" { return "LFL" }; if item.Rule=="MIN" { return fmt.Sprintf("MIN %d/%d",item.A,item.B) }; return fmt.Sprintf("%s %d",item.Rule,item.A) }
+type Link struct { Parent,Child string; Quantity,Scrap int64 }
+type BOM struct { Children,Parents map[string][]Link }
+func need(link Link,quantity int64) int64 { return (quantity*link.Quantity*(100+link.Scrap)+99)/100 }
+func readBOM(items map[string]*Item,errors *[]string) *BOM {
+    bom:=&BOM{map[string][]Link{},map[string][]Link{}}
+    for _,row:=range readRows("bom.csv") {
+        f:=row.Fields; quantity,scrap:=integer(f[2]),integer(f[3]); reason:=""
+        switch { case items[f[0]]==nil: reason="unknown item "+f[0]; case items[f[1]]==nil: reason="unknown item "+f[1]; case quantity<1: reason=fmt.Sprintf("bad quantity %d",quantity); case scrap>50: reason=fmt.Sprintf("bad scrap %d",scrap); case f[0]==f[1]: reason="cycle "+f[0]+" -> "+f[0] }
+        if reason=="" { for _,link:=range bom.Children[f[0]] { if link.Child==f[1] { reason="duplicate "+f[0]+" -> "+f[1]; break } } }
+        if reason=="" { if path:=bom.path(f[1],f[0],map[string]bool{});path!=nil { reason="cycle "+f[0]+" -> "+strings.Join(path," -> ") } }
+        if reason!="" { recordError(errors,"bom.csv",row.Line,reason); continue }
+        link:=Link{f[0],f[1],quantity,scrap}; bom.Children[link.Parent]=append(bom.Children[link.Parent],link); bom.Parents[link.Child]=append(bom.Parents[link.Child],link)
+        sort.Slice(bom.Children[link.Parent],func(i,j int)bool { return bom.Children[link.Parent][i].Child<bom.Children[link.Parent][j].Child }); sort.Slice(bom.Parents[link.Child],func(i,j int)bool { return bom.Parents[link.Child][i].Parent<bom.Parents[link.Child][j].Parent })
+    }
+    return bom
+}
+func (bom *BOM) structure(items map[string]*Item) (map[string]int,map[string]int,[]string) {
+    codes,cumulative:=map[string]int{},map[string]int{}
+    var code,lead func(string)int
+    code=func(id string)int { if value,ok:=codes[id];ok { return value }; value:=0; for _,link:=range bom.Parents[id] { value=max(value,code(link.Parent)+1) }; codes[id]=value; return value }
+    lead=func(id string)int { if value,ok:=cumulative[id];ok { return value }; value:=0; for _,link:=range bom.Children[id] { value=max(value,lead(link.Child)) }; value+=items[id].Lead; cumulative[id]=value; return value }
+    order:=sortedKeys(items); for _,id:=range order { code(id); lead(id) }; sort.Slice(order,func(i,j int)bool { if codes[order[i]]!=codes[order[j]] { return codes[order[i]]<codes[order[j]] }; return order[i]<order[j] }); return codes,cumulative,order
+}
+type WorkCenter struct { ID,Description string; Minutes,Efficiency,Available int64 }
+type Operation struct { Number int; Center string; Setup,Run int64 }
+func readCenters(errors *[]string) map[string]*WorkCenter {
+    centers:=map[string]*WorkCenter{}
+    for _,row:=range readRows("workcenters.csv") { f:=row.Fields; efficiency:=integer(f[2]); reason:=""; if centers[f[0]]!=nil { reason="duplicate center "+f[0] } else if efficiency<50 || efficiency>150 { reason=fmt.Sprintf("bad efficiency %d",efficiency) }; if reason!="" { recordError(errors,"workcenters.csv",row.Line,reason) } else { minutes:=integer(f[1]); centers[f[0]]=&WorkCenter{f[0],f[3],minutes,efficiency,minutes*efficiency/100} } }
+    return centers
+}
+func readRoutings(items map[string]*Item,centers map[string]*WorkCenter,bom *BOM,errors *[]string) map[string][]Operation {
+    routings:=map[string][]Operation{}
+    for _,row:=range readRows("routings.csv") {
+        f:=row.Fields; number,run:=int(integer(f[1])),integer(f[4]); reason:=""
+        switch { case items[f[0]]==nil: reason="unknown item "+f[0]; case centers[f[2]]==nil: reason="unknown center "+f[2]; case len(bom.Children[f[0]])==0: reason="purchased item "+f[0]; case run<1: reason=fmt.Sprintf("bad run time %d",run) }
+        if reason=="" { for _,operation:=range routings[f[0]] { if operation.Number==number { reason=fmt.Sprintf("duplicate %s operation %d",f[0],number); break } } }
+        if reason!="" { recordError(errors,"routings.csv",row.Line,reason) } else { routings[f[0]]=append(routings[f[0]],Operation{number,f[2],integer(f[3]),run}) }
+    }
+    for id:=range routings { sort.Slice(routings[id],func(i,j int)bool { return routings[id][i].Number<routings[id][j].Number }) }; return routings
+}
+func operationWeek(receipt,lead,index,count int) int { return max(receipt-lead+index*lead/count,1) }
+func lotSize(item *Item,week int,projected int64,receipts,gross *[27]int64,horizon int) int64 {
+    net:=item.Safety-projected
+    switch item.Rule {
+    case "LFL": return net
+const ( MPS=iota; CustomerOrder; Dependent; Safety )
+type ScheduleRow struct { Item string; Week int; Quantity int64; Line int }
+type Inquiry struct { ID,Item string; Quantity int64; Week,Line int }
+type Demand struct { Item string; Kind,Week int; Quantity int64; OrderID string; Line int; Parent string; ParentNumber int }
+type PlannedOrder struct { Item string; Number,Receipt,Original,Release int; Quantity int64 }
+type ItemPlan struct { Demands []*Demand; Gross,OnHand,Net,PR,PL [27]int64; Orders []*PlannedOrder; PastDue int64; Supplies,OrderSupplies []*Supply }
+type Plan struct { Items map[string]*ItemPlan; Loads,Overloads map[string]*[27]int64 }
+type Promise struct { Inquiry *Inquiry; Week,Material int; Reason string }
+type PlanningData struct {
+    Horizon int
+    Peg []string
+    TreeQuantity int64
+    Errors []string
+    Items map[string]*Item
+    BOM *BOM
+    Centers map[string]*WorkCenter
+    Routings map[string][]Operation
+    MPS,Receipts []ScheduleRow
+    Inquiries []*Inquiry
+    Codes,Cumulative map[string]int
+    Order,ItemOrder,CenterOrder []string
+    Scheduled map[string]*[27]int64
+    ItemReceipts map[string][]ScheduleRow
+    Weeks []int64
+}
+func (data *PlanningData) scheduleError(id string,week int,quantity int64) string {
+    if data.Items[id]==nil { return "unknown item "+id }; if week<1 || week>data.Horizon { return fmt.Sprintf("week %d outside horizon",week) }; if quantity<1 { return fmt.Sprintf("bad quantity %d",quantity) }; return ""
+}
+func (data *PlanningData) readSchedule(name string,unique bool) []ScheduleRow {
+    var result []ScheduleRow; seen:=map[string]bool{}
+    for _,row:=range readRows(name) { f:=row.Fields; week,quantity:=int(integer(f[1])),integer(f[2]); reason:=data.scheduleError(f[0],week,quantity); key:=fmt.Sprintf("%s %d",f[0],week); if reason=="" && unique && seen[key] { reason=fmt.Sprintf("duplicate %s week %d",f[0],week) }; if reason!="" { recordError(&data.Errors,name,row.Line,reason) } else { result=append(result,ScheduleRow{f[0],week,quantity,row.Line}); seen[key]=true } }
+    return result
+}
+func loadData() *PlanningData {
+    data:=&PlanningData{}
+    for _,line:=range readLines("params.txt") { words:=strings.Split(line," "); switch words[0] { case "horizon": data.Horizon=int(integer(words[1])); case "peg": data.Peg=words[1:]; case "tree_quantity": data.TreeQuantity=integer(words[1]) } }
+    data.Items=readItems(&data.Errors); data.BOM=readBOM(data.Items,&data.Errors); data.Centers=readCenters(&data.Errors); data.Routings=readRoutings(data.Items,data.Centers,data.BOM,&data.Errors)
+    data.MPS=data.readSchedule("mps.csv",true); data.Receipts=data.readSchedule("receipts.csv",false); seen:=map[string]bool{}
+    for _,row:=range readRows("orders.csv") { f:=row.Fields; quantity,week:=integer(f[2]),int(integer(f[3])); reason:=""; if seen[f[0]] { reason="duplicate order "+f[0] } else { reason=data.scheduleError(f[1],week,quantity) }; if reason!="" { recordError(&data.Errors,"orders.csv",row.Line,reason) } else { data.Inquiries=append(data.Inquiries,&Inquiry{f[0],f[1],quantity,week,row.Line}); seen[f[0]]=true } }
+    data.Codes,data.Cumulative,data.Order=data.BOM.structure(data.Items); data.ItemOrder=sortedKeys(data.Items); data.CenterOrder=sortedKeys(data.Centers)
+    data.Scheduled=map[string]*[27]int64{}; data.ItemReceipts=map[string][]ScheduleRow{}
+    for id:=range data.Items { data.Scheduled[id]=&[27]int64{} }; for week:=1;week<=data.Horizon;week++ { data.Weeks=append(data.Weeks,int64(week)) }
+    sort.Slice(data.Receipts,func(i,j int)bool { a,b:=data.Receipts[i],data.Receipts[j]; if a.Week!=b.Week { return a.Week<b.Week }; return a.Line<b.Line })
+    for _,row:=range data.Receipts { data.ItemReceipts[row.Item]=append(data.ItemReceipts[row.Item],row); data.Scheduled[row.Item][row.Week]+=row.Quantity }; return data
+}
+func (data *PlanningData) runMRP(promised []*Demand,extra *Demand) *Plan {
+    plan:=&Plan{Items:map[string]*ItemPlan{},Loads:map[string]*[27]int64{},Overloads:map[string]*[27]int64{}}
+    for id:=range data.Items { plan.Items[id]=&ItemPlan{} }
+    for _,row:=range data.MPS { plan.Items[row.Item].Demands=append(plan.Items[row.Item].Demands,&Demand{Item:row.Item,Kind:MPS,Week:row.Week,Quantity:row.Quantity,Line:row.Line}) }
+    for _,demand:=range promised { plan.Items[demand.Item].Demands=append(plan.Items[demand.Item].Demands,demand) }; if extra!=nil { plan.Items[extra.Item].Demands=append(plan.Items[extra.Item].Demands,extra) }
+    for _,id:=range data.Order {
+        p,item:=plan.Items[id],data.Items[id]
+        for _,demand:=range p.Demands { p.Gross[demand.Week]+=demand.Quantity }; projected:=item.OnHand
+        for week:=1;week<=data.Horizon;week++ {
+            available:=projected+data.Scheduled[id][week]-p.Gross[week]; projected=available
+            if available<item.Safety { quantity:=lotSize(item,week,available,data.Scheduled[id],&p.Gross,data.Horizon); original:=week-item.Lead; order:=&PlannedOrder{id,len(p.Orders)+1,week,original,max(1,original),quantity}; p.Orders=append(p.Orders,order); p.Net[week]=item.Safety-available; p.PR[week]=quantity; p.PL[order.Release]+=quantity; projected=available+quantity; if original<1 { p.PastDue+=quantity } }; p.OnHand[week]=projected
+        }
+        for _,order:=range p.Orders { for _,link:=range data.BOM.Children[id] { plan.Items[link.Child].Demands=append(plan.Items[link.Child].Demands,&Demand{Item:link.Child,Kind:Dependent,Week:order.Release,Quantity:need(link,order.Quantity),Parent:id,ParentNumber:order.Number}) } }
+    }
+    for _,id:=range data.CenterOrder { plan.Loads[id]=&[27]int64{}; plan.Overloads[id]=&[27]int64{} }
+    for _,id:=range data.Order { operations:=data.Routings[id]; for _,order:=range plan.Items[id].Orders { for index,operation:=range operations { week:=operationWeek(order.Receipt,data.Items[id].Lead,index,len(operations)); plan.Loads[operation.Center][week]+=operation.Setup+order.Quantity*operation.Run } } }
+    for _,id:=range data.CenterOrder { for week:=1;week<=data.Horizon;week++ { plan.Overloads[id][week]=max(int64(0),plan.Loads[id][week]-data.Centers[id].Available) } }; return plan
+}
+func (data *PlanningData) promise(base *Plan) ([]Promise,*Plan) {
+    current:=base; var promised []*Demand; var promises []Promise
+    for _,inquiry:=range data.Inquiries {
+        promise:=Promise{Inquiry:inquiry}
+        for week:=inquiry.Week;week<=data.Horizon;week++ {
+            demand:=&Demand{Item:inquiry.Item,Kind:CustomerOrder,Week:week,Quantity:inquiry.Quantity,OrderID:inquiry.ID,Line:inquiry.Line}; trial:=data.runMRP(promised,demand); reason:=""
+            for _,id:=range data.Order { if trial.Items[id].PastDue>current.Items[id].PastDue { reason=id; break } }
+            if reason=="" { if promise.Material==0 { promise.Material=week }; for _,id:=range data.CenterOrder { for w:=1;w<=data.Horizon;w++ { if trial.Overloads[id][w]>current.Overloads[id][w] { reason=fmt.Sprintf("%s week %d",id,w); break } }; if reason!="" { break } } }
+            if reason=="" { promise.Week=week; promised=append(promised,demand); current=trial; break }; if week==inquiry.Week { promise.Reason=reason }
+        }
+        promises=append(promises,promise)
+    }
+    return promises,current
+}
+func (data *PlanningData) gridLines(plan *Plan) []string {
+    var lines []string
+    for _,id:=range data.Order { p,item:=plan.Items[id],data.Items[id]; lines=append(lines,fmt.Sprintf("ITEM %s LLC %d LT %d LOT %s SS %d OH %d %s",id,data.Codes[id],item.Lead,item.lotLabel(),item.Safety,item.OnHand,item.Description)); for _,row:=range []struct{label string; values []int64}{{"WEEK",data.Weeks},{"GROSS",p.Gross[1:data.Horizon+1]},{"RECEIPTS",data.Scheduled[id][1:data.Horizon+1]},{"ON_HAND",p.OnHand[1:data.Horizon+1]},{"NET",p.Net[1:data.Horizon+1]},{"PLAN_RCPT",p.PR[1:data.Horizon+1]},{"PLAN_REL",p.PL[1:data.Horizon+1]}} { lines=append(lines,tableRow(row.label,row.values,6)) }; lines=append(lines,fmt.Sprintf("TOTAL gross %d receipts %d planned %d orders %d ending %d",sum(p.Gross[:]),sum(data.Scheduled[id][:]),sum(p.PR[:]),len(p.Orders),p.OnHand[data.Horizon])) }
+    return lines
+}
+func (data *PlanningData) capacityLines(plan *Plan) []string {
+    var lines []string; totals:=map[string]int64{}
+    for _,id:=range data.CenterOrder {
+        center:=data.Centers[id]; loads,overloads:=plan.Loads[id],plan.Overloads[id]; leveled:=levelLoads(loads,center.Available,data.Horizon); total:=sum(loads[:]); totals[id]=total; var utilization [27]int64; peak,overloaded:=0,0
+        for week:=1;week<=data.Horizon;week++ { utilization[week]=percentage(loads[week],center.Available); if overloads[week]>0 { overloaded++ }; if total>0 && (peak==0 || loads[week]>loads[peak]) { peak=week } }
+        lines=append(lines,fmt.Sprintf("CENTER %s minutes %d efficiency %d available %d %s",id,center.Minutes,center.Efficiency,center.Available,center.Description))
+        for _,row:=range []struct{label string; values []int64}{{"WEEK",data.Weeks},{"LOAD",loads[1:data.Horizon+1]},{"UTIL",utilization[1:data.Horizon+1]},{"OVER",overloads[1:data.Horizon+1]},{"LEVELED",leveled[1:data.Horizon+1]}} { lines=append(lines,tableRow(row.label,row.values,7)) }
+        lines=append(lines,fmt.Sprintf("TOTAL load %d available %d utilization %d overloaded %d peak %d backlog %d",total,center.Available*int64(data.Horizon),percentage(total,center.Available*int64(data.Horizon)),overloaded,peak,max(int64(0),leveled[1]-center.Available)))
+    }
+    order:=append([]string(nil),data.CenterOrder...); sort.Slice(order,func(i,j int)bool { a,b:=order[i],order[j]; left,right:=totals[a]*data.Centers[b].Available,totals[b]*data.Centers[a].Available; if left!=right { return left>right }; return a<b })
+    for rank,id:=range order { lines=append(lines,fmt.Sprintf("RANK %d %s load %d utilization %d",rank+1,id,totals[id],percentage(totals[id],data.Centers[id].Available*int64(data.Horizon)))) }; return lines
+}
+func (data *PlanningData) promiseLines(promises []Promise,base,final *Plan) []string {
+    var lines []string; onTime,late,rejected:=0,0,0
+    for _,promise:=range promises {
+        inquiry:=promise.Inquiry; head:=fmt.Sprintf("ORDER %s %s quantity %d requested %d",inquiry.ID,inquiry.Item,inquiry.Quantity,inquiry.Week); material:="none"; if promise.Material>0 { material=fmt.Sprint(promise.Material) }
+        if promise.Week==0 { rejected++; lines=append(lines,fmt.Sprintf("%s rejected material %s reason %s",head,material,promise.Reason)); continue }
+        if promise.Week==inquiry.Week { onTime++; lines=append(lines,fmt.Sprintf("%s promised %d",head,promise.Week)) } else { late++; lines=append(lines,fmt.Sprintf("%s promised %d late %d material %s reason %s",head,promise.Week,promise.Week-inquiry.Week,material,promise.Reason)) }
+        for _,id:=range data.Order { for _,supply:=range final.Items[id].OrderSupplies { serves:=false; for _,root:=range supply.Roots { if root.Kind==CustomerOrder && root.OrderID==inquiry.ID { serves=true; break } }; if serves { order:=supply.Order; lines=append(lines,fmt.Sprintf("  SUPPLY %s order %d receipt %d release %d quantity %d",id,order.Number,order.Receipt,order.Release,order.Quantity)) } } }
+    }
+    for _,id:=range data.Order { before,after:=base.Items[id],final.Items[id]; for week:=1;week<=data.Horizon;week++ { if before.PR[week]!=after.PR[week] { lines=append(lines,fmt.Sprintf("CHANGE %s from %d planned %d -> %d orders %d -> %d",id,week,sum(before.PR[:]),sum(after.PR[:]),len(before.Orders),len(after.Orders))); break } } }
+    return append(lines,fmt.Sprintf("SUMMARY orders %d on_time %d late %d rejected %d",len(promises),onTime,late,rejected))
+}
+    data:=loadData(); base:=data.runMRP(nil,nil); promises,final:=data.promise(base); data.peg(final); costs:=standardCosts(data.Items,data.BOM,data.Order)
+    writeReport("mrp_grid.txt",data.gridLines(final)); writeReport("pegging.txt",data.peggingLines(final)); writeReport("bom_tree.txt",data.treeLines()); writeReport("cost_rollup.csv",data.costLines(final,costs)); writeReport("exceptions.txt",data.exceptionLines(final)); writeReport("capacity.txt",data.capacityLines(final)); writeReport("promises.txt",data.promiseLines(promises,base,final)); writeReport("releases.txt",data.releaseLines(final)); writeReport("value_plan.csv",data.valueLines(final,costs))
+func tableRow(label string,values []int64,width int) string { var line strings.Builder; fmt.Fprintf(&line,"%-10s",label); for _,value:=range values { fmt.Fprintf(&line,"%*d",width,value) }; return line.String() }
+func writeReport(name string,lines []string) { text:=""; if len(lines)>0 { text=strings.Join(lines,"\n")+"\n" }; if err:=os.WriteFile("output/"+name,[]byte(text),0644);err!=nil { panic(err) } }

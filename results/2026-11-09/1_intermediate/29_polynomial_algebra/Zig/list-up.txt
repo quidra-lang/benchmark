@@ -1,0 +1,199 @@
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+fn integer(text: []const u8) i64 {
+    return std.fmt.parseInt(i64, text, 10) catch unreachable;
+fn line(out: *Writer, comptime fmt: []const u8, args: anytype) Writer.Error!void {
+    try out.print(fmt ++ "\n", args);
+fn absolute(value: i64) i64 {
+    return if (value < 0) -value else value;
+fn gcd(a: i64, b: i64) i64 {
+    var x = absolute(a);
+    var y = absolute(b);
+    while (y != 0) {
+        const remainder = @mod(x, y);
+        x = y;
+        y = remainder;
+    }
+    return x;
+const Fraction = struct {
+    n: i64 = 0,
+    d: i64 = 1,
+    const zero: Fraction = .{};
+    const one: Fraction = .{ .n = 1 };
+    fn init(n: i64, d: i64) Fraction {
+        const divisor = gcd(n, d) * @as(i64, if (d < 0) -1 else 1);
+        return .{ .n = @divTrunc(n, divisor), .d = @divTrunc(d, divisor) };
+    fn parse(text: []const u8) SemanticError!Fraction {
+        const slash = std.mem.findScalar(u8, text, '/');
+        const n = integer(if (slash) |i| text[0..i] else text);
+        const d = if (slash) |i| integer(text[i + 1 ..]) else 1;
+        if (d == 0) return error.ZeroDenominator;
+        return init(n, d);
+    fn add(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d + b.n * a.d, a.d * b.d);
+    fn sub(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d - b.n * a.d, a.d * b.d);
+    fn mul(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.n, a.d * b.d);
+    fn div(a: Fraction, b: Fraction) Fraction {
+        return init(a.n * b.d, a.d * b.n);
+    fn neg(a: Fraction) Fraction {
+        return .{ .n = -a.n, .d = a.d };
+    fn abs(a: Fraction) Fraction {
+        return .{ .n = absolute(a.n), .d = a.d };
+    fn isZero(a: Fraction) bool {
+        return a.n == 0;
+    fn eq(a: Fraction, b: Fraction) bool {
+        return a.n == b.n and a.d == b.d;
+    pub fn format(value: Fraction, out: *Writer) Writer.Error!void {
+        try out.print("{d}", .{value.n});
+        if (value.d != 1) try out.print("/{d}", .{value.d});
+const Polynomial = struct {
+    coefficients: []const Fraction = &.{},
+    const zero: Polynomial = .{};
+    fn fromOwned(values: []const Fraction) Polynomial {
+        var length = values.len;
+        while (length > 0 and values[length - 1].isZero()) length -= 1;
+        return .{ .coefficients = values[0..length] };
+    fn init(gpa: Allocator, values: []const Fraction) Allocator.Error!Polynomial {
+        return fromOwned(try gpa.dupe(Fraction, values));
+    fn constant(gpa: Allocator, value: Fraction) Allocator.Error!Polynomial {
+        return if (value.isZero()) zero else init(gpa, &.{value});
+    fn isZero(value: Polynomial) bool {
+        return value.coefficients.len == 0;
+    fn at(value: Polynomial, index: usize) Fraction {
+        return if (index < value.coefficients.len) value.coefficients[index] else Fraction.zero;
+    fn add(a: Polynomial, gpa: Allocator, b: Polynomial) Allocator.Error!Polynomial {
+        const result = try gpa.alloc(Fraction, @max(a.coefficients.len, b.coefficients.len));
+        for (result, 0..) |*value, i| value.* = a.at(i).add(b.at(i));
+        return fromOwned(result);
+    fn mul(a: Polynomial, gpa: Allocator, b: Polynomial) Allocator.Error!Polynomial {
+        if (a.isZero() or b.isZero()) return zero;
+        const result = try gpa.alloc(Fraction, a.coefficients.len + b.coefficients.len - 1);
+        @memset(result, Fraction.zero);
+        for (a.coefficients, 0..) |left, i| {
+            for (b.coefficients, 0..) |right, j| result[i + j] = result[i + j].add(left.mul(right));
+        }
+        return fromOwned(result);
+    fn notation(a: Polynomial, variable_text: []const u8) Notation {
+        return .{ .value = a, .variable = variable_text };
+    pub fn format(a: Polynomial, out: *Writer) Writer.Error!void {
+        try a.notation("x").format(out);
+const Notation = struct {
+    value: Polynomial,
+    variable: []const u8,
+    pub fn format(notation: Notation, out: *Writer) Writer.Error!void {
+        if (notation.value.isZero()) return out.writeByte('0');
+        var first = true;
+        var i = notation.value.coefficients.len;
+        while (i > 0) {
+            i -= 1;
+            const coefficient = notation.value.at(i);
+            if (coefficient.isZero()) continue;
+            if (first) {
+                if (coefficient.n < 0) try out.writeByte('-');
+            } else try out.writeAll(if (coefficient.n < 0) " - " else " + ");
+            const magnitude = coefficient.abs();
+            if (i == 0 or !magnitude.eq(Fraction.one)) try out.print("{f}", .{magnitude});
+            if (i > 0) try out.writeAll(notation.variable);
+            if (i > 1) try out.print("^{d}", .{i});
+            first = false;
+        }
+fn interpolate(session: *Session, values: []const Fraction) Error!Polynomial {
+    const gpa = session.gpa;
+    const count = values.len / 2;
+    const points = try gpa.alloc(Fraction, count);
+    const differences = try gpa.alloc(Fraction, count);
+    for (0..count) |i| {
+        points[i] = values[2 * i];
+        differences[i] = values[2 * i + 1];
+    }
+    for (1..count) |j| {
+        for (0..j) |i| if (points[j].eq(points[i])) return session.fail("DUPLICATE X {f}", .{points[j]});
+    }
+    for (1..count) |j| {
+        var i = count;
+        while (i > j) {
+            i -= 1;
+            differences[i] = differences[i].sub(differences[i - 1]).div(points[i].sub(points[i - j]));
+        }
+    }
+    var result = Polynomial.zero;
+    var i = count;
+    while (i > 0) {
+        i -= 1;
+        const factor = try Polynomial.init(gpa, &.{ points[i].neg(), Fraction.one });
+        result = try (try result.mul(gpa, factor)).add(gpa, try Polynomial.constant(gpa, differences[i]));
+    }
+    return result;
+const Name = struct {
+    bytes: [8]u8 = @splat(0),
+    len: usize = 0,
+    fn init(text: []const u8) Name {
+        var name: Name = .{ .len = text.len };
+        @memcpy(name.bytes[0..text.len], text);
+        return name;
+    fn matches(name: Name, text: []const u8) bool {
+        return equal(name.bytes[0..name.len], text);
+const Stored = struct {
+    name: Name,
+    value: Polynomial,
+const Storage = struct {
+    gpa: Allocator,
+    entries: std.ArrayList(Stored) = .empty,
+    fn find(storage: *const Storage, text: []const u8) ?usize {
+        for (storage.entries.items, 0..) |entry, i| if (entry.name.matches(text)) return i;
+        return null;
+    fn set(storage: *Storage, entry: Stored) Allocator.Error!void {
+        const saved: Stored = .{ .name = entry.name, .value = try Polynomial.init(storage.gpa, entry.value.coefficients) };
+        if (storage.find(entry.name.bytes[0..entry.name.len])) |i| storage.entries.items[i] = saved else try storage.entries.append(storage.gpa, saved);
+const Session = struct {
+    gpa: Allocator,
+    storage: *Storage,
+    out: *Writer,
+    problem: ?[]const u8 = null,
+    pending: [3]Stored = undefined,
+    pending_count: usize = 0,
+    fn fail(session: *Session, comptime fmt: []const u8, args: anytype) Error {
+        session.problem = std.fmt.allocPrint(session.gpa, fmt, args) catch return error.OutOfMemory;
+        return error.BadCommand;
+    fn save(session: *Session, name: []const u8, value: Polynomial) Writer.Error!void {
+        session.pending[session.pending_count] = .{ .name = Name.init(name), .value = value };
+        session.pending_count += 1;
+        try line(session.out, "{s} = {f}", .{ name, value });
+    fn commit(session: *Session) Allocator.Error!void {
+        for (session.pending[0..session.pending_count]) |entry| try session.storage.set(entry);
+    fn process(session: *Session, text: []const u8) Error!void {
+        var words_buffer: [64][]const u8 = undefined;
+        var word_count: usize = 0;
+        var iterator = std.mem.splitScalar(u8, text, ' ');
+        while (iterator.next()) |word| {
+            words_buffer[word_count] = word;
+            word_count += 1;
+        }
+        const words = words_buffer[0..word_count];
+        const command = std.meta.stringToEnum(Command, words[0]).?;
+        var literals: [62]Fraction = undefined;
+        var literal_count: usize = 0;
+        if (command == .EVAL or command == .INTERP) {
+            for (words[2..]) |word| {
+                literals[literal_count] = try Fraction.parse(word);
+                literal_count += 1;
+            }
+        }
+        switch (command) {
+            .INTERP => try session.save(words[1], try interpolate(session, literals[0..literal_count])),
+fn errorReason(err: anyerror, session: *const Session) ?[]const u8 {
+    return switch (err) {
+        error.BadCommand => session.problem.?,
+        error.ZeroDenominator => "ZERO DENOMINATOR",
+        const text = try readLine(gpa, &input.interface);
+        var response: Writer.Allocating = .init(gpa);
+        var session: Session = .{ .gpa = gpa, .storage = &storage, .out = &response.writer };
+        session.process(text) catch |err| {
+            const reason = errorReason(err, &session) orelse return err;
+            try line(&output.interface, "ERROR {s}", .{reason});
+            continue;
+        try session.commit();
+        try output.interface.writeAll(response.written());
+    try output.interface.flush();

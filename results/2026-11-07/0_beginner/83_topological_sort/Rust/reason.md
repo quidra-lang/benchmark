@@ -1,0 +1,9 @@
+The current question asks: Follow the local stopping block for list 2 when no eligible course remains. Identify how the candidate condition ends selection although untaken courses still exist, then how those remaining courses become the alphabetically ordered cycle-line data. Explain why the source does not remove from an empty candidate collection and how this differs from the all-taken case.
+
+Answer and source evidence: Eligibility requires an untaken course with zero remaining indegree. If none exists, Go best stays -1, Rust selection is None, and Swift first(where:) is nil; the loop exits before selecting/removing anything. Untaken names are then collected and alphabetized (explicit sort or the already sorted Swift names) for the cycle line. If all were taken, the same stopping condition leaves an empty remaining sequence instead.
+
+Selection: `main.rs` lines 13, 14, 15, 16, 17, 18, 19, 20, 21, 27, 29, 30, 31, 32. Only candidate construction/absence guard, taken update and post-loop remaining-name output are needed. Edges and the prior processing history are unnecessary to explain this local stop rather than derive the entire ordering.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

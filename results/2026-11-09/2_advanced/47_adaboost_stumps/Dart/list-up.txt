@@ -1,0 +1,232 @@
+class Round {
+  final Stump stump;
+  final List<double> weights;
+  final double error, alpha, z, bound, loss;
+  final int polarity;
+  Round(
+    this.stump, {
+    this.weights = const [],
+    this.error = 0,
+    this.alpha = 0,
+    this.polarity = 0,
+    this.z = 0,
+    this.bound = 0,
+    this.loss = 0,
+  });
+}
+Model trainDiscrete(
+  List<Row> rows,
+  int maxRounds, {
+  List<double>? initial,
+  double shrinkage = 1,
+  SearchSpace? space,
+}) {
+  space ??= SearchSpace(rows);
+  final labels = labelsOf(rows),
+      weights = initial == null
+          ? uniformWeights(rows.length)
+          : List<double>.of(initial);
+  final model = Model();
+  var bound = 1.0;
+  for (var t = 0; t < maxRounds; t++) {
+    final c = discreteSearch(space, labels, weights), e = c.error;
+    if (e >= 0.5) {
+      model.stop = 'weak';
+      break;
+    }
+    final alpha = e <= 1e-10 ? 1.0 : shrinkage * (0.5 * log((1 - e) / e));
+    final stump = Stump(
+      c.feature,
+      [c.threshold],
+      [-c.polarity * alpha, c.polarity * alpha],
+    );
+    for (var i = 0; i < rows.length; i++) {
+      final decision = rows[i].values[c.feature] > c.threshold
+          ? c.polarity
+          : -c.polarity;
+      final factor = exp(decision == rows[i].label ? -alpha : alpha);
+      if (weights[i] != 0) {
+        updated[i] = weights[i] * factor;
+      }
+    }
+    final z = sum(updated);
+    for (var i = 0; i < weights.length; i++) {
+      weights[i] = updated[i] / z;
+    }
+    model.rounds.add(
+      Round(
+        stump,
+        weights: before,
+        error: e,
+        alpha: alpha,
+        polarity: c.polarity,
+        z: z,
+        bound: bound,
+      ),
+    );
+    if (e <= 1e-10) {
+      model.stop = 'perfect';
+      break;
+    }
+  }
+  return model;
+}
+  final List<Row> rows;
+  final orders = <List<int>>[];
+  final groups = <List<List<int>>>[];
+  final thresholds = <List<double>>[];
+  SearchSpace(this.rows) {
+    for (var feature = 0; feature < rows.first.values.length; feature++) {
+      final order = List.generate(rows.length, (i) => i);
+      order.sort((a, b) {
+        final c = rows[a].values[feature].compareTo(rows[b].values[feature]);
+        return c != 0 ? c : a.compareTo(b);
+      });
+      final grouped = <List<int>>[], distinct = <double>[];
+      for (final i in order) {
+        final value = rows[i].values[feature];
+        if (distinct.isEmpty || value != distinct.last) {
+          distinct.add(value);
+          grouped.add([]);
+        }
+        grouped.last.add(i);
+      }
+      final cuts = <double>[distinct.first - 1];
+      for (var k = 0; k + 1 < distinct.length; k++) {
+        cuts.add((distinct[k] + distinct[k + 1]) / 2);
+      }
+      orders.add(order);
+      groups.add(grouped);
+      thresholds.add(cuts);
+    }
+  }
+Candidate discreteSearch(
+  SearchSpace space,
+  List<int> labels,
+  List<double> weights,
+) {
+  final positive = List.filled(weights.length, 0.0),
+      negative = List.filled(weights.length, 0.0);
+  for (var i = 0; i < weights.length; i++) {
+    (labels[i] == 1 ? positive : negative)[i] = weights[i];
+  }
+  final wp = sum(positive), wn = sum(negative), candidates = <Candidate>[];
+  for (var feature = 0; feature < space.thresholds.length; feature++) {
+    final lp = leftCumulative(space.groups[feature], positive),
+        ln = leftCumulative(space.groups[feature], negative);
+    for (var k = 0; k < space.thresholds[feature].length; k++) {
+      final t = space.thresholds[feature][k];
+      candidates.add(
+        Candidate(lp[k] + (wn - ln[k]), feature, threshold: t, polarity: 1),
+      );
+      candidates.add(
+        Candidate(ln[k] + (wp - lp[k]), feature, threshold: t, polarity: -1),
+      );
+    }
+  }
+  return choose(candidates);
+}
+
+int prediction(double score) => score > 0 ? 1 : -1;
+double rowScore(List<Round> rounds, List<double> values) {
+  var total = 0.0;
+  for (final round in rounds) {
+    total += round.stump.output(values);
+  }
+  return total;
+}
+
+List<double> scoreRows(List<Round> rounds, List<Row> rows) => [
+  for (final row in rows) rowScore(rounds, row.values),
+];
+void addRoundScores(Round round, List<Row> rows, List<double> scores) {
+  for (var i = 0; i < rows.length; i++) {
+    scores[i] += round.stump.output(rows[i].values);
+  }
+}
+List<CurvePoint> trainingCurve(
+  List<Round> rounds,
+  List<Row> training,
+  List<Row> testing,
+  String variant,
+) {
+  final train = List.filled(training.length, 0.0),
+      test = List.filled(testing.length, 0.0),
+      curve = <CurvePoint>[];
+  var scale = 0.0;
+  for (var t = 0; t < rounds.length; t++) {
+    final r = rounds[t];
+    addRoundScores(r, training, train);
+    addRoundScores(r, testing, test);
+    curve.add(
+      CurvePoint(
+        t + 1,
+        countErrors(training, train),
+        countErrors(testing, test),
+      ),
+    );
+  }
+  return curve;
+}
+CrossValidation crossValidate(List<Row> rows, Params p) {
+  final space = SearchSpace(rows), cv = CrossValidation(p.rounds, rows.length);
+  for (var f = 0; f < p.folds; f++) {
+    final indices = [
+      for (var i = 0; i < rows.length; i++)
+        if (i % p.folds == f) i,
+    ];
+    final n = rows.length - indices.length;
+    final weights = [
+      for (var i = 0; i < rows.length; i++) i % p.folds == f ? 0.0 : 1 / n,
+    ];
+    final model = trainDiscrete(rows, p.rounds, initial: weights, space: space);
+    final validation = [for (final i in indices) rows[i]],
+        scores = List.filled(indices.length, 0.0),
+        errors = List.filled(p.rounds, 0);
+    for (var t = 0; t < p.rounds; t++) {
+      if (t < model.rounds.length) {
+        addRoundScores(model.rounds[t], validation, scores);
+      }
+      errors[t] = countErrors(validation, scores);
+      cv.errors[t] += errors[t];
+    }
+    cv.folds.add(Fold(indices, n, model, errors));
+  }
+  var best = 0;
+  for (var t = 1; t < p.rounds; t++) {
+    if (cv.errors[t] < cv.errors[best]) {
+      best = t;
+    }
+  }
+  cv.selected = best + 1;
+  for (final fold in cv.folds) {
+    final rounds = fold.model.rounds.take(cv.selected).toList();
+    for (final i in fold.indices) {
+      cv.scores[i] = rowScore(rounds, rows[i].values);
+    }
+  }
+  return cv;
+}
+  VariantAnalysis(this.name, this.full, this.rounds, Inputs input)
+    : scale = totalMagnitude(rounds),
+      train = scoreRows(rounds, input.train),
+      test = scoreRows(rounds, input.test),
+      curve = trainingCurve(full.rounds, input.train, input.test, name),
+      importance = Importance(rounds, input.features.length, false);
+}
+List<VariantAnalysis> analyzeVariants(Inputs input, int selected) {
+  final result = <VariantAnalysis>[];
+  for (final name in input.params.variants) {
+    final model = trainVariant(name, input.train, input.params);
+    final rounds = name == 'discrete'
+        ? model.rounds.take(selected).toList()
+        : model.rounds;
+    result.add(VariantAnalysis(name, model, rounds, input));
+  }
+  return result;
+}
+  for (final a in analysis) {
+    lines.add(
+      metricsLine('train', a.name, a.rounds.length, input.train, a.train),
+    );
+    lines.add(metricsLine('test', a.name, a.rounds.length, input.test, a.test));

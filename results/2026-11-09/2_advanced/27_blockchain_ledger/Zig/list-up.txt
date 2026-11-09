@@ -1,0 +1,530 @@
+const Entry = struct { tx: *const t.Transaction, fee: i64, arrival: i64 };
+fn priority(_: void, a: Entry, z: Entry) bool {
+    const left = a.fee * z.tx.size();
+    const right = z.fee * a.tx.size();
+    return if (left != right) left > right else std.mem.order(u8, a.tx.id, z.tx.id) == .lt;
+}
+    fn log(self: *Node, comptime pattern: []const u8, args: anytype) void {
+        self.log_lines.add("{d} {s}", .{ self.now, h.fmt(pattern, args) });
+    }
+    fn nextHeight(self: *const Node) i64 {
+        return self.tip.block.height + 1;
+    }
+    fn blockReward(self: *const Node, height: i64) i64 {
+        return c.reward(height, self.params.initial_reward, self.params.halving);
+    }
+    fn nextBits(self: *const Node, parent: *c.Record) i64 {
+        return c.requiredDifficulty(parent, self.params.initial_bits, self.params.retarget, self.params.target);
+    }
+    fn refresh(self: *Node) void {
+        self.main_chain = c.chainTo(self.tip);
+        self.confirmed.clearRetainingCapacity();
+        for (self.main_chain) |record| for (record.block.transactions) |tx| put(&self.confirmed, tx.id, record.block.height);
+    }
+    fn ordered(self: *const Node) []Entry {
+        const result = h.dupe(Entry, self.pool.items);
+        std.mem.sort(Entry, result, {}, priority);
+        return result;
+    }
+    fn findEntry(self: *const Node, id: []const u8) ?Entry {
+        for (self.pool.items) |entry| if (h.eq(entry.tx.id, id)) return entry;
+        return null;
+    }
+    fn locked(self: *const Node, reference: t.Reference) bool {
+        for (self.pool.items) |entry| for (entry.tx.inputs) |other| if (t.same(reference, other)) return true;
+        return false;
+    }
+    fn acceptance(self: *const Node, tx: *const t.Transaction) Acceptance {
+        if (tx.coinbase_height != null) return .{ .reason = "coinbase" };
+        if (self.confirmed.contains(tx.id) or self.findEntry(tx.id) != null) return .{ .reason = "duplicate" };
+        const check = t.check(tx, &self.tip.utxo, &.{}, self.nextHeight(), self.wallets, self.params.maturity);
+        if (check.reason) |reason| return .{ .reason = reason };
+        if (check.fee * 1000 < self.params.min_rate * tx.size()) return .{ .reason = "low-fee" };
+        var conflicts: std.ArrayList([]const u8) = .empty;
+        var fees: i64 = 0;
+        var higher = true;
+        for (self.pool.items) |entry| {
+            var conflict = false;
+            for (tx.inputs) |reference| for (entry.tx.inputs) |other| if (t.same(reference, other)) {
+                conflict = true;
+            };
+            if (!conflict) continue;
+            h.append([]const u8, &conflicts, entry.tx.id);
+            fees += entry.fee;
+            if (check.fee * entry.tx.size() <= entry.fee * tx.size()) higher = false;
+        }
+        if (conflicts.items.len > 0 and (check.fee <= fees or !higher)) return .{ .reason = "conflict" };
+        return .{ .fee = check.fee, .conflicts = conflicts.items };
+    }
+    fn drop(self: *Node, id: []const u8, reason: []const u8) void {
+        for (self.pool.items, 0..) |entry, index| if (h.eq(entry.tx.id, id)) {
+            _ = self.pool.orderedRemove(index);
+            break;
+        };
+        put(&self.drops, id, reason);
+        self.log("DROP {s} {s}", .{ h.short(id), reason });
+    }
+    fn register(self: *Node, tx: *const t.Transaction, result: Acceptance, arrival: i64) void {
+        for (result.conflicts) |id| self.drop(id, "replaced");
+        h.append(Entry, &self.pool, .{ .tx = tx, .fee = result.fee, .arrival = arrival });
+        if (self.pool.items.len > self.params.pool_limit) {
+            const order = self.ordered();
+            self.drop(order[order.len - 1].tx.id, "mempool-full");
+        }
+    }
+    fn rebuildCandidate(self: *Node, tx: *const t.Transaction, arrival: i64, returning: bool) void {
+        if (self.confirmed.contains(tx.id)) return;
+        const result = self.acceptance(tx);
+        if (result.reason) |reason| {
+            self.drop(tx.id, reason);
+            return;
+        }
+        if (returning) self.log("RETURN {s}", .{h.short(tx.id)});
+        self.register(tx, result, arrival);
+    }
+    fn switchTip(self: *Node, target: *c.Record) void {
+        const old = self.tip;
+        const fork = c.forkPoint(old, target);
+        const depth = old.block.height - fork.block.height;
+        const connected = target.block.height - fork.block.height;
+        if (depth > self.params.max_reorg) {
+            self.log("REFUSE {d} {s} work {d} fork {d} depth {d}", .{ target.block.height, h.short(target.block.hash),
+                 target.work, fork.block.height, depth });
+            return;
+        }
+        var returned: std.ArrayList(*const t.Transaction) = .empty;
+        for (self.main_chain[h.u(fork.block.height + 1)..]) |record| for (record.block.transactions[1..]) |tx| h.append(*const t.Transaction,
+             &returned, tx);
+        self.tip = target;
+        self.refresh();
+        if (depth == 0) self.log("TIP {d} {s} work {d}", .{ target.block.height, h.short(target.block.hash), target.work }) else {
+            self.log("REORG {d} {s} work {d} fork {d} disconnected {d} connected {d}", .{ target.block.height,
+                 h.short(target.block.hash), target.work, fork.block.height, depth, connected });
+            h.append(Reorganization, &self.reorganizations, .{ .time = self.now, .fork = fork.block.height,
+                 .disconnected = depth, .connected = connected, .old_hash = old.block.hash, .new_hash = target.block.hash });
+        }
+        const previous = self.pool.items;
+        self.pool = .empty;
+        for (returned.items) |tx| self.rebuildCandidate(tx, self.now, true);
+        for (previous) |entry| self.rebuildCandidate(entry.tx, entry.arrival, false);
+    }
+    fn connect(self: *Node, kind: []const u8, block: b.Block, name: []const u8) void {
+        const parent = self.records.get(block.previous).?;
+        var reason: ?[]const u8 = null;
+        if (block.height != parent.block.height + 1) reason = "bad-height" else if (block.difficulty != self.nextBits(parent)) reason = "bad-difficulty" else if (block.time <= c.medianTime(parent)) reason = "time-too-old" else if (block.time > self.now + self.params.drift) reason = "time-too-new";
+        var utxo = parent.utxo.copy();
+        var spent: std.ArrayList(t.Reference) = .empty;
+        var fees: std.ArrayList(i64) = .empty;
+        var total: i64 = 0;
+        if (reason == null) for (block.transactions[1..], 2..) |tx, position| {
+            const result = t.check(tx, &utxo, spent.items, block.height, self.wallets, self.params.maturity);
+            if (result.reason) |error_reason| {
+                reason = h.fmt("{s} tx {d}", .{ error_reason, position });
+                break;
+            }
+            for (tx.inputs) |reference| h.append(t.Reference, &spent, reference);
+            utxo.apply(tx, block.height);
+            h.append(i64, &fees, result.fee);
+            total += result.fee;
+        };
+        const cb = block.transactions[0];
+        if (reason == null) for (cb.outputs) |output| if (w.owner(self.wallets, output.address) == null or output.amount == 0) {
+            reason = "bad-output tx 1";
+            break;
+        };
+        if (reason == null and cb.total() > self.blockReward(block.height) + total) reason = "bad-coinbase";
+        if (reason) |error_reason| {
+            self.rejectBlock(kind, block, name, error_reason);
+            return;
+        }
+        utxo.apply(cb, block.height);
+        const record = c.Record.create(block, parent, utxo, fees.items, name);
+        put(&self.records, block.hash, record);
+        self.peers.getPtr(name).?.blocks += 1;
+        self.log("{s} {s} {d} {s} accepted work {d}", .{ kind, name, block.height, h.short(block.hash), record.work });
+        if (record.work > self.tip.work) self.switchTip(record);
+    }
+    fn resolve(self: *Node, start: []const u8) void {
+        var queue: std.ArrayList([]const u8) = .empty;
+        h.append([]const u8, &queue, start);
+        var front: usize = 0;
+        while (front < queue.items.len) : (front += 1) {
+            const parent = queue.items[front];
+            var index: usize = 0;
+            while (index < self.orphans.items.len) {
+                if (!h.eq(self.orphans.items[index].block.previous, parent)) {
+                    index += 1;
+                    continue;
+                }
+                const orphan = self.orphans.orderedRemove(index);
+                if (self.rejected.contains(parent)) self.rejectBlock("UNORPHAN", orphan.block, orphan.peer,
+                     "bad-parent") else self.connect("UNORPHAN", orphan.block, orphan.peer);
+                h.append([]const u8, &queue, orphan.block.hash);
+            }
+        }
+    }
+    fn receiveBlock(self: *Node, block: b.Block, name: []const u8) void {
+        var duplicate = self.records.contains(block.hash) or self.rejected.contains(block.hash);
+        for (self.orphans.items) |orphan| if (h.eq(orphan.block.hash, block.hash)) {
+            duplicate = true;
+        };
+        if (duplicate) {
+            self.peers.getPtr(name).?.rejected_blocks += 1;
+            self.tally("block", "duplicate");
+            self.log("BLOCK {s} {d} {s} rejected duplicate", .{ name, block.height, h.short(block.hash) });
+            return;
+        }
+        var reason = b.contextError(block, self.params.max_size);
+        if (reason == null and self.rejected.contains(block.previous)) reason = "bad-parent";
+        if (reason) |error_reason| {
+            self.rejectBlock("BLOCK", block, name, error_reason);
+            self.resolve(block.hash);
+            return;
+        }
+        if (!self.records.contains(block.previous)) {
+            h.append(Orphan, &self.orphans, .{ .block = block, .peer = name });
+            self.peers.getPtr(name).?.orphans += 1;
+            self.log("BLOCK {s} {d} {s} orphan parent {s}", .{ name, block.height, h.short(block.hash),
+                 h.short(block.previous) });
+            if (self.orphans.items.len > self.params.orphan_limit) {
+                const removed = self.orphans.orderedRemove(0);
+                self.log("EVICT {s} orphan-limit", .{h.short(removed.block.hash)});
+            }
+            return;
+        }
+        self.connect("BLOCK", block, name);
+        self.resolve(block.hash);
+    }
+    fn chainReport(self: *Node) h.Lines {
+        var out: h.Lines = .{};
+        out.add("TIP {d} {s} work {d} stored {d} orphans {d}", .{ self.tip.block.height, self.tip.block.hash,
+             self.tip.work, self.records.count(), self.orphans.items.len });
+        for (self.main_chain) |record| {
+            const block = record.block;
+            out.add("BLOCK {d} {s} prev {s} time {d} bits {d} nonce {d} txs {d} size {d} fees {d} miner {s} source {s} work {d}",
+                 .{ block.height, block.hash, h.short(block.previous), block.time, block.difficulty,
+                 block.nonce, block.transactions.len, block.size(), record.fees, self.miner(record),
+                 record.source, record.work });
+        }
+        var stale: std.ArrayList(*c.Record) = .empty;
+        var records = self.records.valueIterator();
+        while (records.next()) |record| {
+            var main = false;
+            for (self.main_chain) |item| if (item == record.*) {
+                main = true;
+            };
+            if (!main) h.append(*c.Record, &stale, record.*);
+        }
+        std.mem.sort(*c.Record, stale.items, {}, recordOrder);
+        for (stale.items) |record| out.add("STALE {d} {s} prev {s} source {s} work {d}", .{ record.block.height,
+             record.block.hash, h.short(record.block.previous), record.source, record.work });
+        for (self.reorganizations.items) |r| out.add("REORG {d} fork {d} disconnected {d} connected {d} old {s} new {s}",
+             .{ r.time, r.fork, r.disconnected, r.connected, h.short(r.old_hash), h.short(r.new_hash) });
+        for (self.ordered(), 1..) |entry, rank| out.add("MEMPOOL {d} {s} fee {d} size {d} time {d}",
+             .{ rank, entry.tx.id, entry.fee, entry.tx.size(), entry.arrival });
+        return out;
+    }
+    fn balancesReport(self: *const Node) h.Lines {
+        var out: h.Lines = .{};
+        out.add("wallet,address,balance,immature,locked,incoming,utxos", .{});
+        for (self.wallets) |wallet| {
+            var amount: i64 = 0;
+            var immature: i64 = 0;
+            var locked_amount: i64 = 0;
+            var incoming: i64 = 0;
+            var count: usize = 0;
+            for (self.tip.utxo.coins.items) |coin| if (h.eq(coin.address, wallet.address)) {
+                amount += coin.amount;
+                count += 1;
+                if (!coin.mature(self.nextHeight(), self.params.maturity)) immature += coin.amount;
+                if (self.locked(coin.reference)) locked_amount += coin.amount;
+            };
+            for (self.pool.items) |entry| for (entry.tx.outputs) |output| if (h.eq(output.address, wallet.address)) {
+                incoming += output.amount;
+            };
+            out.add("{s},{s},{d},{d},{d},{d},{d}", .{ wallet.name, wallet.address, amount, immature,
+                 locked_amount, incoming, count });
+        }
+        return out;
+    }
+    fn utxoReport(self: *const Node) h.Lines {
+        var out: h.Lines = .{};
+        const coins = h.dupe(t.Coin, self.tip.utxo.coins.items);
+        std.mem.sort(t.Coin, coins, {}, coinOrder);
+        const hashes = h.alloc([]const u8, coins.len);
+        var total: i64 = 0;
+        for (coins, hashes) |coin, *hash| {
+            const category = if (coin.height == 0) "genesis" else if (coin.coinbase) "coinbase" else "payment";
+            const state = if (!coin.mature(self.nextHeight(), self.params.maturity)) "immature" else if (self.locked(coin.reference)) "locked" else "free";
+            const line = h.fmt("{s}:{d} {s} {d} height {d} {s} {s}", .{ coin.reference.id, coin.reference.index,
+                 w.owner(self.wallets, coin.address).?.name, coin.amount, coin.height, category, state });
+            out.add("{s}", .{line});
+            hash.* = h.digest(line);
+            total += coin.amount;
+        }
+        out.add("TOTAL {d} {d}", .{ coins.len, total });
+        out.add("ROOT {s}", .{h.merkle(hashes)});
+        return out;
+    }
+    fn referenceOutput(self: *const Node, reference: t.Reference) t.Output {
+        for (self.main_chain) |record| for (record.block.transactions) |tx| if (h.eq(tx.id, reference.id)) return tx.outputs[reference.index];
+        unreachable;
+    }
+    fn historyReport(self: *const Node) h.Lines {
+        var out: h.Lines = .{};
+        for (self.wallets) |wallet| {
+            out.add("WALLET {s} {s}", .{ wallet.name, wallet.address });
+            var count: usize = 0;
+            var total_spent: i64 = 0;
+            var total_received: i64 = 0;
+            var balance_value: i64 = 0;
+            var pending: usize = 0;
+            for (self.main_chain) |record| for (record.block.transactions) |tx| {
+                var spent: i64 = 0;
+                var received: i64 = 0;
+                for (tx.inputs) |reference| {
+                    const output = self.referenceOutput(reference);
+                    if (h.eq(output.address, wallet.address)) spent += output.amount;
+                }
+                for (tx.outputs) |output| if (h.eq(output.address, wallet.address)) {
+                    received += output.amount;
+                };
+                if (spent == 0 and received == 0) continue;
+                count += 1;
+                total_spent += spent;
+                total_received += received;
+                balance_value += received - spent;
+                const category = if (record.block.height == 0) "genesis" else if (tx.coinbase_height != null) "coinbase" else "payment";
+                out.add("{d} {s} {s} spent {d} received {d} net {s} balance {d}", .{ record.block.height,
+                     h.short(tx.id), category, spent, received, signed(received - spent), balance_value });
+            };
+            for (self.ordered()) |entry| {
+                var spent: i64 = 0;
+                var received: i64 = 0;
+                for (entry.tx.inputs) |reference| {
+                    const coin = self.tip.utxo.find(reference).?;
+                    if (h.eq(coin.address, wallet.address)) spent += coin.amount;
+                }
+                for (entry.tx.outputs) |output| if (h.eq(output.address, wallet.address)) {
+                    received += output.amount;
+                };
+                if (spent == 0 and received == 0) continue;
+                pending += 1;
+                out.add("pending {s} spent {d} received {d} net {s}", .{ h.short(entry.tx.id), spent,
+                     received, signed(received - spent) });
+            }
+            out.add("END {s} txs {d} spent {d} received {d} balance {d} pending {d}", .{ wallet.name,
+                 count, total_spent, total_received, balance_value, pending });
+        }
+        return out;
+    }
+        const lines = try h.readLines(io, "events.txt");
+        var index: usize = 0;
+        while (index < lines.len) {
+            const fields = h.split(lines[index], ' ');
+            index += 1;
+            const kind = fields[1];
+            var texts: []const []const u8 = &.{};
+            if (h.eq(kind, "BLOCK")) {
+                const count = h.u(h.number(fields[9]));
+                texts = lines[index .. index + count];
+                index += count;
+            }
+            self.now = h.number(fields[0]);
+            var position: usize = 0;
+            while (position < self.pool.items.len) {
+                const entry = self.pool.items[position];
+                if (self.now - entry.arrival >= self.params.expiry) self.drop(entry.tx.id, "expired") else position += 1;
+            }
+                const name = fields[2];
+                if (!self.peers.contains(name)) put(&self.peers, name, Peer{});
+                if (self.peers.get(name).?.score >= self.params.ban) {
+                    self.peers.getPtr(name).?.ignored += 1;
+                    self.log("IGNORE {s} {s}", .{ name, kind });
+                } else if (h.eq(kind, "TX")) self.receiveTransaction(name, t.parse(fields[3])) else self.receiveBlock(b.parse(fields,
+                     texts), name);
+            }
+        }
+        try std.Io.Dir.cwd().createDirPath(io, "output");
+        try h.writeLines(io, "log.txt", self.log_lines);
+        try h.writeLines(io, "chain.txt", self.chainReport());
+        try h.writeLines(io, "balances.csv", self.balancesReport());
+        try h.writeLines(io, "utxo.txt", self.utxoReport());
+        try h.writeLines(io, "history.txt", self.historyReport());
+pub const Record = struct {
+    block: b.Block,
+    parent: ?*Record,
+    utxo: t.Utxo,
+    transaction_fees: []const i64,
+    source: []const u8,
+    fees: i64 = 0,
+    work: i64 = 1,
+    pub fn create(block: b.Block, parent: ?*Record, utxo: t.Utxo, fees: []const i64, source: []const u8) *Record {
+        var record: Record = .{ .block = block, .parent = parent, .utxo = utxo, .transaction_fees = fees, .source = source };
+        for (fees) |fee| record.fees += fee;
+        if (parent) |previous| {
+            var work: i64 = 1;
+            for (0..h.u(block.difficulty)) |_| work *= 16;
+            record.work = previous.work + work;
+        }
+        return h.create(Record, record);
+    }
+};
+pub fn ancestor(record: *Record, height: i64) *Record {
+    var current = record;
+    while (current.block.height > height) current = current.parent.?;
+    return current;
+}
+pub fn chainTo(record: *Record) []*Record {
+    const result = h.alloc(*Record, h.u(record.block.height + 1));
+    var current: ?*Record = record;
+    var index = result.len;
+    while (current) |value| {
+        index -= 1;
+        result[index] = value;
+        current = value.parent;
+    }
+    return result;
+}
+pub fn forkPoint(first: *Record, second: *Record) *Record {
+    const height = @min(first.block.height, second.block.height);
+    var a = ancestor(first, height);
+    var z = ancestor(second, height);
+    while (a != z) {
+        a = a.parent.?;
+        z = z.parent.?;
+    }
+    return a;
+}
+pub const Block = struct {
+    height: i64,
+    previous: []const u8,
+    root: []const u8,
+    time: i64,
+    difficulty: i64,
+    nonce: i64 = 0,
+    transactions: []const *const t.Transaction,
+    hash: []const u8 = "",
+    pub fn header(self: Block) []const u8 {
+        return h.fmt("{d}|{s}|{s}|{d}|{d}|{d}", .{ self.height, self.previous, self.root, self.time,
+             self.difficulty, self.nonce });
+    }
+    pub fn hashHeader(self: *Block) void {
+        self.hash = h.digest(self.header());
+    }
+    pub fn size(self: Block) i64 {
+        var value: i64 = 0;
+        for (self.transactions[1..]) |tx| value += tx.size();
+        return value;
+    }
+    pub fn proof(self: Block) bool {
+        for (self.hash[0..h.u(self.difficulty)]) |character| if (character != '0') return false;
+        return true;
+    }
+    pub fn ids(self: Block) []const []const u8 {
+        const result = h.alloc([]const u8, self.transactions.len);
+        for (self.transactions, result) |tx, *id| id.* = tx.id;
+        return result;
+    }
+};
+pub fn parse(fields: []const []const u8, texts: []const []const u8) Block {
+    const txs = h.alloc(*const t.Transaction, texts.len);
+    for (texts, txs) |text, *tx| tx.* = t.parse(text);
+    var block: Block = .{ .height = h.number(fields[3]), .previous = fields[4], .root = fields[5],
+         .time = h.number(fields[6]), .difficulty = h.number(fields[7]), .nonce = h.number(fields[8]),
+         .transactions = txs };
+    block.hashHeader();
+    return block;
+}
+pub fn contextError(block: Block, limit: i64) ?[]const u8 {
+    if (!block.proof()) return "bad-pow";
+    if (!h.eq(h.merkle(block.ids()), block.root)) return "bad-merkle";
+    if (block.transactions[0].coinbase_height == null or block.transactions[0].coinbase_height.? != block.height) return "bad-structure";
+    for (block.transactions[1..]) |tx| if (tx.coinbase_height != null) return "bad-structure";
+    if (block.size() > limit) return "too-large";
+    return null;
+}
+pub const Reference = struct { id: []const u8, index: usize };
+pub fn same(a: Reference, b: Reference) bool {
+    return a.index == b.index and h.eq(a.id, b.id);
+}
+pub fn referenceOrder(a: Reference, b: Reference) bool {
+    const order = std.mem.order(u8, a.id, b.id);
+    return if (order == .eq) a.index < b.index else order == .lt;
+}
+pub const Transaction = struct {
+    text: []const u8,
+    id: []const u8,
+    body: []const u8 = "",
+    inputs: []const Reference = &.{},
+    outputs: []const Output,
+    signatures: []const []const u8 = &.{},
+    coinbase_height: ?i64 = null,
+    pub fn total(self: *const Transaction) i64 {
+        var result: i64 = 0;
+        for (self.outputs) |output| result += output.amount;
+        return result;
+    }
+    pub fn size(self: *const Transaction) i64 {
+        return h.n(self.text.len);
+    }
+};
+pub const Coin = struct {
+    reference: Reference,
+    address: []const u8,
+    amount: i64,
+    height: i64,
+    coinbase: bool,
+    pub fn mature(self: Coin, height: i64, maturity: i64) bool {
+        return !self.coinbase or self.height == 0 or height >= self.height + maturity;
+    }
+};
+pub const Utxo = struct {
+    coins: std.ArrayList(Coin) = .empty,
+    pub fn find(self: *const Utxo, reference: Reference) ?Coin {
+        for (self.coins.items) |coin| if (same(coin.reference, reference)) return coin;
+        return null;
+    }
+    pub fn copy(self: Utxo) Utxo {
+        var result: Utxo = .{};
+        for (self.coins.items) |coin| h.append(Coin, &result.coins, coin);
+        return result;
+    }
+    pub fn apply(self: *Utxo, tx: *const Transaction, height: i64) void {
+        for (tx.inputs) |reference| {
+            for (self.coins.items, 0..) |coin, index| if (same(coin.reference, reference)) {
+                _ = self.coins.orderedRemove(index);
+                break;
+            };
+        }
+        for (tx.outputs, 0..) |output, index| {
+            const coin: Coin = .{ .reference = .{ .id = tx.id, .index = index }, .address = output.address,
+                 .amount = output.amount, .height = height, .coinbase = tx.coinbase_height != null };
+            var replaced = false;
+            for (self.coins.items) |*old| if (same(old.reference, coin.reference)) {
+                old.* = coin;
+                replaced = true;
+                break;
+            };
+            if (!replaced) h.append(Coin, &self.coins, coin);
+        }
+    }
+};
+pub fn check(tx: *const Transaction, utxo: *const Utxo, spent: []const Reference, height: i64, wallets: []const w.Wallet,
+     maturity: i64) Check {
+    for (tx.outputs) |output| if (w.owner(wallets, output.address) == null or output.amount == 0) return .{ .reason = "bad-output" };
+    var total: i64 = 0;
+    for (tx.inputs, 0..) |reference, index| {
+        for (spent) |other| if (same(reference, other)) return .{ .reason = "double-spend" };
+        for (tx.inputs[0..index]) |other| if (same(reference, other)) return .{ .reason = "double-spend" };
+        const coin = utxo.find(reference) orelse return .{ .reason = "missing-input" };
+        if (!coin.mature(height, maturity)) return .{ .reason = "immature" };
+        if (!h.eq(tx.signatures[index], w.sign(w.owner(wallets, coin.address).?.secret, index, tx.body))) return .{ .reason = "bad-sig" };
+        total += coin.amount;
+    }
+    if (total < tx.total()) return .{ .reason = "overspend" };
+    return .{ .fee = total - tx.total() };
+}
+pub fn dupe(comptime T: type, values: []const T) []T {
+    return allocator.dupe(T, values) catch @panic("allocation failed");
+}

@@ -1,0 +1,19 @@
+const std = @import("std");
+
+pub fn main(init: std.process.Init) !void {
+    const sentence = "every program starts with a single line";
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.File.stdout().writerStreaming(init.io, &buffer);
+    const out = &writer.interface;
+    var reversed = sentence.*;
+    std.mem.reverse(u8, &reversed);
+    try out.print("{s}\n", .{reversed});
+    var words = std.mem.splitBackwardsScalar(u8, sentence, ' ');
+    var separator: []const u8 = "";
+    while (words.next()) |word| {
+        try out.print("{s}{s}", .{ separator, word });
+        separator = " ";
+    }
+    try out.writeByte('\n');
+    try out.flush();
+}

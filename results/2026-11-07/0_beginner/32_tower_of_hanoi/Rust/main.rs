@@ -1,0 +1,12 @@
+fn hanoi(n: i32, source: char, target: char, auxiliary: char) -> i32 {
+    if n == 0 {
+        return 0;
+    }
+    let count = hanoi(n - 1, source, auxiliary, target);
+    println!("move disk {} from {} to {}", n, source, target);
+    count + 1 + hanoi(n - 1, auxiliary, target, source)
+}
+
+fn main() {
+    println!("total moves: {}", hanoi(4, 'A', 'C', 'B'));
+}

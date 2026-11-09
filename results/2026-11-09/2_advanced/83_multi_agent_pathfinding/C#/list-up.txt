@@ -1,0 +1,426 @@
+    public sealed class Prohibitions {
+        public HashSet<State> states = new(), permanent = new();
+        public bool StateAllowed(GridMap.Cell cell,
+                                 int time) => !states.Contains(new(cell, time)) &&
+                                              !permanent.Any(state => state.cell == cell &&
+                                                                      state.time <= time);
+        public bool ActionAllowed(GridMap.Cell source, GridMap.Cell destination,
+                                  int time) => StateAllowed(destination, time) &&
+                                               (source == destination ||
+                                                !moves.Contains(new(source, destination, time)));
+        public int ArrivalAllowed(GridMap.Cell goal) => states.Where(state => state.cell == goal)
+                                                            .Select(state => state.time + 1)
+                                                            .DefaultIfEmpty(0)
+                                                            .Max();
+    public static void Reserve(Prohibitions prohibitions, List<GridMap.Cell> path, int startTime,
+                               bool permanent) {
+        for (int k = 0; k < path.Count; k++) {
+            GridMap.Cell cell = path[k];
+            int time = startTime + k;
+            prohibitions.states.Add(new(cell, time));
+            if (k > 0 && cell != path[k - 1])
+                prohibitions.moves.Add(new(cell, path[k - 1], time));
+        }
+        if (permanent)
+            prohibitions.permanent.Add(new(path[^1], startTime + path.Count - 1));
+    }
+    public static Search FindPath(GridMap grid, GridMap.Agent agent,
+                                  Dictionary<GridMap.Cell, int> distances, GridMap.Cell start,
+                                  int t0, Prohibitions prohibitions, int tmax, Budget budget,
+                                  bool window) {
+        budget.searches++;
+        int beginning = budget.expansions, arrival = prohibitions.ArrivalAllowed(agent.goal),
+            insertion = 0;
+        PriorityQueue<State, (int f, int negativeG, int insertion)> open = new();
+        State startState = new(start, t0);
+        Dictionary<State, State> parents = new() { { startState, null } };
+        open.Enqueue(startState, (distances[start], 0, 0));
+        while (open.Count > 0) {
+            State state = open.Dequeue();
+            budget.Expand();
+            GridMap.Cell cell = state.cell;
+            int time = state.time;
+            if (cell == agent.goal && time >= arrival || window && time == tmax) {
+                List<GridMap.Cell> path = new();
+                for (State current = state; current != null; current = parents[current])
+                    path.Add(current.cell);
+                path.Reverse();
+                return new(path, budget.expansions - beginning);
+            }
+            if (time == tmax)
+                continue;
+            foreach (GridMap.Cell destination in grid.Destinations(cell)) {
+                State next = new(destination, time + 1);
+                if (!distances.ContainsKey(destination) || parents.ContainsKey(next) ||
+                    !prohibitions.ActionAllowed(cell, destination, time + 1))
+                    continue;
+                parents[next] = state;
+                int g = time + 1 - t0;
+                open.Enqueue(next, (g + distances[destination], -g, ++insertion));
+            }
+        }
+        return new(null, budget.expansions - beginning);
+    }
+    public GridMap() {
+        string[] lines = File.ReadAllLines("input/map.txt", Encoding.ASCII),
+                 f = lines[0].Split(' ');
+        width = int.Parse(f[0]);
+        height = int.Parse(f[1]);
+        rows = lines.Skip(1).ToList();
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                if (rows[y][x] == '.')
+                    free.Add(new(x, y));
+    }
+    public static List<Agent>
+    Agents() => File.ReadAllLines("input/agents.csv", Encoding.ASCII)
+                    .Skip(1)
+                    .Select(line => {
+                        string[] f = line.Split(',');
+                        return new Agent(int.Parse(f[0]), new(int.Parse(f[1]), int.Parse(f[2])),
+                                         new(int.Parse(f[3]), int.Parse(f[4])));
+                    })
+                    .ToList();
+        public Settings(int count) {
+            List<int> numberOrder = new();
+            for (int i = 0; i < count; i++)
+                numberOrder.Add(i);
+            orders.Add(numberOrder);
+            foreach (string line in File
+                         .ReadAllLines(Path.Combine("input/params.txt"), Encoding.ASCII)
+                         .ToList()) {
+                string[] f = line.Split(" ");
+                switch (f[0]) {
+                case "HORIZON":
+                    horizon = int.Parse(f[1]);
+                    break;
+                case "HL_BUDGET":
+                    hlBudget = int.Parse(f[1]);
+                    break;
+                case "LL_BUDGET":
+                    llBudget = int.Parse(f[1]);
+                    break;
+                case "WINDOW":
+                    window = int.Parse(f[1]);
+                    step = int.Parse(f[2]);
+                    break;
+                case "ORDER": {
+                    List<int> order = new();
+                    for (int i = 1; i < f.Length; i++)
+                        order.Add(int.Parse(f[i]));
+                    orders.Add(order);
+                    break;
+                }
+                case "RUN":
+                    runs.Add(new Definition(f[1], f[2]));
+                    break;
+                case "ANIMATE":
+                    animate = f[1];
+                    frames = int.Parse(f[2]);
+                    break;
+                case "DELAY":
+                    delays.Add(new Delay(int.Parse(f[1]), int.Parse(f[2]), int.Parse(f[3])));
+                    break;
+                }
+            }
+        }
+        public Planner() {
+            grid = new GridMap();
+            agents = GridMap.Agents();
+            settings = new Settings(agents.Count);
+            LowLevel.Budget budget = new LowLevel.Budget(null);
+            foreach (GridMap.Agent agent in agents) {
+                Dictionary<GridMap.Cell, int> distance = grid.Distances(agent.goal);
+                distances.Add(distance);
+                independent.Add(LowLevel
+                                    .FindPath(grid, agent, distance, agent.start, 0,
+                                              new LowLevel.Prohibitions(), settings.horizon, budget,
+                                              false)
+                                    .path);
+            }
+            Overview();
+        }
+        public void SolvePp(Run run) {
+            int answer = 0;
+            for (int index = 0; index < settings.orders.Count; index++) {
+                int orderNumber = index + 1;
+                List<int> order = settings.orders[index];
+                run.highLevel++;
+                int before = run.budget.expansions;
+                Prioritized.Result result = Prioritized.TryOrder(
+                    grid, agents, distances, settings.horizon, order, run.budget);
+                foreach (Prioritized.Attempt attempt in result.attempts) {
+                    LowLevel.Search search = attempt.search;
+                    string prefix = "order " + orderNumber + " agent " + Report.Name(attempt.agent);
+                    run.trace.Add(
+                        prefix +
+                        (search.path == null ? " failed" : " cost " + (search.path.Count - 1)) +
+                        " expansions " + search.expansions);
+                }
+                if (result.aborted) {
+                    run.reason = "ll_budget";
+                    break;
+                }
+                StringBuilder names = new StringBuilder();
+                foreach (int id in order)
+                    names.Append(Report.Name(id));
+                int planned = result.attempts.Count - (result.failed == null ? 0 : 1);
+                string summary = "order " + orderNumber + " " + names + " planned " + planned +
+                                 " expansions " + (run.budget.expansions - before);
+                if (result.failed == null) {
+                    run.specific.Add(summary + " ok");
+                    run.paths = result.paths;
+                    run.status = "OK";
+                    answer = orderNumber;
+                    break;
+                }
+                run.specific.Add(summary + " failed " + Report.Name(result.failed.Value));
+            }
+            if (run.status.Equals("OK"))
+                run.end = "end OK order " + answer;
+            else {
+                if (run.reason == null)
+                    run.reason = "orders";
+                run.end = "end FAIL " + run.reason;
+            }
+        }
+        public Validation Validate(List<List<GridMap.Cell>> paths) {
+            int start = 0, goal = 0, moves = 0;
+            for (int id = 0; id < agents.Count; id++) {
+                List<GridMap.Cell> path = paths[id];
+                if (!path[0].Equals(agents[id].start))
+                    start++;
+                if (!path[^1].Equals(agents[id].goal))
+                    goal++;
+                for (int t = 1; t < path.Count; t++)
+                    if (!grid.Destinations(path[t - 1]).Contains(path[t]))
+                        moves++;
+            }
+            List<Cbs.Conflict> collisions = Cbs.Conflicts(paths);
+            int vertex = collisions.Count(c => c.kind == "vertex"),
+                edge = collisions.Count - vertex, follows = 0;
+            int horizon = Cbs.Cost(paths, "MAKESPAN");
+            for (int time = 1; time <= horizon; time++)
+                for (int a = 0; a < paths.Count; a++) {
+                    GridMap.Cell pastA = Cbs.Position(paths[a], time - 1),
+                                 nextA = Cbs.Position(paths[a], time);
+                    if (nextA.Equals(pastA))
+                        continue;
+                    for (int b = 0; b < paths.Count; b++)
+                        if (a != b && nextA.Equals(Cbs.Position(paths[b], time - 1)) &&
+                            !Cbs.Position(paths[b], time).Equals(pastA))
+                            follows++;
+                }
+            return new Validation(start, goal, moves, vertex, edge, follows, collisions);
+        }
+        public Metrics Metrics(List<List<GridMap.Cell>> paths, string function) {
+            Metrics result = new Metrics();
+            result.soc = Cbs.Cost(paths, "SOC");
+            result.makespan = Cbs.Cost(paths, "MAKESPAN");
+            result.cost = function.Equals("SOC") ? result.soc : result.makespan;
+            result.ratio =
+                Report.Fraction(result.cost, function.Equals("SOC") ? socLower : makespanLower);
+            for (int id = 0; id < agents.Count; id++) {
+                List<GridMap.Cell> path = paths[id];
+                PathStats stats = PathStats(path, id);
+                result.agents.Add(stats);
+                result.sumExtra += stats.extra;
+                result.maxExtra = Math.Max(result.maxExtra, stats.extra);
+                result.waits += stats.waits;
+                result.turns += stats.turns;
+                foreach (GridMap.Cell cell in new HashSet<GridMap.Cell>(path))
+                    result.traffic.AddCount(cell, 1);
+                for (int t = 1; t < path.Count; t++)
+                    if (path[t].Equals(path[t - 1]))
+                        result.cellWaits.AddCount(path[t], 1);
+            }
+            for (int time = 0; time <= result.makespan; time++) {
+                int arrived = 0;
+                foreach (List<GridMap.Cell> path in paths)
+                    if (path.Count - 1 <= time)
+                        arrived++;
+                result.arrivals.Add(arrived);
+            }
+            result.hotspots = new(result.traffic.Keys);
+            result.hotspots.Sort((a, b) => {
+                int c = result.traffic[b].CompareTo(result.traffic[a]);
+                if (c == 0)
+                    c = a.y.CompareTo(b.y);
+                return c != 0 ? c : a.x.CompareTo(b.x);
+            });
+            if (result.hotspots.Count > 5)
+                result.hotspots = new(result.hotspots.GetRange(0, 5 - 0));
+            return result;
+        }
+        public void Solve() {
+            foreach (Definition definition in settings.runs) {
+                Run run = new Run(definition, settings.llBudget);
+                switch (definition.solver) {
+                case "PP":
+                    SolvePp(run);
+                    break;
+                case "CBS":
+                case "ICBS":
+                    SolveCbs(run);
+                    break;
+                default:
+                    SolveWhca(run);
+                    break;
+                }
+                if (run.status.Equals("OK")) {
+                    run.metrics = Metrics(run.paths, definition.function);
+                    run.validation = Validate(run.paths);
+                    run.execution = DelayedExecution(run.paths);
+                }
+                results.Add(run);
+            }
+        }
+        public List<string> SuccessfulLines(Run run) {
+            Metrics m = run.metrics;
+            Execution execution = run.execution;
+            List<string> lines = new();
+            lines.Add("run " + run.Name() + " solver " + run.definition.solver + " cost_function " +
+                      run.definition.function + " result OK cost " + m.cost + " soc " + m.soc +
+                      " makespan " + m.makespan + " ratio " + m.ratio);
+            lines.AddRange(run.specific);
+            for (int id = 0; id < agents.Count; id++) {
+                PathStats p = m.agents[id];
+                lines.Add("agent " + Report.Name(id) + " cost " + p.cost + " extra " + p.extra +
+                          " waits " + p.waits + " turns " + p.turns + " arrive " + p.arrive +
+                          " leave " + p.leave + " moves " + p.actions);
+            }
+            lines.Add("arrivals " + JoinNumbers(m.arrivals));
+            List<string> hot = new();
+            foreach (GridMap.Cell cell in m.hotspots)
+                hot.Add(cell + ":" + m.traffic[cell]);
+            lines.Add("hotspots " + string.Join(" ", hot));
+            if (execution.deadlock != null)
+                lines.Add("execution deadlock time " + execution.deadlock);
+            else
+                lines.Add("execution soc " + execution.soc + " makespan " + execution.makespan +
+                          " blocked " + execution.blocked + " finish " +
+                          JoinNumbers(execution.finish));
+            return lines;
+        }
+        public void ValidationBlock(List<string> lines, string name, Validation v) {
+            lines.Add("plan " + name + " verdict " + v.Verdict() + " start " + v.start + " goal " +
+                      v.goal + " moves " + v.moves + " vertex " + v.vertex + " edge " + v.edge +
+                      " follows " + v.follows);
+            foreach (Cbs.Conflict conflict in v.conflicts)
+                lines.Add("  " + Report.Conflict(conflict) +
+                          (name.Equals("INDEPENDENT") ? " " + independentClasses[conflict] : ""));
+        }
+        public List<string> ValidationLines() {
+            List<string> lines = new();
+            ValidationBlock(lines, "INDEPENDENT", Validate(independent));
+            foreach (Run run in results)
+                if (run.validation == null)
+                    lines.Add("plan " + run.Name() + " verdict NONE");
+                else
+                    ValidationBlock(lines, run.Name(), run.validation);
+            return lines;
+        }
+        public List<string> AnimationLines() {
+            Run selected = results.First(run => run.Name() == settings.animate);
+            if (!selected.status.Equals("OK"))
+                return new List<string> { "run " + selected.Name() + " FAIL" };
+            List<string> lines = new();
+            lines.Add("run " + selected.Name() + " frames " + settings.frames);
+            for (int time = 0; time < settings.frames; time++) {
+                int done = 0, moving = 0, waiting = 0;
+                Dictionary<GridMap.Cell, char> glyphs = new();
+                foreach (GridMap.Agent agent in agents)
+                    glyphs[agent.goal] = char.ToLowerInvariant(agent.Name());
+                for (int id = 0; id < agents.Count; id++) {
+                    List<GridMap.Cell> path = selected.paths[id];
+                    GridMap.Cell cell = Cbs.Position(path, time);
+                    glyphs[cell] = Report.Name(id);
+                    if (time >= path.Count - 1)
+                        done++;
+                    else if (time >= 1 && !cell.Equals(Cbs.Position(path, time - 1)))
+                        moving++;
+                    else
+                        waiting++;
+                }
+                lines.Add("");
+                lines.Add("frame " + time + " done " + done + " moving " + moving + " waiting " +
+                          waiting);
+                lines.AddRange(Picture(glyphs));
+            }
+            lines.Add("");
+            lines.Add("traffic");
+            lines.AddRange(CountPicture(selected.metrics.traffic));
+            lines.Add("");
+            lines.Add("waits");
+            lines.AddRange(CountPicture(selected.metrics.cellWaits));
+            return lines;
+        }
+        public void Write() {
+            Report.Write("solutions.txt", SolutionLines());
+            Report.Write("stats.csv", StatsLines());
+            Report.Write("validation.txt", ValidationLines());
+            Report.Write("trace.txt", TraceLines());
+            Report.Write("frames.txt", AnimationLines());
+        }
+    public static GridMap.Cell Position(List<GridMap.Cell> path,
+                                        int time) => path[Math.Min(time, path.Count - 1)];
+    public static List<Conflict> Conflicts(List<List<GridMap.Cell>> paths) {
+        List<Conflict> result = new();
+        int horizon = paths.Max(path => path.Count - 1);
+        for (int time = 1; time <= horizon; time++)
+            for (int a = 0; a < paths.Count; a++)
+                for (int b = a + 1; b < paths.Count; b++) {
+                    GridMap.Cell currentA = Position(paths[a], time),
+                                 currentB = Position(paths[b], time);
+                    if (currentA == currentB)
+                        result.Add(new("vertex", time, a, b, currentA, currentA));
+                    else if (currentA == Position(paths[b], time - 1) &&
+                             currentB == Position(paths[a], time - 1))
+                        result.Add(new("edge", time, a, b, Position(paths[a], time - 1), currentA));
+                }
+        return result;
+    }
+    public static int Cost(List<List<GridMap.Cell>> paths,
+                           string function) => function == "SOC"
+                                                   ? paths.Sum(path => path.Count - 1)
+                                                   : paths.Max(path => path.Count - 1);
+    public sealed class Node {
+        public List<List<GridMap.Cell>> paths;
+        public List<LowLevel.Prohibitions> constraints;
+        public List<Conflict> conflicts;
+        public int number, depth, cost;
+        public int? parent;
+        public Node(List<List<GridMap.Cell>> paths, List<LowLevel.Prohibitions> constraints,
+                    int number, int depth, int? parent, string function) {
+            this.paths = paths;
+            this.constraints = constraints;
+            this.number = number;
+            this.depth = depth;
+            this.parent = parent;
+            conflicts = Conflicts(paths);
+            cost = Cost(paths, function);
+        }
+    }
+    public static Result TryOrder(GridMap grid, List<GridMap.Agent> agents,
+                                  List<Dictionary<GridMap.Cell, int>> distances, int horizon,
+                                  List<int> order, LowLevel.Budget budget) {
+        LowLevel.Prohibitions prohibitions = new();
+        List<List<GridMap.Cell>> paths =
+            Enumerable.Repeat<List<GridMap.Cell>>(null, agents.Count).ToList();
+        List<Attempt> attempts = new();
+        foreach (int id in order) {
+            LowLevel.Search search;
+            try {
+                search = LowLevel.FindPath(grid, agents[id], distances[id], agents[id].start, 0,
+                                           prohibitions, horizon, budget, false);
+            } catch (LowLevel.BudgetExceeded) {
+                return new(null, attempts, null, true);
+            }
+            attempts.Add(new(id, search));
+            if (search.path == null)
+                return new(null, attempts, id, false);
+            paths[id] = search.path;
+            LowLevel.Reserve(prohibitions, search.path, 0, true);
+        }
+        return new(paths, attempts, null, false);
+    }

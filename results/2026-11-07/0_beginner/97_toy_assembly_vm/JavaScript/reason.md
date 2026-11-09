@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+After parsing each instruction operation, increment executed only for SET,ADD,SUB,MUL,MOD,JNZ, before a taken JNZ can continue and excluding PRINT/HALT. Registers start zero, pc starts 0, operands resolve register names or numeric literals, and JNZ changes pc by offset or 1. Three initial SETs plus eight factorial iterations of MUL/ADD/SUB/JNZ give 35 counted instructions; JNZ is taken seven times and not taken once. Two Euclidean SETs plus three five-instruction iterations give 17 more (remainders 147,21,0; JNZ taken twice). Revised total is 52. PRINT still emits 1,2,6,24,120,720,5040,40320,21 because only counting changes; HALT still terminates. Instruction data, parsing/operand/state/control operations and count/output sites are required.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

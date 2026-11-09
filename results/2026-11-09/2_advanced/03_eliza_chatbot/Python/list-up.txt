@@ -1,0 +1,576 @@
+GLOBAL_DIRECTIVES = (
+    "INITIAL", "FINAL", "QUIT", "STOP", "DEFAULT", "QUESTION", "REPEAT",
+    "MEMSIZE", "PERSIST", "PRE", "POST", "SYNON",
+)
+TEXT_DIRECTIVES = ("INITIAL", "FINAL", "DEFAULT", "QUESTION", "REPEAT")
+RULE_DIRECTIVES = ("DECOMP", "MEMORY")
+ITEM_DIRECTIVES = ("REASM", "GOTO", "NEWKEY", "RESTATE")
+MOVE_DIRECTIVES = ("GOTO", "NEWKEY", "RESTATE")
+DIRECTIVES = GLOBAL_DIRECTIVES + ("KEY",) + RULE_DIRECTIVES + ITEM_DIRECTIVES
+UNIQUE_DIRECTIVES = ("KEY", "SYNON", "PRE", "POST", "PERSIST")
+PERSIST_OPTIONS = ("cycles", "memory")
+WORD_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789'"
+DEFAULT_MEMSIZE = 3
+MAX_MEMSIZE = 20
+def is_word(text):
+    if not text or text[0] == "'" or text[-1] == "'":
+        return False
+    return all(character in WORD_CHARACTERS for character in text)
+def is_number(text):
+    return len(text) <= 2 and text.isdigit()
+def is_reference(text):
+    return len(text) == 3 and text[0] == "(" and text[1].isdigit() and text[2] == ")"
+def is_element(text):
+    if text in ("*", "#"):
+        return True
+    if text.startswith("@"):
+        return is_word(text[1:])
+    return is_word(text)
+def well_formed(name, arguments):
+    count = len(arguments)
+    if name in TEXT_DIRECTIVES or name == "REASM":
+        return count >= 1
+    if name in ("QUIT", "STOP"):
+        return count >= 1 and all(is_word(argument) for argument in arguments)
+    if name == "KEY":
+        return count == 2 and is_word(arguments[0]) and is_number(arguments[1])
+    if name in RULE_DIRECTIVES:
+        return count >= 1 and all(is_element(argument) for argument in arguments)
+def definition_key(name, arguments):
+    if name == "MEMSIZE":
+        return name
+    if name in UNIQUE_DIRECTIVES:
+        return name + " " + arguments[0]
+    return None
+class Item:
+    def __init__(self, kind, text, arguments, line_number, index):
+        self.kind = kind
+        self.text = text
+        self.arguments = arguments
+        self.line_number = line_number
+        self.index = index
+class Rule:
+    def __init__(self, kind, pattern, line_number, index):
+        self.kind = kind
+        self.pattern = pattern
+        self.line_number = line_number
+        self.index = index
+        self.items = []
+class Keyword:
+    def __init__(self, word, rank, line_number, index):
+        self.word = word
+        self.rank = rank
+        self.line_number = line_number
+        self.index = index
+        self.memories = []
+        self.decomps = []
+class Script:
+    def __init__(self, lines):
+        self.lines = lines
+        self.texts = {name: [] for name in TEXT_DIRECTIVES}
+        self.quit_words = set()
+        self.stop_words = set()
+        self.memsize = DEFAULT_MEMSIZE
+        self.persist = set()
+        self.pres = []
+        self.posts = []
+        self.pre_table = {}
+        self.post_table = {}
+        self.groups = []
+        self.group_words = {}
+        self.keywords = []
+        self.keyword_map = {}
+        self.rules = []
+        self.items = []
+        self.diagnostics = []
+class ScriptLoader:
+    def __init__(self, lines):
+        self.script = Script(lines)
+        self.keyword = None
+        self.rule = None
+        self.ignoring = False
+        self.first_lines = {}
+    def update_structure(self, name):
+        if name in GLOBAL_DIRECTIVES or name == "KEY":
+            self.keyword = None
+            self.rule = None
+            self.ignoring = False
+        elif name in RULE_DIRECTIVES or name in ITEM_DIRECTIVES:
+            if self.ignoring:
+                return False
+            if name in RULE_DIRECTIVES:
+                self.rule = None
+        return True
+    def problem(self, name, arguments):
+        if name not in DIRECTIVES:
+            return "SYNTAX", "unknown directive " + name
+        if not well_formed(name, arguments):
+            return "SYNTAX", "bad arguments for " + name
+        if name in RULE_DIRECTIVES and self.keyword is None:
+            return "ORPHAN", name + " without KEY"
+        if name == "REASM" and self.rule is None:
+            return "ORPHAN", "REASM without DECOMP or MEMORY"
+        if name in MOVE_DIRECTIVES and (self.rule is None or self.rule.kind == "MEMORY"):
+            return "ORPHAN", name + " without DECOMP"
+        key = definition_key(name, arguments)
+        if key is not None and key in self.first_lines:
+            return "DUPLICATE", f"{key} first defined at line {self.first_lines[key]}"
+        return None
+    def load(self, number, name, arguments, text):
+        script = self.script
+        key = definition_key(name, arguments)
+        if key is not None:
+            self.first_lines[key] = number
+        if name in TEXT_DIRECTIVES:
+            script.texts[name].append(text)
+        elif name == "QUIT":
+            script.quit_words.update(arguments)
+        elif name == "KEY":
+            keyword = Keyword(arguments[0], int(arguments[1]), number, len(script.keywords))
+            script.keywords.append(keyword)
+            script.keyword_map[keyword.word] = keyword
+            self.keyword = keyword
+        elif name in RULE_DIRECTIVES:
+            rule = Rule(name, arguments, number, len(script.rules))
+            script.rules.append(rule)
+            if name == "DECOMP":
+                self.keyword.decomps.append(rule)
+            else:
+                self.keyword.memories.append(rule)
+            self.rule = rule
+        else:
+            item = Item(name, text, arguments, number, len(script.items))
+            script.items.append(item)
+            self.rule.items.append(item)
+    def load_line(self, number, line):
+        name, _, text = line.partition(" ")
+        arguments = text.split()
+        if not self.update_structure(name):
+            return
+        problem = self.problem(name, arguments)
+        if problem is None:
+            self.load(number, name, arguments, text)
+            return
+        code, message = problem
+        self.script.diagnostics.append(Diagnostic(number, code, message))
+        if code == "DUPLICATE" and name == "KEY":
+            self.ignoring = True
+def load_script(path):
+    with open(path) as file:
+        lines = file.read().splitlines()
+    loader = ScriptLoader(lines)
+    for number, line in enumerate(lines, 1):
+        if line and not line.startswith("#"):
+            loader.load_line(number, line)
+    return loader.script
+def word_fits(element, word, group_words):
+    if element == "#":
+        return True
+    if element.startswith("@"):
+        return word in group_words.get(element[1:], ())
+    return element == word
+def match_from(pattern, words, group_words, position, start, ends):
+    if position == len(pattern):
+        return start == len(words)
+    if pattern[position] == "*":
+        candidates = range(start, len(words) + 1)
+    elif start < len(words) and word_fits(pattern[position], words[start], group_words):
+        candidates = [start + 1]
+    else:
+        return False
+    for end in candidates:
+        ends.append(end)
+        if match_from(pattern, words, group_words, position + 1, end, ends):
+            return True
+        ends.pop()
+    return False
+def match_pattern(pattern, words, group_words):
+    ends = []
+    if not match_from(pattern, words, group_words, 0, 0, ends):
+        return None
+    bindings = []
+    return bindings
+LINE_WIDTH = 72
+FIRST_PREFIX = "ELIZA: "
+CONTINUATION_PREFIX = " " * 7
+def build_reply(template, bindings, reflections):
+    pieces = []
+    index = 0
+    while index < len(template):
+        chunk = template[index:index + 3]
+        if is_reference(chunk):
+            pieces.append(" ".join(reflect(binding(bindings, int(chunk[1])), reflections)))
+            index += 3
+        else:
+            pieces.append(template[index])
+            index += 1
+    reply = " ".join("".join(pieces).split())
+    return reply[:1].upper() + reply[1:]
+def eliza_lines(text):
+    words = text.split()
+    lines = [FIRST_PREFIX + words[0]]
+    for word in words[1:]:
+        if len(lines[-1]) + 1 + len(word) <= LINE_WIDTH:
+            lines[-1] += " " + word
+        else:
+            lines.append(CONTINUATION_PREFIX + word)
+    return lines
+class MemoryQueue:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.texts = []
+        self.log = []
+    def copy(self):
+        other = MemoryQueue(self.capacity)
+        other.texts = list(self.texts)
+        other.log = list(self.log)
+        return other
+    def store(self, prefix, keyword, text):
+        if text in self.texts:
+            self.log.append(f"{prefix} SKIP {keyword} {text}")
+            return False
+        if len(self.texts) == self.capacity:
+            self.log.append(f"{prefix} DROP {self.texts.pop(0)}")
+        self.texts.append(text)
+        self.log.append(f"{prefix} STORE {keyword} {text}")
+        return True
+SCRIPT_PATH = os.path.join("input", "script.txt")
+DIALOGUE_PATH = os.path.join("input", "dialogue.txt")
+OUTPUT_DIR = "output"
+SESSION_PREFIX = "SESSION "
+USER_PREFIX = "YOU: "
+OUTPUT_INDENT = "  "
+SOURCES = ("keyword", "memory", "question", "default", "repeat")
+UNRECOGNIZED_SOURCES = ("question", "default")
+CYCLED_LISTS = ("DEFAULT", "QUESTION", "REPEAT")
+TOP_LIMIT = 5
+NO_ARGUMENT_COMMANDS = (
+    ":keys", ":why", ":history", ":memory", ":forget", ":reset", ":unused", ":stats", ":undo",
+)
+TEXT_COMMANDS = (":prepare", ":reflect", ":say", ":explain")
+SINGLE_ARGUMENT_COMMANDS = (":groups", ":find", ":script", ":cycles", ":coverage")
+KEYWORD_COMMANDS = (":script", ":cycles", ":coverage", ":test")
+def normalize(text):
+    clauses = []
+    for part in re.split(r"[,.?!;]", text.lower()):
+        pieces = re.sub(r"[^a-z0-9']", " ", part).split()
+        words = [piece.strip("'") for piece in pieces]
+        words = [word for word in words if word]
+        if words:
+            clauses.append(words)
+    return clauses
+def all_words(clauses):
+    return [word for clause in clauses for word in clause]
+def arguments_fit(name, text, arguments):
+    if name in NO_ARGUMENT_COMMANDS:
+        return not arguments
+    if name in TEXT_COMMANDS:
+        return text != ""
+    if name in SINGLE_ARGUMENT_COMMANDS:
+        return len(arguments) == 1
+    return True
+def ranked_counts(counts):
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:TOP_LIMIT]
+    if not ranked:
+        return "none"
+    return ", ".join(f"{word} {count}" for word, count in ranked)
+def source_line(turns, sources):
+    counts = " ".join(f"{source}={sources[source]}" for source in SOURCES)
+    return f"turns={turns} {counts}"
+def pick(texts, session_number):
+    return texts[(session_number - 1) % len(texts)]
+def split_sessions(lines):
+    sessions = []
+    for line in lines:
+        if line.startswith(SESSION_PREFIX):
+            sessions.append((line[len(SESSION_PREFIX):], []))
+        else:
+            sessions[-1][1].append(line)
+    return sessions
+def read_lines(path):
+    with open(path) as file:
+        return file.read().splitlines()
+def write_lines(name, lines):
+    with open(os.path.join(OUTPUT_DIR, name), "w") as file:
+        file.write("".join(line + "\n" for line in lines))
+class Session:
+    def __init__(self, name):
+        self.name = name
+        self.turns = 0
+        self.sources = dict.fromkeys(SOURCES, 0)
+        self.previous = None
+        self.history = []
+        self.last_trace = None
+        self.trace_on = False
+        self.topics = {}
+        self.words = {}
+        self.stored = 0
+        self.recalled = 0
+        self.unrecognized = []
+        self.undo = None
+    def copy(self):
+        other = copy.copy(self)
+        other.sources = dict(self.sources)
+        other.history = list(self.history)
+        other.topics = dict(self.topics)
+        other.words = dict(self.words)
+        other.unrecognized = list(self.unrecognized)
+        return other
+class State:
+    def __init__(self, script):
+        self.positions = [0] * len(script.rules)
+        self.hits = [0] * len(script.rules)
+        self.item_uses = [0] * len(script.items)
+        self.keyword_uses = [0] * len(script.keywords)
+        self.keyword_replies = [0] * len(script.keywords)
+        self.list_positions = dict.fromkeys(CYCLED_LISTS, 0)
+        self.memory = MemoryQueue(script.memsize)
+        self.session = None
+    def copy(self):
+        other = copy.copy(self)
+        other.positions = list(self.positions)
+        other.hits = list(self.hits)
+        other.item_uses = list(self.item_uses)
+        other.keyword_uses = list(self.keyword_uses)
+        other.keyword_replies = list(self.keyword_replies)
+        other.list_positions = dict(self.list_positions)
+        other.memory = self.memory.copy()
+        other.session = self.session.copy()
+        return other
+    def snapshot(self):
+        other = self.copy()
+        other.session.undo = None
+        return other
+class Chatbot:
+    def __init__(self, script):
+        self.script = script
+        self.state = State(script)
+        self.transcript = []
+        self.total_turns = 0
+        self.total_sources = dict.fromkeys(SOURCES, 0)
+    def log_prefix(self):
+        session = self.state.session
+        return f"{session.name} {session.turns}"
+    def take_item(self, rule):
+        state = self.state
+        position = state.positions[rule.index]
+        item = rule.items[position]
+        state.item_uses[item.index] += 1
+        state.positions[rule.index] = (position + 1) % len(rule.items)
+        return position + 1, item
+    def pre_substitute(self, clauses):
+        substituted = []
+        for clause in clauses:
+            words = []
+            for word in clause:
+                words.extend(self.script.pre_table.get(word, [word]))
+            substituted.append(words)
+        return substituted
+    def is_quit(self, text):
+        words = all_words(normalize(text))
+        return len(words) == 1 and words[0] in self.script.quit_words
+    def select_clause(self, clauses):
+        for number, clause in enumerate(clauses, 1):
+            if any(word in self.script.keyword_map for word in clause):
+                return number, clause
+        return None
+    def keyword_list(self, words):
+        found = []
+        for word in words:
+            keyword = self.script.keyword_map.get(word)
+            if keyword is not None and keyword not in found:
+                found.append(keyword)
+        return sorted(found, key=lambda keyword: -keyword.rank)
+    def find_rule(self, rules, words):
+        for number, rule in enumerate(rules, 1):
+            bindings = match_pattern(rule.pattern, words, self.script.group_words)
+            if bindings is not None:
+                return number, rule, bindings
+        return None
+    def apply_memory(self, keyword, words, trace):
+        found = self.find_rule(keyword.memories, words)
+        if found is None:
+            return
+        number, rule, bindings = found
+        trace.append(f"MEMORY {keyword.word} {number}")
+        self.state.hits[rule.index] += 1
+        if not rule.items:
+            return
+        _, item = self.take_item(rule)
+        text = build_reply(item.text, bindings, self.script.post_table)
+        if self.state.memory.store(self.log_prefix(), keyword.word, text):
+            self.state.session.stored += 1
+    def follow_keyword(self, keyword, words, entered, trace):
+        state = self.state
+        while True:
+            entered.add(keyword.word)
+            state.keyword_uses[keyword.index] += 1
+            found = self.find_rule(keyword.decomps, words)
+            if found is None:
+                trace.append("NOMATCH " + keyword.word)
+                return None
+            number, rule, bindings = found
+            state.hits[rule.index] += 1
+            if not rule.items:
+                trace.append(f"DECOMP {keyword.word} {number} 0")
+                return None
+            item_number, item = self.take_item(rule)
+            trace.append(f"DECOMP {keyword.word} {number} {item_number}")
+            if item.kind == "REASM":
+                state.keyword_replies[keyword.index] += 1
+                topics = state.session.topics
+                topics[keyword.word] = topics.get(keyword.word, 0) + 1
+                return build_reply(item.text, bindings, self.script.post_table)
+    def keyword_reply(self, clauses, trace):
+        selected = self.select_clause(clauses)
+        if selected is None:
+            trace.append("CLAUSE none")
+            return None
+        number, words = selected
+        trace.append(f"CLAUSE {number} {' '.join(words)}")
+        keywords = self.keyword_list(words)
+        trace.append("KEYS " + " ".join(keyword.word for keyword in keywords))
+        self.apply_memory(keywords[0], words, trace)
+        entered = set()
+        for keyword in keywords:
+            if keyword.word in entered:
+                continue
+            trace.append("ENTER " + keyword.word)
+            reply = self.follow_keyword(keyword, words, entered, trace)
+            if reply is not None:
+                return reply
+        return None
+    def decide(self, text):
+        session = self.state.session
+        clauses = normalize(text)
+        trace = []
+        if self.script.texts["REPEAT"] and clauses and clauses == session.previous:
+            trace.append("REPEAT")
+            reply = self.take_text("REPEAT")
+            source = "repeat"
+        else:
+            reply = self.keyword_reply(self.pre_substitute(clauses), trace)
+            source = "keyword"
+            if reply is None:
+                reply, source = self.fallback_reply(text)
+        trace.append("REPLY " + source)
+        session.previous = clauses
+        session.sources[source] += 1
+        if source in UNRECOGNIZED_SOURCES:
+            session.unrecognized.append(session.turns)
+        return reply, trace
+    def speculate(self, text):
+        saved = self.state.copy()
+        reply, trace = self.decide(text)
+        self.state = saved
+        return reply, trace
+    def write_eliza(self, text):
+        self.transcript.extend(eliza_lines(text))
+    def write_indented(self, lines):
+        self.transcript.extend(OUTPUT_INDENT + line for line in lines)
+    def respond(self, line):
+        state = self.state
+        session = state.session
+        session.undo = state.snapshot()
+        session.turns += 1
+        for word in all_words(normalize(line)):
+            if word not in self.script.stop_words:
+                session.words[word] = session.words.get(word, 0) + 1
+        session.history.append(f"{session.turns}: {line}")
+        reply, trace = self.decide(line)
+        self.write_eliza(reply)
+        session.last_trace = trace
+        if session.trace_on:
+            self.write_indented(trace)
+    def say(self, text, arguments):
+        if self.is_quit(text):
+            return ["would quit"]
+        reply, _ = self.speculate(text)
+        return [reply]
+    def explain(self, text, arguments):
+        if self.is_quit(text):
+            return ["would quit"]
+        _, trace = self.speculate(text)
+        return trace
+    def undo(self, text, arguments):
+        snapshot = self.state.session.undo
+        if snapshot is None:
+            return ["nothing to undo"]
+        self.state = snapshot
+        return [f"undone turn {snapshot.session.turns + 1}"]
+    def execute(self, line):
+        name, _, text = line.partition(" ")
+        arguments = text.split()
+        handlers = {
+            ":say": self.say,
+            ":explain": self.explain,
+            ":undo": self.undo,
+        }
+        if name not in handlers:
+            return ["unknown command " + name]
+        if not arguments_fit(name, text, arguments):
+            return ["bad arguments"]
+        if name in KEYWORD_COMMANDS and arguments[0] not in self.script.keyword_map:
+            return ["unknown keyword " + arguments[0]]
+        return handlers[name](text, arguments)
+    def write_notes(self):
+        session = self.state.session
+        pending = len(self.state.memory.texts)
+        unrecognized = " ".join(str(turn) for turn in session.unrecognized) or "none"
+        self.transcript.append("NOTES " + session.name)
+        self.write_indented([
+            source_line(session.turns, session.sources),
+            "topics: " + ranked_counts(session.topics),
+            "words: " + ranked_counts(session.words),
+            f"memory: stored={session.stored} recalled={session.recalled} pending={pending}",
+            "unrecognized: " + unrecognized,
+        ])
+        self.total_turns += session.turns
+        for source in SOURCES:
+            self.total_sources[source] += session.sources[source]
+    def run_session(self, number, name, lines):
+        script = self.script
+        self.state.session = Session(name)
+        self.transcript.append(SESSION_PREFIX + name)
+        self.write_eliza(pick(script.texts["INITIAL"], number))
+        for line in lines:
+            if line.startswith(":"):
+                self.transcript.append(line)
+                self.write_indented(self.execute(line))
+                continue
+            self.transcript.append(USER_PREFIX + line)
+            if self.is_quit(line):
+                self.write_eliza(pick(script.texts["FINAL"], number))
+                break
+            self.respond(line)
+        self.write_notes()
+    def run(self, lines):
+        sessions = split_sessions(lines)
+        for number, (name, session_lines) in enumerate(sessions, 1):
+            self.run_session(number, name, session_lines)
+        totals = source_line(self.total_turns, self.total_sources)
+        self.transcript.append("")
+        self.transcript.append(f"SUMMARY sessions={len(sessions)} {totals}")
+    def keyword_stats(self):
+        state = self.state
+        ranked = sorted(
+            self.script.keywords,
+            key=lambda keyword: (-state.keyword_uses[keyword.index], keyword.word),
+        )
+        lines = ["keyword,rank,uses,replies,decomposition_hits"]
+        for keyword in ranked:
+            hits = "/".join(str(state.hits[rule.index]) for rule in keyword.decomps) or "-"
+            uses = state.keyword_uses[keyword.index]
+            replies = state.keyword_replies[keyword.index]
+            lines.append(f"{keyword.word},{keyword.rank},{uses},{replies},{hits}")
+        return lines
+def main():
+    script = load_script(SCRIPT_PATH)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    chatbot = Chatbot(script)
+    chatbot.run(read_lines(DIALOGUE_PATH))
+    write_lines("transcript.txt", chatbot.transcript)
+    write_lines("keyword_stats.csv", chatbot.keyword_stats())
+    write_lines("memory_log.txt", chatbot.state.memory.log)
+if __name__ == "__main__":
+    main()

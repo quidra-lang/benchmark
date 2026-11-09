@@ -1,0 +1,5 @@
+Keep the existing n=N k=K header and one-space-per-person list construction from the named removal order. Replace the final separate-line survivor emission with ` | survivor=` plus the last removal `order.back()` formatted with zero padding to width 2, then one newline. Remove the old leading newline and `survivor: ` label. Given person numbers at most 41, width 2 is exactly two decimal digits. The stored-order append and final read establish the connection; elimination arithmetic does not change.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

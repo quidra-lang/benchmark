@@ -1,0 +1,99 @@
+  def start_throw(point, target)
+    point.moving, point.target, point.completion = true, target, @time + @throw_time
+    log("MOVE #{point.name} #{target} until #{point.completion}")
+  end
+  def add_request(name, requester)
+    @request_count += 1
+    @queue << Request.new(@request_count, name, @time, nil)
+    @routes.fetch(name).stats['requests'] += 1
+    log("REQUEST q#{@request_count} #{name} #{requester}")
+  end
+  def cancel(name)
+    removed = @queue.select { |q| q.route == name }
+    unless removed.empty?
+      removed.each { |q| log("DROP q#{q.number} #{name}") }
+      @dropped += removed.size
+      @queue.reject! { |q| q.route == name }
+      return
+    end
+    route = @routes.fetch(name)
+    if route.state == 'LOCKED'
+      route.stats['cancels'] += 1
+      signal = @layout.signals.fetch(route.start)
+      if signal.aspect != 'RED' && occupied?(signal.section)
+        route.state, route.release_time = 'APPROACH', @time + route.approach_time
+        log("CANCEL #{name} approach until #{route.release_time}")
+      else
+        @interlocking.release(route)
+        log("CANCEL #{name} released")
+      end
+    else
+      log("CANCEL #{name} #{route.set? ? 'refused' : 'none'}")
+    end
+  end
+  def request_reason(route)
+    return 'busy' if route.set?
+
+    route.conflicts.each do |name|
+      return "conflict #{name}" if %w[LOCKED APPROACH].include?(@routes[name].state)
+    end
+    route.sections.each do |name|
+      section = @layout.sections.fetch(name)
+      return "occupied #{name}" if occupied?(name)
+      return "locked #{name}" if section.route_lock || opposite_lock?(section.overlap_locks, route)
+    end
+    route.overlap.each do |name|
+      section = @layout.sections.fetch(name)
+      return "occupied #{name}" if occupied?(name)
+
+      locks = section.overlap_locks.to_a
+      locks << section.route_lock if section.route_lock
+      return "locked #{name}" if opposite_lock?(locks, route)
+    end
+    route.requirements.each do |name, target|
+      point = @layout.points.fetch(name)
+      return "point #{name} locked" if point.locks.any? { |_, position| position != target }
+      next if (!point.moving && point.position == target) || (point.moving && point.target == target)
+
+      return "point #{name} failed" if point.failed
+      return "point #{name} moving" if point.moving
+      return "point #{name} occupied" if occupied?(point.common)
+    end
+    nil
+  end
+  def judge_requests
+    waiting = []
+    @queue.each do |request|
+      route = @routes.fetch(request.route)
+      reason = request_reason(route)
+      if reason
+        if reason != request.reason
+          log("WAIT q#{request.number} #{route.name} #{reason}")
+          request.reason = reason
+        end
+        waiting << request
+        next
+      end
+      @interlocking.lock(route)
+      wait = @time - request.time
+      log("GRANT q#{request.number} #{route.name} wait #{wait}")
+      route.stats['grants'] += 1
+      route.stats['wait'] += wait
+      route.stats['maxwait'] = [route.stats['maxwait'], wait].max
+      route.requirements.each do |name, target|
+        point = @layout.points.fetch(name)
+        start_throw(point, target) if !point.moving && point.position != target
+      end
+    end
+    @queue = waiting
+  end
+      @planned_requests[time].each { |train, route| add_request(route, train) }
+      execute_events
+      judge_requests
+  def lock(route)
+    route.state, route.release_time = 'LOCKED', nil
+    route.passed, route.overlap_locked, route.overlap_counter = Set.new, true, 0
+    route.sections.each { |name| @layout.sections[name].route_lock = route.name }
+    route.overlap.each { |name| @layout.sections[name].overlap_locks.add(route.name) }
+    route.requirements.each { |name, position| @layout.points[name].locks.add([route.name, position]) }
+  end

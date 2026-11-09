@@ -1,0 +1,5 @@
+The current source already meets the nonempty all-negative extension: current and best start at the first element, with the initial best range [0,0], rather than artificial zero. For [-6,-3,-9], restart at index 1 because the prior current is negative (equivalently extending is worse than a[i]), producing -3 and best range [1,1]; restart at 2 produces -9 and does not improve best. No recurrence/initialization change is needed. The source’s strict best update and nonempty initial state provide the evidence.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

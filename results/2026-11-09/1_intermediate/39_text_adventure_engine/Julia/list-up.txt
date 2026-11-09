@@ -1,0 +1,272 @@
+@enum PlaceKind FLOOR HELD INSIDE NOWHERE
+@enum ContainerState OPEN CLOSED LOCKED
+@enum EndStatus PLAYING WON DEAD
+@enum TriggerKind ENTER_ROOM USE_ITEMS
+@enum Verb GO LOOK EXAMINE TAKE DROP PUT INVENTORY OPEN_ITEM CLOSE_ITEM UNLOCK LOCK USE LIGHT EXTINGUISH WAIT SCORE SAVE RESTORE VERBOSE BRIEF
+const DIRECTIONS = ("north", "south", "east", "west", "up", "down")
+const VERB_NAMES = ("go", "look", "examine", "take", "drop", "put", "inventory", "open", "close", "unlock",
+                    "lock", "use", "light", "extinguish", "wait", "score", "save", "restore", "verbose", "brief")
+const VERBS = Dict{String,Verb}(word => verb for (verb, aliases) in (
+    (CLOSE_ITEM, "close shut"), (UNLOCK, "unlock"), (LOCK, "lock"), (USE, "use apply"),
+    (LIGHT, "light ignite"), (EXTINGUISH, "extinguish douse snuff"), (WAIT, "wait z"), (SCORE, "score"),
+    (SAVE, "save"), (RESTORE, "restore load"), (VERBOSE, "verbose"), (BRIEF, "brief")) for word in split(aliases))
+const ACTIONS = (GO, TAKE, DROP, PUT, OPEN_ITEM, CLOSE_ITEM, UNLOCK, LOCK, USE, LIGHT, EXTINGUISH, WAIT)
+const NO_ARGUMENTS = (LOOK, INVENTORY, WAIT, SCORE, SAVE, RESTORE, VERBOSE, BRIEF)
+struct CommandError <: Exception
+    message::String
+fail(message::String) = throw(CommandError(message))
+canonical(verb::Verb) = VERB_NAMES[Int(verb) + 1]
+direction(word::AbstractString) = something(findfirst(d -> word == DIRECTIONS[d] || word == DIRECTIONS[d][1:1], 1:6), 0)
+command_words(line::String) = filter(word -> word ∉ ("the", "a", "an"), String.(split(lowercase(line))))
+struct Place
+    kind::PlaceKind
+    index::Int
+const PLAYER = Place(HELD, 0)
+const REMOVED = Place(NOWHERE, 0)
+floor_place(room::Int) = Place(FLOOR, room)
+inside(item::Int) = Place(INSIDE, item)
+struct Room
+    name::String
+    dark::Bool
+    description::Vector{String}
+mutable struct Item
+    id::String
+    name::String
+    nouns::Set{String}
+    words::Set{String}
+    details::Vector{String}
+    weight::Int
+    treasure::Int
+    light::Bool
+    capacity::Int
+    key::Union{Nothing,Int}
+    fixed::Bool
+Item(id::String) = Item(id, "", Set([id]), Set{String}(), String[], 0, 0, false, 0, nothing, false)
+struct Trigger
+    kind::TriggerKind
+    first::Int
+    second::Int
+struct Condition
+    flag::String
+    on::Bool
+struct MessageEffect
+    text::String
+struct MoveEffect
+    item::Int
+    place::Place
+const Effect = Union{MessageEffect,OpenEffect,MoveEffect,FlagEffect,PointsEffect}
+struct Rule
+    trigger::Trigger
+    condition::Union{Nothing,Condition}
+    effect::Effect
+struct World
+    rooms::Vector{Room}
+    items::Vector{Item}
+    rules::Vector{Rule}
+    vocabulary::Set{String}
+    trophy::Int
+    max_weight::Int
+mutable struct GameState
+    room::Int
+    places::Vector{Place}
+    containers::Vector{ContainerState}
+    exits::Matrix{Union{Nothing,ExitLink}}
+    lit::BitVector
+    fuel::Vector{Int}
+    flags::Set{String}
+    bonus::Int
+    moves::Int
+    visited::BitVector
+    darkness::Int
+    ended::EndStatus
+mutable struct Adventure
+    world::World
+    state::GameState
+    saved::Union{Nothing,GameState}
+    pronoun::Union{Nothing,Int}
+    previous::Union{Nothing,String}
+    verbose::Bool
+function read_rule(tokens::Vector{String}, position::Int, trigger::Trigger, rooms::Dict{String,Int}, items::Dict{String,Int})
+    condition = nothing
+    if tokens[position] in ("IF", "UNLESS")
+        condition = Condition(tokens[position + 1], tokens[position] == "IF")
+        position += 2
+    kind = tokens[position]
+    args = tokens[position+1:end]
+    effect = if kind == "MESSAGE"
+        MessageEffect(join(args, " "))
+    elseif kind == "ADD"
+        MoveEffect(items[args[1]], floor_place(rooms[args[2]]))
+    Rule(trigger, condition, effect)
+function Adventure(definitions::Vector{Vector{String}})
+    room_ids = [tokens[2] for tokens in definitions if tokens[1] == "ROOM"]
+    item_ids = sort([tokens[2] for tokens in definitions if tokens[1] == "ITEM"])
+    room_index = Dict{String,Int}(id => index for (index, id) in enumerate(room_ids))
+    item_index = Dict{String,Int}(id => index for (index, id) in enumerate(item_ids))
+    rooms = [Room("", false, String[]) for _ in room_ids]
+    items = Item.(item_ids)
+    exits = fill!(Matrix{Union{Nothing,ExitLink}}(undef, length(rooms), 6), nothing)
+    state = GameState(1, fill(PLAYER, length(items)), fill(OPEN, length(items)), exits, falses(length(items)),
+                      zeros(Int, length(items)), Set{String}(), 0, 0, falses(length(rooms)), 0, PLAYING)
+    rules = Rule[]
+    trophy = max_weight = 0
+    for tokens in definitions
+        kind = tokens[1]
+        if kind == "ROOM"
+            dark = tokens[3] == "DARK"
+            rooms[room_index[tokens[2]]] = Room(join(tokens[(dark ? 4 : 3):end], " "), dark, String[])
+        elseif kind == "ITEM"
+            index = item_index[tokens[2]]
+            item = items[index]
+            state.places[index] = tokens[3] == "PLAYER" ? PLAYER : tokens[3] == "NOWHERE" ? REMOVED : floor_place(room_index[tokens[3]])
+            item.weight = parse(Int, tokens[4])
+            position = 5
+            if tokens[position] == "TREASURE"
+                item.treasure = parse(Int, tokens[position + 1]); position += 2
+            if tokens[position] == "LIGHT"
+                item.light = true; state.fuel[index] = parse(Int, tokens[position + 1]); position += 2
+            item.name = join(tokens[position:end], " ")
+            union!(item.words, tokens[position:end])
+        elseif kind == "RULE"
+            push!(rules, read_rule(tokens, 4, Trigger(USE_ITEMS, item_index[tokens[2]], item_index[tokens[3]]), room_index, item_index))
+        elseif kind == "TROPHY"
+            trophy = room_index[tokens[2]]
+        elseif kind == "START"
+            state.room = room_index[tokens[2]]
+    vocabulary = Set{String}()
+    for item in items
+        union!(vocabulary, item.nouns, item.words)
+    Adventure(World(rooms, items, rules, vocabulary, trophy, max_weight), state, nothing, nothing, nothing, false)
+current_floor(game::Adventure) = floor_place(game.state.room)
+function reachable(game::Adventure, item::Int, root::Place)
+    place = game.state.places[item]
+    while place.kind == INSIDE
+        game.state.containers[place.index] == OPEN || return false
+        place = game.state.places[place.index]
+    place == root
+carried(game::Adventure, item::Int) = reachable(game, item, PLAYER)
+room_item(game::Adventure, item::Int) = reachable(game, item, current_floor(game))
+is_lit(game::Adventure) = !game.world.rooms[game.state.room].dark ||
+    any(i -> game.state.lit[i] && (carried(game, i) || room_item(game, i)), eachindex(game.world.items))
+function visible(game::Adventure)
+    lit = is_lit(game)
+    [carried(game, i) || (lit && room_item(game, i)) for i in eachindex(game.world.items)]
+function stored(game::Adventure, item::Int)
+    place = game.state.places[item]
+    while place.kind == INSIDE
+        place = game.state.places[place.index]
+    place == floor_place(game.world.trophy)
+function treasures(game::Adventure)
+    indices = findall(item -> item.treasure > 0, game.world.items)
+    collected = filter(i -> stored(game, i), indices)
+    (points = sum(i -> game.world.items[i].treasure, collected; init = 0), stored = length(collected), total = length(indices))
+score(game::Adventure) = treasures(game).points + game.state.bonus
+item_names(game::Adventure, items::Vector{Int}) = join((game.world.items[i].name for i in items), ", ")
+function resolve!(game::Adventure, phrase::Vector{String})
+    seen = visible(game)
+    for word in phrase
+        word in game.world.vocabulary || fail("I don't know the word \"$word\".")
+    matches = [i for i in eachindex(game.world.items) if seen[i] && last(phrase) in game.world.items[i].nouns &&
+               all(word -> word in game.world.items[i].words, phrase[1:end-1])]
+    isempty(matches) && fail("You can't see any such thing.")
+    length(matches) > 1 && fail("Which do you mean: $(item_names(game, matches))?")
+    game.pronoun = only(matches)
+    game.pronoun::Int
+function run_rules!(game::Adventure, trigger::Trigger)
+    executed = 0
+    message = false
+    for rule in game.world.rules
+        rule.trigger == trigger || continue
+        condition = rule.condition
+        condition !== nothing && (condition.flag in game.state.flags) != condition.on && continue
+        executed += 1
+        effect = rule.effect
+        if effect isa MessageEffect
+            println(effect.text); message = true
+        elseif effect isa MoveEffect
+            game.state.places[effect.item] = effect.place
+    (; executed, message)
+function pass_turn!(game::Adventure, baseline::Bool)
+    game.state.moves += 1
+    nearby = [carried(game, i) || room_item(game, i) for i in eachindex(game.world.items)]
+    for item in eachindex(game.world.items)
+        game.state.lit[item] || continue
+        game.state.fuel[item] -= 1
+        if game.state.fuel[item] == 0
+            game.state.lit[item] = false
+            nearby[item] && println("The $(game.world.items[item].name) goes out.")
+    lit = is_lit(game)
+    if baseline && !lit
+        println("It is now pitch dark.")
+    elseif !baseline && lit
+        describe(game, true)
+    game.state.darkness = lit ? 0 : game.state.darkness + 1
+    game.state.darkness == 2 && println("You hear something moving in the dark.")
+    game.state.darkness == 3 && (game.state.ended = DEAD)
+    treasure = treasures(game)
+    if game.state.ended == PLAYING && treasure.total > 0 && treasure.stored == treasure.total
+        game.state.ended = WON
+    if game.state.ended != PLAYING
+        println(game.state.ended == DEAD ? "*** You have died ***" : "*** You have won ***")
+        println("You scored $(treasure.points + game.state.bonus) points in $(game.state.moves) moves.")
+function execute!(game::Adventure, verb::Verb, first::Vector{String}, second::Vector{String}, d::Int)
+    baseline = is_lit(game)
+    success = true
+    if verb == GO
+    elseif verb == USE
+        a = resolve!(game, first)
+        b = resolve!(game, second)
+        carried(game, a) || fail("You aren't carrying the $(game.world.items[a].name).")
+        result = run_rules!(game, Trigger(USE_ITEMS, a, b))
+        result.executed > 0 || fail("Nothing happens.")
+        result.message || println("Done.")
+    elseif verb == SCORE
+        treasure = treasures(game)
+        println("You have scored $(treasure.points + game.state.bonus) points (treasure $(treasure.points), bonus $(game.state.bonus)) in $(game.state.moves) moves.")
+        println("Treasures stored: $(treasure.stored) of $(treasure.total).")
+    success && verb in ACTIONS && pass_turn!(game, baseline)
+    nothing
+function interpret!(game::Adventure, tokens::Vector{String})
+    isempty(tokens) && fail("I beg your pardon?")
+    direction(tokens[1]) != 0 && pushfirst!(tokens, "go")
+    verb = get(VERBS, tokens[1], nothing)
+    verb === nothing && fail("I don't know the verb \"$(tokens[1])\".")
+    game.state.ended != PLAYING && verb != RESTORE && fail("The game is over.")
+    first, second = tokens[2:end], String[]
+    d = 0
+    if verb in NO_ARGUMENTS
+        isempty(first) || fail("I don't understand that.")
+    else
+        isempty(first) && fail(verb == GO ? "Which way do you want to go?" : "What do you want to $(canonical(verb))?")
+        if verb == GO
+        else
+            prepositions = verb == PUT ? ("in", "into") : verb == USE ? ("on", "with") :
+                           verb in (UNLOCK, LOCK) ? ("with",) : verb == TAKE ? ("from",) : ()
+            split = findfirst(word -> word in prepositions, first)
+            if split !== nothing
+                (split == 1 || split == length(first)) && fail("I don't understand that.")
+                second, first = first[split+1:end], first[1:split-1]
+            elseif verb in (PUT, USE)
+                fail("I don't understand that.")
+    execute!(game, verb, first, second, d)
+function process_line!(game::Adventure, line::String)
+    println("> ", line)
+    try
+        tokens = command_words(line)
+        else
+            game.previous = line
+        interpret!(game, tokens)
+    catch error
+        error isa CommandError || rethrow()
+        println(error.message)
+function main()
+    definitions = Vector{String}[]
+    for line in eachline(stdin)
+        line == "BEGIN" && break
+        push!(definitions, String.(split(line, ' ')))
+    game = Adventure(definitions)
+    for line in eachline(stdin)
+        line == "QUIT" && break
+        process_line!(game, line)
+    println("Final score: $(score(game)) points in $(game.state.moves) moves.")
+main()

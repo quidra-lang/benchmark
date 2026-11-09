@@ -1,0 +1,9 @@
+The current question asks: Explain the complete dice-simulation run from seed 12345 and the trial count through random-state advancement, die mapping, sum-frequency accumulation and the twelve output lines. Derive the two die values of the first trial as a concrete check, then show how the source repeats the process for exactly 1000 trials and selects the most frequent sum with its tie-break. Identify how zero-frequency buckets and final ordering are represented; do not list all 2000 generated states.
+
+Answer and source evidence: The named MINSTD state starts at 12345 and advances with multiplier 48271 modulo 2147483647 once per die, mapping each state to state%6+1. The first states 595905495 and 1558181227 give dice 4 and 2, hence sum 6. Exactly 1000 trials each add one to the matching zero-initialized sum bucket. Output visits sums 2..12 ascending, including zero buckets, then prints the selected most frequent sum. Strict improvement over best, initialized at 2, resolves ties to the smaller sum. Eleven bucket lines plus the final line make twelve.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. All simulation stages and both output stages are necessary for this end-to-end question; imports and main wrapper add no facts.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,98 @@
+const ITEMS = Vector{Tuple{String,Int}}
+fee(plan::Plan, seats::Int) = plan.price * (plan.per_seat ? seats : 1)
+function usage_charge(plan::Plan, units::Int)
+    for (index, (upper, unit_price, flat)) in enumerate(plan.tiers)
+        last = index == length(plan.tiers)
+        if plan.mode == "VOLUME"
+            if last || upper === nothing || units <= upper
+                return units * unit_price + flat
+emit!(billing::Billing, parts...) = push!(billing.output, join(string.(parts), " "))
+indented!(billing::Billing, parts...) =
+    push!(billing.output, "  " * join(string.(parts), " "))
+function require_sub(billing::Billing, text::String, allowed::Vararg{String})
+    id = parse(Int, text)
+    1 <= id <= length(billing.subscriptions) || fail("unknown sub " * text)
+    sub = billing.subscriptions[id]
+    if !isempty(allowed) && !(sub.state in allowed)
+        fail("invalid state $text $(sub.state)")
+    end
+    sub
+end
+function period_item(plan::Plan, seats::Int, start::Int)
+    ("charge $(plan.name) seats $seats $start-$(start + plan.length)", fee(plan, seats))
+end
+
+function opening_items(billing::Billing, sub::Subscription, start::Int)
+    plan = billing.plans[sub.plan]
+    items = ITEMS([period_item(plan, sub.seats, start)])
+    if plan.setup > 0
+        push!(items, ("setup " * plan.name, plan.setup))
+    end
+    items
+end
+
+function usage_items!(billing::Billing, sub::Subscription; close::Bool=false)
+    plan = billing.plans[sub.plan]
+    if plan.mode === nothing || sub.usage == 0
+        return ITEMS()
+    end
+    units = sub.usage
+    items = ITEMS([("usage $(plan.name) $units units", usage_charge(plan, units))])
+    close && (sub.usage = 0)
+    items
+end
+
+coupon_usable(sub::Subscription, subtotal::Int) =
+    subtotal > 0 && sub.coupon !== nothing &&
+    (sub.remaining === nothing || sub.remaining > 0)
+
+function invoice_totals(billing::Billing, sub::Subscription, items::ITEMS)
+    subtotal = sum(amount for (_, amount) in items; init=0)
+    discount = 0
+    if coupon_usable(sub, subtotal)
+        coupon = billing.coupons[sub.coupon]
+        discount = coupon.kind == "PERCENT" ?
+                   div(subtotal * coupon.value, 10000) : min(subtotal, coupon.value)
+    end
+    customer = billing.customers[sub.customer]
+    tax = div((subtotal - discount) * get(billing.taxes, customer.region, 0), 10000)
+    total = subtotal - discount + tax
+    credit = min(customer.balance, total)
+    (subtotal, discount, tax, total, credit, total - credit)
+end
+function emit_items!(billing::Billing, items::ITEMS)
+    for (description, amount) in items
+        indented!(billing, description, money(amount))
+    end
+end
+
+function emit_totals!(billing::Billing, subtotal::Int, discount::Int, tax::Int, total::Int)
+    indented!(billing, "subtotal", money(subtotal), "discount", money(discount),
+              "tax", money(tax), "total", money(total))
+end
+function cmd_preview!(billing::Billing, a::Vector{String})
+    sub = require_sub(billing, a[1], "TRIALING", "ACTIVE", "PAST_DUE", "UNPAID")
+    day = sub.state == "TRIALING" ? sub.trial_end : sub.finish
+    items = ITEMS()
+    kind = "renewal"
+    if sub.cancel_end
+        kind = "final"
+        items = sub.state == "TRIALING" ? ITEMS() : usage_items!(billing, sub)
+    elseif sub.state == "TRIALING"
+        kind = "first"
+        items = opening_items(billing, sub, day)
+    else
+        plan, seats = sub.pending === nothing ? (sub.plan, sub.seats) : sub.pending
+        items = usage_items!(billing, sub)
+        push!(items, period_item(billing.plans[plan], seats, day))
+    end
+    emit!(billing, "PREVIEW", "sub", sub.number, "day", day, kind)
+    if isempty(items)
+        indented!(billing, "(none)")
+        return
+    end
+    emit_items!(billing, items)
+    subtotal, discount, tax, total, credit, due = invoice_totals(billing, sub, items)
+    emit_totals!(billing, subtotal, discount, tax, total)
+    indented!(billing, "credit", money(credit), "due", money(due))
+end

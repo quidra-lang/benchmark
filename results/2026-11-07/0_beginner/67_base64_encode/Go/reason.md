@@ -1,0 +1,9 @@
+The current question asks: Suppose Base64 output omits trailing equals-sign padding. Explain the complete encoding/output path for Hello, World!, from ASCII bytes through three-byte packing, six-bit alphabet indices, final partial-group handling and quoted line construction. Derive its unpadded output and identify which emitted padding characters disappear without changing zero-filled bit calculation. Also explain why Man and the empty input retain their existing encoded content.
+
+Answer and source evidence: ASCII bytes are grouped by three, packed big endian into 24 bits with missing bytes zero, and indexed as four six-bit chunks in the Base64 alphabet. Hello, World! has 13 bytes: complete groups give SGVsbG8sIFdvcmxk and final ! gives IQ==. Omit only the two emitted = characters for the one-byte final group, leaving zero-filled bits unchanged; the quoted line becomes "Hello, World!" -> "SGVsbG8sIFdvcmxkIQ". Man fills a complete group so TWFu is unchanged; empty input executes no group and retains an empty result.
+
+Selection: `main.go` lines 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. The alphabet and every input/packing/partial-group/output stage are needed for the requested complete path. All selected code is relevant to encoding, not a full-source fallback.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

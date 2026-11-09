@@ -1,0 +1,154 @@
+local M={UNKNOWN=0,FILLED=1,EMPTY=2}
+function M.is_line(text) return #text>0 and not text:find('[^0-9 ]') end
+function M.parse(text)
+    if text=='0' then return {} end
+    if text=='' or text:sub(1,1)==' ' or text:sub(-1)==' ' or text:find('  ',1,true) then return nil end
+    local clue={}
+    for token in text:gmatch('[^ ]+') do if #token>2 or token:sub(1,1)=='0' or not token:match('^[0-9]+$') then return nil end; clue[#clue+1]=tonumber(token) end
+    return clue
+end
+function M.span(clue) local total=#clue-1; for _,n in ipairs(clue) do total=total+n end; return total end
+function M.state(character) return character=='#' and 1 or character=='.' and 2 or 0 end
+local function read_blocks(path)
+    local blocks,block={},nil
+    for line in io.lines(path) do
+        if not block then if line~='' and line:sub(1,1)~='#' then block={line} end
+        elseif line=='END' then blocks[#blocks+1]=block; block=nil else block[#block+1]=line end
+    end
+    return blocks
+end
+local function tokens(text) local parts={}; for token in text:gmatch('[^ ]+') do parts[#parts+1]=token end; return parts end
+local function valid_name(name) return #name>=1 and #name<=20 and not name:find('[^a-z0-9_]') end
+local function parse_puzzle(block)
+    local size=tokens(block[2]); local p={name=block[1]:sub(8),width=tonumber(size[2]),height=tonumber(size[3]),raw_rows={},raw_columns={},givens={},answer_result='-'}
+    local at=4
+    while block[at]~='COLUMNS' do p.raw_rows[#p.raw_rows+1]=block[at]; at=at+1 end
+    at=at+1
+    while at<=#block and Clues.is_line(block[at]) do p.raw_columns[#p.raw_columns+1]=block[at]; at=at+1 end
+    while at<=#block and block[at]:sub(1,6)=='GIVEN ' do local fields=tokens(block[at]); p.givens[#p.givens+1]={row=tonumber(fields[2]),column=tonumber(fields[3]),state=Render.state(fields[4])}; at=at+1 end
+    if at<=#block then p.answer_lines={}; for i=at+1,#block do p.answer_lines[#p.answer_lines+1]=block[i] end end
+    return p
+end
+local function validate(p,seen)
+    if not valid_name(p.name) then return 'bad name' end
+    if seen[p.name] then return 'duplicate name' end
+    if p.width<1 or p.width>30 or p.height<1 or p.height>30 then return 'bad size' end
+    if #p.raw_rows~=p.height then return fmt('row count %d expected %d',#p.raw_rows,p.height) end
+    if #p.raw_columns~=p.width then return fmt('column count %d expected %d',#p.raw_columns,p.width) end
+    local totals={0,0}
+    for kind,texts in ipairs({p.raw_rows,p.raw_columns}) do
+        local label,length=kind==1 and 'row' or 'column',kind==1 and p.width or p.height; local clues={}
+        for i,text in ipairs(texts) do
+            local clue=Clues.parse(text)
+            if not clue then return fmt('bad clue %s %d',label,i) end
+            if Clues.span(clue)>length then return fmt('%s %d too long',label,i) end
+            clues[#clues+1]=clue; for _,n in ipairs(clue) do totals[kind]=totals[kind]+n end
+        end
+        if kind==1 then p.rows=clues else p.columns=clues end
+    end
+    if totals[1]~=totals[2] then return fmt('total mismatch rows=%d columns=%d',totals[1],totals[2]) end
+    local occupied={}
+    for k,g in ipairs(p.givens) do
+        if g.row<1 or g.row>p.height or g.column<1 or g.column>p.width or g.state==Solver.UNKNOWN then return fmt('bad given %d',k) end
+        local key=g.row..','..g.column
+        if occupied[key] then return fmt('duplicate given %d',k) end
+        occupied[key]=true
+    end
+local function logical(rows,columns,givens,precise)
+    local grid,row_marks,column_marks={},{},{}
+    for r=1,#rows do grid[r]={}; row_marks[r]=true; for c=1,#columns do grid[r][c]=Solver.UNKNOWN end end
+    for c=1,#columns do column_marks[c]=true end
+    for _,g in ipairs(givens) do grid[g.row][g.column]=g.state end
+    local propagation=Propagation.run(grid,rows,columns,precise,row_marks,column_marks); local result='stuck'
+    if propagation.conflict then local step=propagation.conflict; result='contradiction at='..Propagation.label(step.is_row,step.index)
+    elseif Propagation.known(grid)==#rows*#columns then result='solved' end
+    return {grid=grid,propagation=propagation,result=result}
+end
+local function analyze(rows,columns,givens)
+    local a={simple=logical(rows,columns,givens,false),logic=logical(rows,columns,givens,true),solutions={},difficulty='-',guesses=0,max_depth=0}
+    a.line_solves=#a.logic.propagation.steps
+    if a.logic.propagation.conflict then a.status='contradiction'
+    elseif a.logic.result=='solved' then a.status='unique'; a.solutions={a.logic.grid}; a.difficulty=a.simple.result=='solved' and 'easy' or 'medium'
+    else
+        a.search=Search.new(rows,columns); a.search:run(a.logic.grid,1); a.solutions=a.search.solutions; a.status=({'none','unique','multiple'})[#a.solutions+1]
+        if a.status=='unique' then a.difficulty='hard' end
+        a.line_solves=a.line_solves+a.search.line_solves; a.guesses=#a.search.guesses; a.max_depth=a.search.max_depth
+    end
+    return a
+end
+    local a=p.analysis
+    lines[#lines+1]=fmt('size=%dx%d givens=%d status=%s difficulty=%s',p.width,p.height,#p.givens,a.status,a.difficulty)
+    lines[#lines+1]='clues '..clue_stats(p.rows,p.columns)
+    lines[#lines+1]=fmt('simple known=%d line_solves=%d result=%s',Propagation.known(a.simple.grid),#a.simple.propagation.steps,a.simple.result)
+    lines[#lines+1]=fmt('logic known=%d line_solves=%d result=%s',Propagation.known(a.logic.grid),#a.logic.propagation.steps,a.logic.result)
+    if a.search then
+        local s=a.search; lines[#lines+1]=fmt('search guesses=%d max_depth=%d backtracks=%d solutions=%d line_solves=%d',#s.guesses,s.max_depth,s.backtracks,#s.solutions,s.line_solves)
+        for _,g in ipairs(s.guesses) do lines[#lines+1]=fmt('guess %d depth=%d cell=%d,%d value=%s solves=%d known=%d result=%s',g.number,g.depth,g.row,g.column,Render.char(g.value),g.solves,g.known,g.result) end
+    end
+    if a.status=='multiple' then local cells=differing(a.solutions[1],a.solutions[2]); lines[#lines+1]=fmt('differ count=%d cells=%s',#cells,cell_list(cells)) end
+    local names,grids={},{}
+    if a.status=='contradiction' then names={'partial'}; grids={a.logic.grid}
+    else
+        if a.simple.result=='stuck' then names[#names+1]='simple'; grids[#grids+1]=a.simple.grid end
+        if a.logic.result=='stuck' then names[#names+1]='logic'; grids[#grids+1]=a.logic.grid end
+        if a.status=='multiple' then extend(names,{'first','second'}); extend(grids,a.solutions) end
+    end
+    if #names>0 then extend(lines,Render.display(names,grids)) end
+    if a.status=='unique' then lines[#lines+1]='sheet'; extend(lines,Render.sheet(p.rows,p.columns,a.solutions[1])); lines[#lines+1]='picture '..features(a.solutions[1]) end
+local function process_puzzles()
+    local puzzles,paragraphs,seen,counts,ranking={},{},{},{},{}; local line_solves,guesses=0,0
+    local stats={'puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer'}
+    for _,block in ipairs(read_blocks('input/puzzles.txt')) do
+        local p=parse_puzzle(block); p.error=validate(p,seen); seen[p.name]=true; puzzles[#puzzles+1]=p
+        if p.error then counts.invalid=(counts.invalid or 0)+1; stats[#stats+1]=p.name..',invalid'..string.rep(',-',11)
+        else
+            p.analysis=analyze(p.rows,p.columns,p.givens); local a=p.analysis; counts[a.status]=(counts[a.status] or 0)+1; counts[a.difficulty]=(counts[a.difficulty] or 0)+1; line_solves=line_solves+a.line_solves; guesses=guesses+a.guesses
+            if a.status=='unique' then ranking[#ranking+1]=p end
+        end
+        paragraphs[#paragraphs+1]=puzzle_paragraph(p)
+        if not p.error then local a=p.analysis; stats[#stats+1]=fmt('%s,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s',p.name,a.status,a.difficulty,p.width,p.height,#p.givens,Propagation.known(a.simple.grid),Propagation.known(a.logic.grid),a.line_solves,a.guesses,a.max_depth,#a.solutions,p.answer_result) end
+    end
+    return puzzles,join_paragraphs(paragraphs),stats
+local puzzles,solutions,stats=process_puzzles()
+for name,lines in pairs({['solutions.txt']=solutions,['stats.csv']=stats,['generated.txt']=generated}) do local file=assert(io.open('output/'..name,'w')); file:write(table.concat(lines,'\n'),'\n'); file:close() end
+function M.cells(grid,is_row,index)
+    local cells={}
+    if is_row then for i,c in ipairs(grid[index]) do cells[i]=c end else for i,row in ipairs(grid) do cells[i]=row[index] end end
+    return cells
+end
+function M.clone(grid) local copy={}; for r in ipairs(grid) do copy[r]=M.cells(grid,true,r) end; return copy end
+function M.known(grid) local n=0; for _,row in ipairs(grid) do for _,c in ipairs(row) do if c~=Solver.UNKNOWN then n=n+1 end end end; return n end
+function M.run(grid,rows,columns,precise,row_marks,column_marks)
+    local result={steps={}}
+    while true do
+        local is_row,index=true,nil
+        for i=1,#rows do if row_marks[i] then index=i; break end end
+        if not index then is_row=false; for i=1,#columns do if column_marks[i] then index=i; break end end end
+        if not index then return result end
+        local clue
+        if is_row then row_marks[index]=false; clue=rows[index] else column_marks[index]=false; clue=columns[index] end
+        local cells=M.cells(grid,is_row,index); local solved=Solver.solve(cells,clue,precise); local step={is_row=is_row,index=index,gain=0}
+        result.steps[#result.steps+1]=step
+        if not solved then step.contradiction=true; result.conflict=step; return result end
+        for position,state in ipairs(solved) do
+            if cells[position]==Solver.UNKNOWN and state~=Solver.UNKNOWN then
+                step.gain=step.gain+1
+                if is_row then grid[index][position]=state; column_marks[position]=true else grid[position][index]=state; row_marks[position]=true end
+            end
+        end
+    end
+end
+function M.new(rows,columns) return setmetatable({rows=rows,columns=columns,guesses={},solutions={},max_depth=0,backtracks=0,line_solves=0},Search) end
+function Search:run(grid,depth)
+    local r,c=M.cell(grid)
+    for _,value in ipairs({Solver.FILLED,Solver.EMPTY}) do
+        local child=Propagation.clone(grid); child[r][c]=value; local row_marks,column_marks={},{}; row_marks[r]=true; column_marks[c]=true
+        local p=Propagation.run(child,self.rows,self.columns,true,row_marks,column_marks); local known=Propagation.known(child); local result='open'
+        if p.conflict then result='contradiction at='..Propagation.label(p.conflict.is_row,p.conflict.index); self.backtracks=self.backtracks+1
+        elseif known==#self.rows*#self.columns then self.solutions[#self.solutions+1]=child; result='solution'..#self.solutions end
+        self.max_depth=math.max(self.max_depth,depth); self.line_solves=self.line_solves+#p.steps
+        self.guesses[#self.guesses+1]={number=#self.guesses+1,depth=depth,row=r,column=c,value=value,solves=#p.steps,known=known,result=result}
+        if result=='open' then if self:run(child,depth+1) then return true end elseif #self.solutions==2 then return true end
+    end
+    return false
+end

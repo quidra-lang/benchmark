@@ -1,0 +1,200 @@
+pub const UNKNOWN: u8 = b'?';
+pub const FILLED: u8 = b'#';
+pub const EMPTY: u8 = b'.';
+pub type Grid = Vec<Vec<u8>>;
+pub type Clues = Vec<Vec<usize>>;
+pub fn is_line(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|c| c.is_ascii_digit() || c == b' ')
+}
+pub fn parse(text: &str) -> Option<Vec<usize>> {
+    if text == "0" { return Some(Vec::new()); }
+    text.split(' ').map(|token| {
+        if token.is_empty() || token.len() > 2 || token.starts_with('0') || !token.bytes().all(|c| c.is_ascii_digit()) { None }
+        else { token.parse().ok() }
+    }).collect()
+}
+pub fn span(clue: &[usize]) -> usize { clue.iter().sum::<usize>() + clue.len().saturating_sub(1) }
+fn read_blocks(name: &str) -> io::Result<Vec<Vec<String>>> {
+    let mut blocks = Vec::new();
+    let mut current: Option<Vec<String>> = None;
+    for line in fs::read_to_string(format!("input/{name}"))?.lines() {
+        if let Some(block) = current.as_mut() {
+            if line == "END" { blocks.push(current.take().unwrap()); } else { block.push(line.to_owned()); }
+        } else if !line.is_empty() && !line.starts_with('#') { current = Some(vec![line.to_owned()]); }
+    }
+    Ok(blocks)
+}
+fn write_lines(name: &str, lines: &[String]) -> io::Result<()> { fs::write(format!("output/{name}"), lines.join("\n") + "\n") }
+fn valid_name(name: &str) -> bool { (1..=20).contains(&name.len()) && name.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') }
+    fn new(lines: Vec<String>) -> Self {
+        let name = lines[0][7..].to_owned();
+        let size: Vec<_> = lines[1].split(' ').collect();
+        let width = size[1].parse().unwrap();
+        let height = size[2].parse().unwrap();
+        let split = lines.iter().position(|s| s == "COLUMNS").unwrap();
+        let row_lines = lines[3..split].to_vec();
+        let mut column_lines = Vec::new();
+        let mut position = split + 1;
+        while position < lines.len() && clues::is_line(&lines[position]) { column_lines.push(lines[position].clone()); position += 1; }
+        let mut given_lines = Vec::new();
+        while position < lines.len() && lines[position].starts_with("GIVEN ") {
+            let fields: Vec<_> = lines[position].split(' ').collect();
+            given_lines.push((fields[1].parse().unwrap(), fields[2].parse().unwrap(), fields[3].as_bytes()[0])); position += 1;
+        }
+        let answer = if position < lines.len() { Some(lines[position + 1..].iter().map(|s| s.as_bytes().to_vec()).collect()) } else { None };
+        Self { name, width, height, row_lines, column_lines, given_lines, answer, rows: Vec::new(), columns: Vec::new(), givens: Vec::new() }
+    }
+    fn validate(&mut self, names: &HashSet<String>) -> Option<String> {
+        if !valid_name(&self.name) { return Some("bad name".into()); }
+        if names.contains(&self.name) { return Some("duplicate name".into()); }
+        if !(1..=30).contains(&self.width) || !(1..=30).contains(&self.height) { return Some("bad size".into()); }
+        if self.row_lines.len() != self.height { return Some(format!("row count {} expected {}", self.row_lines.len(), self.height)); }
+        if self.column_lines.len() != self.width { return Some(format!("column count {} expected {}", self.column_lines.len(), self.width)); }
+        for row in [true, false] {
+            let (kind, texts, length, target) = if row { ("row", &self.row_lines, self.width, &mut self.rows) } else { ("column", &self.column_lines, self.height, &mut self.columns) };
+            for (i, text) in texts.iter().enumerate() {
+                let Some(clue) = clues::parse(text) else { return Some(format!("bad clue {kind} {}", i + 1)); };
+                if clues::span(&clue) > length { return Some(format!("{kind} {} too long", i + 1)); }
+                target.push(clue);
+            }
+        }
+        let a: usize = self.rows.iter().flatten().sum();
+        let b: usize = self.columns.iter().flatten().sum();
+        if a != b { return Some(format!("total mismatch rows={a} columns={b}")); }
+        let mut taken = HashSet::new();
+        for (i, &(r, c, value)) in self.given_lines.iter().enumerate() {
+            if r < 1 || r > self.height || c < 1 || c > self.width || ![FILLED, EMPTY].contains(&value) { return Some(format!("bad given {}", i + 1)); }
+            if !taken.insert((r, c)) { return Some(format!("duplicate given {}", i + 1)); }
+            self.givens.push(Given { row: r - 1, column: c - 1, value });
+        }
+        if let Some(answer) = &self.answer {
+            if answer.len() != self.height || answer.iter().any(|row| row.len() != self.width || row.iter().any(|v| ![FILLED, EMPTY, UNKNOWN].contains(v))) { return Some("bad answer".into()); }
+        }
+        None
+fn logical_solve(rows: &Clues, columns: &Clues, givens: &[Given], precise: bool) -> (Grid, Propagation) {
+    let mut grid = vec![vec![UNKNOWN; columns.len()]; rows.len()];
+    for given in givens { grid[given.row][given.column] = given.value; }
+    let result = propagation::run(&mut grid, rows, columns, precise, vec![true; rows.len()], vec![true; columns.len()]);
+    (grid, result)
+}
+fn solving_result(grid: &Grid, propagation: &Propagation) -> String {
+    if let Some(step) = &propagation.conflict { format!("contradiction at={}", step.label()) }
+    else if determined(grid) == grid.len() * grid[0].len() { "solved".into() } else { "stuck".into() }
+}
+    fn new(rows: &Clues, columns: &Clues, givens: &[Given]) -> Self {
+        let (simple_grid, simple) = logical_solve(rows, columns, givens, false);
+        let (logic_grid, logic) = logical_solve(rows, columns, givens, true);
+        let simple_result = solving_result(&simple_grid, &simple);
+        let logic_result = solving_result(&logic_grid, &logic);
+        let mut difficulty = "-";
+        let mut search = None;
+        let mut solutions = Vec::new();
+        let status;
+        if logic.conflict.is_some() { status = "contradiction"; }
+        else if logic_result == "solved" { status = "unique"; solutions.push(logic_grid.clone()); difficulty = if simple_result == "solved" { "easy" } else { "medium" }; }
+        else {
+            let found = Search::new(&logic_grid, rows, columns);
+            solutions = found.solutions.clone(); status = ["none", "unique", "multiple"][solutions.len()];
+            if status == "unique" { difficulty = "hard"; }
+            search = Some(found);
+        }
+        let line_solves = logic.steps.len() + search.as_ref().map_or(0, |s| s.line_solves);
+        let guesses = search.as_ref().map_or(0, |s| s.guesses.len());
+        let max_depth = search.as_ref().map_or(0, |s| s.max_depth);
+        Self { simple_grid, logic_grid, simple, logic, simple_result, logic_result, status, difficulty, search, solutions, line_solves, guesses, max_depth }
+    }
+    fn new(puzzle: Puzzle) -> Self {
+        let analysis = Analysis::new(&puzzle.rows, &puzzle.columns, &puzzle.givens);
+        let grading = Grading::new(&puzzle, &analysis);
+        Self { puzzle, analysis, grading }
+    fn paragraph(&self) -> Vec<String> {
+        let (p, a) = (&self.puzzle, &self.analysis);
+        let mut lines = vec![format!("PUZZLE {}", p.name), format!("size={}x{} givens={} status={} difficulty={}", p.width, p.height, p.givens.len(), a.status, a.difficulty),
+            format!("clues {}", clue_statistics(&p.rows, &p.columns)),
+            format!("simple known={} line_solves={} result={}", determined(&a.simple_grid), a.simple.steps.len(), a.simple_result),
+            format!("logic known={} line_solves={} result={}", determined(&a.logic_grid), a.logic.steps.len(), a.logic_result),
+            format!("steps {}", step_statistics(&a.logic))];
+        if let Some(search) = &a.search {
+            lines.push(format!("search guesses={} max_depth={} backtracks={} solutions={} line_solves={}", search.guesses.len(), search.max_depth, search.backtracks, search.solutions.len(), search.line_solves));
+            for g in &search.guesses { lines.push(format!("guess {} depth={} cell={} value={} solves={} known={} result={}", g.number, g.depth, cell_text(g.row, g.column), g.value as char, g.solves, g.known, g.result)); }
+        }
+        if a.status == "multiple" {
+            let cells = differences(&a.solutions[0], &a.solutions[1]);
+            lines.push(format!("differ count={} cells={}", cells.len(), cells.iter().map(|&(r, c)| cell_text(r, c)).collect::<Vec<_>>().join(" ")));
+        }
+        let mut grids = Vec::new();
+        if a.status == "contradiction" { grids.push(("partial", &a.logic_grid)); }
+        else {
+            if a.simple_result == "stuck" { grids.push(("simple", &a.simple_grid)); }
+            if a.logic_result == "stuck" { grids.push(("logic", &a.logic_grid)); }
+            if a.status == "multiple" { grids.push(("first", &a.solutions[0])); grids.push(("second", &a.solutions[1])); }
+        }
+        lines.extend(render::grid_display(&grids));
+        if a.status == "unique" { lines.push("sheet".into()); lines.extend(render::answer_sheet(&p.rows, &p.columns, &a.solutions[0])); lines.push(format!("picture {}", features(&a.solutions[0]))); }
+    fn stats(&self) -> String {
+        let (p, a) = (&self.puzzle, &self.analysis);
+        format!("{},{},{},{},{},{},{},{},{},{},{},{},{}", p.name, a.status, a.difficulty, p.width, p.height, p.givens.len(), determined(&a.simple_grid), determined(&a.logic_grid), a.line_solves, a.guesses, a.max_depth, a.solutions.len(), self.grading.result)
+    }
+fn process_puzzles(blocks: Vec<Vec<String>>) -> io::Result<Vec<Report>> {
+    let total = blocks.len();
+    let mut names = HashSet::new();
+    let mut reports = Vec::new();
+    let mut output = Vec::new();
+    let mut stats = vec!["puzzle,status,difficulty,width,height,givens,simple_known,logic_known,line_solves,guesses,max_depth,solutions,answer".into()];
+    for block in blocks {
+        let mut puzzle = Puzzle::new(block);
+        let error = puzzle.validate(&names); names.insert(puzzle.name.clone());
+        if let Some(error) = error { output.push(vec![format!("PUZZLE {}", puzzle.name), format!("error {error}")]); stats.push(format!("{},invalid{}", puzzle.name, ",-".repeat(11))); }
+        else { let report = Report::new(puzzle); output.push(report.paragraph()); stats.push(report.stats()); reports.push(report); }
+    }
+    write_lines("solutions.txt", &paragraphs(output))?; write_lines("stats.csv", &stats)?; Ok(reports)
+    let reports = process_puzzles(read_blocks("puzzles.txt")?)?;
+pub fn cells(grid: &Grid, row: bool, index: usize) -> Vec<u8> { if row { grid[index].clone() } else { grid.iter().map(|r| r[index]).collect() } }
+pub fn determined(grid: &Grid) -> usize { grid.iter().flatten().filter(|&&state| state != UNKNOWN).count() }
+pub struct Propagation { pub steps: Vec<Step>, pub conflict: Option<Step> }
+pub fn run(grid: &mut Grid, rows: &Clues, columns: &Clues, precise: bool, mut row_marks: Vec<bool>, mut column_marks: Vec<bool>) -> Propagation {
+    let mut result = Propagation { steps: Vec::new(), conflict: None };
+    loop {
+        let (row, index) = if let Some(index) = row_marks.iter().position(|&mark| mark) { row_marks[index] = false; (true, index) }
+            else if let Some(index) = column_marks.iter().position(|&mark| mark) { column_marks[index] = false; (false, index) }
+            else { return result; };
+        let current = cells(grid, row, index);
+        let Some(solved) = line_solver::solve(&current, if row { &rows[index] } else { &columns[index] }, precise) else {
+            let step = Step { row, index, gain: 0, contradiction: true };
+            result.conflict = Some(step.clone()); result.steps.push(step); return result;
+        };
+        let mut gain = 0;
+        for (position, &state) in solved.iter().enumerate() {
+            if current[position] != UNKNOWN || state == UNKNOWN { continue; }
+            gain += 1;
+            if row { grid[index][position] = state; column_marks[position] = true; }
+            else { grid[position][index] = state; row_marks[position] = true; }
+        }
+        result.steps.push(Step { row, index, gain, contradiction: false });
+    }
+}
+#[derive(Default)]
+pub struct Search { pub guesses: Vec<Guess>, pub solutions: Vec<Grid>, pub backtracks: usize, pub max_depth: usize, pub line_solves: usize }
+impl Search {
+    pub fn new(grid: &Grid, rows: &Clues, columns: &Clues) -> Self { let mut search = Self::default(); search.visit(grid, rows, columns, 1); search }
+    fn visit(&mut self, parent: &Grid, rows: &Clues, columns: &Clues, depth: usize) -> bool {
+        let (row, column) = guess_cell(parent);
+        for value in [FILLED, EMPTY] {
+            let mut child = parent.clone();
+            child[row][column] = value;
+            let mut row_marks = vec![false; rows.len()];
+            let mut column_marks = vec![false; columns.len()];
+            row_marks[row] = true; column_marks[column] = true;
+            let propagation = propagation::run(&mut child, rows, columns, true, row_marks, column_marks);
+            let known = propagation::determined(&child);
+            let result = if let Some(step) = &propagation.conflict { self.backtracks += 1; format!("contradiction at={}", step.label()) }
+                else if known == rows.len() * columns.len() { self.solutions.push(child.clone()); format!("solution{}", self.solutions.len()) }
+                else { "open".into() };
+            self.line_solves += propagation.steps.len(); self.max_depth = self.max_depth.max(depth);
+            let open = result == "open";
+            self.guesses.push(Guess { number: self.guesses.len() + 1, depth, row, column, value, solves: propagation.steps.len(), known, result });
+            if open { if self.visit(&child, rows, columns, depth + 1) { return true; } }
+            else if self.solutions.len() == 2 { return true; }
+        }
+        false
+    }

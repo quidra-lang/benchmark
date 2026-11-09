@@ -1,0 +1,252 @@
+int integer(string text)
+    result := int(text)
+    return result
+
+real64 number(string text)
+    result := real64(text)
+    return result
+
+string[] lines(string path)
+    content := string.from_utf8(file.read_bin(path))
+    rows := content.split(NL)
+    return rows[0:<int(#rows) - 1]
+Example[] read_binary(string name)
+    Example[] result := []
+    rows := lines("input/" + name)
+    for row := rows[1:<int(#rows)][]
+        fields := row.split(",")
+        result = result.append(Example(fields[0], [number(fields[1]), number(fields[2])], integer(fields[3])))
+    return result
+
+Params read_settings()
+    real64[] c_grid := []
+    Kernel[] kernels := []
+    real64 tolerance := 0.0
+    real64 eps := 0.0
+    max_passes := 0
+    fold_count := 0
+    for row := lines("input/params.txt")[]
+        fields := row.split(" ")
+        key := fields[0]
+        if key == "C_GRID"
+            c_grid = [for text := fields[1:<int(#fields)][] then number(text)]
+        elif key == "KERNEL"
+            kind := fields[2]
+            degree := if kind == "poly" then integer(fields[3]) else 1
+            gamma := if kind == "poly" then number(fields[4]) elif kind == "rbf" then number(fields[3]) else 0.0
+            coef0 := if kind == "poly" then number(fields[5]) else 0.0
+            kernels = kernels.append(Kernel(fields[1], kind, degree, gamma, coef0))
+        elif key == "TOLERANCE"
+            tolerance = number(fields[1])
+        elif key == "EPS"
+            eps = number(fields[1])
+        elif key == "MAX_PASSES"
+            max_passes = integer(fields[1])
+        elif key == "FOLDS"
+            fold_count = integer(fields[1])
+    return Params(c_grid, kernels, tolerance, eps, max_passes, fold_count, learning_curve, newton_iterations, multiclass_name, multiclass_c, regularization, pegasos_iterations, seed, plot_x, plot_y, plot_size)
+Input read_inputs()
+    return Input(read_binary("train.csv"), read_binary("test.csv"), multi_training, multi_testing, read_settings())
+real64 value(string kind, int degree, real64 gamma, real64 coef0, real64[] first, real64[] second)
+    if kind == "rbf"
+        e1 := first[0] - second[0]
+        e2 := first[1] - second[1]
+        return math.exp(-gamma * (e1 * e1 + e2 * e2))
+    dot := first[0] * second[0] + first[1] * second[1]
+    if kind == "linear"
+        return dot
+    factor := gamma * dot + coef0
+    real64 result := 1.0
+    for: i < degree
+        result *= factor
+    return result
+real64[][] matrix(string kind, int degree, real64 gamma, real64 coef0, real64[][] points)
+    return [for first := points[] then [for second := points[] then value(kind, degree, gamma, coef0, first, second)]]
+
+real64[][] submatrix(real64[][] values, int[] indices)
+    return [for i := indices[] then [for j := indices[] then values[i][j]]]
+int sign(real64 value)
+    return if value > 0.0 then 1 else -1
+
+int[][][] folds(int size, int count)
+    int[][][] result := []
+    for: fold < count
+        int[] training := []
+        int[] testing := []
+        for: i < size
+            if i % count == fold
+                testing = testing.append(i)
+            else
+                training = training.append(i)
+        result = result.append([training, testing])
+    return result
+    real64 decision(real64[] point)
+        real64 total := 0.0
+        for: i < int(#alpha)
+            if alpha[i] > 0.0
+                total += alpha[i] * real64(labels[i]) * kernels.value(kind, degree, gamma, coef0, points[i], point)
+        return total - b
+Model train(real64[][] points, int[] labels, string kind, int degree, real64 gamma, real64 coef0, real64[][] matrix, real64 coefficient, real64 tolerance, real64 eps, int max_passes)
+    result := Model(points, labels, kind, degree, gamma, coef0, matrix, coefficient, tolerance, eps, max_passes)
+    .result.fit()
+    return result
+real64[][] example_points(dataset.Example[] examples)
+    return [for example := examples[] then example.point]
+
+int[] example_labels(dataset.Example[] examples)
+    return [for example := examples[] then example.label]
+
+smo.Model train_model(real64[][] points, int[] labels, dataset.Kernel definition, real64[][] matrix, real64 coefficient, dataset.Params params)
+    return smo.train(points, labels, definition.kind, definition.degree, definition.gamma, definition.coef0, matrix, coefficient, params.tolerance, params.eps, params.max_passes)
+
+int[] support_counts(real64[] alpha, real64 coefficient)
+    total := 0
+    bound := 0
+    for value := alpha[]
+        if value > 0.0
+            total += 1
+            if value == coefficient
+                bound += 1
+    return [total, bound, total - bound]
+class Fold(int training, int testing, int correct, int support, int passes, int steps, bool converged)
+class Candidate(int kernel, int c_index, real64[] values, Fold[] folds, int correct, int support, int passes, int steps)
+class CrossValidation(real64[][][] matrices, Candidate[] combinations, int[] best, int selected, int[] ranking)
+
+CrossValidation cross_validate(dataset.Example[] training, dataset.Params params)
+    points := example_points(training)
+    labels := example_labels(training)
+    n := int(#training)
+    partitions := evaluation.folds(n, params.fold_count)
+    real64[][][] matrices := []
+    Candidate[] combinations := []
+    int[] best := []
+    for: k < int(#params.kernels)
+        dataset.Kernel definition := params.kernels[k]
+        matrix := kernels.matrix(definition.kind, definition.degree, definition.gamma, definition.coef0, points)
+        matrices = matrices.append(matrix)
+        chosen := -1
+        for: c < int(#params.c_grid)
+            real64[] values := [for i := (0:<int(n))[] then 0.0]
+            Fold[] folds := []
+            total_correct := 0
+            total_support := 0
+            total_passes := 0
+            total_steps := 0
+            for partition := partitions[]
+                train_indices := partition[0]
+                test_indices := partition[1]
+                fold_points := [for i := train_indices[] then points[i]]
+                fold_labels := [for i := train_indices[] then labels[i]]
+                model := train_model(fold_points, fold_labels, definition, kernels.submatrix(matrix, train_indices), params.c_grid[c], params)
+                correct := 0
+                for i := test_indices[]
+                    value := model.decision(points[i])
+                    values[i] = value
+                    if evaluation.sign(value) == labels[i]
+                        correct += 1
+                counts := support_counts(model.alpha, model.coefficient)
+                folds = folds.append(Fold(int(#train_indices), int(#test_indices), correct, counts[0], model.passes(), model.steps, model.converged))
+                total_correct += correct
+                total_support += counts[0]
+                total_passes += model.passes()
+                total_steps += model.steps
+            index := int(#combinations)
+            combinations = combinations.append(Candidate(k, c, values, folds, total_correct, total_support, total_passes, total_steps))
+            if chosen < 0 or total_correct > combinations[chosen].correct
+                chosen = index
+        best = best.append(chosen)
+    selected := best[0]
+    for index := best[]
+        current := combinations[index]
+        previous := combinations[selected]
+        if current.correct > previous.correct or (current.correct == previous.correct and current.c_index < previous.c_index)
+            selected = index
+    kernel_count := int(#params.kernels)
+    c_count := int(#params.c_grid)
+    base := kernel_count * c_count
+    keys := [for candidate := combinations[] then (n - candidate.correct) * base + candidate.c_index * kernel_count + candidate.kernel]
+    ranking := [for key := keys.sorted()[] then (key % kernel_count) * c_count + (key % base) / kernel_count]
+    return CrossValidation(matrices, combinations, best, selected, ranking)
+
+string[] cross_validation_lines(int size, dataset.Params params, CrossValidation cv)
+    lines := ["cross_validation folds {params.fold_count} examples {size}"]
+    for index := cv.best[]
+        candidate := cv.combinations[index]
+        lines = lines.append("best {params.kernels[candidate.kernel].name} C " + evaluation.fixed(params.c_grid[candidate.c_index]) + " correct {candidate.correct}/{size} accuracy " + evaluation.ratio(candidate.correct, size))
+    selected := cv.combinations[cv.selected]
+    string name := params.kernels[selected.kernel].name
+    lines = lines.concat(["selected {name} C " + evaluation.fixed(params.c_grid[selected.c_index]), "ranking"])
+    for: rank < int(#cv.ranking)
+        candidate := cv.combinations[cv.ranking[rank]]
+        lines = lines.append("{rank + 1} {params.kernels[candidate.kernel].name} C " + evaluation.fixed(params.c_grid[candidate.c_index]) + " correct {candidate.correct}/{size}")
+    lines = lines.append("cv_detail {name} C " + evaluation.fixed(params.c_grid[selected.c_index]))
+    for: i < int(#selected.folds)
+        fold := selected.folds[i]
+        lines = lines.append("fold {i + 1} train {fold.training} test {fold.testing} correct {fold.correct} support_vectors {fold.support} " + run_info(fold.passes, fold.steps, fold.converged))
+    return lines
+
+class Final(smo.Model model, real64[] train_values, real64[] test_values, real64[] weights, string[] lines)
+
+Final evaluate_final(smo.Model model, dataset.Example[] training, dataset.Example[] testing, dataset.Kernel definition, real64 tolerance)
+    n := int(#training)
+    m := int(#testing)
+    train_values := model.training_decisions()
+    test_values := [for example := testing[] then model.decision(example.point)]
+    lines := ["model {definition.name}", "kernel " + kernels.description(definition.kind, definition.degree, definition.gamma, definition.coef0), "C " + evaluation.fixed(model.coefficient),
+    return Final(model, train_values, test_values, [w1, w2], lines)
+Calibration calibrate(dataset.Input data, Candidate selected, real64[] test_values)
+    values := selected.values
+    probabilities := [for value := test_values[] then probability(value, coefficient, intercept)]
+string[] cv_grid_lines(CrossValidation cv, dataset.Params params, int size)
+    header := ["kernel", "C"]
+    for: 1 <= i <= params.fold_count
+        header = header.append("fold{i}")
+    header = header.concat(["correct", "accuracy", "support_vectors", "passes", "steps"])
+    lines := [header.join(",")]
+    for candidate := cv.combinations[]
+        string[] row := [params.kernels[candidate.kernel].name, evaluation.fixed(params.c_grid[candidate.c_index])]
+        row = row.concat([for fold := candidate.folds[] then string(fold.correct)])
+        row = row.concat([string(candidate.correct), evaluation.ratio(candidate.correct, size), string(candidate.support), string(candidate.passes), string(candidate.steps)])
+        lines = lines.append(row.join(","))
+    return lines
+
+string[] prediction_lines(dataset.Input data, Final[] finals, Candidate selected, real64[] pegasos_values, real64[] probabilities)
+    string[] header := ["id", "label"].concat([for definition := data.params.kernels[] then definition.name]).concat(["pegasos", "predicted", "probability"])
+    lines := [header.join(",")]
+    for: i < int(#data.testing)
+        string[] row := [data.testing[i].id, string(data.testing[i].label)]
+        row = row.concat([for result := finals[] then evaluation.fixed(result.test_values[i])])
+        row = row.concat([evaluation.fixed(pegasos_values[i]), string(evaluation.sign(finals[selected.kernel].test_values[i])), evaluation.fixed(probabilities[i])])
+        lines = lines.append(row.join(","))
+    return lines
+
+string[] join_parts(string[][] sections)
+    string[] lines := []
+    for: i < int(#sections)
+        if i > 0
+            lines = lines.append("")
+        lines = lines.concat(sections[i])
+    return lines
+
+void run()
+    data := dataset.read_inputs()
+    cv := cross_validate(data.training, data.params)
+    selected := cv.combinations[cv.selected]
+    Final[] finals := []
+    for: i < int(#cv.best)
+        candidate := cv.combinations[cv.best[i]]
+        dataset.Kernel definition := data.params.kernels[i]
+        model := train_model(example_points(data.training), example_labels(data.training), definition, cv.matrices[i], data.params.c_grid[candidate.c_index], data.params)
+        finals = finals.append(evaluate_final(model, data.training, data.testing, definition, data.params.tolerance))
+    selected_result := finals[selected.kernel]
+    sections := [cross_validation_lines(int(#data.training), data.params, cv)]
+    for result := finals[]
+        sections = sections.append(result.lines)
+    sections = sections.append(training_log(selected_result.model, data.params.kernels[selected.kernel].name))
+    sections = sections.append(c_path(data, selected, cv.matrices[selected.kernel]))
+    sections = sections.append(learning_curve(data, selected, cv.matrices[selected.kernel]))
+    calibration := calibrate(data, selected, selected_result.test_values)
+    sections = sections.append(calibration.lines)
+    evaluation.write("model.txt", join_parts(sections))
+    evaluation.write("cv_grid.csv", cv_grid_lines(cv, data.params, int(#data.training)))
+    evaluation.write("predictions.csv", prediction_lines(data, finals, selected, descent.values, calibration.probabilities))

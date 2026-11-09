@@ -1,0 +1,107 @@
+    def member(self, identifier):
+        if identifier not in self.members:
+            raise Invalid("unknown member")
+        return self.members[identifier]
+    def title(self, token):
+        identifier = normalize_isbn(token)
+        if identifier not in self.titles:
+            raise Invalid("unknown book")
+        return self.titles[identifier]
+    def common(self, identifier, token):
+        member = self.member(identifier)
+        title = self.title(token)
+        return member, title
+    def all_copies(self):
+        return [
+            copy for title in self.titles.values()
+            for copy in title["copies"]
+        ]
+    def balance(self, member):
+        return sum(item["unpaid"] for item in member["items"])
+    def open_day(self, day):
+        while day in self.closed:
+            day += 1
+        return day
+    def late(self, copy):
+        days = max(0, self.day - copy["due"])
+        rule = RULES[self.members[copy["member"]]["type"]]
+        return days, min(days * rule["fine"], rule["cap"])
+    def charge(self, member, kind, title, value):
+        if not value:
+            return
+        member["items"].append({
+            "no": len(member["items"]) + 1,
+            "day": self.day,
+            "kind": kind,
+            "isbn": title["isbn"],
+            "amount": value,
+            "unpaid": value,
+        })
+        self.counts[kind] += value
+    def release(self, title, copy):
+        if not title["queue"]:
+            copy["state"] = "AVAILABLE"
+            copy["member"] = None
+            return []
+        identifier = title["queue"].pop(0)
+        copy["state"] = "HOLD"
+        copy["member"] = identifier
+        copy["expiry"] = self.open_day(self.day + 3)
+        self.members[identifier]["holds"][title["isbn"]] = copy
+        return [
+            f"HOLD {title['isbn']} copy {copy['no']}"
+            f" {identifier} until {copy['expiry']}"
+        ]
+    def end_loan(self, title, copy, result):
+        member = self.members[copy["member"]]
+        days, fine = self.late(copy)
+        del member["loans"][title["isbn"]]
+        self.charge(member, "FINE", title, fine)
+        member["history"].append(
+            f"{result} {title['isbn']} copy {copy['no']}"
+            f" from {copy['loan_day']} to {self.day}"
+            f" late {days} fine {money(fine)}"
+        return days, fine
+    def advance(self, day):
+        if day <= self.day:
+            raise Invalid("invalid day")
+        output = [f"DAY {day}"]
+        while self.day < day:
+            self.day += 1
+            expired = [
+                copy for copy in self.all_copies()
+                if copy["state"] == "HOLD" and copy["expiry"] < self.day
+            ]
+            for copy in sorted(expired, key=copy_order):
+                title = self.titles[copy["isbn"]]
+                member = self.members[copy["member"]]
+                fee = RULES[member["type"]]["fee"]
+                self.charge(member, "FEE", title, fee)
+                del member["holds"][copy["isbn"]]
+                output.append(
+                    f"EXPIRED {copy['isbn']} copy {copy['no']}"
+                    f" {member['id']} fee {money(fee)}"
+                output.extend(self.release(title, copy))
+        return output
+    def circulate(self, name, args):
+        member, title = self.common(args[0], args[1])
+        identifier = title["isbn"]
+        loan = member["loans"].get(identifier)
+        if name in ("RETURN", "LOST", "RENEW"):
+            if loan is None:
+                raise Invalid("not borrowed")
+            if name == "RETURN":
+                days, fine = self.end_loan(title, loan, "RETURNED")
+                self.counts["returned"] += 1
+                output = [
+                    f"RETURN {member['id']} {identifier} copy {loan['no']}"
+                    f" late {days} fine {money(fine)}"
+                    f" balance {money(self.balance(member))}"
+                ]
+                return output + self.release(title, loan)
+    def command(self, line):
+        name, *args = line.split()
+        if name == "DAY":
+            return self.advance(int(args[0]))
+        if name in ("BORROW", "RETURN", "RENEW", "RESERVE", "CANCEL", "LOST"):
+            return self.circulate(name, args)

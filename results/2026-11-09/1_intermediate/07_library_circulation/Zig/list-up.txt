@@ -1,0 +1,85 @@
+    fn balance(self: *const Member) i64 {
+        var total: i64 = 0;
+        for (self.items.items) |item|
+            total += item.unpaid;
+        return total;
+fn titleCopy(m: *Member, t: *Title, state: CopyState) ?*Copy {
+    for (t.copies.items) |c| {
+        if (c.state == state and c.member == m)
+            return c;
+    }
+    return null;
+    fn findMember(self: *Library, id: []const u8) Error!*Member {
+        return self.members.get(id) orelse self.fail("unknown member");
+    fn findTitle(self: *Library, token: []const u8) Error!*Title {
+        return self.titles.get(try self.normalized(token)) orelse self.fail("unknown book");
+    fn openDay(self: *const Library, d: i64) i64 {
+        var current = d;
+        while (self.closed.contains(current))
+            current += 1;
+        return current;
+    fn daysLate(self: *const Library, c: *const Copy) i64 {
+        return @max(0, self.day - c.due);
+    fn lateFine(self: *const Library, c: *const Copy) i64 {
+        return @min(self.daysLate(c) * c.member.?.rate(), c.member.?.cap());
+    fn addCharge(self: *Library, m: *Member, t: *Title, kind: ChargeKind, value: i64) Allocator.Error!void {
+        if (value == 0)
+            return;
+        try m.items.append(self.gpa, .{ .day = self.day, .kind = kind, .isbn = t.isbn, .value = value, .unpaid = value });
+        self.charged[@backingInt(kind)] += value;
+    fn release(self: *Library, c: *Copy, out: *std.Io.Writer) Error!void {
+        if (c.title.queue.items.len == 0) {
+            c.state = .AVAILABLE;
+            c.member = null;
+            return;
+        }
+        const m = c.title.queue.orderedRemove(0);
+        c.state = .HOLD;
+        c.member = m;
+        c.expiry = self.openDay(self.day + 3);
+        try out.print("HOLD {s} copy {d} {s} until {d}\n", .{ c.title.isbn, c.number, m.id, c.expiry });
+    fn endLoan(self: *Library, c: *Copy, result: []const u8) Error!LoanEnd {
+        const m = c.member.?;
+        const late = self.daysLate(c);
+        const value = self.lateFine(c);
+        try self.addCharge(m, c.title, .FINE, value);
+        try m.history.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s} {s} copy {d} from {d} to {d} late {d} fine {s}", .{ result, c.title.isbn, c.number, c.loan_day, self.day, late, try money(self.gpa, value) }));
+        c.state = .AVAILABLE;
+        c.member = null;
+        return .{ .late = late, .fine = value };
+    fn execute(self: *Library, line: []const u8, out: *std.Io.Writer) Error!void {
+        const a = try split(self.gpa, line);
+        const op = a[0];
+        if (std.mem.eql(u8, op, "DAY")) {
+            const target = integer(a[1]);
+            if (target <= self.day)
+                return self.fail("invalid day");
+            const ordered_titles = try self.titlesSorted();
+            try out.print("DAY {d}\n", .{target});
+            while (self.day < target) {
+                self.day += 1;
+                var expired: std.ArrayList(*Copy) = .empty;
+                for (ordered_titles) |t| for (t.copies.items) |c| {
+                    if (c.state == .HOLD and c.expiry < self.day)
+                        try expired.append(self.gpa, c);
+                };
+                for (expired.items) |c| {
+                    const m = c.member.?;
+                    try self.addCharge(m, c.title, .FEE, m.fee());
+                    try out.print("EXPIRED {s} copy {d} {s} fee {s}\n", .{ c.title.isbn, c.number, m.id, try money(self.gpa, m.fee()) });
+                    try self.release(c, out);
+                }
+            }
+        } else if (std.mem.eql(u8, op, "BORROW") or std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "RENEW") or std.mem.eql(u8, op, "RESERVE") or std.mem.eql(u8, op, "CANCEL") or std.mem.eql(u8, op, "LOST")) {
+            const m = try self.findMember(a[1]);
+            const t = try self.findTitle(a[2]);
+            const current = titleCopy(m, t, .LOANED);
+            } else if (std.mem.eql(u8, op, "RETURN") or std.mem.eql(u8, op, "LOST")) {
+                const c = current orelse return self.fail("not borrowed");
+                if (std.mem.eql(u8, op, "LOST"))
+                    try self.processLoss(c, "LOST", out)
+                else {
+                    const result = try self.endLoan(c, "RETURNED");
+                    self.returned += 1;
+                    try out.print("RETURN {s} {s} copy {d} late {d} fine {s} balance {s}\n", .{ m.id, t.isbn, c.number, result.late, try money(self.gpa, result.fine), try money(self.gpa, m.balance()) });
+                    try self.release(c, out);

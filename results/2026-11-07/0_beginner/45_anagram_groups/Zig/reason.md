@@ -1,0 +1,5 @@
+The signature represents apple as a 26-entry frequency vector: a=1,e=1,l=1,p=2, all others zero. The group scan compares this key with each existing group representative. When none matches, the scan reaches the current group count/size and the equality test creates a new group before appending the current word index. Thus absence is represented by exhausted scanning rather than a missing-key library default. Only signature formation and this lookup/create block are needed, not all words or output order.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

@@ -1,0 +1,244 @@
+function M.read_ecg()
+    local result = {}
+    for line in io.lines("input/ecg.csv") do
+        if line ~= "sample,microvolts" then
+            result[#result + 1] = tonumber(line:match(",(.+)$"))
+        end
+    end
+    return result
+end
+function M.read_annotations()
+    local result = {}
+    for line in io.lines("input/annotations.csv") do
+        if line ~= "sample,label" then
+            local sample, label = line:match("^(%d+),([NVA])$")
+            result[#result + 1] = {sample = tonumber(sample), label = label}
+        end
+    end
+    return result
+end
+function M.read_params()
+    local result = {}
+    for line in io.lines("input/params.txt") do
+        local key, value = line:match("^(%S+) (%S+)$")
+        result[key] = tonumber(value)
+    end
+    return result
+end
+function M.write_lines(name, lines)
+local function beat_list(registered, band, params)
+    local beats = {}
+    for number, peak in ipairs(registered) do
+        local sample = math.max(0, peak.r - 21)
+        local rr = number > 1 and 5 * (sample - beats[number - 1].sample) or nil
+        local width, label = detector.width(band, peak.r), "N"
+        if number >= 10 then
+            local preceding = 0
+            for index = number - 8, number - 1 do
+                preceding = preceding + beats[index].rr
+            end
+            if 800 * rr < params.premature_percent * preceding then
+                label = width > params.qrs_width_ms and "V" or "A"
+            end
+        end
+        beats[number] = {number = number, sample = sample, rr = rr, hr = rr and report.rdiv(6000000, rr), width = width, label = label,
+            method = peak.class == "qrs" and "threshold" or "searchback"}
+    end
+    return beats
+end
+local function match(beats, refs, tolerance)
+    for _, beat in ipairs(beats) do
+        local chosen, distance
+        for index, ref in ipairs(refs) do
+            local delta = math.abs(ref.sample - beat.sample)
+            if not ref.beat and delta <= tolerance and (not chosen or delta < distance) then
+                chosen, distance = index, delta
+            end
+        end
+        if chosen then
+            beat.annotation, refs[chosen].beat = chosen, beat.number
+            beat.offset = 5 * (beat.sample - refs[chosen].sample)
+        end
+    end
+end
+local function segments(beats, refs, peaks, count, params)
+    local width, result = params.segment_ms // 5, {}
+    for start = 0, count - 1, width do
+        local stop = math.min(start + width, count)
+        local segment = {start = 5 * start, stop = 5 * stop, refs = 0, tp = 0, fp = 0, fn = 0, noise = 0, beats = 0, rr = {}}
+        for _, ref in ipairs(refs) do
+            if ref.sample >= start and ref.sample < stop then
+                segment.refs = segment.refs + 1
+                if ref.beat then
+                    segment.tp = segment.tp + 1
+                else
+                    segment.fn = segment.fn + 1
+                end
+            end
+        end
+        for _, beat in ipairs(beats) do
+            if beat.sample >= start and beat.sample < stop then
+                segment.beats = segment.beats + 1
+                if not beat.annotation then
+                    segment.fp = segment.fp + 1
+                end
+                if beat.rr then
+                    segment.rr[#segment.rr + 1] = beat.rr
+                end
+            end
+        end
+        for _, peak in ipairs(peaks) do
+            if peak.time >= start and peak.time < stop and peak.class == "noise" then
+                segment.noise = segment.noise + 1
+            end
+        end
+        result[#result + 1] = segment
+    end
+    return result
+end
+local function beat_csv(beats, refs)
+    local lines = {"beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"}
+    for _, beat in ipairs(beats) do
+        local ref = beat.annotation and refs[beat.annotation]
+        lines[#lines + 1] = csv({beat.number, beat.sample, 5 * beat.sample, report.missing(beat.rr), beat.hr and report.two(beat.hr) or "-",
+            beat.width, beat.label, beat.method, ref and ref.sample or "-", ref and ref.label or "-"})
+    end
+    return lines
+end
+local function matching_csv(beats, refs)
+    local records = {}
+    for _, ref in ipairs(refs) do
+        local beat = ref.beat and beats[ref.beat]
+        local fields = beat and {ref.sample, ref.label, beat.number, beat.sample, beat.label, beat.offset, "TP", ref.label == beat.label and "yes" or "no"}
+            or {ref.sample, ref.label, "-", "-", "-", "-", "FN", "-"}
+        records[#records + 1] = {sample = ref.sample, priority = 0, line = csv(fields)}
+    end
+    for _, beat in ipairs(beats) do
+        if not beat.annotation then
+            records[#records + 1] = {sample = beat.sample, priority = 1, line = csv({"-", "-", beat.number, beat.sample, beat.label, "-", "FP", "-"})}
+        end
+    end
+    table.sort(records, function(a, b) return a.sample < b.sample or (a.sample == b.sample and a.priority < b.priority) end)
+    local lines = {"ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"}
+    for _, record in ipairs(records) do
+        lines[#lines + 1] = record.line
+    end
+    return lines
+end
+local function performance(beats, refs, peaks, detection, params, parts, count)
+    local classes, types, detected = {}, {N = 0, V = 0, A = 0}, {N = 0, V = 0, A = 0}
+    local tp, fp, offsets, confusion, misses, extras = 0, 0, {}, {}, {}, {}
+    local method_total, method_tp, errors = {threshold = 0, searchback = 0}, {threshold = 0, searchback = 0}, {}
+    for _, label in ipairs(labels) do
+        confusion[label], misses[label], extras[label] = {N = 0, V = 0, A = 0}, 0, 0
+    end
+    for _, ref in ipairs(refs) do
+        types[ref.label] = types[ref.label] + 1
+        if ref.beat then
+            local beat = beats[ref.beat]
+            tp = tp + 1
+            confusion[ref.label][beat.label] = confusion[ref.label][beat.label] + 1
+        else
+            misses[ref.label] = misses[ref.label] + 1
+            errors[#errors + 1] = {sample = ref.sample, priority = 1, line = "false_negative sample=" .. ref.sample .. " time_ms=" .. 5 * ref.sample .. " label=" .. ref.label}
+        end
+    end
+    for _, beat in ipairs(beats) do
+        detected[beat.label] = detected[beat.label] + 1
+        method_total[beat.method] = method_total[beat.method] + 1
+        if beat.annotation then
+            method_tp[beat.method] = method_tp[beat.method] + 1
+            offsets[#offsets + 1] = beat.offset
+        else
+            fp = fp + 1
+            extras[beat.label] = extras[beat.label] + 1
+            errors[#errors + 1] = {sample = beat.sample, priority = 0, line = "false_positive beat=" .. beat.number .. " sample=" .. beat.sample .. " time_ms=" .. 5 * beat.sample .. " label=" .. beat.label}
+        end
+    end
+    local fn = #refs - tp
+        "final_rr_averages rravg1_ms=" .. 5 * detection.ra1 .. " rravg2_ms=" .. 5 * detection.ra2, "MATCHING", "tolerance_ms " .. params.match_ms,
+        "references " .. #refs .. " N=" .. types.N .. " V=" .. types.V .. " A=" .. types.A, "detections " .. #beats .. " N=" .. detected.N .. " V=" .. detected.V .. " A=" .. detected.A,
+        "true_positives " .. tp, "false_positives " .. fp, "false_negatives " .. fn,
+        "sensitivity " .. report.ratio(tp, #refs), "positive_predictivity " .. report.ratio(tp, #beats), "detection_error_rate " .. report.ratio(fp + fn, #refs),
+        "by_method threshold=" .. method_tp.threshold .. "/" .. method_total.threshold .. " searchback=" .. method_tp.searchback .. "/" .. method_total.searchback}
+    if #offsets == 0 then
+        lines[#lines + 1] = "offset_ms none"
+    else
+        local absolute_sum, absolute_max = 0, 0
+        for _, offset in ipairs(offsets) do
+            absolute_sum, absolute_max = absolute_sum + math.abs(offset), math.max(absolute_max, math.abs(offset))
+        end
+        lines[#lines + 1] = "offset_ms mean=" .. report.two(report.rdiv(100 * sum(offsets), #offsets)) .. " mean_abs=" .. report.two(report.rdiv(100 * absolute_sum, #offsets)) .. " max_abs=" .. absolute_max
+    end
+    append(lines, {"CONFUSION", "ref  " .. pad("N", 6) .. pad("V", 6) .. pad("A", 6) .. "  miss"})
+    for _, label in ipairs(labels) do
+        lines[#lines + 1] = label .. "    " .. pad(confusion[label].N, 6) .. pad(confusion[label].V, 6) .. pad(confusion[label].A, 6) .. pad(misses[label], 6)
+    end
+    lines[#lines + 1] = "extra" .. pad(extras.N, 6) .. pad(extras.V, 6) .. pad(extras.A, 6)
+    for _, label in ipairs({"V", "A"}) do
+        local prefix = label == "V" and "veb" or "sveb"
+        lines[#lines + 1] = prefix .. "_sensitivity " .. report.ratio(confusion[label][label], types[label])
+        lines[#lines + 1] = prefix .. "_positive_predictivity " .. report.ratio(confusion[label][label], detected[label])
+    end
+    lines[#lines + 1] = "SEGMENTS segment_ms=" .. params.segment_ms .. " segments=" .. #parts
+    for _, part in ipairs(parts) do
+        lines[#lines + 1] = pad(part.start, 6) .. "-" .. pad(part.stop, 6) .. " refs=" .. part.refs .. " tp=" .. part.tp .. " fp=" .. part.fp .. " fn=" .. part.fn .. " noise_peaks=" .. part.noise
+    end
+    lines[#lines + 1] = "ERRORS count=" .. #errors
+    table.sort(errors, function(a, b) return a.sample < b.sample or (a.sample == b.sample and a.priority < b.priority) end)
+    for _, item in ipairs(errors) do
+        lines[#lines + 1] = item.line
+    end
+    return lines
+end
+local function rhythm_strip(samples, beats, refs, params)
+    local start, count = params.strip_start_ms // 5, params.strip_ms // 5
+    local columns, upper, lower = count // 10, {}, {}
+    local markers, beat_marks, ref_marks = {}, {}, {}
+    for column = 0, columns - 1 do
+        beat_marks[column + 1], ref_marks[column + 1] = " ", " "
+    end
+    for _, beat in ipairs(beats) do
+        if beat.sample >= start and beat.sample < start + count then
+            beat_marks[(beat.sample - start) // 10 + 1] = beat.label
+        end
+    end
+    for _, ref in ipairs(refs) do
+        if ref.sample >= start and ref.sample < start + count then
+            ref_marks[(ref.sample - start) // 10 + 1] = ref.label
+        end
+    end
+    append(lines, {" beats |" .. table.concat(beat_marks) .. "|", "  refs |" .. table.concat(ref_marks) .. "|"})
+    return lines
+end
+local samples, refs, params = signal_io.read_ecg(), signal_io.read_annotations(), signal_io.read_params()
+local signals = filters.run(samples)
+local peaks = detector.find_peaks(signals)
+local detection = detect(peaks, signals, params)
+local beats = beat_list(detection.registered, signals.bandpass, params)
+match(beats, refs, params.match_ms // 5)
+local parts = segments(beats, refs, peaks, #samples, params)
+signal_io.write_lines("beats.csv", beat_csv(beats, refs))
+signal_io.write_lines("matching.csv", matching_csv(beats, refs))
+signal_io.write_lines("performance.txt", performance(beats, refs, peaks, detection, params, parts, #samples))
+signal_io.write_lines("rhythm_strip.txt", rhythm_strip(samples, beats, refs, params))
+function M.rdiv(a, b)
+    return (2 * a + b) // (2 * b)
+end
+function M.two(value)
+    local magnitude = math.abs(value)
+    return (value < 0 and "-" or "") .. (magnitude // 100) .. "." .. string.format("%02d", magnitude % 100)
+end
+function M.fraction(a, b)
+    local first, second = a, b
+    while second ~= 0 do
+        first, second = second, first % second
+    end
+    return (a // first) .. "/" .. (b // first)
+end
+function M.ratio(a, b)
+    if b == 0 then
+        return a .. "/0 none"
+    end
+    return a .. "/" .. b .. " reduced=" .. M.fraction(a, b) .. " percent=" .. M.two(M.rdiv(10000 * a, b))
+end

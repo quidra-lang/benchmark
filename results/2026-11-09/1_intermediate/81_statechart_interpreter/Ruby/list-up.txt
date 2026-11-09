@@ -1,0 +1,332 @@
+class State
+  attr_accessor :name, :kind, :parent, :children, :initial, :history_kind, :default,
+                :entries, :exits, :transitions, :depth, :entered, :taken, :dwell, :entry_time
+
+  def initialize(name, kind, parent = nil)
+    @name, @kind, @parent = name, kind, parent
+    @children = []
+    @entries = []
+    @exits = []
+    @transitions = []
+    @initial = @history_kind = @default = nil
+    @depth = parent ? parent.depth + 1 : 0
+    @entered = @taken = @dwell = @entry_time = 0
+  def child_states
+    @children.reject { |state| state.kind == 'history' }
+  end
+
+  def compound?
+    @kind == 'root' || (@kind == 'state' && !child_states.empty?)
+  end
+
+  def parallel?
+    @kind == 'parallel' && !child_states.empty?
+  end
+
+  def atomic?
+    @kind != 'history' && child_states.empty?
+  end
+
+  def initial_child
+    @initial || child_states.first
+class Transition
+  attr_accessor :source, :kind, :descriptors, :delay, :guard, :target, :mode, :actions
+end
+
+class Chart
+  def initialize(definitions)
+    @definitions = definitions
+    @root = State.new('', 'root')
+    @states = {}
+    @variables = {}
+    @errors = {}
+    @document = []
+    @configuration = {}
+    @history = {}
+    @queue = []
+    @reservations = []
+    @creation = @time = @data = @macrosteps = @microsteps = 0
+    @trace = @halted = false
+  def check_references(references)
+    references.each do |kind, name|
+      return "unknown variable #{name}" if kind == :variable && !@variables.key?(name)
+      return "unknown state #{name}" if kind == :state && !@states.key?(name)
+    end
+    nil
+  end
+
+  def expression(text)
+    text ? Expression.new(text) : nil
+  def actions(text)
+    references = []
+    result = (text ? text.split('; ') : []).map do |action|
+      kind, rest = action.split(' ', 2)
+      record = { kind: kind }
+      case kind
+      when 'log'
+        if rest.start_with?('"')
+          finish = rest.index('"', 1)
+          record[:text] = rest[1...finish]
+          record[:expression] = expression(rest[(finish + 2)..]) if finish + 1 < rest.length
+        end
+      end
+      references.concat(record[:expression].references) if record[:expression]
+      record
+    end
+    [result, references]
+  def validate
+    @definitions.each do |line, number|
+      parts = line.split(' ')
+      kind, name = parts.take(2)
+      if %w[state parallel final history].include?(kind)
+        parent_name = kind == 'state' && parts[2] == 'initial' ? nil : parts[2]
+        if @states.key?(name)
+          @errors[number] = "duplicate state #{name}"
+        elsif parent_name && !@states.key?(parent_name)
+          @errors[number] = "unknown state #{parent_name}"
+        else
+          parent = parent_name ? @states[parent_name] : @root
+          state = State.new(name, kind, parent)
+          state.history_kind = parts[3] if kind == 'history'
+          state.default = parts[4] if kind == 'history'
+          if kind == 'state' && (at = parts.index('initial'))
+            state.initial = parts[at + 1]
+          end
+          @states[name] = state
+          parent.children << state
+        end
+      end
+    end
+    visit = lambda do |state|
+      @document << state
+      state.children.each { |child| visit.call(child) }
+    end
+    @root.children.each { |state| visit.call(state) }
+    @definitions.each do |line, number|
+      next if @errors.key?(number)
+      kind, name = line.split(' ').take(2)
+      state = @states[name]
+      reason = nil
+      if kind == 'state' && state.initial
+      elsif kind == 'on'
+        if state.nil?
+          reason = "unknown state #{name}"
+        elsif %w[final history].include?(state.kind)
+          reason = "#{name} cannot have transitions"
+        else
+          match = /\Aon (\S+) (always|after [0-9]+|[^ ]+)(?: \[(.*?)\])?(?: (->|~>) (\S+))?(?: \/ (.*))?\z/.match(line)
+          trigger, guard_text, arrow, target_name, action_text = match.captures.drop(1)
+          guard = expression(guard_text)
+          list, references = actions(action_text)
+          ordered_references = guard ? guard.references.dup : []
+          ordered_references << [:state, target_name] if target_name
+          reason = check_references(ordered_references + references)
+          unless reason
+            transition = Transition.new
+            transition.source = state
+            transition.kind = trigger == 'always' ? :always : trigger.start_with?('after ') ? :timer : :event
+            transition.descriptors = trigger.split('|') if transition.kind == :event
+            transition.delay = trigger.split(' ')[1].to_i if transition.kind == :timer
+            transition.guard = guard
+            transition.target = target_name ? @states[target_name] : nil
+            transition.mode = arrow == '~>' ? :local : arrow ? :external : :internal
+            transition.actions = list
+            state.transitions << transition
+          end
+        end
+      end
+      @errors[number] = reason if reason
+    end
+    unless @errors.empty?
+      @errors.keys.sort.each { |number| puts "error line #{number}: #{@errors[number]}" }
+      return false
+    end
+    @document.each do |state|
+      state.initial = @states[state.initial] if state.initial
+      state.default = @states[state.default] if state.default
+    end
+    true
+  def run_actions(list)
+    list.each do |action|
+      value = action[:expression] ? evaluate(action[:expression]) : 0
+      case action[:kind]
+      when 'assign' then @variables[action[:name]] = value
+      when 'raise' then @queue << [action[:event], value]
+      when 'send' then reserve(kind: :send, event: action[:event], value: value, delay: action[:delay])
+      when 'cancel' then @reservations.reject! { |r| r[:kind] == :send && r[:event] == action[:event] }
+      when 'log'
+        puts(action[:expression] ? (action[:text] || '') + value.to_s : action[:text])
+      end
+    end
+  def choice(transition)
+    return { transition: transition, scope: nil, exits: {} } if transition.mode == :internal
+  def matches?(transition, trigger)
+    if trigger[:kind] == :always
+      transition.kind == :always
+    elsif trigger[:kind] == :timer
+      transition == trigger[:transition]
+    else
+      transition.kind == :event && transition.descriptors.any? { |descriptor| descriptor == '*' || descriptor == trigger[:event] || trigger[:event].start_with?(descriptor + '.') }
+    end
+  end
+
+  def select_transitions(trigger)
+    selected = []
+    @document.each do |atomic|
+      next unless @configuration[atomic] && atomic.atomic?
+      state = atomic
+      found = nil
+      while state != @root && !found
+        state.transitions.each do |transition|
+          next unless matches?(transition, trigger)
+          begin
+            accepted = transition.guard.nil? || !evaluate(transition.guard).zero?
+          end
+          if accepted
+            found = transition
+            break
+          end
+        end
+        state = state.parent
+      end
+      selected << found if found && !selected.include?(found)
+    end
+    occupied = {}
+    selected.filter_map do |transition|
+      candidate = choice(transition)
+      next if candidate[:exits].keys.any? { |state| occupied[state] }
+      occupied.merge!(candidate[:exits])
+      candidate
+    end
+  def expand_entry(set)
+    loop do
+      before = set.length
+      set.keys.each do |state|
+        if state.parallel?
+          state.child_states.each { |child| set[child] = true }
+        elsif state.compound? && state.child_states.none? { |child| set[child] }
+          set[state.initial_child] = true
+        end
+      end
+      break if set.length == before
+    end
+    set
+  def enter(set)
+    @document.each do |state|
+      next unless set[state]
+      @configuration[state] = true
+      state.entered += 1
+      state.entry_time = @time
+      state.transitions.each { |transition| reserve(kind: :timer, transition: transition, delay: transition.delay) if transition.kind == :timer }
+      state.entries.each { |list| run_actions(list) }
+      next unless state.kind == 'final'
+      parent = state.parent
+      @queue << ["done.state.#{parent.name}", 0]
+    end
+  def microstep(selected, trigger)
+    exits = selected.each_with_object({}) { |candidate, set| set.merge!(candidate[:exits]) }
+    @document.each do |state|
+      next unless state.kind == 'history' && exits[state.parent]
+    end
+    entries = {}
+    selected.each do |candidate|
+      transition = candidate[:transition]
+      next if transition.mode == :internal
+    end
+    expand_entry(entries)
+    if @trace
+    end
+    @document.reverse_each do |state|
+      next unless exits[state]
+      state.exits.each { |actions| run_actions(actions) }
+      @configuration.delete(state)
+    end
+    selected.each do |candidate|
+      transition = candidate[:transition]
+      run_actions(transition.actions)
+      transition.source.taken += 1
+    end
+    enter(entries)
+  def macrostep(trigger)
+    @macrosteps += 1
+    count = 0
+    perform = lambda do |selected, current|
+      if count == 1000
+      else
+        count += 1
+        @microsteps += 1
+        microstep(selected, current)
+      end
+    end
+    @data = trigger[:kind] == :event ? trigger[:value] : 0
+    if trigger[:kind] == :start
+      enter(expand_entry({ @root.initial_child => true }))
+    else
+      selected = select_transitions(trigger)
+      perform.call(selected, trigger) unless selected.empty?
+    end
+    until @halted
+      @data = 0
+      current = { kind: :always }
+      selected = select_transitions(current)
+      unless selected.empty?
+        perform.call(selected, current)
+        next
+      end
+      break if @queue.empty?
+      event, value = @queue.shift
+      @data = value
+      current = { kind: :event, event: event, value: value }
+      selected = select_transitions(current)
+      perform.call(selected, current) unless selected.empty?
+    end
+  def dump
+    puts "dump t=#{@time}"
+    @document.each { |state| puts '  ' * state.depth + state.name if @configuration[state] }
+  def run(script)
+    return unless validate
+    warn_unreachable
+    macrostep(kind: :start)
+    script.each do |line|
+      break if @halted
+      command, rest = line.split(' ', 2)
+      case command
+      when 'event'
+        name, value = rest.split(' ')
+        macrostep(kind: :event, event: name, value: value.to_i)
+      when 'tick'
+        finish = @time + rest.to_i
+        loop do
+          break if @halted
+          next_reservation = @reservations.select { |r| r[:due] <= finish }.min_by { |r| [r[:due], r[:number]] }
+          break unless next_reservation
+          @reservations.delete(next_reservation)
+          @time = next_reservation[:due]
+          trigger = next_reservation[:kind] == :timer ? next_reservation : { kind: :event, event: next_reservation[:event], value: next_reservation[:value] }
+          macrostep(trigger)
+        end
+      when 'dump'
+        dump
+      end
+    end
+input = STDIN.each_line.map(&:chomp)
+charts = input[0].to_i
+i = 1
+charts.times do
+  name = input[i].split(' ')[1]
+  i += 1
+  definitions = []
+  until input[i] == 'RUN'
+    definitions << [input[i], i + 1]
+    i += 1
+  end
+  i += 1
+  script = []
+  until input[i] == 'END'
+    script << input[i]
+    i += 1
+  end
+  i += 1
+  puts "chart #{name}"
+  Chart.new(definitions).run(script)
+end

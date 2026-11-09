@@ -1,0 +1,122 @@
+static void die(Game *game, char *cause) { say(game, "You die."); game->result = "died"; game->cause = cause; }
+    source = read_lines("commands.txt");
+    for (int i = 0; i < source.count; ++i) {
+        int count;
+        char **parts = tokens(source.items[i], &count);
+        int repetitions = !strcmp(parts[0], "wait") ? (count == 2 ? atoi(parts[1]) : 1) : count == 3 ? atoi(parts[2]) : 1;
+        char *argument = count > 1 && strcmp(parts[0], "wait") ? parts[1] : NULL;
+        for (int j = 0; j < repetitions; ++j) game->commands[game->command_count++] = (Command){parts[0], argument};
+    game->turn = 1;
+    Player *player = &game->player;
+    MonsterType *kind = monster->kind;
+    Attack attack = resolve_attack(&game->rng, kind->to_hit, defense(player), kind->damage, 0);
+    record_attack(&game->monster_attacks, attack);
+    if (attack.outcome == MISS) { say(game, "The %s misses you.", kind->name); return; }
+    say(game, "The %s hits you%s for %d.", kind->name, attack.outcome == CRITICAL ? " hard" : "", attack.damage);
+    player->hp -= attack.damage;
+    if (player->hp <= 0) die(game, format("killed_by %s", kind->name));
+    else if (kind->poisonous) { player->poison += 5; say(game, "You are poisoned."); }
+static bool pickup(Game *game) {
+    Level *level = current_level(game);
+    Player *player = &game->player;
+    Item *item = item_at(level, player->x, player->y);
+    if (!item) { say(game, "There is nothing here."); return false; }
+    enum ItemClass category = item->kind->category;
+    if (category == GOLD) { player->gold += item->amount; say(game, "You pick up %s.", display_name(item)); }
+    else if (category == AMULET) {
+        say(game, "You pick up the amulet."); say(game, "You win!");
+        game->result = "won"; game->cause = "amulet";
+    } else if (player->pack_count == game->config.pack_limit) { say(game, "Your pack is full."); return false; }
+    else {
+        player->pack[player->pack_count++] = item;
+        say(game, "You pick up the %s (%d).", display_name(item), player->pack_count);
+    }
+    item->ground = false;
+    ++level->picked;
+    ++game->usage[0];
+    return true;
+    if (required == FOOD) {
+        ++game->usage[3];
+        player->satiation += item->kind->nutrition;
+        if (player->satiation > game->config.food_max) player->satiation = game->config.food_max;
+        say(game, "You eat the %s.", display_name(item));
+        return true;
+    }
+    const char *effect = item->kind->effect;
+    if (required == POTION) {
+        ++game->usage[1];
+        say(game, "You quaff the %s.", display_name(item));
+        if (!strcmp(effect, "heal")) {
+            player->hp += roll_dice(&game->rng, item->kind->dice);
+            if (player->hp > player->max_hp) { ++player->max_hp; player->hp = player->max_hp; }
+            player->poison = 0;
+            say(game, "You feel better.");
+        } else if (!strcmp(effect, "poison")) { player->poison += item->kind->poison_turns; say(game, "You feel very sick."); }
+static bool execute(Game *game, Command command) {
+    if (!strcmp(command.name, "wait")) return true;
+    if (!strcmp(command.name, "pickup")) return pickup(game);
+static void monsters_act(Game *game) {
+    Level *level = current_level(game);
+    game->distance = distances(level, game->player.x, game->player.y);
+    for (int i = 0; i < level->monster_count; ++i) {
+        Monster *monster = &level->monsters[i];
+        if (monster->hp <= 0) continue;
+        monster->energy += monster->kind->speed;
+        while (monster->energy >= 2) {
+            monster->energy -= 2;
+            monster_action(game, monster);
+            if (game->result) return;
+        }
+    }
+}
+static void end_turn(Game *game) {
+    Level *level = current_level(game);
+    Player *player = &game->player;
+    for (int i = 0; i < level->monster_count; ++i) {
+        Monster *monster = &level->monsters[i];
+        if (monster->hp > 0 && monster->kind->regenerates && monster->hp < monster->max_hp) ++monster->hp;
+    }
+    if (player->poison > 0) {
+        --player->hp;
+        ++game->poison_damage;
+        if (player->hp <= 0) { die(game, "poison"); return; }
+        --player->poison;
+        if (!player->poison) say(game, "You feel less sick.");
+    }
+    if (!player->satiation) {
+        --player->hp;
+        ++game->starvation_damage;
+        if (player->hp <= 0) { die(game, "starvation"); return; }
+    } else {
+        const char *before = hunger(game);
+        --player->satiation;
+        const char *after = hunger(game);
+        if (strcmp(before, after)) {
+            if (!strcmp(after, "hungry")) say(game, "You are getting hungry.");
+            else if (!strcmp(after, "weak")) say(game, "You feel weak from hunger.");
+            else say(game, "You are starving.");
+        }
+    }
+    if (game->turn % game->config.regen == 0 && !player->poison && player->satiation > 0 && player->hp < player->max_hp) ++player->hp;
+static void checkpoint(Game *game) {
+    add_line(&game->maps, "CHECKPOINT turn %d depth %d", game->turn, game->player.depth);
+    map_rows(game, current_level(game), true, &game->maps);
+    add_line(&game->maps, "%s", status_line(game));
+}
+static void run_game(Game *game) {
+    update_view(game);
+    for (int i = 0; i < game->command_count; ++i) {
+        if (game->result) { ++game->unused; continue; }
+        if (!execute(game, game->commands[i])) { ++game->failed; continue; }
+        ++game->succeeded;
+        if (game->result) continue;
+        update_view(game);
+        monsters_act(game);
+        if (game->result) continue;
+        end_turn(game);
+        if (game->result) continue;
+        for (int j = 0; j < game->config.checkpoint_count; ++j) if (game->turn == game->config.checkpoints[j]) checkpoint(game);
+        ++game->turn;
+    }
+    if (!game->result) { game->result = "alive"; game->cause = "commands_exhausted"; }
+    add_line(&game->maps, "FINAL turn %d depth %d", game->succeeded, game->player.depth);

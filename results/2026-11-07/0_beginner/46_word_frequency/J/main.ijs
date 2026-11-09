@@ -1,0 +1,13 @@
+main =: 3 : 0
+  text =. tolower 'The cat sat on the mat. The dog sat on the rug, and the cat watched the dog. A bird sang on the fence, and the Dog barked at the bird. The cat slept in the sun, the bird flew away, and the dog sat by the door.'
+  text =. ' ' (I.-.text e.'abcdefghijklmnopqrstuvwxyz')}text
+  tokens =. ;:text
+  words =. /:~ ~.tokens
+  counts =. +/"1 words =/ tokens
+  order =. \:counts
+  for_i. 5{.order do.
+    smoutput (>i{words),': ',":i{counts
+  end.
+  smoutput 'distinct words: ',":#words
+)
+main ''

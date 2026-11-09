@@ -1,0 +1,248 @@
+const CATEGORIES: [&str; 13] = [
+    "ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+    "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE",
+type CommandResult<T = ()> = Result<T, String>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JokerRule { Forced, Free, Off }
+
+#[derive(Clone, Copy)]
+struct Rules { rolls: usize, joker: JokerRule }
+fn positive(word: &str, maximum: i64) -> CommandResult<i64> {
+    if !matches!(word.as_bytes()[0], b'1'..=b'9') || !word.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("bad value {word}"));
+    }
+    let value = word.parse::<i64>().unwrap();
+    if value > maximum { Err(format!("bad value {word}")) } else { Ok(value) }
+}
+
+fn valid_name(word: &str) -> CommandResult {
+    if word.len() > 8 || !word.bytes().all(|b| b.is_ascii_uppercase()) {
+        Err(format!("bad name {word}"))
+    } else { Ok(()) }
+}
+
+fn parse_pattern(word: &str) -> CommandResult<u8> {
+    if word.len() != 5 || !word.bytes().all(|b| b == b'0' || b == b'1') {
+        return Err(format!("bad pattern {word}"));
+    }
+    Ok(word.bytes().fold(0, |mask, b| mask * 2 + b - b'0'))
+fn held(mask: u8, die: usize) -> bool { mask & (1 << (4 - die)) != 0 }
+
+fn pattern_text(mask: u8) -> String { format!("{mask:05b}") }
+
+fn face_text(faces: &[usize; 5], mask: u8) -> String {
+    let selected: Vec<_> = faces.iter().enumerate()
+        .filter(|(i, _)| held(mask, *i)).map(|(_, face)| face.to_string()).collect();
+    if selected.is_empty() { "-".into() } else { selected.join(" ") }
+}
+
+fn face_counts(faces: &[usize; 5]) -> [usize; 6] {
+    let mut counts = [0; 6];
+    for &face in faces { counts[face - 1] += 1; }
+    counts
+fn normal_score(category: usize, counts: &[usize; 6]) -> i32 {
+    if category < 6 { return ((category + 1) * counts[category]) as i32; }
+struct Player {
+    name: String,
+    strategy: Strategy,
+    scores: [Option<i32>; 13],
+    yahtzee_bonus: i32,
+}
+
+impl Player {
+    fn new(name: &str) -> Self {
+        Self { name: name.into(), strategy: Strategy::Kind, scores: [None; 13], yahtzee_bonus: 0 }
+    }
+
+    fn upper(&self) -> i32 { self.scores[..6].iter().flatten().sum() }
+    fn upper_bonus(&self) -> i32 { if self.upper() >= 63 { 35 } else { 0 } }
+    fn total(&self) -> i32 { self.scores.iter().flatten().sum::<i32>() + self.upper_bonus() + self.yahtzee_bonus }
+    fn round(&self) -> usize { self.scores.iter().filter(|s| s.is_some()).count() + 1 }
+struct Candidates {
+    points: [Option<i32>; 13],
+    allowed: u16,
+    best: usize,
+    yahtzee_face: Option<usize>,
+    joker: bool,
+}
+
+fn evaluate(player: &Player, counts: &[usize; 6], rule: JokerRule) -> Candidates {
+    let yahtzee_face = counts.iter().position(|&n| n == 5);
+    let joker = rule != JokerRule::Off && yahtzee_face.is_some() && player.scores[11].is_some();
+    let mut allowed = (0..13).filter(|&c| player.scores[c].is_none()).fold(0, |mask, c| mask | (1 << c));
+    if joker && rule == JokerRule::Forced {
+    let mut result = Candidates { points: [None; 13], allowed, best: 0, yahtzee_face, joker };
+    let mut best_score = -1;
+    for c in 0..13 {
+        if player.scores[c].is_some() { continue; }
+        let points = if allowed & (1 << c) == 0 { 0 }
+            else if joker && (8..=10).contains(&c) { [25, 30, 40][c - 8] }
+            else { normal_score(c, counts) };
+        result.points[c] = Some(points);
+        if points > best_score { best_score = points; result.best = c; }
+    }
+    result
+#[derive(Clone, Copy, Default)]
+struct Turn { seat: usize, rolls: usize, faces: [usize; 5], hold: u8 }
+
+#[derive(Clone, Copy)]
+struct ScoreEntry { before: Turn, category: usize, points: i32, bonus: i32, joker: bool }
+
+struct RedoEntry { after: Option<Turn>, entry: ScoreEntry }
+
+struct Game {
+    players: Vec<Player>,
+    rules: Rules,
+    random_state: i64,
+    face_counts: [i64; 6],
+    loaded: VecDeque<usize>,
+    entries: Vec<ScoreEntry>,
+    redo: Vec<RedoEntry>,
+    turn: Option<Turn>,
+    verbose: bool,
+}
+
+impl Game {
+    fn new(seed: i64, names: &[&str], rules: Rules, verbose: bool) -> Self {
+        Self {
+            players: names.iter().map(|name| Player::new(name)).collect(), rules,
+            random_state: seed, face_counts: [0; 6], loaded: VecDeque::new(),
+            entries: Vec::new(), redo: Vec::new(), turn: Some(Turn::default()), verbose,
+        }
+    }
+
+    fn check_turn(&self) -> CommandResult<Turn> { self.turn.ok_or_else(|| "game over".into()) }
+
+    fn rolled(&self) -> CommandResult<Turn> {
+        let turn = self.check_turn()?;
+        if turn.rolls == 0 { Err("not rolled".into()) } else { Ok(turn) }
+    }
+
+    fn rolls_left(&self) -> CommandResult<Turn> {
+        let turn = self.rolled()?;
+        if turn.rolls == self.rules.rolls { Err("no rolls left".into()) } else { Ok(turn) }
+    fn roll(&mut self) -> CommandResult {
+        let mut turn = self.check_turn()?;
+        if turn.rolls == self.rules.rolls { return Err("no rolls left".into()); }
+        if turn.hold == 31 { return Err("all dice held".into()); }
+        self.redo.clear();
+        for i in 0..5 {
+            if turn.rolls != 0 && held(turn.hold, i) { continue; }
+            turn.faces[i] = if let Some(face) = self.loaded.pop_front() { face } else {
+                self.random_state = 48271 * self.random_state % 2147483647;
+                (self.random_state % 6 + 1) as usize
+            };
+            self.face_counts[turn.faces[i] - 1] += 1;
+        }
+        turn.rolls += 1;
+        self.turn = Some(turn);
+        if self.verbose { println!("{} roll {}: {}", self.players[turn.seat].name, turn.rolls, face_text(&turn.faces, 31)); }
+        Ok(())
+    }
+
+    fn hold(&mut self, mask: u8) -> CommandResult {
+        let mut turn = self.rolls_left()?;
+        self.redo.clear();
+        turn.hold = mask;
+        self.turn = Some(turn);
+        if self.verbose { println!("{} holds {}: {}", self.players[turn.seat].name, pattern_text(mask), face_text(&turn.faces, mask)); }
+        Ok(())
+    fn score(&mut self, category: usize, preview: bool) -> CommandResult {
+        let turn = self.rolled()?;
+        let player = &self.players[turn.seat];
+        if player.scores[category].is_some() { return Err(format!("{} already used", CATEGORIES[category])); }
+        let candidates = evaluate(player, &face_counts(&turn.faces), self.rules.joker);
+        if candidates.allowed & (1 << category) == 0 {
+            let face = candidates.yahtzee_face.unwrap();
+            return Err(format!("joker requires {}", if player.scores[face].is_none() { CATEGORIES[face] } else { "lower box" }));
+        }
+        let points = candidates.points[category].unwrap();
+        let bonus = if candidates.yahtzee_face.is_some() && player.scores[11] == Some(50) { 100 } else { 0 };
+        let upper = player.upper();
+        let gained_upper = if category < 6 && upper < 63 && upper + points >= 63 { 35 } else { 0 };
+        if self.verbose {
+            print!("{} {} {} in {}", player.name, if preview { "would score" } else { "scores" }, points, CATEGORIES[category]);
+            if candidates.joker { print!(" joker"); }
+            if bonus != 0 { print!(" ybonus 100"); }
+            if gained_upper != 0 { print!(" ubonus 35"); }
+            println!(" total {}", player.total() + points + bonus + gained_upper);
+        }
+        if preview { return Ok(()); }
+        self.redo.clear();
+        self.entries.push(ScoreEntry { before: turn, category, points, bonus, joker: candidates.joker });
+        self.players[turn.seat].scores[category] = Some(points);
+        self.players[turn.seat].yahtzee_bonus += bonus;
+        self.turn = if self.entries.len() == 13 * self.players.len() { None }
+            else { Some(Turn { seat: (turn.seat + 1) % self.players.len(), ..Turn::default() }) };
+        if self.verbose {
+            if let Some(next) = self.turn { println!("turn {} {}", self.players[next.seat].round(), self.players[next.seat].name); }
+            else { println!("game over"); }
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self) -> CommandResult {
+        let entry = self.entries.pop().ok_or_else(|| "nothing to undo".to_string())?;
+        self.redo.push(RedoEntry { after: self.turn, entry });
+        let player = &mut self.players[entry.before.seat];
+        player.scores[entry.category] = None;
+        player.yahtzee_bonus -= entry.bonus;
+        self.turn = Some(entry.before);
+        println!("undo {} {} {}", player.name, CATEGORIES[entry.category], entry.points);
+        Ok(())
+    }
+
+    fn redo(&mut self) -> CommandResult {
+        let saved = self.redo.pop().ok_or_else(|| "nothing to redo".to_string())?;
+        let entry = saved.entry;
+        let player = &mut self.players[entry.before.seat];
+        player.scores[entry.category] = Some(entry.points);
+        player.yahtzee_bonus += entry.bonus;
+        self.entries.push(entry);
+        self.turn = saved.after;
+        println!("redo {} {} {}", player.name, CATEGORIES[entry.category], entry.points);
+        Ok(())
+struct Table { game: Option<Game>, rules: Rules, records: BTreeMap<String, Record> }
+impl Table {
+    fn game_mut(&mut self) -> CommandResult<&mut Game> { self.game.as_mut().ok_or_else(|| "no game".into()) }
+    fn execute(&mut self, words: &[&str], outcomes: &[Vec<Outcome>; 6]) -> CommandResult {
+        match words[0] {
+            "GAME" => {
+                let seed = positive(words[1], 2147483646)?;
+                let names = &words[2..];
+                for name in names { valid_name(name)?; }
+                if names.len() > 6 { return Err("too many players".into()); }
+                if self.game.is_some() { return Err("game in progress".into()); }
+                for (i, name) in names.iter().enumerate() {
+                    if names[..i].contains(name) { return Err(format!("duplicate name {name}")); }
+                }
+                self.game = Some(Game::new(seed, names, self.rules, true));
+                println!("game seed {} players {}\nturn 1 {}", seed, names.join(" "), names[0]);
+            "LOAD" | "KEEP" => {
+                let values = words[1..].iter().map(|word| positive(word, 6).map(|n| n as usize)).collect::<CommandResult<Vec<_>>>()?;
+                let game = self.game_mut()?;
+                if words[0] == "KEEP" { game.keep(&values)?; }
+                else { game.loaded.extend(values); println!("loaded {}", game.loaded.len()); }
+            }
+            "ROLL" => self.game_mut()?.roll()?,
+            "HOLD" | "ODDS" => {
+                let mask = parse_pattern(words[1])?;
+                if words[0] == "HOLD" { self.game_mut()?.hold(mask)?; }
+            "SCORE" | "WHATIF" => {
+                let category = CATEGORIES.iter().position(|&c| c == words[1]).ok_or_else(|| format!("bad category {}", words[1]))?;
+                self.game_mut()?.score(category, words[0] == "WHATIF")?;
+            }
+            "UNDO" => self.game_mut()?.undo()?,
+            "REDO" => self.game_mut()?.redo()?,
+            word => return Err(format!("unknown command {word}")),
+        Ok(())
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let mut lines = input.lines();
+    let count: usize = lines.next().unwrap().parse().unwrap();
+    let outcomes = make_outcomes();
+    let mut table = Table { game: None, rules: Rules { rolls: 3, joker: JokerRule::Forced }, records: BTreeMap::new() };
+    for line in lines.take(count) {
+        let words: Vec<_> = line.split_whitespace().collect();
+        if let Err(error) = table.execute(&words, &outcomes) { println!("error: {error}"); }

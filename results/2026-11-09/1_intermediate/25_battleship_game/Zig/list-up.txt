@@ -1,0 +1,94 @@
+const Error = error{BadCommand} || Allocator.Error || Writer.Error;
+const Command = enum {
+    FIRE,
+    AI,
+    TORPEDO,
+    fn isTurn(command: Command) bool {
+        return switch (command) {
+            .FIRE, .AI, .TORPEDO, .SONAR => true,
+            else => false,
+        };
+    }
+};
+const Game = struct {
+    fn shoot(game: *Game, player: usize, cell: usize) Shot {
+        const owner = &game.players[player];
+        owner.record(result);
+        return result;
+    }
+    fn finishTurn(game: *Game, player: usize, hit: bool, mode: LogMode, out: ?*Writer) Writer.Error!void {
+        game.players[player].turns += 1;
+        if (game.players[1 - player].afloat() == 0) {
+            game.phase = .over;
+            game.winner = player;
+            game.players[player].wins += 1;
+            if (mode == .normal) try line(out.?, "WINNER {d}", .{player + 1});
+        } else game.current = if (game.chain and hit) player else 1 - player;
+    }
+    fn shootingTurn(game: *Game, player: usize, ai: ?Strategy, targets: []const usize, mode: LogMode, out: ?*Writer) Writer.Error!void {
+        const count = game.allowance(player);
+        game.phase = .battle;
+        var hit = false;
+        for (0..count) |i| {
+            const cell = if (ai) |choice| game.choose(player, choice, true).cell else targets[i];
+            const result = game.shoot(player, cell);
+            hit = hit or result.isHit();
+            if (mode == .normal) try line(out.?, "SHOT {d} {f} {f}", .{ player + 1, coordinate(cell), result });
+            if (game.players[1 - player].afloat() == 0) break;
+        }
+        try game.finishTurn(player, hit, mode, out);
+    }
+const Program = struct {
+    game: Game = .{},
+    scratch: Allocator,
+    out: *Writer,
+    error_message: []const u8 = "",
+    fn fail(program: *Program, comptime fmt: []const u8, args: anytype) Error {
+        program.error_message = std.fmt.allocPrint(program.scratch, fmt, args) catch return error.OutOfMemory;
+        return error.BadCommand;
+    }
+    fn execute(program: *Program, words: []const []const u8) Error!void {
+        const command = std.meta.stringToEnum(Command, words[0]).?;
+        const game = &program.game;
+        const out = program.out;
+        if (command.isTurn()) {
+            const player = playerIndex(words[1]);
+            if (game.phase == .over) return program.fail("game over", .{});
+            if (game.phase == .setup and (game.players[0].placed() != 5 or game.players[1].placed() != 5)) return program.fail("fleets not ready", .{});
+            if (player != game.current) return program.fail("not your turn", .{});
+            switch (command) {
+                .FIRE => {
+                    const count = words.len - 2;
+                    if (count != game.allowance(player)) return program.fail("expected {d} shots", .{game.allowance(player)});
+                    var targets: [5]usize = undefined;
+                    for (words[2..], 0..) |word, i| {
+                        const cell = parseCell(word);
+                        if (game.reefs[cell]) return program.fail("reef at {f}", .{coordinate(cell)});
+                        targets[i] = cell;
+                    }
+                    try game.shootingTurn(player, null, targets[0..count], .normal, out);
+                },
+                .AI => try game.shootingTurn(player, strategy(words[2]), &.{}, .normal, out),
+                .TORPEDO => {
+                    if (game.players[player].torpedo_used) return program.fail("torpedo used", .{});
+                    try game.torpedo(player, words[2][0] - 'A', std.mem.eql(u8, words[3], "W"), out);
+                },
+                else => unreachable,
+            }
+            return game.automatic(out);
+        }
+    var program: Program = .{ .scratch = scratch.allocator(), .out = &output.interface };
+    const count: usize = @intCast(number((try readWords(scratch.allocator(), &input.interface))[0]));
+    for (0..count) |_| {
+        _ = scratch.reset(.retain_capacity);
+        const words = try readWords(scratch.allocator(), &input.interface);
+        var response: Writer.Allocating = .init(scratch.allocator());
+        defer response.deinit();
+        program.out = &response.writer;
+        program.execute(words) catch |err| {
+            if (err != error.BadCommand) return err;
+            try output.interface.print("ERROR {s}\n", .{program.error_message});
+            continue;
+        };
+        try output.interface.writeAll(response.written());
+    }

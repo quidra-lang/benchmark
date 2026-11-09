@@ -1,0 +1,347 @@
+const Writer = std.Io.Writer;
+const Error = Allocator.Error || Writer.Error || error{Invalid};
+const PlaceKind = enum { nowhere, room, player, inside };
+const Place = struct {
+    kind: PlaceKind = .nowhere,
+    index: usize = 0,
+    fn equal(a: Place, b: Place) bool {
+        return a.kind == b.kind and a.index == b.index;
+const player: Place = .{ .kind = .player };
+const ContainerState = enum { open, closed, locked };
+const EndStatus = enum { none, won, dead };
+const Direction = enum { north, south, east, west, up, down };
+const directions = [_][]const u8{ "north", "south", "east", "west", "up", "down" };
+const Verb = enum { go, look, examine, take, drop, put, inventory, open, close, unlock, lock, use, light, extinguish, wait, score, save, restore, verbose, brief };
+const synonyms = [_][]const u8{
+    "go walk run",     "look l",                 "examine x inspect read", "take get grab", "drop discard", "put insert place",
+    "inventory inv i", "open",                   "close shut",             "unlock",        "lock",         "use apply",
+    "light ignite",    "extinguish douse snuff", "wait z",                 "score",         "save",         "restore load",
+    "verbose",         "brief",
+const Effect = union(enum) {
+    message: []const u8,
+    open: struct { room: usize, direction: Direction, destination: usize },
+    move: struct { item: usize, place: Place },
+const Rule = struct { flag: ?usize, when_on: bool, effect: Effect };
+const UseRule = struct { first: usize, second: usize, rule: Rule };
+const Room = struct {
+    id: []const u8,
+    name: []const u8 = "",
+    dark: bool = false,
+const Item = struct {
+    id: []const u8,
+    name: []const u8 = "",
+    treasure: ?i32 = null,
+    light: bool = false,
+    nouns: std.ArrayList([]const u8) = .empty,
+    name_words: []const []const u8 = &.{},
+const GameState = struct {
+    room: usize = 0,
+    bonus: i32 = 0,
+    moves: i32 = 0,
+    darkness: i32 = 0,
+    end: EndStatus = .none,
+    places: [200]Place = @splat(.{}),
+    containers: [200]ContainerState = @splat(.open),
+    fuel: [200]i32 = @splat(0),
+    lit: [200]bool = @splat(false),
+    flags: [400]bool = @splat(false),
+const Selection = struct {
+    data: [200]usize = undefined,
+    len: usize = 0,
+    fn add(selection: *Selection, item: usize) void {
+        selection.data[selection.len] = item;
+        selection.len += 1;
+    fn slice(selection: *const Selection) []const usize {
+        return selection.data[0..selection.len];
+const TreasureScore = struct { points: i32 = 0, stored: usize = 0, total: usize = 0 };
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+fn contains(words: []const []const u8, word: []const u8) bool {
+    for (words) |value| if (equal(word, value)) return true;
+    return false;
+fn integer(text: []const u8) i32 {
+    return std.fmt.parseInt(i32, text, 10) catch unreachable;
+fn directionOf(word: []const u8) ?Direction {
+    for (directions, 0..) |name, index| if (equal(word, name) or equal(word, name[0..1])) return @fromBackingInt(@intCast(index));
+    return null;
+fn verbOf(word: []const u8) ?Verb {
+    for (synonyms, 0..) |group, index| {
+        var tokens = std.mem.tokenizeScalar(u8, group, ' ');
+        while (tokens.next()) |alias| if (equal(alias, word)) return @fromBackingInt(@intCast(index));
+    return null;
+fn line(out: *Writer, comptime format: []const u8, args: anytype) Writer.Error!void {
+    try out.print(format ++ "\n", args);
+fn splitWords(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
+    var result: std.ArrayList([]const u8) = .empty;
+    var tokens = std.mem.tokenizeScalar(u8, text, ' ');
+    while (tokens.next()) |word| try result.append(gpa, word);
+    return result.toOwnedSlice(gpa);
+fn normalized(gpa: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
+    const lower = try gpa.dupe(u8, text);
+    for (lower) |*character| if (character.* >= 'A' and character.* <= 'Z') {
+        character.* += 'a' - 'A';
+    var result: std.ArrayList([]const u8) = .empty;
+    var tokens = std.mem.tokenizeScalar(u8, lower, ' ');
+    while (tokens.next()) |word| {
+        if (!equal(word, "the") and !equal(word, "a") and !equal(word, "an")) try result.append(gpa, word);
+    return result.toOwnedSlice(gpa);
+fn joined(gpa: Allocator, words: []const []const u8) Error![]const u8 {
+    var buffer: Writer.Allocating = .init(gpa);
+    defer buffer.deinit();
+    for (words, 0..) |word, index| {
+        if (index > 0) try buffer.writer.writeByte(' ');
+        try buffer.writer.writeAll(word);
+    return buffer.toOwnedSlice();
+const Adventure = struct {
+    gpa: Allocator,
+    rooms: std.ArrayList(Room) = .empty,
+    items: std.ArrayList(Item) = .empty,
+    flags: std.ArrayList([]const u8) = .empty,
+    use_rules: std.ArrayList(UseRule) = .empty,
+    trophy: usize = 0,
+    state: GameState = .{},
+    fn roomId(game: *const Adventure, id: []const u8) usize {
+        for (game.rooms.items, 0..) |room, index| if (equal(room.id, id)) return index;
+        unreachable;
+    fn itemId(game: *const Adventure, id: []const u8) usize {
+        for (game.items.items, 0..) |item, index| if (equal(item.id, id)) return index;
+        unreachable;
+    fn parseRule(game: *Adventure, words: []const []const u8, start: usize) Error!Rule {
+        var index = start;
+        var flag: ?usize = null;
+        var when_on = true;
+        if (equal(words[index], "IF") or equal(words[index], "UNLESS")) {
+        const effect: Effect = if (equal(words[index], "MESSAGE"))
+            .{ .message = try joined(game.gpa, words[index + 1 ..]) }
+        else if (equal(words[index], "OPEN"))
+        else if (equal(words[index], "ADD"))
+            .{ .move = .{ .item = game.itemId(words[index + 1]), .place = .{ .kind = .room, .index = game.roomId(words[index + 2]) } } }
+        return .{ .flag = flag, .when_on = when_on, .effect = effect };
+    fn lessItem(_: void, a: Item, b: Item) bool {
+        return std.mem.order(u8, a.id, b.id) == .lt;
+    fn create(gpa: Allocator, definitions: []const []const u8) Error!*Adventure {
+        const game = try gpa.create(Adventure);
+        game.* = .{ .gpa = gpa };
+        for (definitions) |text| {
+            const words = try splitWords(gpa, text);
+            if (equal(words[0], "ROOM")) try game.rooms.append(gpa, .{ .id = words[1] });
+            if (equal(words[0], "ITEM")) try game.items.append(gpa, .{ .id = words[1] });
+        std.sort.heap(Item, game.items.items, {}, lessItem);
+        for (definitions) |text| {
+            const words = try splitWords(gpa, text);
+            const kind = words[0];
+            if (equal(kind, "ROOM")) {
+                const room = &game.rooms.items[game.roomId(words[1])];
+                room.dark = equal(words[2], "DARK");
+                const start: usize = if (room.dark) 3 else 2;
+                room.name = try joined(gpa, words[start..]);
+            } else if (equal(kind, "ITEM")) {
+                const x = game.itemId(words[1]);
+                const item = &game.items.items[x];
+                game.state.places[x] = if (equal(words[2], "PLAYER")) player else if (equal(words[2], "NOWHERE")) .{} else .{ .kind = .room, .index = game.roomId(words[2]) };
+                try item.nouns.append(gpa, words[1]);
+                var index: usize = 4;
+                if (equal(words[index], "TREASURE")) {
+                    item.treasure = integer(words[index + 1]);
+                    index += 2;
+                if (equal(words[index], "LIGHT")) {
+                    item.light = true;
+                    game.state.fuel[x] = integer(words[index + 1]);
+                    index += 2;
+                if (equal(words[index], "CONTAINER")) {
+                if (equal(words[index], "FIXED")) {
+                item.name = try joined(gpa, words[index..]);
+                item.name_words = words[index..];
+            } else if (equal(kind, "RULE")) {
+                try game.use_rules.append(gpa, .{ .first = game.itemId(words[1]), .second = game.itemId(words[2]), .rule = try game.parseRule(words, 3) });
+            } else if (equal(kind, "TROPHY")) game.trophy = game.roomId(words[1]) else if (equal(kind, "START")) game.state.room = game.roomId(words[1]) else if (equal(kind, "MAXWEIGHT")) game.max_weight = integer(words[1]);
+        return game;
+    fn floor(game: *const Adventure) Place {
+        return .{ .kind = .room, .index = game.state.room };
+    fn reachable(game: *const Adventure, x: usize, root: Place) bool {
+        var place = game.state.places[x];
+        while (true) {
+            if (place.equal(root)) return true;
+            if (place.kind != .inside or game.state.containers[place.index] != .open) return false;
+            place = game.state.places[place.index];
+    fn carried(game: *const Adventure, x: usize) bool {
+        return game.reachable(x, player);
+    fn isLit(game: *const Adventure) bool {
+        if (!game.rooms.items[game.state.room].dark) return true;
+        for (0..game.items.items.len) |x| if (game.state.lit[x] and (game.carried(x) or game.reachable(x, game.floor()))) return true;
+        return false;
+    fn visible(game: *const Adventure, x: usize, lit: bool) bool {
+        return game.carried(x) or (lit and game.reachable(x, game.floor()));
+    fn treasures(game: *const Adventure) TreasureScore {
+        var result: TreasureScore = .{};
+        for (game.items.items, 0..) |item, x| if (item.treasure) |points| {
+            result.total += 1;
+            var place = game.state.places[x];
+            while (place.kind == .inside) place = game.state.places[place.index];
+            if (place.equal(.{ .kind = .room, .index = game.trophy })) {
+                result.stored += 1;
+                result.points += points;
+        return result;
+    fn knownWord(game: *const Adventure, word: []const u8) bool {
+        for (game.items.items) |item| if (contains(item.nouns.items, word) or contains(item.name_words, word)) return true;
+        return false;
+const Names = struct {
+    game: *const Adventure,
+    selected: Selection,
+    pub fn format(names: Names, out: *Writer) Writer.Error!void {
+        for (names.selected.slice(), 0..) |x, index| {
+            if (index > 0) try out.writeAll(", ");
+            try out.writeAll(names.game.items.items[x].name);
+const Session = struct {
+    game: *Adventure,
+    gpa: Allocator,
+    out: *Writer,
+    problem: []const u8 = "",
+    fn fail(session: *Session, comptime format: []const u8, args: anytype) Error {
+        session.problem = try std.fmt.allocPrint(session.gpa, format, args);
+        return error.Invalid;
+    fn say(session: *Session, comptime format: []const u8, args: anytype) Error!void {
+        try line(session.out, format, args);
+    fn resolve(session: *Session, phrase: []const []const u8) Error!usize {
+        const game = session.game;
+        const lit = game.isLit();
+        for (phrase) |word| if (!game.knownWord(word)) return session.fail("I don't know the word \"{s}\".", .{word});
+        var matches: Selection = .{};
+        for (game.items.items, 0..) |item, x| {
+            if (!game.visible(x, lit) or !contains(item.nouns.items, phrase[phrase.len - 1])) continue;
+            var match = true;
+            for (phrase[0 .. phrase.len - 1]) |word| if (!contains(item.name_words, word)) {
+                match = false;
+                break;
+            if (match) matches.add(x);
+        if (matches.len == 0) return session.fail("You can't see any such thing.", .{});
+        if (matches.len > 1) return session.fail("Which do you mean: {f}?", .{Names{ .game = game, .selected = matches }});
+        game.pronoun = matches.data[0];
+        return matches.data[0];
+    fn runRule(session: *Session, rule: Rule) Error!?bool {
+        const game = session.game;
+        if (rule.flag) |flag| if (game.state.flags[flag] != rule.when_on) return null;
+        switch (rule.effect) {
+            .message => |text| {
+                try session.say("{s}", .{text});
+                return true;
+            .move => |effect| game.state.places[effect.item] = effect.place,
+        return false;
+    fn use(session: *Session, first: []const []const u8, second: []const []const u8) Error!void {
+        const game = session.game;
+        const x = try session.resolve(first);
+        const y = try session.resolve(second);
+        if (!game.carried(x)) return session.fail("You aren't carrying the {s}.", .{game.items.items[x].name});
+        var executed: usize = 0;
+        var message = false;
+        for (game.use_rules.items) |entry| if (entry.first == x and entry.second == y) {
+            if (try session.runRule(entry.rule)) |printed| {
+                executed += 1;
+                message = message or printed;
+        if (executed == 0) return session.fail("Nothing happens.", .{});
+        if (!message) try session.say("Done.", .{});
+    fn turn(session: *Session, baseline: bool) Error!void {
+        const game = session.game;
+        game.state.moves += 1;
+        var reachable: [200]bool = @splat(false);
+        for (0..game.items.items.len) |x| reachable[x] = game.carried(x) or game.reachable(x, game.floor());
+        for (0..game.items.items.len) |x| if (game.state.lit[x]) {
+            game.state.fuel[x] -= 1;
+            if (game.state.fuel[x] == 0) {
+                game.state.lit[x] = false;
+                if (reachable[x]) try session.say("The {s} goes out.", .{game.items.items[x].name});
+        const lit = game.isLit();
+        if (baseline and !lit) try session.say("It is now pitch dark.", .{}) else if (!baseline and lit) try session.describe(true);
+        game.state.darkness = if (lit) 0 else game.state.darkness + 1;
+        if (game.state.darkness == 2) try session.say("You hear something moving in the dark.", .{});
+        if (game.state.darkness == 3) game.state.end = .dead;
+        const treasure = game.treasures();
+        if (game.state.end == .none and treasure.total > 0 and treasure.stored == treasure.total) game.state.end = .won;
+        if (game.state.end != .none) {
+            try session.say("{s}", .{if (game.state.end == .dead) "*** You have died ***" else "*** You have won ***"});
+            try session.say("You scored {d} points in {d} moves.", .{ treasure.points + game.state.bonus, game.state.moves });
+    fn run(session: *Session, verb: Verb, first: []const []const u8, second: ?[]const []const u8) Error!void {
+        const game = session.game;
+        var baseline = game.isLit();
+        var success = true;
+        switch (verb) {
+            .use => try session.use(first, second.?),
+            .score => {
+                const treasure = game.treasures();
+                try session.say("You have scored {d} points (treasure {d}, bonus {d}) in {d} moves.", .{
+                    treasure.points + game.state.bonus, treasure.points, game.state.bonus, game.state.moves,
+                });
+                try session.say("Treasures stored: {d} of {d}.", .{ treasure.stored, treasure.total });
+        const action = switch (verb) {
+            .go, .take, .drop, .put, .open, .close, .unlock, .lock, .use, .light, .extinguish, .wait => true,
+            else => false,
+        if (success and action) try session.turn(baseline);
+    fn interpret(session: *Session, words: []const []const u8) Error!void {
+        if (words.len == 0) return session.fail("I beg your pardon?", .{});
+        var rest = words[1..];
+        var verb: Verb = undefined;
+        if (directionOf(words[0]) != null) {
+            verb = .go;
+            rest = words;
+        } else verb = verbOf(words[0]) orelse return session.fail("I don't know the verb \"{s}\".", .{words[0]});
+        if (session.game.state.end != .none and verb != .restore) return session.fail("The game is over.", .{});
+        if (verb == .look and rest.len > 0) {
+        const no_objects = switch (verb) {
+            .look, .inventory, .wait, .score, .save, .restore, .verbose, .brief => true,
+            else => false,
+        if (no_objects) {
+            if (rest.len != 0) return session.fail("I don't understand that.", .{});
+            return session.run(verb, rest, null);
+        if (rest.len == 0) {
+            if (verb == .go) return session.fail("Which way do you want to go?", .{});
+            return session.fail("What do you want to {s}?", .{@tagName(verb)});
+        if (verb == .go) {
+        const prepositions: []const []const u8 = switch (verb) {
+            .put => &.{ "in", "into" },
+            .use => &.{ "on", "with" },
+            else => &.{},
+        if (prepositions.len == 0) return session.run(verb, rest, null);
+        var at: usize = 0;
+        while (at < rest.len and !contains(prepositions, rest[at])) : (at += 1) {}
+        if (at == 0 or at >= rest.len - 1) return session.fail("I don't understand that.", .{});
+        try session.run(verb, rest[0..at], rest[at + 1 ..]);
+    fn process(session: *Session, text: []const u8) Error!void {
+        try session.say("> {s}", .{text});
+        var words = try normalized(session.gpa, text);
+        if (words.len > 0 and (equal(words[0], "again") or equal(words[0], "g"))) {
+        } else session.game.previous = try session.game.gpa.dupe(u8, text);
+        try session.interpret(words);
+fn readLine(gpa: Allocator, input: *std.Io.Reader) ![]const u8 {
+    var buffer: Writer.Allocating = .init(gpa);
+    defer buffer.deinit();
+    _ = try input.streamDelimiterEnding(&buffer.writer, '\n');
+    if (input.seek < input.end) input.toss(1) else if (buffer.written().len == 0) return error.EndOfStream;
+    const text = try buffer.toOwnedSlice();
+    return if (text.len > 0 and text[text.len - 1] == '\r') text[0 .. text.len - 1] else text;
+pub fn main(init: std.process.Init) !void {
+    const gpa = storage.allocator();
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    var definitions: std.ArrayList([]const u8) = .empty;
+    while (true) {
+        const text = try readLine(gpa, &input.interface);
+        if (equal(text, "BEGIN")) break;
+        try definitions.append(gpa, text);
+    const game = try Adventure.create(gpa, definitions.items);
+    var initial: Session = .{ .game = game, .gpa = gpa, .out = &output.interface };
+    while (true) {
+        var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        const temporary = scratch.allocator();
+        const text = try readLine(temporary, &input.interface);
+        if (equal(text, "QUIT")) break;
+        var response: Writer.Allocating = .init(temporary);
+        defer response.deinit();
+        var session: Session = .{ .game = game, .gpa = temporary, .out = &response.writer };
+        session.process(text) catch |err| {
+            if (err != error.Invalid) return err;
+            try line(&response.writer, "{s}", .{session.problem});
+        try output.interface.writeAll(response.written());
+        try output.interface.flush();
+    const treasure = game.treasures();
+    try line(&output.interface, "Final score: {d} points in {d} moves.", .{ treasure.points + game.state.bonus, game.state.moves });
+    try output.interface.flush();

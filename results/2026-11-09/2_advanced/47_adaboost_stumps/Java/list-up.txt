@@ -1,0 +1,193 @@
+    record Round(Stumps.Stump stump, int polarity, double error, double alpha, double z, double bound,
+                 double loss, double[] weights) {}
+    static final class Model {
+        List<Round> rounds = new ArrayList<>();
+        String stop = "completed";
+        double[][] cuts;
+    }
+    static Model discrete(List<Dataset.Row> rows, double[] initial, int maximum, double shrinkage) {
+        Stumps.Search search = new Stumps.Search(rows);
+        double[] weights = initial.clone();
+        for (int t = 0; t < maximum; t++) {
+            Stumps.Candidate candidate = Stumps.discrete(search, weights);
+            double e = candidate.error();
+            if (e >= 0.5) {
+                model.stop = "weak";
+                break;
+            }
+            double alpha = e <= 0.0000000001 ? 1 : shrinkage * (0.5 * Math.log((1 - e) / e));
+            Stumps.Stump stump =
+                new Stumps.Stump(candidate.stump().feature(), candidate.stump().thresholds(),
+                                 new double[] {-candidate.polarity() * alpha, candidate.polarity() * alpha});
+            for (int i = 0; i < weights.length; i++) {
+                int decision = rows.get(i).x()[stump.feature()] > stump.thresholds()[0]
+                                   ? candidate.polarity()
+                                   : -candidate.polarity();
+                weights[i] *= Math.exp(decision == rows.get(i).label() ? -alpha : alpha);
+                z += weights[i];
+            }
+            for (int i = 0; i < weights.length; i++)
+                weights[i] /= z;
+            model.rounds.add(new Round(stump, candidate.polarity(), e, alpha, z, bound, Double.NaN, before));
+            if (e <= 0.0000000001) {
+                model.stop = "perfect";
+                break;
+            }
+        }
+        return model;
+    }
+        Search(List<Dataset.Row> rows) {
+            this.rows = rows;
+            int d = rows.get(0).x().length, n = rows.size();
+            sorted = new int[d][n];
+            ends = new int[d][];
+            thresholds = new double[d][];
+            for (int j = 0; j < d; j++) {
+                final int feature = j;
+                List<Integer> order = new ArrayList<>();
+                for (int i = 0; i < n; i++)
+                    order.add(i);
+                order.sort((a, b) -> {
+                    int comparison = Double.compare(rows.get(a).x()[feature], rows.get(b).x()[feature]);
+                    return comparison != 0 ? comparison : Integer.compare(a, b);
+                });
+                List<Double> distinct = new ArrayList<>();
+                List<Integer> starts = new ArrayList<>();
+                for (int i = 0; i < n; i++) {
+                    sorted[j][i] = order.get(i);
+                    double value = rows.get(order.get(i)).x()[j];
+                    if (i == 0 || value != rows.get(order.get(i - 1)).x()[j]) {
+                        distinct.add(value);
+                        starts.add(i);
+                    }
+                }
+                int q = distinct.size();
+                ends[j] = new int[q];
+                thresholds[j] = new double[q];
+                for (int c = 0; c < q; c++) {
+                    ends[j][c] = starts.get(c);
+                    thresholds[j][c] =
+                        c == 0 ? distinct.get(0) - 1 : (distinct.get(c - 1) + distinct.get(c)) / 2;
+                }
+            }
+        }
+    static Candidate discrete(Search search, double[] weights) {
+        double plus = 0, minus = 0;
+        for (int i = 0; i < weights.length; i++)
+            if (search.rows.get(i).label() == 1)
+                plus += weights[i];
+            else
+                minus += weights[i];
+        List<Candidate> candidates = new ArrayList<>();
+        for (int j = 0; j < search.sorted.length; j++) {
+            int position = 0;
+            double leftPlus = 0, leftMinus = 0;
+            for (int c = 0; c < search.thresholds[j].length; c++) {
+                while (position < search.ends[j][c]) {
+                    int i = search.sorted[j][position++];
+                    if (search.rows.get(i).label() == 1)
+                        leftPlus += weights[i];
+                    else
+                        leftMinus += weights[i];
+                }
+                double threshold = search.thresholds[j][c];
+                candidates.add(new Candidate(new Stump(j, new double[] {threshold}, new double[] {-1, 1}),
+                                             leftPlus + (minus - leftMinus), 1));
+                candidates.add(new Candidate(new Stump(j, new double[] {threshold}, new double[] {1, -1}),
+                                             leftMinus + (plus - leftPlus), -1));
+            }
+        }
+        return choose(candidates);
+    }
+    static int prediction(double score) {
+        return score > 0 ? 1 : -1;
+    }
+    static int earliest(int[] values) {
+        int index = 0;
+        for (int i = 1; i < values.length; i++)
+            if (values[i] < values[index])
+                index = i;
+        return index;
+    }
+    static double score(Adaboost.Model model, double[] x, int limit) {
+        double score = 0;
+        for (int t = 0; t < Math.min(limit, model.rounds.size()); t++)
+            score += model.rounds.get(t).stump().output(x);
+        return score;
+    }
+    static double[] scores(Adaboost.Model model, List<Dataset.Row> rows, int limit) {
+        double[] scores = new double[rows.size()];
+        for (int i = 0; i < scores.length; i++)
+            scores[i] = score(model, rows.get(i).x(), limit);
+        return scores;
+    }
+    static Adaboost.Model prefix(Adaboost.Model model, int count) {
+        Adaboost.Model result = new Adaboost.Model();
+        result.rounds.addAll(model.rounds.subList(0, Math.min(count, model.rounds.size())));
+        result.stop = model.stop;
+        result.cuts = model.cuts;
+        return result;
+    }
+    static final class Curve {
+        int[] trainErrors, testErrors;
+        double[] trainLoss, testLoss, margin;
+        Curve(Adaboost.Model model, List<Dataset.Row> training, List<Dataset.Row> testing, boolean logit) {
+            int r = model.rounds.size();
+            trainErrors = new int[r];
+            testErrors = new int[r];
+            trainLoss = new double[r];
+            testLoss = new double[r];
+            margin = new double[r];
+            for (int t = 0; t < r; t++) {
+                double[] a = scores(model, training, t + 1), b = scores(model, testing, t + 1);
+                trainErrors[t] = errors(training, a);
+                testErrors[t] = errors(testing, b);
+            }
+        }
+    }
+    static void crossValidate() {
+        int count = settings.integer("FOLDS");
+        cvErrors = new int[maximum];
+        for (int fold = 0; fold < count; fold++) {
+            int validation = 0;
+            for (int i = 0; i < n; i++)
+                if (i % count == fold)
+                    validation++;
+            double[] w = new double[n];
+            for (int i = 0; i < n; i++)
+                if (i % count != fold)
+                    w[i] = 1.0 / (n - validation);
+            Adaboost.Model model = Adaboost.discrete(train, w, maximum, 1);
+            folds.add(model);
+            for (int t = 1; t <= maximum; t++)
+                for (int i = 0; i < n; i++)
+                    if (i % count == fold &&
+                        Evaluation.prediction(score(model, train.get(i).x(), t)) != train.get(i).label())
+                        cvErrors[t - 1]++;
+        }
+        selected = earliest(cvErrors) + 1;
+        crossScores = new double[n];
+        for (int i = 0; i < n; i++)
+            crossScores[i] = score(folds.get(i % count), train.get(i).x(), selected);
+    }
+    static void trainModels() {
+        trainScores = new double[variants.size()][];
+        testScores = new double[variants.size()][];
+        for (int v = 0; v < variants.size(); v++) {
+            String variant = variants.get(v);
+            Adaboost.Model training = Variants.train(variant, train, settings),
+                           model = variant.equals("discrete") ? prefix(training, selected) : training;
+            full.add(training);
+            models.add(model);
+            trainScores[v] = scores(model, train, maximum);
+            testScores[v] = scores(model, test, maximum);
+            curves.add(new Curve(training, train, test, variant.equals("logit")));
+        }
+        for (int v = 0; v < variants.size(); v++) {
+            String variant = variants.get(v);
+            Adaboost.Model model = models.get(v);
+            rounds += model.rounds.size();
+            out.add(metrics("train", variant, model.rounds.size(), train, trainScores[v],
+                            variant.equals("logit")));
+            out.add(
+                metrics("test", variant, model.rounds.size(), test, testScores[v], variant.equals("logit")));

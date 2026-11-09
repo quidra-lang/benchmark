@@ -1,0 +1,237 @@
+pub fn read_rows(name: &str) -> io::Result<Vec<(usize, Vec<String>)>> {
+    Ok(fs::read_to_string(format!("input/{name}"))?.split_terminator('\n').skip(1).enumerate().map(|(index, line)| (index + 2, line.split(',').map(str::to_owned).collect())).collect())
+}
+#[derive(Clone, Copy)]
+pub enum Lot { Lfl, Foq(i64), Poq(usize), Min(i64, i64) }
+impl Lot {
+    pub fn label(&self) -> String { match self { Self::Lfl => "LFL".to_owned(), Self::Foq(value) => format!("FOQ {value}"), Self::Poq(value) => format!("POQ {value}"), Self::Min(minimum, multiple) => format!("MIN {minimum}/{multiple}") } }
+#[derive(Clone)]
+pub struct Item { pub id: String, pub lead: usize, pub lot: Lot, pub safety: i64, pub on_hand: i64, pub material: i64, pub labor: i64, pub description: String }
+fn parse_lot(rule: &str, text: &str) -> Option<Lot> {
+    let values: Vec<i64> = text.split('/').map(|part| part.parse().unwrap()).collect();
+    match (rule, values.as_slice()) {
+        ("LFL", [0]) => Some(Lot::Lfl), ("FOQ", [value]) if *value >= 1 => Some(Lot::Foq(*value)),
+        ("POQ", [value]) if *value >= 1 => Some(Lot::Poq(*value as usize)),
+        ("MIN", [minimum, multiple]) if *minimum >= 1 && *multiple >= 1 => Some(Lot::Min(*minimum, *multiple)), _ => None,
+    }
+}
+pub fn read_items(errors: &mut Vec<String>) -> io::Result<BTreeMap<String, Item>> {
+    let mut items = BTreeMap::new();
+    for (line, fields) in read_rows("items.csv")? {
+        let id = &fields[0]; let rule = &fields[2]; let parameter = &fields[3];
+        let reason = if items.contains_key(id) { Some(format!("duplicate item {id}")) }
+            else if !["LFL", "FOQ", "POQ", "MIN"].contains(&rule.as_str()) { Some(format!("unknown lot rule {rule}")) }
+            else if parse_lot(rule, parameter).is_none() { Some(format!("bad lot parameter {parameter} for {rule}")) } else { None };
+        if let Some(reason) = reason { errors.push(format!("items.csv line {line}: {reason}")); continue; }
+        items.insert(id.clone(), Item { id: id.clone(), lead: fields[1].parse().unwrap(), lot: parse_lot(rule, parameter).unwrap(), safety: fields[4].parse().unwrap(), on_hand: fields[5].parse().unwrap(), material: fields[6].parse().unwrap(), labor: fields[7].parse().unwrap(), description: fields[8].clone() });
+    }
+    Ok(items)
+}
+pub struct BomRow { pub parent: String, pub child: String, pub quantity: i64, pub scrap: i64 }
+pub fn need(row: &BomRow, quantity: i64) -> i64 { (quantity * row.quantity * (100 + row.scrap) + 99) / 100 }
+pub struct Bom { pub children: BTreeMap<String, Vec<BomRow>>, pub parents: BTreeMap<String, Vec<BomRow>> }
+impl Bom {
+    pub fn manufactured(&self, id: &str) -> bool { !self.children[id].is_empty() }
+    pub fn code(&self, id: &str, codes: &mut BTreeMap<String, usize>) -> usize {
+        if let Some(&code) = codes.get(id) { return code; }
+        let mut code = 0; for row in &self.parents[id] { code = code.max(self.code(&row.parent, codes) + 1); }
+        codes.insert(id.to_owned(), code); code
+    }
+pub fn read_bom(items: &BTreeMap<String, Item>, errors: &mut Vec<String>) -> io::Result<Bom> {
+    let empty = items.keys().map(|id| (id.clone(), Vec::new())).collect::<BTreeMap<_, _>>(); let mut bom = Bom { children: empty.clone(), parents: empty };
+    for (line, fields) in read_rows("bom.csv")? {
+        let row = BomRow { parent: fields[0].clone(), child: fields[1].clone(), quantity: fields[2].parse().unwrap(), scrap: fields[3].parse().unwrap() };
+        let parent = &row.parent; let child = &row.child;
+        let reason = if !items.contains_key(parent) { Some(format!("unknown item {parent}")) } else if !items.contains_key(child) { Some(format!("unknown item {child}")) }
+            else if row.quantity < 1 { Some(format!("bad quantity {}", row.quantity)) } else if row.scrap > 50 { Some(format!("bad scrap {}", row.scrap)) }
+            else if parent == child { Some(format!("cycle {parent} -> {parent}")) } else if bom.children[parent].iter().any(|other| other.child == *child) { Some(format!("duplicate {parent} -> {child}")) }
+            else { bom.path(child, parent, &mut HashSet::new()).map(|path| format!("cycle {parent} -> {}", path.join(" -> "))) };
+        if let Some(reason) = reason { errors.push(format!("bom.csv line {line}: {reason}")); continue; }
+        let children = bom.children.get_mut(parent).unwrap(); children.push(row.clone()); children.sort_by(|a, b| a.child.cmp(&b.child));
+        let parents = bom.parents.get_mut(child).unwrap(); parents.push(row); parents.sort_by(|a, b| a.parent.cmp(&b.parent));
+    }
+    Ok(bom)
+}
+pub struct WorkCenter { pub id: String, pub minutes: i64, pub efficiency: i64, pub available: i64, pub description: String }
+pub struct Operation { pub number: usize, pub center: String, pub setup: i64, pub run: i64 }
+impl Operation { pub fn minutes(&self, quantity: i64) -> i64 { self.setup + quantity * self.run } }
+pub fn read_centers(errors: &mut Vec<String>) -> io::Result<BTreeMap<String, WorkCenter>> {
+    let mut centers = BTreeMap::new();
+    for (line, fields) in read_rows("workcenters.csv")? {
+        let id = &fields[0]; let minutes = fields[1].parse::<i64>().unwrap(); let efficiency = fields[2].parse::<i64>().unwrap();
+        let reason = if centers.contains_key(id) { Some(format!("duplicate center {id}")) } else if !(50..=150).contains(&efficiency) { Some(format!("bad efficiency {efficiency}")) } else { None };
+        if let Some(reason) = reason { errors.push(format!("workcenters.csv line {line}: {reason}")); }
+        else { centers.insert(id.clone(), WorkCenter { id: id.clone(), minutes, efficiency, available: minutes * efficiency / 100, description: fields[3].clone() }); }
+    }
+    Ok(centers)
+}
+pub fn read_routings(items: &BTreeMap<String, Item>, centers: &BTreeMap<String, WorkCenter>, bom: &Bom, errors: &mut Vec<String>) -> io::Result<BTreeMap<String, Vec<Operation>>> {
+    let mut routings: BTreeMap<String, Vec<Operation>> = BTreeMap::new();
+    for (line, fields) in read_rows("routings.csv")? {
+        let id = &fields[0]; let number = fields[1].parse::<usize>().unwrap(); let center = &fields[2]; let run = fields[4].parse::<i64>().unwrap();
+        let reason = if !items.contains_key(id) { Some(format!("unknown item {id}")) } else if !centers.contains_key(center) { Some(format!("unknown center {center}")) }
+            else if !bom.manufactured(id) { Some(format!("purchased item {id}")) } else if run < 1 { Some(format!("bad run time {run}")) }
+            else if routings.get(id).is_some_and(|operations| operations.iter().any(|operation| operation.number == number)) { Some(format!("duplicate {id} operation {number}")) } else { None };
+        if let Some(reason) = reason { errors.push(format!("routings.csv line {line}: {reason}")); }
+        else { routings.entry(id.clone()).or_default().push(Operation { number, center: center.clone(), setup: fields[3].parse().unwrap(), run }); }
+    }
+    for operations in routings.values_mut() { operations.sort_by_key(|operation| operation.number); }
+    Ok(routings)
+}
+pub fn operation_week(receipt: usize, lead: usize, index: usize, count: usize) -> usize { (receipt as i32 - lead as i32 + (index * lead / count) as i32).max(1) as usize }
+pub fn lot_size(item: &Item, week: usize, mut projected: i64, receipts: &[i64], gross: &[i64], horizon: usize) -> i64 {
+    let net = item.safety - projected;
+    match item.lot {
+        Lot::Lfl => net, Lot::Foq(factor) => multiple(net, factor), Lot::Min(minimum, factor) => multiple(net.max(minimum), factor),
+fn total(values: &[i64]) -> i64 { values.iter().sum() }
+struct ScheduleRow { item: String, week: usize, quantity: i64, line: usize }
+struct Inquiry { id: String, item: String, quantity: i64, week: usize, line: usize }
+#[derive(Clone)]
+struct Demand { item: String, kind: &'static str, week: usize, quantity: i64, order_id: String, line: usize, parent: String, parent_number: usize }
+impl Demand {
+    fn new(item: String, kind: &'static str, week: usize, quantity: i64) -> Self { Self { item, kind, week, quantity, order_id: String::new(), line: 0, parent: String::new(), parent_number: 0 } }
+struct PlannedOrder { item: String, number: usize, receipt: usize, quantity: i64, original_release: i32, release: usize }
+impl PlannedOrder {
+    fn new(item: String, number: usize, receipt: usize, quantity: i64, lead: usize) -> Self { let original_release = receipt as i32 - lead as i32; Self { item, number, receipt, quantity, original_release, release: original_release.max(1) as usize } }
+}
+#[derive(Clone)]
+struct ItemPlan {
+    item: Item, receipts: Vec<i64>, demands: Vec<Demand>, gross: Vec<i64>, on_hand: Vec<i64>, net: Vec<i64>, planned_receipts: Vec<i64>, planned_releases: Vec<i64>,
+    orders: Vec<PlannedOrder>, supplies: Vec<Supply>, order_supplies: Vec<usize>,
+}
+impl ItemPlan {
+    fn new(item: Item, horizon: usize, receipts: Vec<i64>) -> Self {
+        let mut on_hand = vec![0; horizon + 1]; on_hand[0] = item.on_hand;
+        Self { item, receipts, demands: Vec::new(), gross: vec![0; horizon + 1], on_hand, net: vec![0; horizon + 1], planned_receipts: vec![0; horizon + 1], planned_releases: vec![0; horizon + 1], orders: Vec::new(), supplies: Vec::new(), order_supplies: Vec::new() }
+    }
+    fn past_due(&self) -> i64 { self.orders.iter().filter(|order| order.original_release < 1).map(|order| order.quantity).sum() }
+}
+#[derive(Clone)]
+struct Plan { items: BTreeMap<String, ItemPlan>, loads: BTreeMap<String, Vec<i64>>, overloads: BTreeMap<String, Vec<i64>> }
+struct Promise { inquiry: usize, week: usize, material_week: usize, reason: String }
+impl Promise { fn status(&self, inquiry: &Inquiry) -> &'static str { if self.week == 0 { "rejected" } else if self.week == inquiry.week { "on_time" } else { "late" } } }
+struct PlanningData {
+    errors: Vec<String>, horizon: usize, peg: Vec<String>, tree_quantity: i64, items: BTreeMap<String, Item>, bom: Bom, centers: BTreeMap<String, WorkCenter>, routings: BTreeMap<String, Vec<Operation>>,
+    inquiries: Vec<Inquiry>, mps: Vec<Demand>, codes: BTreeMap<String, usize>, cumulative: BTreeMap<String, usize>, order: Vec<String>, center_order: Vec<String>, receipts: BTreeMap<String, Vec<ScheduleRow>>, scheduled: BTreeMap<String, Vec<i64>>,
+}
+fn schedule_error(item: &str, week: usize, quantity: i64, items: &BTreeMap<String, Item>, horizon: usize) -> Option<String> {
+    if !items.contains_key(item) { Some(format!("unknown item {item}")) } else if !(1..=horizon).contains(&week) { Some(format!("week {week} outside horizon")) } else if quantity < 1 { Some(format!("bad quantity {quantity}")) } else { None }
+}
+fn read_schedule(name: &str, items: &BTreeMap<String, Item>, horizon: usize, errors: &mut Vec<String>, unique: bool) -> io::Result<Vec<ScheduleRow>> {
+    let mut result = Vec::new(); let mut seen = HashSet::new();
+    for (line, fields) in read_rows(name)? {
+        let item = &fields[0]; let week = fields[1].parse().unwrap(); let quantity = fields[2].parse().unwrap();
+        let mut reason = schedule_error(item, week, quantity, items, horizon);
+        if reason.is_none() && unique && seen.contains(&(item.clone(), week)) { reason = Some(format!("duplicate {item} week {week}")); }
+        if let Some(reason) = reason { errors.push(format!("{name} line {line}: {reason}")); }
+        else { seen.insert((item.clone(), week)); result.push(ScheduleRow { item: item.clone(), week, quantity, line }); }
+    }
+    Ok(result)
+}
+impl PlanningData {
+    fn read() -> io::Result<Self> {
+        let (mut horizon, mut peg, mut tree_quantity) = (0, Vec::new(), 0);
+        for line in fs::read_to_string("input/params.txt")?.split_terminator('\n') {
+            let words: Vec<_> = line.split(' ').collect(); match words[0] { "horizon" => horizon = words[1].parse().unwrap(), "peg" => peg = words[1..].iter().map(|word| (*word).to_owned()).collect(), _ => tree_quantity = words[1].parse().unwrap() }
+        }
+        let mut errors = Vec::new(); let items = read_items(&mut errors)?; let bom = read_bom(&items, &mut errors)?; let centers = read_centers(&mut errors)?; let routings = read_routings(&items, &centers, &bom, &mut errors)?;
+        let mps_rows = read_schedule("mps.csv", &items, horizon, &mut errors, true)?; let mut receipt_rows = read_schedule("receipts.csv", &items, horizon, &mut errors, false)?;
+        let mut inquiries = Vec::new(); let mut seen = HashSet::new();
+        for (line, fields) in read_rows("orders.csv")? {
+            let id = &fields[0]; let item = &fields[1]; let quantity = fields[2].parse().unwrap(); let week = fields[3].parse().unwrap();
+            let reason = if seen.contains(id) { Some(format!("duplicate order {id}")) } else { schedule_error(item, week, quantity, &items, horizon) };
+            if let Some(reason) = reason { errors.push(format!("orders.csv line {line}: {reason}")); }
+            else { seen.insert(id.clone()); inquiries.push(Inquiry { id: id.clone(), item: item.clone(), quantity, week, line }); }
+        }
+        let mps = mps_rows.into_iter().map(|row| Demand::new(row.item, "MPS", row.week, row.quantity)).collect();
+        let (mut codes, mut cumulative) = (BTreeMap::new(), BTreeMap::new()); for id in items.keys() { bom.code(id, &mut codes); bom.cumulative(id, &items, &mut cumulative); }
+        let mut order: Vec<_> = items.keys().cloned().collect(); order.sort_by(|a, b| codes[a].cmp(&codes[b]).then_with(|| a.cmp(b)));
+        let center_order = centers.keys().cloned().collect(); let mut receipts: BTreeMap<String, Vec<ScheduleRow>> = items.keys().map(|id| (id.clone(), Vec::new())).collect(); let mut scheduled: BTreeMap<String, Vec<i64>> = items.keys().map(|id| (id.clone(), vec![0; horizon + 1])).collect();
+        receipt_rows.sort_by_key(|row| (row.week, row.line)); for row in receipt_rows { scheduled.get_mut(&row.item).unwrap()[row.week] += row.quantity; receipts.get_mut(&row.item).unwrap().push(row); }
+        Ok(Self { errors, horizon, peg, tree_quantity, items, bom, centers, routings, inquiries, mps, codes, cumulative, order, center_order, receipts, scheduled })
+    }
+    fn weeks(&self) -> Vec<i64> { (1..=self.horizon).map(|week| week as i64).collect() }
+}
+fn run_mrp(data: &PlanningData, orders: &[Demand]) -> Plan {
+    let mut plans: BTreeMap<_, _> = data.order.iter().map(|id| (id.clone(), ItemPlan::new(data.items[id].clone(), data.horizon, data.scheduled[id].clone()))).collect();
+    for demand in data.mps.iter().chain(orders) { plans.get_mut(&demand.item).unwrap().demands.push(demand.clone()); }
+    for id in &data.order {
+        {
+            let plan = plans.get_mut(id).unwrap(); for demand in &plan.demands { plan.gross[demand.week] += demand.quantity; }
+            let mut projected = plan.item.on_hand;
+            for week in 1..=data.horizon {
+                projected += plan.receipts[week] - plan.gross[week];
+                if projected < plan.item.safety {
+                    let quantity = lot_size(&plan.item, week, projected, &plan.receipts, &plan.gross, data.horizon);
+                    let order = PlannedOrder::new(id.clone(), plan.orders.len() + 1, week, quantity, plan.item.lead);
+                    plan.net[week] = plan.item.safety - projected; plan.planned_receipts[week] = quantity; plan.planned_releases[order.release] += quantity; projected += quantity; plan.orders.push(order);
+                }
+                plan.on_hand[week] = projected;
+            }
+        }
+        for order in plans[id].orders.clone() { for row in &data.bom.children[id] { let mut demand = Demand::new(row.child.clone(), "DEPENDENT", order.release, need(row, order.quantity)); demand.parent = id.clone(); demand.parent_number = order.number; plans.get_mut(&row.child).unwrap().demands.push(demand); } }
+    }
+    let mut loads: BTreeMap<_, _> = data.centers.keys().map(|id| (id.clone(), vec![0; data.horizon + 1])).collect();
+    for (id, operations) in &data.routings { for order in &plans[id].orders { for (index, operation) in operations.iter().enumerate() { let week = operation_week(order.receipt, data.items[id].lead, index, operations.len()); loads.get_mut(&operation.center).unwrap()[week] += operation.minutes(order.quantity); } } }
+    let overloads = loads.iter().map(|(id, weeks)| (id.clone(), weeks.iter().map(|&load| (load - data.centers[id].available).max(0)).collect())).collect();
+    Plan { items: plans, loads, overloads }
+}
+fn promise_inquiries(data: &PlanningData, base: &Plan) -> (Vec<Promise>, Plan) {
+    let mut current = base.clone(); let mut promised = Vec::new(); let mut promises = Vec::new();
+    for (number, inquiry) in data.inquiries.iter().enumerate() {
+        let mut promise = Promise { inquiry: number, week: 0, material_week: 0, reason: String::new() };
+        for week in inquiry.week..=data.horizon {
+            let mut demand = Demand::new(inquiry.item.clone(), "ORDER", week, inquiry.quantity); demand.order_id = inquiry.id.clone(); demand.line = inquiry.line;
+            let mut demands = promised.clone(); demands.push(demand.clone()); let trial = run_mrp(data, &demands);
+            let mut reason = data.order.iter().find(|id| trial.items[*id].past_due() > current.items[*id].past_due()).cloned();
+            if reason.is_none() {
+                if promise.material_week == 0 { promise.material_week = week; }
+                'centers: for id in &data.center_order { for w in 1..=data.horizon { if trial.overloads[id][w] > current.overloads[id][w] { reason = Some(format!("{id} week {w}")); break 'centers; } } }
+            }
+            if let Some(reason) = reason { if week == inquiry.week { promise.reason = reason; } }
+            else { promise.week = week; promised.push(demand); current = trial; break; }
+        }
+        promises.push(promise);
+    }
+    (promises, current)
+}
+fn grid_lines(data: &PlanningData, plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new();
+    for id in &data.order {
+        let p = &plan.items[id]; let item = &p.item;
+        lines.push(format!("ITEM {id} LLC {} LT {} LOT {} SS {} OH {} {}", data.codes[id], item.lead, item.lot.label(), item.safety, item.on_hand, item.description)); lines.push(table_row("WEEK", &data.weeks(), 6));
+        for (label, values) in [("GROSS", &p.gross), ("RECEIPTS", &p.receipts), ("ON_HAND", &p.on_hand), ("NET", &p.net), ("PLAN_RCPT", &p.planned_receipts), ("PLAN_REL", &p.planned_releases)] { lines.push(table_row(label, &values[1..], 6)); }
+        lines.push(format!("TOTAL gross {} receipts {} planned {} orders {} ending {}", total(&p.gross), total(&p.receipts), total(&p.planned_receipts), p.orders.len(), p.on_hand[data.horizon]));
+    }
+    lines
+}
+fn capacity_lines(data: &PlanningData, plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new(); let mut totals = BTreeMap::new();
+    for id in &data.center_order {
+        let center = &data.centers[id]; let loads = &plan.loads[id][1..]; let overloads = &plan.overloads[id][1..]; let leveled = level_loads(&plan.loads[id], center.available); let sum = total(loads); totals.insert(id.clone(), sum);
+        let capacity = center.available * data.horizon as i64; let peak = if sum > 0 { loads.iter().position(|value| value == loads.iter().max().unwrap()).unwrap() + 1 } else { 0 }; let overloaded = overloads.iter().filter(|&&value| value > 0).count(); let backlog = (leveled[1] - center.available).max(0);
+        lines.push(format!("CENTER {} minutes {} efficiency {} available {} {}", center.id, center.minutes, center.efficiency, center.available, center.description));
+        for (label, values) in [("WEEK", data.weeks()), ("LOAD", loads.to_vec()), ("UTIL", loads.iter().map(|&load| percent(load, center.available)).collect()), ("OVER", overloads.to_vec()), ("LEVELED", leveled[1..].to_vec())] { lines.push(table_row(label, &values, 7)); }
+        lines.push(format!("TOTAL load {sum} available {capacity} utilization {} overloaded {overloaded} peak {peak} backlog {backlog}", percent(sum, capacity)));
+    }
+    let mut ranked = data.center_order.clone(); ranked.sort_by(|a, b| (totals[b] * data.centers[a].available).cmp(&(totals[a] * data.centers[b].available)).then_with(|| a.cmp(b)));
+    for (index, id) in ranked.iter().enumerate() { lines.push(format!("RANK {} {id} load {} utilization {}", index + 1, totals[id], percent(totals[id], data.centers[id].available * data.horizon as i64))); } lines
+}
+fn promise_lines(data: &PlanningData, promises: &[Promise], base: &Plan, final_plan: &Plan) -> Vec<String> {
+    let mut lines = Vec::new(); let (mut on_time, mut late, mut rejected) = (0, 0, 0);
+    for promise in promises {
+        let inquiry = &data.inquiries[promise.inquiry]; let head = format!("ORDER {} {} quantity {} requested {}", inquiry.id, inquiry.item, inquiry.quantity, inquiry.week); let material = if promise.material_week > 0 { promise.material_week.to_string() } else { "none".to_owned() };
+        match promise.status(inquiry) {
+            "rejected" => { rejected += 1; lines.push(format!("{head} rejected material {material} reason {}", promise.reason)); continue; }
+            "on_time" => { on_time += 1; lines.push(format!("{head} promised {}", promise.week)); }
+            _ => { late += 1; lines.push(format!("{head} promised {} late {} material {material} reason {}", promise.week, promise.week - inquiry.week, promise.reason)); }
+        }
+        for id in &data.order { let p = &final_plan.items[id]; for &index in &p.order_supplies { let supply = &p.supplies[index]; if supply.serves(&inquiry.id) { let order = supply.order.as_ref().unwrap(); lines.push(format!("  SUPPLY {id} order {} receipt {} release {} quantity {}", order.number, order.receipt, order.release, order.quantity)); } } }
+    }
+    for id in &data.order { let before = &base.items[id]; let after = &final_plan.items[id]; if let Some(week) = (1..=data.horizon).find(|&week| before.planned_receipts[week] != after.planned_receipts[week]) { lines.push(format!("CHANGE {id} from {week} planned {} -> {} orders {} -> {}", total(&before.planned_receipts), total(&after.planned_receipts), before.orders.len(), after.orders.len())); } }
+    lines.push(format!("SUMMARY orders {} on_time {on_time} late {late} rejected {rejected}", promises.len())); lines
+}
+    let data = PlanningData::read()?; let base = run_mrp(&data, &[]); let (promises, mut final_plan) = promise_inquiries(&data, &base); peg_plan(&data, &mut final_plan); let costs = standard_costs(&data.items, &data.bom, &data.order);
+    for (name, lines) in [("mrp_grid.txt", grid_lines(&data, &final_plan)), ("pegging.txt", pegging_lines(&data, &final_plan)), ("bom_tree.txt", bom_tree_lines(&data)), ("cost_rollup.csv", cost_lines(&data, &final_plan, &costs)), ("exceptions.txt", exception_lines(&data, &final_plan)), ("capacity.txt", capacity_lines(&data, &final_plan)), ("promises.txt", promise_lines(&data, &promises, &base, &final_plan)), ("releases.txt", release_lines(&data, &final_plan)), ("value_plan.csv", value_lines(&data, &final_plan, &costs))] { write_report(name, &lines)?; }
+pub fn table_row(label: &str, values: &[i64], width: usize) -> String { let mut line = format!("{label:<10}"); for value in values { line.push_str(&format!("{value:>width$}")); } line }
+pub fn write_report(name: &str, lines: &[String]) -> io::Result<()> { fs::create_dir_all("output")?; fs::write(format!("output/{name}"), if lines.is_empty() { String::new() } else { lines.join("\n") + "\n" }) }

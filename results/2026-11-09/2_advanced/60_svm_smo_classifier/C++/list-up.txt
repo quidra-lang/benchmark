@@ -1,0 +1,259 @@
+static std::vector<std::string> split(const std::string &text, char delimiter) {
+    std::vector<std::string> out;
+    std::istringstream row(text);
+    std::string field;
+    while (std::getline(row, field, delimiter))
+        out.push_back(field);
+    return out;
+}
+static std::vector<Example> read_data(const std::string &path) {
+    std::ifstream input(path);
+    std::string text;
+    std::getline(input, text);
+    std::vector<Example> out;
+    while (std::getline(input, text)) {
+        const auto fields = split(text, ',');
+        out.push_back(
+            {fields[0], {std::stod(fields[1]), std::stod(fields[2])}, std::stoi(fields[3])});
+    }
+    return out;
+}
+Input load() {
+    Input out;
+    out.train = read_data("input/train.csv");
+    out.test = read_data("input/test.csv");
+    std::ifstream settings("input/params.txt");
+    Params &p = out.params;
+    while (std::getline(settings, text)) {
+        std::istringstream row(text);
+        std::string key;
+        row >> key;
+        if (key == "C_GRID") {
+            double c;
+            while (row >> c)
+                p.c_grid.push_back(c);
+        } else if (key == "KERNEL") {
+            Kernel k;
+            row >> k.name >> k.kind;
+            if (k.kind == "poly")
+                row >> k.degree >> k.gamma >> k.coef0;
+            else if (k.kind == "rbf")
+                row >> k.gamma;
+            p.kernels.push_back(k);
+        } else if (key == "TOLERANCE")
+            row >> p.tolerance;
+        else if (key == "EPS")
+            row >> p.epsilon;
+        else if (key == "MAX_PASSES")
+            row >> p.max_passes;
+        else if (key == "FOLDS")
+            row >> p.folds;
+    }
+    return out;
+}
+double kernel_value(const Kernel &kernel, Point a, Point b) {
+    if (kernel.kind == "linear")
+        return a[0] * b[0] + a[1] * b[1];
+    if (kernel.kind == "poly") {
+        const double s = kernel.gamma * (a[0] * b[0] + a[1] * b[1]) + kernel.coef0;
+        double value = 1;
+        for (int i = 0; i < kernel.degree; ++i)
+            value *= s;
+        return value;
+    }
+    const double e1 = a[0] - b[0], e2 = a[1] - b[1];
+    return std::exp(-kernel.gamma * (e1 * e1 + e2 * e2));
+}
+Matrix kernel_matrix(const Kernel &kernel, const std::vector<Example> &data) {
+    Matrix out(data.size(), Field(data.size()));
+    for (int i = 0; i < int(data.size()); ++i)
+        for (int j = 0; j < int(data.size()); ++j)
+            out[i][j] = kernel_value(kernel, data[i].point, data[j].point);
+    return out;
+}
+int sign(double value) { return value > 0 ? 1 : -1; }
+std::vector<Fold> folds(int count, int k) {
+    std::vector<Fold> out(k);
+    for (int fold = 0; fold < k; ++fold)
+        for (int i = 0; i < count; ++i)
+            (i % k == fold ? out[fold].test : out[fold].train).push_back(i);
+    return out;
+}
+Model train(const std::vector<Example> &data, const Kernel &kernel, Matrix matrix, double c,
+            const Params &params) {
+    return Trainer(data, kernel, std::move(matrix), c, params).run();
+}
+double Model::decision(Point point) const {
+    double out = 0;
+    for (int i = 0; i < int(alpha.size()); ++i)
+        if (alpha[i] > 0)
+            out += alpha[i] * data[i].label * kernel_value(kernel, data[i].point, point);
+    return out - b;
+}
+static std::vector<Example> selected_data(const std::vector<Example> &data, const Ids &indices) {
+    std::vector<Example> out;
+    for (int i : indices)
+        out.push_back(data[i]);
+    return out;
+}
+static Matrix selected_matrix(const Matrix &matrix, const Ids &indices) {
+    Matrix out(indices.size(), Field(indices.size()));
+    for (int i = 0; i < int(indices.size()); ++i)
+        for (int j = 0; j < int(indices.size()); ++j)
+            out[i][j] = matrix[indices[i]][indices[j]];
+    return out;
+}
+static Field decisions(const Model &model, const std::vector<Example> &data) {
+    Field out;
+    for (const Example &example : data)
+        out.push_back(model.decision(example.point));
+    return out;
+}
+struct Support {
+    int total = 0, bound = 0, free = 0;
+    std::array<int, 2> by_bound{}, by_free{};
+};
+static Support support(const Model &model) {
+    Support out;
+    for (int i = 0; i < int(model.alpha.size()); ++i)
+        if (model.alpha[i] > 0) {
+            ++out.total;
+        }
+    return out;
+}
+static CV cross_validate(const Input &input, int kernel, int candidate, const Matrix &matrix) {
+    CV out;
+    out.kernel = kernel;
+    out.candidate = candidate;
+    out.decisions.resize(input.train.size());
+    for (const Fold &fold : folds(int(input.train.size()), input.params.folds)) {
+        const Model model = train(selected_data(input.train, fold.train),
+                                  input.params.kernels[kernel], selected_matrix(matrix, fold.train),
+                                  input.params.c_grid[candidate], input.params);
+        int correct = 0;
+        for (int i : fold.test) {
+            out.decisions[i] = model.decision(input.train[i].point);
+            correct += sign(out.decisions[i]) == input.train[i].label;
+        }
+        const int sv = support(model).total;
+        out.correct += correct;
+        out.sv += sv;
+        out.passes += int(model.passes.size());
+        out.steps += model.steps;
+        out.folds.push_back({int(fold.train.size()), int(fold.test.size()), correct, sv,
+                             int(model.passes.size()), model.steps, model.converged});
+    }
+    return out;
+}
+static Metrics metrics(const Input &input, const Model &model) {
+    Metrics out;
+    out.train = model.training_decisions();
+    out.test = decisions(model, input.test);
+static void model_report(Lines &out, const Input &input, const Model &model, const Metrics &m) {
+    const int n = int(input.train.size()), count = int(input.test.size());
+    const Evaluation &e = m.evaluation;
+    line(out, "model ", model.kernel.name);
+    line(out, "kernel ", kernel_description(model.kernel));
+    line(out, "C ", real(model.c, 4));
+    const Input input = load();
+    const Params &p = input.params;
+    const int n = int(input.train.size()), m = int(input.test.size());
+    std::vector<Matrix> matrices;
+    std::vector<CV> cv;
+    Ids best(p.kernels.size());
+    for (int k = 0; k < int(p.kernels.size()); ++k) {
+        matrices.push_back(kernel_matrix(p.kernels[k], input.train));
+        best[k] = int(cv.size());
+        for (int c = 0; c < int(p.c_grid.size()); ++c) {
+            cv.push_back(cross_validate(input, k, c, matrices[k]));
+            if (cv.back().correct > cv[best[k]].correct)
+                best[k] = int(cv.size()) - 1;
+        }
+    }
+    int selected = 0;
+    for (int k = 1; k < int(best.size()); ++k)
+        if (cv[best[k]].correct > cv[best[selected]].correct ||
+            (cv[best[k]].correct == cv[best[selected]].correct &&
+             p.c_grid[cv[best[k]].candidate] < p.c_grid[cv[best[selected]].candidate]))
+            selected = k;
+    const double selected_c = p.c_grid[cv[best[selected]].candidate];
+    std::vector<Model> models;
+    std::vector<Metrics> evaluations;
+    int linear = 0, multi_kernel = 0;
+    bool found_linear = false;
+    for (int k = 0; k < int(p.kernels.size()); ++k) {
+        models.push_back(
+            train(input.train, p.kernels[k], matrices[k], p.c_grid[cv[best[k]].candidate], p));
+        evaluations.push_back(metrics(input, models.back()));
+    }
+    Ids ranking(cv.size());
+    std::iota(ranking.begin(), ranking.end(), 0);
+    std::sort(ranking.begin(), ranking.end(), [&](int a, int b) {
+        const CV &x = cv[a], &y = cv[b];
+        return x.correct != y.correct ? x.correct > y.correct
+               : p.c_grid[x.candidate] != p.c_grid[y.candidate]
+                   ? p.c_grid[x.candidate] < p.c_grid[y.candidate]
+                   : x.kernel < y.kernel;
+    });
+    Lines model_report_lines;
+    line(model_report_lines, "cross_validation folds ", p.folds, " examples ", n);
+    for (int k = 0; k < int(best.size()); ++k) {
+        const CV &value = cv[best[k]];
+        line(model_report_lines, "best ", p.kernels[k].name, " C ",
+             real(p.c_grid[value.candidate], 4), " correct ", value.correct, "/", n, " accuracy ",
+             ratio(value.correct, n));
+    }
+    line(model_report_lines, "selected ", p.kernels[selected].name, " C ", real(selected_c, 4));
+    model_report_lines.push_back("ranking");
+    for (int i = 0; i < int(ranking.size()); ++i) {
+        const CV &value = cv[ranking[i]];
+        line(model_report_lines, i + 1, " ", p.kernels[value.kernel].name, " C ",
+             real(p.c_grid[value.candidate], 4), " correct ", value.correct, "/", n);
+    }
+    line(model_report_lines, "cv_detail ", p.kernels[selected].name, " C ", real(selected_c, 4));
+    for (int i = 0; i < p.folds; ++i) {
+        const FoldResult &f = cv[best[selected]].folds[i];
+        line(model_report_lines, "fold ", i + 1, " train ", f.train, " test ", f.test, " correct ",
+             f.correct, " support_vectors ", f.sv, " passes ", f.passes, " steps ", f.steps,
+             " converged ", f.converged ? "yes" : "no");
+    }
+    for (int k = 0; k < int(models.size()); ++k) {
+        model_report_lines.push_back("");
+        model_report(model_report_lines, input, models[k], evaluations[k]);
+    }
+    const Model &model = models[selected];
+    const Calibration calibration =
+        calibrate(input, model, cv[best[selected]].decisions, evaluations[selected].test);
+    Lines grid;
+    std::string header = "kernel,C";
+    for (int i = 1; i <= p.folds; ++i)
+        header += ",fold" + std::to_string(i);
+    header += ",correct,accuracy,support_vectors,passes,steps";
+    grid.push_back(header);
+    for (const CV &value : cv) {
+        std::string row = p.kernels[value.kernel].name + "," + real(p.c_grid[value.candidate], 4);
+        for (const FoldResult &fold : value.folds)
+            row += "," + std::to_string(fold.correct);
+        row += "," + std::to_string(value.correct) + "," + ratio(value.correct, n) + "," +
+               std::to_string(value.sv) + "," + std::to_string(value.passes) + "," +
+               std::to_string(value.steps);
+        grid.push_back(row);
+    }
+    Lines predictions;
+    header = "id,label";
+    for (const Kernel &kernel : p.kernels)
+        header += "," + kernel.name;
+    header += ",pegasos,predicted,probability";
+    predictions.push_back(header);
+    for (int i = 0; i < m; ++i) {
+        std::string row = input.test[i].id + "," + std::to_string(input.test[i].label);
+        for (const Metrics &value : evaluations)
+            row += "," + real(value.test[i], 4);
+        row += "," + real(peg.test[i], 4) + "," +
+               std::to_string(sign(evaluations[selected].test[i])) + "," +
+               real(calibration.probabilities[i], 4);
+        predictions.push_back(row);
+    }
+    save("model.txt", model_report_lines);
+    save("cv_grid.csv", grid);
+    save("predictions.csv", predictions);

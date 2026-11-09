@@ -1,0 +1,336 @@
+typedef int64_t Integer;
+typedef struct {
+    Integer refractory_ms, twave_ms, searchback_percent, premature_percent, qrs_width_ms, match_ms, pause_ms,
+        brady_ms, tachy_ms, excerpt_ms, segment_ms, strip_start_ms, strip_ms, strip_rows, chart_rows,
+        poincare_size;
+} Params;
+typedef struct {
+    int sample;
+    char label;
+    int beat;
+} Annotation;
+typedef struct {
+    Integer ecg[12000];
+    int count;
+    Annotation annotations[300];
+    int annotation_count;
+    Params params;
+} Input;
+Input *read_input(void) {
+    Input *out = calloc(1, sizeof(Input));
+    char buffer[128];
+    FILE *file = fopen("input/ecg.csv", "rb");
+    fgets(buffer, sizeof buffer, file);
+    while (fgets(buffer, sizeof buffer, file))
+        out->ecg[out->count++] = strtoll(strchr(buffer, ',') + 1, NULL, 10);
+    fclose(file);
+    file = fopen("input/annotations.csv", "rb");
+    fgets(buffer, sizeof buffer, file);
+    while (fgets(buffer, sizeof buffer, file)) {
+        char *comma = strchr(buffer, ',');
+        out->annotations[out->annotation_count++] = (Annotation){atoi(buffer), comma[1], -1};
+    }
+    fclose(file);
+    file = fopen("input/params.txt", "rb");
+    Integer *fields[] = {
+        &out->params.refractory_ms,     &out->params.twave_ms,     &out->params.searchback_percent,
+        &out->params.premature_percent, &out->params.qrs_width_ms, &out->params.match_ms,
+        &out->params.pause_ms,          &out->params.brady_ms,     &out->params.tachy_ms,
+        &out->params.excerpt_ms,        &out->params.segment_ms,   &out->params.strip_start_ms,
+        &out->params.strip_ms,          &out->params.strip_rows,   &out->params.chart_rows,
+        &out->params.poincare_size};
+    for (int i = 0; i < 16; ++i) {
+        fgets(buffer, sizeof buffer, file);
+        *fields[i] = strtoll(strchr(buffer, ' ') + 1, NULL, 10);
+    }
+    fclose(file);
+    return out;
+}
+Signals *filter(const Input *input) {
+    Signals *out = calloc(1, sizeof(Signals));
+    out->count = input->count;
+    Integer *c = calloc((size_t)input->count, sizeof(Integer));
+    Integer highpass_sum = 0, square_sum = 0;
+    for (int n = 0; n < input->count; ++n) {
+        c[n] = 2 * at(c, n - 1) - at(c, n - 2) + input->ecg[n] - 2 * at(input->ecg, n - 6) +
+               at(input->ecg, n - 12);
+        out->lowpass[n] = floor_div(c[n], 32);
+        highpass_sum += out->lowpass[n] - at(out->lowpass, n - 32);
+        out->bandpass[n] = at(out->lowpass, n - 16) - floor_div(highpass_sum, 32);
+        out->derivative[n] = floor_div(2 * out->bandpass[n] + at(out->bandpass, n - 1) -
+                                           at(out->bandpass, n - 3) - 2 * at(out->bandpass, n - 4),
+                                       8);
+        out->squared[n] = out->derivative[n] * out->derivative[n];
+        square_sum += out->squared[n] - at(out->squared, n - 30);
+        out->integrated[n] = floor_div(square_sum, 30);
+    }
+    free(c);
+    return out;
+}
+static int label_index(char label) {
+    return label == 'N' ? 0 : label == 'V' ? 1 : 2;
+}
+typedef struct {
+    int peak, sample, reference;
+    Integer rr, width;
+    char label;
+} Beat;
+    out->beats[out->beat_count++] = (Beat){.peak = index, .reference = -1, .label = 'N'};
+static Detection *detect(const Signals *signals, const Params *params) {
+    Detection *out = calloc(1, sizeof(Detection));
+    out->peaks = find_peaks(signals);
+    out->initial = out->levels = initial_levels(signals);
+    out->last = -1;
+    for (int i = 0; i < out->beat_count; ++i) {
+        Beat *beat = &out->beats[i];
+        const Peak *peak = &out->peaks.data[beat->peak];
+        beat->sample = peak->r > 21 ? peak->r - 21 : 0;
+        beat->width = qrs_width(signals, peak->r);
+        if (i)
+            beat->rr = 5 * (beat->sample - out->beats[i - 1].sample);
+        if (i >= 9) {
+            Integer preceding = 0;
+            for (int j = i - 8; j < i; ++j)
+                preceding += out->beats[j].rr;
+            if (800 * beat->rr < params->premature_percent * preceding)
+                beat->label = beat->width > params->qrs_width_ms ? 'V' : 'A';
+        }
+    }
+    return out;
+}
+static void match(Detection *detection, Input *input) {
+    Integer tolerance = input->params.match_ms / 5;
+    for (int k = 0; k < detection->beat_count; ++k) {
+        int selected = -1;
+        Integer distance = 0;
+        for (int i = 0; i < input->annotation_count; ++i) {
+            Integer difference = llabs((Integer)input->annotations[i].sample - detection->beats[k].sample);
+            if (input->annotations[i].beat < 0 && difference <= tolerance &&
+                (selected < 0 || difference < distance)) {
+                selected = i;
+                distance = difference;
+            }
+        }
+        if (selected >= 0) {
+            detection->beats[k].reference = selected;
+            input->annotations[selected].beat = k;
+        }
+    }
+}
+static Lines rhythm(const Input *input, const Detection *detection) {
+    const Params *p = &input->params;
+    int first = (int)(p->strip_start_ms / 5), length = (int)(p->strip_ms / 5), columns = length / 10;
+    char *beat_marks = repeat(' ', columns), *ref_marks = repeat(' ', columns);
+    for (int i = 0; i < detection->beat_count; ++i) {
+        const Beat *beat = &detection->beats[i];
+        if (beat->sample >= first && beat->sample < first + length)
+            beat_marks[(beat->sample - first) / 10] = beat->label;
+    }
+    for (int i = 0; i < input->annotation_count; ++i) {
+        const Annotation *reference = &input->annotations[i];
+        if (reference->sample >= first && reference->sample < first + length)
+            ref_marks[(reference->sample - first) / 10] = reference->label;
+    }
+    line_push(&out, format(" beats |%s|", beat_marks));
+    line_push(&out, format("  refs |%s|", ref_marks));
+typedef struct {
+    int sample, priority;
+    char *line;
+} OrderedLine;
+static int ordered_compare(const void *left, const void *right) {
+    const OrderedLine *a = left, *b = right;
+    if (a->sample != b->sample)
+        return (a->sample > b->sample) - (a->sample < b->sample);
+    return (a->priority > b->priority) - (a->priority < b->priority);
+}
+static Lines performance(const Input *input, const Detection *detection) {
+    int classes[5] = {0}, refs[3] = {0}, labels[3] = {0}, miss[3] = {0}, extra[3] = {0},
+        confusion[3][3] = {{0}}, method_total[2] = {0}, method_tp[2] = {0}, tp = 0, max_abs = 0;
+    Integer offset_sum = 0, absolute_sum = 0;
+    for (int i = 0; i < input->annotation_count; ++i) {
+        const Annotation *reference = &input->annotations[i];
+        ++refs[label_index(reference->label)];
+        if (reference->beat < 0)
+            ++miss[label_index(reference->label)];
+    }
+    for (int i = 0; i < detection->beat_count; ++i) {
+        const Beat *beat = &detection->beats[i];
+        ++labels[label_index(beat->label)];
+        int method = detection->peaks.data[beat->peak].kind == SEARCHBACK;
+        ++method_total[method];
+        if (beat->reference >= 0) {
+            ++tp;
+            ++method_tp[method];
+            const Annotation *reference = &input->annotations[beat->reference];
+            ++confusion[label_index(reference->label)][label_index(beat->label)];
+            int offset = 5 * (beat->sample - reference->sample);
+            offset_sum += offset;
+            absolute_sum += abs(offset);
+            if (abs(offset) > max_abs)
+                max_abs = abs(offset);
+        } else
+            ++extra[label_index(beat->label)];
+    }
+    int fp = detection->beat_count - tp, fn = input->annotation_count - tp;
+    line_push(&out, format("tolerance_ms %lld", (long long)input->params.match_ms));
+    line_push(&out,
+              format("references %d N=%d V=%d A=%d", input->annotation_count, refs[0], refs[1], refs[2]));
+    line_push(&out,
+              format("detections %d N=%d V=%d A=%d", detection->beat_count, labels[0], labels[1], labels[2]));
+    line_push(&out, format("true_positives %d", tp));
+    line_push(&out, format("false_positives %d", fp));
+    line_push(&out, format("false_negatives %d", fn));
+    line_push(&out, format("sensitivity %s", ratio(tp, tp + fn)));
+    line_push(&out, format("positive_predictivity %s", ratio(tp, tp + fp)));
+    line_push(&out, format("detection_error_rate %s", ratio(fp + fn, input->annotation_count)));
+    line_push(&out, format("by_method threshold=%d/%d searchback=%d/%d", method_tp[0], method_total[0],
+                           method_tp[1], method_total[1]));
+    if (tp)
+        line_push(&out,
+                  format("offset_ms mean=%s mean_abs=%s max_abs=%d", decimal2(rdiv(100 * offset_sum, tp)),
+                         decimal2(rdiv(100 * absolute_sum, tp)), max_abs));
+    else
+        line_push(&out, text("offset_ms none"));
+    line_push(&out, text("CONFUSION"));
+    line_push(&out, format("ref  %6s%6s%6s  miss", "N", "V", "A"));
+    for (int i = 0; i < 3; ++i)
+        line_push(&out, format("%c    %6d%6d%6d%6d", "NVA"[i], confusion[i][0], confusion[i][1],
+                               confusion[i][2], miss[i]));
+    line_push(&out, format("extra%6d%6d%6d", extra[0], extra[1], extra[2]));
+    line_push(&out, format("veb_sensitivity %s", ratio(confusion[1][1], refs[1])));
+    line_push(&out, format("veb_positive_predictivity %s", ratio(confusion[1][1], labels[1])));
+    line_push(&out, format("sveb_sensitivity %s", ratio(confusion[2][2], refs[2])));
+    line_push(&out, format("sveb_positive_predictivity %s", ratio(confusion[2][2], labels[2])));
+    int segment =
+            input->params.segment_ms / 5 > input->count ? input->count : (int)(input->params.segment_ms / 5),
+        segments = (input->count + segment - 1) / segment;
+    line_push(&out,
+              format("SEGMENTS segment_ms=%lld segments=%d", (long long)input->params.segment_ms, segments));
+    for (int g = 0; g < segments; ++g) {
+        int start = g * segment, end = (g + 1) * segment;
+        if (end > input->count)
+            end = input->count;
+        int reference_count = 0, matched = 0, false_positive = 0, noise = 0;
+        for (int i = 0; i < input->annotation_count; ++i) {
+            const Annotation *reference = &input->annotations[i];
+            if (reference->sample >= start && reference->sample < end) {
+                ++reference_count;
+                matched += reference->beat >= 0;
+            }
+        }
+        for (int i = 0; i < detection->beat_count; ++i) {
+            const Beat *beat = &detection->beats[i];
+            if (beat->sample >= start && beat->sample < end && beat->reference < 0)
+                ++false_positive;
+        }
+        for (int i = 0; i < detection->peaks.count; ++i) {
+            const Peak *peak = &detection->peaks.data[i];
+            if (peak->time >= start && peak->time < end && peak->kind == NOISE)
+                ++noise;
+        }
+        line_push(&out, format("%6d-%6d refs=%d tp=%d fp=%d fn=%d noise_peaks=%d", 5 * start, 5 * end,
+                               reference_count, matched, false_positive, reference_count - matched, noise));
+    }
+    line_push(&out, format("ERRORS count=%d", fp + fn));
+    OrderedLine errors[900];
+    int error_count = 0;
+    for (int i = 0; i < detection->beat_count; ++i) {
+        const Beat *beat = &detection->beats[i];
+        if (beat->reference < 0)
+            errors[error_count++] =
+                (OrderedLine){beat->sample, 0,
+                              format("false_positive beat=%d sample=%d time_ms=%d label=%c", i + 1,
+                                     beat->sample, 5 * beat->sample, beat->label)};
+    }
+    for (int i = 0; i < input->annotation_count; ++i) {
+        const Annotation *reference = &input->annotations[i];
+        if (reference->beat < 0)
+            errors[error_count++] =
+                (OrderedLine){reference->sample, 1,
+                              format("false_negative sample=%d time_ms=%d label=%c", reference->sample,
+                                     5 * reference->sample, reference->label)};
+    }
+    qsort(errors, (size_t)error_count, sizeof(OrderedLine), ordered_compare);
+    for (int i = 0; i < error_count; ++i)
+        line_push(&out, errors[i].line);
+    return out;
+}
+int main(void) {
+    mkdir("output", 0777);
+    Input *input = read_input();
+    Signals *signals = filter(input);
+    Detection *detection = detect(signals, &input->params);
+    match(detection, input);
+    Lines beats = {0};
+    line_push(&beats, text("beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"));
+    for (int i = 0; i < detection->beat_count; ++i) {
+        const Beat *beat = &detection->beats[i];
+        line_push(&beats, format("%d,%d,%d,%s,%s,%lld,%c,%s,%s,%c", i + 1, beat->sample, 5 * beat->sample,
+                                 i ? num(beat->rr) : "-", i ? decimal2(rdiv(6000000, beat->rr)) : "-",
+                                 (long long)beat->width, beat->label,
+                                 detection->peaks.data[beat->peak].kind == QRS ? "threshold" : "searchback",
+                                 beat->reference < 0 ? "-" : num(input->annotations[beat->reference].sample),
+                                 beat->reference < 0 ? '-' : input->annotations[beat->reference].label));
+    }
+    write_owned("beats.csv", beats);
+    OrderedLine matches[900];
+    int match_count = 0;
+    for (int i = 0; i < input->annotation_count; ++i) {
+        const Annotation *reference = &input->annotations[i];
+        char *line;
+        if (reference->beat < 0)
+            line = format("%d,%c,-,-,-,-,FN,-", reference->sample, reference->label);
+        else {
+            const Beat *beat = &detection->beats[reference->beat];
+            line = format("%d,%c,%d,%d,%c,%d,TP,%s", reference->sample, reference->label, reference->beat + 1,
+                          beat->sample, beat->label, 5 * (beat->sample - reference->sample),
+                          beat->label == reference->label ? "yes" : "no");
+        }
+        matches[match_count++] = (OrderedLine){reference->sample, 0, line};
+    }
+    for (int i = 0; i < detection->beat_count; ++i) {
+        const Beat *beat = &detection->beats[i];
+        if (beat->reference < 0)
+            matches[match_count++] = (OrderedLine){
+                beat->sample, 1, format("-,-,%d,%d,%c,-,FP,-", i + 1, beat->sample, beat->label)};
+    }
+    qsort(matches, (size_t)match_count, sizeof(OrderedLine), ordered_compare);
+    Lines matching = {0};
+    line_push(&matching, text("ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"));
+    for (int i = 0; i < match_count; ++i)
+        line_push(&matching, matches[i].line);
+    write_owned("matching.csv", matching);
+    write_owned("performance.txt", performance(input, detection));
+    write_owned("rhythm_strip.txt", rhythm(input, detection));
+Integer floor_div(Integer a, Integer b) {
+    Integer quotient = a / b;
+    if (a % b < 0)
+        --quotient;
+    return quotient;
+}
+Integer rdiv(Integer a, Integer b) {
+    return floor_div(2 * a + b, 2 * b);
+}
+char *decimal2(Integer value) {
+    Integer magnitude = value < 0 ? -value : value;
+    return format("%s%lld.%02lld", value < 0 ? "-" : "", (long long)(magnitude / 100),
+                  (long long)(magnitude % 100));
+}
+char *reduced(Integer a, Integer b) {
+    Integer x = a, y = b;
+    while (y) {
+        Integer remainder = x % y;
+        x = y;
+        y = remainder;
+    }
+    return format("%lld/%lld", (long long)(a / x), (long long)(b / x));
+}
+char *ratio(Integer a, Integer b) {
+    if (!b)
+        return format("%lld/%lld none", (long long)a, (long long)b);
+    char *fraction = reduced(a, b), *percent = decimal2(rdiv(10000 * a, b));
+    char *out = format("%lld/%lld reduced=%s percent=%s", (long long)a, (long long)b, fraction, percent);
+    free(fraction);
+    free(percent);
+    return out;
+}

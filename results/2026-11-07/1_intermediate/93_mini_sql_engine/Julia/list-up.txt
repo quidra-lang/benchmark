@@ -1,0 +1,134 @@
+struct SqlError <: Exception
+    reason::String
+end
+fail(s) = throw(SqlError(s))
+struct Column
+    name::String
+    type::String
+    notnull::Bool
+    keys::Int
+end
+mutable struct Table
+    name::String
+    columns::Vector{Column}
+    rows::Vector{Vector{Any}}
+end
+Table(name, columns) = Table(name, columns, Vector{Any}[])
+function parselist!(p, f)
+    a = [f()]
+    while accept!(p, ",")
+        push!(a, f())
+    end
+    a
+end
+    elseif accept!(p, "UPDATE")
+        s.command = "UPDATE"
+        s.name = parsename!(p)
+        expect!(p, "SET")
+        s.assignments = parselist!(p, function ()
+            n = parsename!(p)
+            expect!(p, "=")
+            (n, parseexpr!(p))
+        end)
+        s.whereexpr = parseclause!(p, "WHERE")
+struct Entry
+    name::String
+    table::Table
+    offset::Int
+end
+mutable struct Scope
+    entries::Vector{Entry}
+    width::Int
+end
+Scope() = Scope(Entry[], 0)
+function add!(scope, name, table)
+    any(e -> e.name == name, scope.entries) && fail("duplicate table name $name")
+    push!(scope.entries, Entry(name, table, scope.width))
+    scope.width += length(table.columns)
+end
+function resolve!(scope, e)
+    selected = scope.entries
+    if e.table !== nothing
+        selected = filter(entry -> entry.name == e.table, selected)
+        isempty(selected) && fail("unknown table $(e.table)")
+    end
+    candidates = Tuple{Int,String}[]
+    for entry in selected, (i, c) in enumerate(entry.table.columns)
+        c.name == e.column && push!(candidates, (entry.offset+i, c.type))
+    end
+    isempty(candidates) && fail("unknown column $(e.written)")
+    length(candidates) > 1 && fail("ambiguous column $(e.column)")
+    e.index = candidates[1][1]
+    candidates[1][2]
+end
+valuetype(v) = v === nothing ? "NULL" : v isa Integer ? "INT" : "TEXT"
+written(v) = v === nothing ? "NULL" : string(v)
+function require(a, b, op)
+    (a == b || a == "NULL" || b == "NULL") || fail("type mismatch for $op")
+end
+function check(e, scope, allowed=false, grouped=nothing, inside=false)
+    e.kind == "literal" && return valuetype(e.literal)
+    if e.kind == "column"
+        t = resolve!(scope, e)
+        grouped !== nothing && !inside && !(e.index in grouped) && fail("column $(e.written) is not grouped")
+        return t
+    end
+    if e.kind == "aggregate"
+        (!allowed || inside) && fail("misuse of aggregate $(e.op)")
+function condition(e, scope, clause, allowed=false, grouped=nothing)
+    e === nothing || require(check(e, scope, allowed, grouped), "INT", clause)
+end
+truth(v) = v !== nothing && v != 0
+function evaluate(e, row, group=Vector{Any}[])
+    e.kind == "literal" && return e.literal
+    e.kind == "column" && return row[e.index]
+const DATABASE = Dict{String,Table}()
+lookup(n) = haskey(DATABASE, n) ? DATABASE[n] : fail("unknown table $n")
+function targets(names, t)
+    indices = Int[]
+    for n in names
+        i = findfirst(c -> c.name == n, t.columns)
+        i === nothing && fail("unknown column $n")
+        i in indices && fail("duplicate column $n")
+        push!(indices, i)
+    end
+    indices
+end
+function constraints(t, checked)
+    key = findfirst(c -> c.keys > 0, t.columns)
+    for i in checked
+        for (j, c) in enumerate(t.columns)
+            c.notnull && t.rows[i][j] === nothing && fail("NULL value in column $(c.name)")
+        end
+        if key !== nothing && any(j -> j != i && t.rows[j][key] == t.rows[i][key], eachindex(t.rows))
+            fail("duplicate primary key $(written(t.rows[i][key]))")
+        end
+    end
+end
+countmessage(n, verb) = println("$n $(n == 1 ? "row" : "rows") $verb.")
+    original = lookup(s.name)
+    t = Table(original.name, original.columns, [copy(r) for r in original.rows])
+    scope = Scope()
+    add!(scope, t.name, t)
+    assigned = Int[]
+    if s.command == "UPDATE"
+        assigned = targets([a[1] for a in s.assignments], t)
+        for (assignment, i) in zip(s.assignments, assigned)
+            require(check(assignment[2], scope), t.columns[i].type, "column $(t.columns[i].name)")
+        end
+    end
+    condition(s.whereexpr, scope, "WHERE")
+    affected = filter(i -> s.whereexpr === nothing || truth(evaluate(s.whereexpr, t.rows[i])), eachindex(t.rows))
+    if s.command == "DELETE"
+    else
+        for i in affected
+            before = copy(t.rows[i])
+            for (assignment, j) in zip(s.assignments, assigned)
+                t.rows[i][j] = evaluate(assignment[2], before)
+            end
+        end
+        constraints(t, affected)
+    end
+    DATABASE[s.name] = t
+    countmessage(length(affected), s.command == "DELETE" ? "deleted" : "updated")
+end

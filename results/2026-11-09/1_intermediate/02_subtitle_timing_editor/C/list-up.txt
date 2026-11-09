@@ -1,0 +1,228 @@
+typedef int64_t Integer;
+typedef struct {
+    char **items;
+    int count, capacity;
+} Strings;
+typedef struct {
+    Integer index, start, end;
+    Strings text;
+} Cue;
+typedef struct {
+    Cue *items;
+    int count, capacity;
+} Cues;
+typedef struct {
+    char name[16], schema[8];
+    Strings raw;
+    Integer values[4], denominator;
+static Cues cues;
+static jmp_buf recovery;
+static char error_message[128];
+static Arguments arguments;
+static char *slice(const char *s, size_t n) {
+    char *copy = allocate(n + 1);
+    memcpy(copy, s, n);
+    copy[n] = '\0';
+    return copy;
+static char *copy_string(const char *s) { return slice(s, strlen(s)); }
+static char *format(const char *pattern, ...) {
+    va_list args, copy;
+    va_start(args, pattern);
+    va_copy(copy, args);
+    int length = vsnprintf(NULL, 0, pattern, copy);
+    char *s = allocate((size_t)length + 1);
+    vsnprintf(s, (size_t)length + 1, pattern, args);
+    return s;
+static void push_owned(Strings *s, char *item) {
+    s->items[s->count++] = item;
+static void push(Strings *s, const char *item) { push_owned(s, copy_string(item)); }
+static Strings clone_strings(const Strings *s) {
+    Strings result = {0};
+    for (int i = 0; i < s->count; ++i) push(&result, s->items[i]);
+    return result;
+static Strings split(const char *s, char delimiter, int limit) {
+    Strings result = {0};
+    const char *start = s;
+    for (const char *p = s;; ++p) {
+        if (!*p || (*p == delimiter && (!limit || result.count + 1 < limit))) {
+            push_owned(&result, slice(start, (size_t)(p - start)));
+            start = p + 1;
+            if (!*p) break;
+        }
+    }
+    return result;
+static void push_cue(Cues *list, Cue c) {
+    list->items[list->count++] = c;
+static void fail(const char *message) {
+    snprintf(error_message, sizeof error_message, "%s", message);
+    longjmp(recovery, 1);
+static bool unsigned_value(const char *s, Integer *value) {
+    size_t n = strlen(s);
+    if (!n || n > 9) return false;
+    *value = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        *value = *value * 10 + s[i] - '0';
+    }
+    return true;
+static bool time_value(const char *s, Integer *value) {
+    if (strlen(s) != 12 || s[2] != ':' || s[5] != ':' || s[8] != ',') return false;
+    for (int i = 0; i < 12; ++i) {
+        if (i != 2 && i != 5 && i != 8 && (s[i] < '0' || s[i] > '9')) return false;
+    }
+    int h = (s[0] - '0') * 10 + s[1] - '0';
+    int m = (s[3] - '0') * 10 + s[4] - '0';
+    int sec = (s[6] - '0') * 10 + s[7] - '0';
+    int ms = (s[9] - '0') * 100 + (s[10] - '0') * 10 + s[11] - '0';
+    *value = (Integer)h * 3600000 + m * 60000 + sec * 1000 + ms;
+    return m <= 59 && sec <= 59;
+static char *time_text(Integer t, int kind) {
+    return format("%02" PRId64 ":%02" PRId64 ":%02" PRId64 "%c%03" PRId64, t / 3600000, t / 60000 % 60, t / 1000 % 60, kind == 1 ? '.' : ',', t % 1000);
+static bool dialogue(const Cue *c) {
+    for (int i = 0; i < c->text.count; ++i) if (!strncmp(c->text.items[i], "- ", 2)) return true;
+    return false;
+static Strings words(const Strings *lines) {
+    Strings result = {0};
+    for (int i = 0; i < lines->count; ++i) {
+        Strings parts = split(lines->items[i], ' ', 0);
+        for (int j = 0; j < parts.count; ++j) if (*parts.items[j]) push(&result, parts.items[j]);
+    }
+    return result;
+static Strings wrap(const Strings *lines, int width) {
+    Strings w = words(lines), result = {0};
+    for (int i = 0; i < w.count; ++i) {
+        if (!result.count || strlen(result.items[result.count - 1]) + 1 + strlen(w.items[i]) > (size_t)width) push(&result, w.items[i]);
+        else {
+            char **last = &result.items[result.count - 1];
+            char *replacement = format("%s %s", *last, w.items[i]);
+            *last = replacement;
+        }
+    }
+    return result;
+static int parse_arguments(const char *line) {
+    const char *names[] = {"LIST", "VALIDATE", "SEARCH", "AT", "GAPS", "STATS", "PRINT", "TOVTT", "TOASS", "FRAMES", "SHIFT", "SHIFTFROM", "SCALE", "SYNC", "SNAP", "FIXOVERLAP", "EXTEND", "TIME", "SORT", "RENUMBER", "MERGE", "SPLIT", "INSERT", "DELETE", "TEXT", "BALANCE", "STRIP", "CLEANHI", "REPLACE", "UNDO"};
+    const char *schemas[] = {"", "", "S", "T", "U", "", "", "", "", "F", "I", "PI", "UU", "PTPT", "F", "U", "U", "PTT", "", "", "U", "U", "PTTX", "P", "PX", "", "", "", "R", ""};
+    const char *space = strchr(line, ' ');
+    size_t length = space ? (size_t)(space - line) : strlen(line);
+    int cmd = -1;
+    for (int i = 0; i < 30; ++i) if (strlen(names[i]) == length && !strncmp(line, names[i], length)) cmd = i;
+    if (cmd < 0) fail("unknown command");
+    Arguments *a = &arguments;
+    strcpy(a->name, names[cmd]);
+    strcpy(a->schema, schemas[cmd]);
+    a->denominator = 1;
+    if (space) a->raw = split(space + 1, ' ', strpbrk(a->schema, "SXR") ? (int)strlen(a->schema) : 0);
+    if (a->raw.count != (int)strlen(a->schema)) fail("bad arguments");
+    for (int i = 0; i < a->raw.count; ++i) {
+        const char *s = a->raw.items[i];
+        char kind = a->schema[i];
+        Integer value = 0;
+        bool valid = true;
+        if (kind == 'P' || kind == 'U') {
+            valid = unsigned_value(s, &value);
+        } else if (kind == 'I') {
+        } else if (kind == 'S') valid = *s != '\0';
+        if (!valid) fail("bad arguments");
+        a->values[i] = value;
+    }
+    Integer *v = a->values;
+    if (cmd == 4 || cmd == 15 || cmd == 16 || cmd == 20) {
+        if (v[0] < (cmd == 16 ? 1 : 0) || v[0] > 60000) fail("bad arguments");
+    }
+    return cmd;
+static void execute(const char *line, Strings *out) {
+    int cmd = parse_arguments(line), n = cues.count;
+    Arguments *a = &arguments;
+    Integer *v = a->values;
+    if (cmd == 0 || cmd == 3) {
+    } else if (cmd == 6 || cmd == 7) {
+        for (int i = 0; i < n; ++i) {
+            const Cue *c = &cues.items[i];
+            int code = 0, removed = 0;
+            Strings lines = cmd == 7 ? converted(&c->text, 1, &code, &removed) : c->text;
+            if (!lines.count) {
+                continue;
+            }
+            char setting[64] = "";
+            char *start = time_text(c->start, cmd == 7), *end = time_text(c->end, cmd == 7);
+            push_owned(out, format("%" PRId64, c->index));
+            push_owned(out, format("%s --> %s%s", start, end, setting));
+            for (int j = 0; j < lines.count; ++j) push(out, lines.items[j]);
+            push(out, "");
+        }
+    } else if (cmd == 20) {
+        Cues result = {0};
+        int merged = 0;
+        for (int i = 0; i < n; ++i) {
+            Cue c = cues.items[i];
+            if (result.count) {
+                Cue *previous = &result.items[result.count - 1];
+                if (c.start - previous->end < v[0] && !dialogue(previous) && !dialogue(&c)) {
+                    Strings lines = clone_strings(&previous->text);
+                    for (int j = 0; j < c.text.count; ++j) push(&lines, c.text.items[j]);
+                    Strings wrapped = wrap(&lines, 42);
+                    if (wrapped.count <= 2) {
+                        if (c.end > previous->end) previous->end = c.end;
+                        previous->text = wrapped;
+                        ++merged;
+                        continue;
+                    }
+                }
+            }
+            push_cue(&result, c);
+        }
+        cues = result;
+        push_owned(out, format("MERGE merged=%d cues=%d", merged, cues.count));
+    }
+static bool load_block(const Strings *block, int position) {
+    Integer index = 0, start = 0, end = 0;
+    if (!unsigned_value(block->items[0], &index) || strlen(block->items[0]) > 6) {
+        printf("BAD CUE %d: index\n", position);
+        return false;
+    }
+    bool valid = block->count >= 2 && strlen(block->items[1]) == 29 && !strncmp(block->items[1] + 12, " --> ", 5);
+    if (valid) {
+        char time[13];
+        memcpy(time, block->items[1], 12);
+        time[12] = '\0';
+        valid = time_value(time, &start) && time_value(block->items[1] + 17, &end);
+    }
+    if (!valid) {
+        printf("BAD CUE %d: time\n", position);
+        return false;
+    }
+    if (block->count < 3) {
+        printf("BAD CUE %d: no text\n", position);
+        return false;
+    }
+    Cue c = {index, start, end, {0}};
+    for (int i = 2; i < block->count; ++i) push(&c.text, block->items[i]);
+    push_cue(&cues, c);
+    return true;
+int main(void) {
+    char line[256];
+    Strings block = {0};
+    int blocks = 0, bad = 0;
+    while (fgets(line, sizeof line, stdin)) {
+        line[strcspn(line, "\n")] = '\0';
+        bool terminator = !strcmp(line, "###");
+        if (!*line || terminator) {
+            if (block.count) {
+                if (!load_block(&block, ++blocks)) ++bad;
+                free_strings(&block);
+            }
+            if (terminator) break;
+        } else push(&block, line);
+    }
+    printf("LOAD cues=%d bad=%d\n", cues.count, bad);
+    if (!fgets(line, sizeof line, stdin)) return 0;
+    int count = atoi(line);
+    for (int i = 0; i < count; ++i) {
+        if (!fgets(line, sizeof line, stdin)) break;
+        line[strcspn(line, "\n")] = '\0';
+        arguments = (Arguments){0};
+        if (setjmp(recovery) == 0) {
+            Strings output = {0};
+            execute(line, &output);
+            for (int j = 0; j < output.count; ++j) puts(output.items[j]);
+        } else printf("ERROR %s\n", error_message);

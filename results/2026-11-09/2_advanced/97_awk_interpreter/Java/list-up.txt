@@ -1,0 +1,865 @@
+        SyntaxIssue(Position pos) { this.pos = pos; }
+    }
+    static final Set<String> KEYWORDS =
+                                 Set.of("BEGIN", "END", "function", "if", "else", "while", "for",
+                                        "do", "break", "continue", "next", "exit", "return",
+                                        "delete", "in", "getline", "print", "printf"),
+                             BUILTINS = Set.of("length", "substr", "index", "split", "sprintf",
+                                               "toupper", "tolower", "close", "int"),
+                             PAIRS = Set.of("+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=",
+                                            "!=", "++", "--", "&&", "||", ">>");
+    static boolean letter(char c) {
+        return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_';
+    }
+    static boolean digit(char c) { return c >= '0' && c <= '9'; }
+    static List<Token> tokenize(String source) {
+        List<Token> result = new ArrayList<>();
+        int index = 0, line = 1, column = 1;
+        while (index < source.length()) {
+            char c = source.charAt(index);
+            Position start = new Position(line, column);
+            if (c == ' ') {
+                index++;
+                column++;
+                continue;
+            }
+            if (c == '\\' && index + 1 < source.length() && source.charAt(index + 1) == '\n') {
+                index += 2;
+                line++;
+                column = 1;
+                continue;
+            }
+            if (c == '#') {
+                int end = source.indexOf('\n', index);
+                if (end < 0)
+                    end = source.length();
+                column += end - index;
+                index = end;
+                continue;
+            }
+            if (c == '\n') {
+                result.add(new Token(Kind.NEWLINE, "\n", null, start));
+                index++;
+                line++;
+                column = 1;
+                continue;
+            }
+            int end = index + 1;
+            Kind kind;
+            String value = null;
+            if (digit(c)) {
+                while (end < source.length() && digit(source.charAt(end)))
+                    end++;
+                kind = Kind.NUMBER;
+                value = source.substring(index, end);
+            } else if (letter(c)) {
+                while (end < source.length() &&
+                       (letter(source.charAt(end)) || digit(source.charAt(end))))
+                    end++;
+                String word = source.substring(index, end);
+                kind = KEYWORDS.contains(word)                              ? Kind.KEYWORD
+                       : BUILTINS.contains(word)                            ? Kind.BUILTIN
+                       : end < source.length() && source.charAt(end) == '(' ? Kind.FUNCNAME
+                                                                            : Kind.NAME;
+            } else if (c == '"') {
+                StringBuilder text = new StringBuilder();
+                while (end < source.length() && source.charAt(end) != '"') {
+                    char next = source.charAt(end);
+                    if (next == '\n')
+                        throw new SyntaxIssue(start);
+                    if (next == '\\') {
+                        if (end + 1 == source.length())
+                            throw new SyntaxIssue(new Position(line, column + end - index));
+                        char escaped = source.charAt(end + 1);
+                        if ("nt\\\"/".indexOf(escaped) < 0)
+                            throw new SyntaxIssue(new Position(line, column + end - index));
+                        text.append(switch (escaped) {
+                            case 'n' -> '\n';
+                            case 't' -> '\t';
+                            default -> escaped;
+                        });
+                        end += 2;
+                    } else {
+                        text.append(next);
+                        end++;
+                    }
+                }
+                if (end == source.length())
+                    throw new SyntaxIssue(start);
+                end++;
+                kind = Kind.STRING;
+                value = text.toString();
+            } else if (end < source.length() && PAIRS.contains(source.substring(index, end + 1))) {
+                end++;
+                kind = Kind.SYMBOL;
+            } else if ("+-*/%^!><?:=()[]{},;$".indexOf(c) >= 0)
+                kind = Kind.SYMBOL;
+            else
+                throw new SyntaxIssue(start);
+            result.add(new Token(kind, source.substring(index, end), value, start));
+            column += end - index;
+            index = end;
+        }
+        result.add(new Token(Kind.END, "", null, new Position(line, 1)));
+        return result;
+    }
+}
+    }
+    sealed interface Expr extends Node permits Variable, ArrayAccess, Field, Literal, Paren,
+                                  Assignment, Increment, Conditional, Unary, Membership, Binary,
+                                  Call, Builtin, Getline {}
+    sealed interface Stmt extends Node permits Block, Empty, ExpressionStatement, Output, If, While,
+                                  DoWhile, For, ForIn, Delete, TransferStatement {}
+    sealed interface Item extends Node permits Function, Rule {}
+    record Variable(String name, Lexer.Position pos) implements Expr {}
+    record ArrayAccess(String name, List<Expr> indexes, Lexer.Position pos) implements Expr {}
+    record Field(Expr index, Lexer.Position pos) implements Expr {}
+    record Literal(ValuesFields.Value value, Lexer.Position pos) implements Expr {}
+    record Paren(Expr expression, Lexer.Position pos) implements Expr {}
+    record Assignment(String operator, Expr location, Expr value, Lexer.Position pos)
+        implements Expr {}
+    record Increment(Expr location, int delta, boolean prefix, Lexer.Position pos) implements Expr {
+            this.flavor = flavor;
+            this.pos = pos;
+            this.patterns = patterns;
+            this.action = action;
+        }
+        public Lexer.Position pos() { return pos; }
+    }
+    static final Set<String> ASSIGNMENTS = Set.of("=", "+=", "-=", "*=", "/=", "%=", "^="),
+                             COMPARISONS = Set.of("<", "<=", "==", "!=", ">=", ">");
+    final List<Lexer.Token> tokens;
+    int index, loopDepth;
+    boolean function;
+    String phase;
+    Parser(List<Lexer.Token> tokens) { this.tokens = tokens; }
+    Lexer.Token peek() { return tokens.get(index); }
+    Lexer.Token take() { return tokens.get(index++); }
+    boolean at(String text) { return peek().text().equals(text); }
+    Lexer.Token accept(String text) { return at(text) ? take() : null; }
+    Lexer.Token expect(String text) {
+        if (!at(text))
+            fail();
+        return take();
+    }
+    void fail() { throw new Lexer.SyntaxIssue(peek().pos()); }
+    void fail(Lexer.Position pos) { throw new Lexer.SyntaxIssue(pos); }
+    Variable name() {
+        if (peek().kind() != Lexer.Kind.NAME)
+            fail();
+        Lexer.Token token = take();
+        return new Variable(token.text(), token.pos());
+    }
+    void newlines() {
+        while (accept("\n") != null) {
+        }
+    }
+    List<Item> parse() {
+        List<Item> items = new ArrayList<>();
+        while (peek().kind() != Lexer.Kind.END) {
+            if (at("\n") || at(";")) {
+                take();
+                continue;
+            }
+            Lexer.Token start = peek();
+            if (accept("function") != null) {
+            }
+            List<Expr> patterns = new ArrayList<>();
+            String flavor;
+            if (at("BEGIN") || at("END"))
+                flavor = take().text();
+            else if (at("{"))
+                flavor = "all";
+            phase = flavor;
+            Block action = null;
+            if (flavor.equals("BEGIN") || flavor.equals("END") || flavor.equals("all") || at("{"))
+                action = block();
+            else if (!at("\n") && !at(";") && peek().kind() != Lexer.Kind.END)
+                fail();
+            phase = null;
+            items.add(new Rule(flavor, start.pos(), patterns, action));
+        }
+        return items;
+    }
+    Block block() {
+        Lexer.Token opening = expect("{");
+        List<Stmt> statements = new ArrayList<>();
+        while (!at("}")) {
+            if (at("\n") || at(";"))
+                take();
+            else
+                statements.add(statement());
+        }
+        expect("}");
+        return new Block(statements, opening.pos());
+    }
+    }
+    void terminator() {
+        if (at(";") || at("\n"))
+            take();
+        else if (!at("}"))
+            fail();
+    }
+    Stmt statement() {
+        Lexer.Token token = peek();
+        String spelling = token.text();
+        if (at("{"))
+            return block();
+        if (accept(";") != null)
+            return new Empty(token.pos());
+        if (accept("if") != null) {
+            Expr condition = condition();
+        Stmt result;
+        if (spelling.equals("print") || spelling.equals("printf")) {
+            take();
+            result = output(token);
+        } else
+            result = new ExpressionStatement(expression(), token.pos());
+        terminator();
+        return result;
+    }
+    boolean parenthesizedOutput() {
+        if (!at("("))
+            return false;
+    Output output(Lexer.Token token) {
+        List<Expr> arguments = new ArrayList<>();
+        if (parenthesizedOutput()) {
+            expect("(");
+            arguments = expressionList(true);
+            expect(")");
+        } else if (!Set.of(";", "\n", "}", ">", ">>").contains(peek().text()))
+            arguments = expressionList(false);
+        if (token.text().equals("printf") && arguments.isEmpty())
+            fail();
+        Lexer.Token redirect = at(">") || at(">>") ? take() : null;
+        Expr filename = redirect == null ? null : concatenation();
+        return new Output(token.text().equals("printf"), arguments,
+                          redirect == null ? null : redirect.text(),
+                          redirect == null ? null : redirect.pos(), filename, token.pos());
+    }
+    List<Expr> expressionList(boolean greater) {
+        List<Expr> result = new ArrayList<>();
+        result.add(expression(greater));
+        while (accept(",") != null) {
+            newlines();
+            result.add(expression(greater));
+        }
+        return result;
+    }
+    Expr expression() { return expression(true); }
+    Expr expression(boolean greater) {
+        Expr left = conditional(greater);
+        if (lvalue(left) && ASSIGNMENTS.contains(peek().text())) {
+            Lexer.Token operator = take();
+            return new Assignment(operator.text(), left, expression(greater), operator.pos());
+        }
+        return left;
+    }
+    static boolean lvalue(Expr expr) {
+        return expr instanceof Variable || expr instanceof ArrayAccess || expr instanceof Field;
+    }
+    Expr conditional(boolean greater) {
+        Expr condition = logical(0, greater);
+        Lexer.Token operator = accept("?");
+        if (operator == null)
+            return condition;
+    }
+    Expr logical(int level, boolean greater) {
+        if (level == 2)
+            return membership(greater);
+        String operatorName = level == 0 ? "||" : "&&";
+        Expr left = logical(level + 1, greater);
+        while (at(operatorName)) {
+        }
+        return left;
+    }
+    Expr membership(boolean greater) {
+        Expr left = comparison(greater);
+        while (at("in")) {
+        }
+        return left;
+    }
+    Expr comparison(boolean greater) {
+        Expr left = concatenation();
+        while (COMPARISONS.contains(peek().text()) && (greater || !at(">"))) {
+        }
+        return left;
+    }
+    Expr concatenation() {
+        Expr left = additive();
+        while (Set.of(Lexer.Kind.NUMBER, Lexer.Kind.STRING, Lexer.Kind.NAME, Lexer.Kind.FUNCNAME,
+                      Lexer.Kind.BUILTIN)
+                   .contains(peek().kind()) ||
+               Set.of("$", "(", "++", "--").contains(peek().text())) {
+        }
+        return left;
+    }
+    Expr additive() {
+        Expr left = multiplicative();
+        while (at("+") || at("-")) {
+        }
+        return left;
+    }
+    Expr multiplicative() {
+        Expr left = unary();
+        while (at("*") || at("/") || at("%")) {
+        }
+        return left;
+    }
+    Expr unary() {
+        if (at("!") || at("-") || at("+")) {
+        }
+        Expr left = postfix();
+        if (at("^")) {
+        }
+        return left;
+    }
+    Expr postfix() {
+        if (at("++") || at("--"))
+            return prefix();
+        Expr left = atom();
+        if (lvalue(left) && (at("++") || at("--"))) {
+        }
+        return left;
+    }
+    Expr lvalue() {
+        if (peek().kind() == Lexer.Kind.NAME) {
+            Variable node = name();
+            if (accept("[") != null) {
+            }
+            return node;
+        }
+        Lexer.Token dollar = accept("$");
+        if (dollar != null)
+            return new Field(at("++") || at("--") ? prefix() : atom(), dollar.pos());
+        fail();
+        throw new AssertionError();
+    }
+    Expr atom() {
+        Lexer.Token token = peek();
+        if (token.kind() == Lexer.Kind.NUMBER || token.kind() == Lexer.Kind.STRING) {
+            take();
+            return new Literal(token.kind() == Lexer.Kind.NUMBER
+                                   ? ValuesFields.number(Integer.parseInt(token.value()))
+                                   : ValuesFields.string(token.value()),
+                               token.pos());
+        }
+        if (token.kind() == Lexer.Kind.NAME || at("$"))
+            return lvalue();
+    enum Kind { NUMBER, STRING, STRNUM, UNINITIALIZED }
+    record Value(Kind kind, String text, int numeric) {}
+    static final Value UNINITIALIZED = new Value(Kind.UNINITIALIZED, null, 0);
+    static Value number(int value) { return new Value(Kind.NUMBER, null, value); }
+    static Value string(String value) { return new Value(Kind.STRING, value, 0); }
+    static boolean whitespace(char c) { return c == ' ' || c == '\t' || c == '\n'; }
+    static Value input(String text) {
+        int start = 0, end = text.length();
+        while (start < end && whitespace(text.charAt(start)))
+            start++;
+        while (end > start && whitespace(text.charAt(end - 1)))
+            end--;
+        int digits = start;
+        if (digits < end && (text.charAt(digits) == '+' || text.charAt(digits) == '-'))
+            digits++;
+        boolean numeric = digits < end;
+        for (int i = digits; i < end; i++)
+            if (!Lexer.digit(text.charAt(i)))
+                numeric = false;
+        return numeric ? new Value(Kind.STRNUM, text, numericPrefix(text)) : string(text);
+    }
+    static int numeric(Value value) {
+        return value.kind() == Kind.STRING ? numericPrefix(value.text()) : value.numeric();
+    }
+    static String text(Value value) {
+        return switch (value.kind()) {
+            case NUMBER -> Integer.toString(value.numeric());
+            case UNINITIALIZED -> "";
+            default -> value.text();
+        };
+    }
+    static List<String> split(String text, String separator) {
+        List<String> result = new ArrayList<>();
+        if (text.isEmpty())
+            return result;
+        if (separator.isEmpty()) {
+            for (int i = 0; i < text.length(); i++)
+                result.add(text.substring(i, i + 1));
+        } else if (separator.equals(" ")) {
+                result.add(text.substring(start));
+        } else {
+            int start = 0, next;
+            while ((next = text.indexOf(separator, start)) >= 0) {
+                result.add(text.substring(start, next));
+                start = next + separator.length();
+            }
+            result.add(text.substring(start));
+        }
+        return result;
+    }
+    static final class Record {
+        final Function<String, Value> special;
+        Value zero = string("");
+        final List<Value> fields = new ArrayList<>();
+        Record(Function<String, Value> special) { this.special = special; }
+        void set(String text) {
+            zero = input(text);
+            fields.clear();
+            for (String piece : split(text, text(special.apply("FS"))))
+                fields.add(input(piece));
+        }
+        Value read(int index) {
+            return index == 0        ? zero
+            : index <= fields.size() ? fields.get(index - 1)
+                                     : UNINITIALIZED;
+        }
+        void rebuild() {
+            StringJoiner joined = new StringJoiner(text(special.apply("OFS")));
+            for (Value value : fields)
+                joined.add(text(value));
+            zero = input(joined.toString());
+        }
+        void write(int index, Value value) {
+            if (index == 0) {
+                set(text(value));
+                return;
+            }
+            while (fields.size() < index)
+                fields.add(string(""));
+            fields.set(index - 1, value);
+            rebuild();
+        }
+        void resize(int size) {
+            while (fields.size() > size)
+                fields.removeLast();
+            while (fields.size() < size)
+                fields.add(string(""));
+            rebuild();
+        }
+    }
+    static String quoted(String text) {
+        StringBuilder result = new StringBuilder("\"");
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            result.append(switch (c) {
+                case '"' -> "\\\"";
+                case '\\' -> "\\\\";
+                case '\n' -> "\\n";
+                case '\t' -> "\\t";
+                default ->
+                    c >= 32 && c <= 126 ? String.valueOf(c)
+                                        : "\\" + String.format(Locale.ROOT, "%03o", (int)c);
+            });
+        }
+        return result.append('"').toString();
+    }
+    static String describe(Value value) {
+        return switch (value.kind()) {
+            case NUMBER -> Integer.toString(value.numeric());
+            case UNINITIALIZED -> "(uninitialized)";
+            default -> quoted(value.text()) + (value.kind() == Kind.STRNUM ? " (strnum)" : "");
+        };
+    }
+final class Streams {
+    record Option(String name, String value) {}
+    static final class Operand {
+        final boolean file;
+        final String name, value;
+        int records;
+        Operand(boolean file, String name, String value) {
+            this.file = file;
+            this.name = name;
+            this.value = value;
+        }
+    }
+    record Arguments(List<Option> options, List<Operand> operands) {}
+    record Read(int status, String line) {}
+    static List<String> lines(String text) {
+        List<String> result = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < text.length(); i++)
+            if (text.charAt(i) == '\n') {
+                result.add(text.substring(start, i));
+                start = i + 1;
+            }
+        if (start < text.length())
+            result.add(text.substring(start));
+        return result;
+    }
+    static List<String> records(String name) throws IOException {
+        return lines(Files.readString(Path.of("input", name), StandardCharsets.US_ASCII));
+    }
+    static Arguments parse(String text) {
+        List<Option> options = new ArrayList<>();
+        List<Operand> operands = new ArrayList<>();
+        for (String line : lines(text)) {
+            int equal = line.indexOf('=');
+            if (line.startsWith("-F "))
+                options.add(new Option("FS", line.substring(3)));
+            else if (line.startsWith("-v ")) {
+                equal = line.indexOf('=', 3);
+                options.add(new Option(line.substring(3, equal), line.substring(equal + 1)));
+            } else if (equal >= 0 && validName(line.substring(0, equal)))
+                operands.add(
+                    new Operand(false, line.substring(0, equal), line.substring(equal + 1)));
+            else
+                operands.add(new Operand(true, line, null));
+        }
+        return new Arguments(options, operands);
+    }
+    static final class Output {
+        final StringBuilder content = new StringBuilder();
+        boolean open;
+        int writes;
+        void append(String text) {
+            content.append(text);
+            writes++;
+        }
+    }
+    final Output stdout = new Output();
+    final LinkedHashMap<String, Output> outputs = new LinkedHashMap<>();
+    final LinkedHashMap<String, Input> inputs = new LinkedHashMap<>();
+    void write(String text, String name, String mode, Lexer.Position pos) {
+        if (name == null) {
+            stdout.append(text);
+            return;
+        }
+        if (!validFilename(name) || name.equals("stdout.txt") || name.equals("stats.txt"))
+            throw new Builtins.RuntimeIssue(pos, "invalid output file name");
+        Output output = outputs.computeIfAbsent(name, key -> new Output());
+        if (!output.open) {
+            output.open = true;
+    void save() throws IOException {
+        Files.createDirectories(Path.of("output"));
+        Files.writeString(Path.of("output/stdout.txt"), stdout.content, StandardCharsets.US_ASCII);
+        for (var entry : outputs.entrySet())
+            Files.writeString(Path.of("output", entry.getKey()), entry.getValue().content,
+                              StandardCharsets.US_ASCII);
+    }
+    static final Set<String> SPECIAL =
+        Set.of("FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP");
+    record Binding(Parser.Function scope, String name) {}
+        switch (node) {
+        case Parser.Function f -> {
+            result.addAll(f.parameters);
+            result.add(f.body);
+        }
+        case Parser.Rule r -> {
+            result.addAll(r.patterns);
+            result.add(r.action);
+        }
+        case Parser.ArrayAccess a -> result.addAll(a.indexes());
+        case Parser.Field f -> result.add(f.index());
+        case Parser.Paren p -> result.add(p.expression());
+        case Parser.Assignment a -> {
+            result.add(a.location());
+            result.add(a.value());
+        }
+        case Parser.Increment i -> result.add(i.location());
+        }
+        case Parser.Unary u -> result.add(u.operand());
+        case Parser.Membership m -> {
+            result.addAll(m.indexes());
+            result.add(m.array());
+        }
+            result.add(o.filename());
+        }
+        case Parser.If i -> {
+            result.add(i.condition());
+        result.removeIf(Objects::isNull);
+        return result;
+    }
+    static final class Analysis {
+        final List<Parser.Item> items;
+        final List<Parser.Function> functions = new ArrayList<>();
+        final List<Parser.Rule> rules = new ArrayList<>();
+        final Map<String, Parser.Function> functionTable = new HashMap<>();
+        final Set<String> globals = new TreeSet<>(SPECIAL);
+        final Set<Binding> bindings = new HashSet<>(), arrays = new HashSet<>();
+        final Map<Parser.Node, Binding> resolved = new IdentityHashMap<>();
+        final Map<Parser.Call, Parser.Function> targets = new IdentityHashMap<>();
+        final Set<Integer> statementLines = new TreeSet<>();
+        final List<Parser.Node> nodes = new ArrayList<>();
+        final List<StaticError> errors = new ArrayList<>();
+        Analysis(List<Parser.Item> items) {
+            this.items = items;
+            for (String name : SPECIAL)
+                bindings.add(new Binding(null, name));
+            for (Parser.Item item : items) {
+                if (item instanceof Parser.Function f)
+                    functions.add(f);
+                else
+                    rules.add((Parser.Rule)item);
+            }
+        }
+        void error(Lexer.Position pos, int priority, String message) {
+            errors.add(new StaticError(pos, priority, message));
+        }
+        void resolve(Parser.Node node, String name, Parser.Function function) {
+            boolean local = function != null && function.parameterNames.contains(name);
+            Binding binding = new Binding(local ? function : null, name);
+            resolved.put(node, binding);
+            bindings.add(binding);
+            if (!local)
+                globals.add(name);
+            if (functionTable.containsKey(name))
+                error(node.pos(), 2, "function " + name + " used as variable");
+        }
+        void collect(Parser.Node node, Parser.Function function) {
+            nodes.add(node);
+            if (node instanceof Parser.Stmt && !(node instanceof Parser.Block) &&
+                !(node instanceof Parser.Empty))
+                statementLines.add(node.pos().line());
+            if (node instanceof Parser.Variable v)
+                resolve(v, v.name(), function);
+            else if (node instanceof Parser.ArrayAccess a)
+                resolve(a, a.name(), function);
+            for (Parser.Node child : children(node))
+                collect(child, function);
+        }
+        Analysis prepare() {
+            for (Parser.Item item : items)
+                collect(item, item instanceof Parser.Function f ? f : null);
+            if (!errors.isEmpty()) {
+                errors.sort(Comparator.comparing(StaticError::pos)
+                                .thenComparingInt(StaticError::priority)
+                                .thenComparing(StaticError::message));
+                StaticError first = errors.getFirst();
+                throw new StaticIssue(first.pos(), first.message());
+            }
+            return this;
+    static ValuesFields.Value number(int value) { return ValuesFields.number(value); }
+    static ValuesFields.Value string(String text) { return ValuesFields.string(text); }
+    static int numeric(ValuesFields.Value value) { return ValuesFields.numeric(value); }
+    static String text(ValuesFields.Value value) { return ValuesFields.text(value); }
+    static final class Engine {
+        final Analysis analysis;
+        final Streams.Arguments arguments;
+        final Set<String> globalNames;
+        final Map<String, Cell> globals = new HashMap<>();
+        final Deque<Map<String, Cell>> locals = new ArrayDeque<>();
+        final ValuesFields.Record record;
+        final Streams streams = new Streams();
+        final TreeMap<Integer, Integer> lines = new TreeMap<>();
+        String phase = "BEGIN";
+        int exitStatus, operandIndex, inputIndex;
+        Streams.Operand current;
+        List<String> inputLines = List.of();
+        Builtins.RuntimeIssue error;
+        Engine(Analysis analysis, Streams.Arguments arguments) {
+            this.analysis = analysis;
+            this.arguments = arguments;
+            globalNames = new TreeSet<>(analysis.globals);
+            for (String name : globalNames)
+                globals.put(name, new Cell(analysis.arrays.contains(new Binding(null, name))));
+            for (String name : List.of("NR", "FNR", "NF"))
+                globals.put(name, new Cell(number(0)));
+            globals.put("FILENAME", new Cell(string("")));
+            globals.put("FS", new Cell(string(" ")));
+            globals.put("OFS", new Cell(string(" ")));
+            globals.put("ORS", new Cell(string("\n")));
+            globals.put("SUBSEP", new Cell(string(String.valueOf((char)28))));
+            record
+            = new ValuesFields.Record(this::global);
+            for (int line : analysis.statementLines)
+                lines.put(line, 0);
+        }
+        Cell cell(Binding binding) {
+            return binding.scope() == null ? globals.get(binding.name())
+                                           : locals.peek().get(binding.name());
+        }
+        ValuesFields.Value variable(Binding binding) {
+            return binding.scope() == null && binding.name().equals("NF")
+                ? number(record.fields.size())
+                : cell(binding).scalar;
+        }
+        ValuesFields.Value global(String name) { return variable(new Binding(null, name)); }
+        void assignInput(String name, String text) {
+            globalNames.add(name);
+            globals.put(name, new Cell(ValuesFields.input(text)));
+        }
+        Location location(Parser.Expr node) throws IOException {
+            if (node instanceof Parser.Variable)
+                return new VariableLocation(analysis.resolved.get(node));
+            if (node instanceof Parser.ArrayAccess access) {
+            Parser.Field field = (Parser.Field)node;
+            int index = numeric(evaluate(field.index()));
+            if (index < 0)
+                throw new Builtins.RuntimeIssue(field.pos(), "negative field index");
+            return new FieldLocation(index);
+        }
+        ValuesFields.Value read(Location location) {
+            return switch (location) {
+                case VariableLocation v -> variable(v.binding());
+                case FieldLocation f -> record.read(f.index()) ;
+        void store(Location location, ValuesFields.Value value, Lexer.Position pos) {
+            switch (location) {
+            case FieldLocation f -> record.write(f.index(), value) ;
+            case VariableLocation v -> {
+                Binding binding = v.binding();
+                if (binding.scope() == null && binding.name().equals("NF")) {
+                    int size = numeric(value);
+                    if (size < 0)
+                        throw new Builtins.RuntimeIssue(pos, "negative NF");
+                    record.resize(size)
+                    ;
+                } else
+                    cell(binding).scalar = value;
+            }
+            }
+        }
+        ValuesFields.Value evaluate(Parser.Expr expression) throws IOException {
+            return switch (expression) {
+                case Parser.Literal literal -> literal.value();
+                case Parser.Variable v -> read(location(v));
+                case Parser.ArrayAccess a -> read(location(a));
+                case Parser.Field f -> read(location(f));
+                case Parser.Paren p -> evaluate(p.expression());
+                case Parser.Assignment a -> {
+                    Location location = location(a.location());
+                    ValuesFields.Value value = evaluate(a.value());
+                    if (!a.operator().equals("="))
+                        value = arithmetic(a.operator().substring(0, 1), read(location), value,
+                                           a.pos());
+                    store(location, value, a.pos());
+                    yield read(location);
+                }
+        void output(Parser.Output output) throws IOException {
+            List<ValuesFields.Value> values = new ArrayList<>();
+            for (Parser.Expr expression : output.arguments())
+                values.add(evaluate(expression));
+            String content;
+            if (output.formatted())
+                content = Builtins.format(values, output.pos());
+            else {
+                if (values.isEmpty())
+                    values.add(record.zero);
+                StringJoiner joined = new StringJoiner(text(global("OFS")));
+                for (ValuesFields.Value value : values)
+                    joined.add(text(value));
+                content = joined + text(global("ORS"));
+            String filename = output.filename() == null ? null : text(evaluate(output.filename()));
+            streams.write(content, filename, output.redirect(), output.redirectPos());
+        }
+        void statement(Parser.Stmt statement) throws IOException {
+            if (statement instanceof Parser.Block block) {
+                for (Parser.Stmt child : block.statements())
+                    statement(child);
+                return;
+            }
+            if (statement instanceof Parser.Empty)
+                return;
+            lines.merge(statement.pos().line(), 1, Integer::sum);
+            switch (statement) {
+            case Parser.ExpressionStatement expression -> evaluate(expression.expression());
+            case Parser.Output output -> output(output);
+        String nextRecord() throws IOException {
+            while (true) {
+                if (inputIndex < inputLines.size()) {
+                    String line = inputLines.get(inputIndex++);
+                    current.records++;
+                    globals.get("NR").scalar = number(numeric(global("NR")) + 1);
+                    globals.get("FNR").scalar = number(numeric(global("FNR")) + 1);
+                    return line;
+                }
+                if (operandIndex == arguments.operands().size())
+                    return null;
+                Streams.Operand operand = arguments.operands().get(operandIndex++);
+                if (!operand.file)
+                    assignInput(operand.name, operand.value);
+                else {
+                    current = operand;
+                    inputLines = Streams.records(operand.name);
+                    inputIndex = 0;
+                    globals.get("FILENAME").scalar = string(operand.name);
+                    globals.get("FNR").scalar = number(0);
+                }
+            }
+        }
+        void actions(String phase) throws IOException {
+            this.phase = phase;
+            for (Parser.Rule rule : analysis.rules)
+                if (rule.flavor.equals(phase)) {
+                    rule.count++;
+                    statement(rule.action);
+                }
+        }
+        boolean matches(Parser.Rule rule) throws IOException {
+            if (rule.flavor.equals("all"))
+                return true;
+        void records() throws IOException {
+            if (analysis.rules.stream().noneMatch(rule -> !rule.flavor.equals("BEGIN")))
+                return;
+            phase = "records";
+            String line;
+            while ((line = nextRecord()) != null) {
+                record.set(line)
+                ;
+                try {
+                    for (Parser.Rule rule : analysis.rules)
+                        if (!rule.flavor.equals("BEGIN") && !rule.flavor.equals("END") &&
+                            matches(rule)) {
+                            rule.count++;
+                            if (rule.action == null)
+                                streams.write(text(record.zero) + text(global("ORS")), null, null,
+                                              null);
+                            else
+                                statement(rule.action);
+                        }
+                } catch (Transfer transfer) {
+                    if (transfer.flow != Flow.NEXT)
+                        throw transfer;
+                }
+            }
+        }
+        void execute() throws IOException {
+            try {
+                for (Streams.Option option : arguments.options())
+                    assignInput(option.name(), option.value());
+                try {
+                    actions("BEGIN");
+                    records();
+        List<String> statistics() {
+            List<String> result = new ArrayList<>();
+            result.add(error == null
+                           ? "status: exit " + exitStatus
+                           : "status: runtime error at " + error.pos + ": " + error.getMessage());
+            result.add("[inputs]");
+            for (Streams.Operand operand : arguments.operands())
+                if (operand.file)
+                    result.add(operand.name + " records=" + operand.records);
+            result.add("[rules]");
+            for (Parser.Rule rule : analysis.rules)
+                result.add(rule.pos + " " + rule.flavor + " count=" + rule.count);
+            result.add("[outputs]");
+            result.add("stdout.txt writes=" + streams.stdout.writes +
+                       " bytes=" + streams.stdout.content.length());
+            result.add("[lines]");
+            for (var entry : lines.entrySet())
+                result.add(entry.getKey() + " count=" + entry.getValue());
+            result.add("[globals]");
+            for (String name : globalNames) {
+                Binding binding = new Binding(null, name);
+                result.add(name + " = " +
+                           (analysis.arrays.contains(binding)
+                                ? "array (" + globals.get(name).array.size() + ")"
+                                : ValuesFields.describe(variable(binding))));
+            }
+            return result;
+        }
+    }
+    public static void main(String[] args) throws IOException {
+        Streams.Arguments arguments =
+            Streams.parse(Files.readString(Path.of("input/args.txt"), StandardCharsets.US_ASCII));
+        String source = Files.readString(Path.of("input/program.awk"), StandardCharsets.US_ASCII);
+        Streams streams;
+        List<String> statistics;
+        try {
+            Analysis analysis = new Analysis(new Parser(Lexer.tokenize(source)).parse()).prepare();
+            Engine engine = new Engine(analysis, arguments);
+            engine.execute();
+            streams = engine.streams;
+            statistics = engine.statistics();
+        streams.save();
+        Files.writeString(Path.of("output/stats.txt"), String.join("\n", statistics) + "\n",
+                          StandardCharsets.US_ASCII);
+    }

@@ -1,0 +1,129 @@
+func readLines(_ name: String) throws -> [String] { try String(contentsOfFile: "input/" + name, encoding: .ascii).split(separator: "\n").map(String.init) }
+func readBinary(_ name: String) throws -> [Example] { try readLines(name).dropFirst().map { line in let fields = line.components(separatedBy: ","); return Example(id: fields[0], point: Point(x: Double(fields[1])!, y: Double(fields[2])!), label: Int(fields[3])!) } }
+func readSettings() throws -> Settings {
+    var settings = Settings()
+    for line in try readLines("params.txt") {
+        let fields = line.components(separatedBy: " ")
+        switch fields[0] {
+        case "C_GRID": settings.coefficients = fields.dropFirst().map { Double($0)! }
+        case "KERNEL":
+            let kind: KernelKind
+            if fields[2] == "linear" { kind = .linear }
+            else if fields[2] == "poly" { kind = .polynomial(Int(fields[3])!, Double(fields[4])!, Double(fields[5])!) }
+            else { kind = .rbf(Double(fields[3])!) }
+            settings.kernels.append(Kernel(name: fields[1], kind: kind))
+        case "TOLERANCE": settings.tolerance = Double(fields[1])!
+        case "EPS": settings.epsilon = Double(fields[1])!
+        case "MAX_PASSES": settings.maximumPasses = Int(fields[1])!
+        case "FOLDS": settings.foldCount = Int(fields[1])!
+        }
+    }
+    return settings
+}
+func readInputs() throws -> Inputs {
+    let training = try readBinary("train.csv"), testing = try readBinary("test.csv")
+    return try Inputs(training: training, testing: testing, multiTraining: multiTraining, multiTesting: multiTesting, settings: readSettings())
+}
+enum KernelKind { case linear, polynomial(Int, Double, Double), rbf(Double) }
+struct Kernel {
+    let name: String
+    let kind: KernelKind
+    var isLinear: Bool { if case .linear = kind { return true }; return false }
+    func value(_ first: Point, _ second: Point) -> Double {
+        if case .rbf(let gamma) = kind { let e1 = first.x - second.x, e2 = first.y - second.y; return exp(-gamma * (e1 * e1 + e2 * e2)) }
+        let product = first.x * second.x + first.y * second.y
+        if case .polynomial(let degree, let gamma, let constant) = kind { let factor = gamma * product + constant; var result = 1.0; for _ in 0..<degree { result *= factor }; return result }
+        return product
+    }
+    func matrix(_ points: [Point]) -> [[Double]] { points.map { first in points.map { value(first, $0) } } }
+}
+func submatrix(_ matrix: [[Double]], _ indices: [Int]) -> [[Double]] { indices.map { i in indices.map { matrix[i][$0] } } }
+func sign(_ value: Double) -> Int { value > 0 ? 1 : -1 }
+func folds(_ size: Int, _ count: Int) -> [(training: [Int], testing: [Int])] { (0..<count).map { fold in ((0..<size).filter { $0 % count != fold }, (0..<size).filter { $0 % count == fold }) } }
+func correctCount(_ labels: [Int], _ values: [Double]) -> Int { labels.indices.filter { labels[$0] == sign(values[$0]) }.count }
+    func decision(_ point: Point) -> Double { var total = 0.0; for i in alpha.indices where alpha[i] > 0 { total += alpha[i] * Double(labels[i]) * kernel.value(points[i], point) }; return total - b }
+func train(_ points: [Point], _ labels: [Int], _ kernel: Kernel, _ matrix: [[Double]], _ coefficient: Double, _ settings: Settings) -> Model { let model = Model(points, labels, kernel, matrix, coefficient, settings); model.fit(); return model }
+func supportCounts(_ model: Model) -> (total: Int, bound: Int, free: Int) {
+    let total = model.alpha.filter { $0 > 0 }.count, bound = model.alpha.filter { $0 > 0 && $0 == model.coefficient }.count
+    return (total, bound, total - bound)
+}
+struct FoldResult { let training: Int; let testing: Int; let correct: Int; let support: Int; let model: Model }
+struct CVResult {
+    let kernel: Kernel
+    let kernelIndex: Int
+    let coefficient: Double
+    let values: [Double]
+    let folds: [FoldResult]
+    let correct: Int
+    let support: Int
+    let passes: Int
+    let steps: Int
+}
+struct CVSummary { let matrices: [[[Double]]]; let combinations: [CVResult]; let best: [CVResult]; let selected: CVResult; let ranking: [CVResult] }
+func ranksBefore(_ first: CVResult, _ second: CVResult) -> Bool { if first.correct != second.correct { return first.correct > second.correct }; if first.coefficient != second.coefficient { return first.coefficient < second.coefficient }; return first.kernelIndex < second.kernelIndex }
+func crossValidate(_ examples: [Example], _ settings: Settings) -> CVSummary {
+    let points = examples.map { $0.point }, labels = examples.map { $0.label }, partitions = folds(examples.count, settings.foldCount)
+    var matrices: [[[Double]]] = [], combinations: [CVResult] = [], best: [CVResult] = []
+    for (kernelIndex, kernel) in settings.kernels.enumerated() {
+        let matrix = kernel.matrix(points)
+        matrices.append(matrix)
+        var candidates: [CVResult] = []
+        for coefficient in settings.coefficients {
+            var values = Array(repeating: 0.0, count: examples.count), foldResults: [FoldResult] = [], totalCorrect = 0, totalSupport = 0, totalPasses = 0, totalSteps = 0
+            for partition in partitions {
+                let model = train(partition.training.map { points[$0] }, partition.training.map { labels[$0] }, kernel, submatrix(matrix, partition.training), coefficient, settings)
+                var correct = 0
+                for i in partition.testing { values[i] = model.decision(points[i]); if sign(values[i]) == labels[i] { correct += 1 } }
+                let support = supportCounts(model).total
+                foldResults.append(FoldResult(training: partition.training.count, testing: partition.testing.count, correct: correct, support: support, model: model))
+                totalCorrect += correct; totalSupport += support; totalPasses += model.passes; totalSteps += model.steps
+            }
+            let result = CVResult(kernel: kernel, kernelIndex: kernelIndex, coefficient: coefficient, values: values, folds: foldResults, correct: totalCorrect, support: totalSupport, passes: totalPasses, steps: totalSteps)
+            candidates.append(result); combinations.append(result)
+        }
+        best.append(candidates.sorted(by: ranksBefore)[0])
+    }
+    return CVSummary(matrices: matrices, combinations: combinations, best: best, selected: best.sorted(by: ranksBefore)[0], ranking: combinations.sorted(by: ranksBefore))
+}
+func crossValidationLines(_ size: Int, _ foldCount: Int, _ summary: CVSummary) -> [String] {
+    var lines = ["cross_validation folds \(foldCount) examples \(size)"]
+    for result in summary.best { lines.append("best \(result.kernel.name) C \(fixed(result.coefficient)) correct \(result.correct)/\(size) accuracy \(ratio(result.correct, size))") }
+    let selected = summary.selected
+    lines += ["selected \(selected.kernel.name) C \(fixed(selected.coefficient))", "ranking"]
+    for (index, result) in summary.ranking.enumerated() { lines.append("\(index + 1) \(result.kernel.name) C \(fixed(result.coefficient)) correct \(result.correct)/\(size)") }
+    lines.append("cv_detail \(selected.kernel.name) C \(fixed(selected.coefficient))")
+    for (index, result) in selected.folds.enumerated() { lines.append("fold \(index + 1) train \(result.training) test \(result.testing) correct \(result.correct) support_vectors \(result.support) \(runInfo(result.model))") }
+    return lines
+}
+struct FinalEvaluation { let model: Model; let trainingValues: [Double]; let testingValues: [Double]; let weights: Point; let lines: [String] }
+func evaluateFinal(_ model: Model, _ training: [Example], _ testing: [Example], _ tolerance: Double) -> FinalEvaluation {
+    let n = training.count, m = testing.count, trainingValues = model.trainingDecisions(), testingValues = testing.map { model.decision($0.point) }, testLabels = testing.map { $0.label }, objective = objectives(model)
+    var lines = ["model \(model.kernel.name)", "kernel \(model.kernel.description)", "C \(fixed(model.coefficient))", "alignment \(fixed(alignment, 6))", "passes \(model.passes) full \(model.fullPasses) nonbound \(model.nonboundPasses) converged \(model.converged ? "yes" : "no")", "examined \(model.examined) steps \(model.steps)", "choice heuristic \(model.choices[0]) nonbound_loop \(model.choices[1]) full_loop \(model.choices[2])", "clipping none \(model.clipping[0]) lower \(model.clipping[1]) upper \(model.clipping[2])", supportText(model), "b \(fixed(model.b, 6))", "equality \(fixed(equality, 6))"]
+    return FinalEvaluation(model: model, trainingValues: trainingValues, testingValues: testingValues, weights: Point(x: w1, y: w2), lines: lines)
+}
+func calibrate(_ training: [Example], _ testing: [Example], _ selected: CVResult, _ testingValues: [Double], _ iterations: Int) -> Calibration {
+    let positives = training.filter { $0.label == 1 }.count, negatives = training.count - positives, targets = training.map { $0.label == 1 ? Double(positives + 1) / Double(positives + 2) : 1 / Double(negatives + 2) }, values = selected.values
+    let probabilities = testingValues.map { probability($0, coefficient, intercept) }
+func cvGridLines(_ summary: CVSummary, _ foldCount: Int, _ size: Int) -> [String] {
+    let header = ["kernel", "C"] + (1...foldCount).map { "fold\($0)" } + ["correct", "accuracy", "support_vectors", "passes", "steps"]
+    var lines = [header.joined(separator: ",")]
+    for result in summary.combinations { let row = [result.kernel.name, fixed(result.coefficient)] + result.folds.map { String($0.correct) } + [String(result.correct), ratio(result.correct, size), String(result.support), String(result.passes), String(result.steps)]; lines.append(row.joined(separator: ",")) }
+    return lines
+}
+func predictionLines(_ testing: [Example], _ results: [FinalEvaluation], _ selected: CVResult, _ pegasosValues: [Double], _ probabilities: [Double]) -> [String] {
+    let header = ["id", "label"] + results.map { $0.model.kernel.name } + ["pegasos", "predicted", "probability"]
+    var lines = [header.joined(separator: ",")]
+    for i in testing.indices { let row = [testing[i].id, String(testing[i].label)] + results.map { fixed($0.testingValues[i]) } + [fixed(pegasosValues[i]), String(sign(results[selected.kernelIndex].testingValues[i])), fixed(probabilities[i])]; lines.append(row.joined(separator: ",")) }
+    return lines
+}
+let input = try readInputs(), settings = input.settings, summary = crossValidate(input.training, settings), points = input.training.map { $0.point }, labels = input.training.map { $0.label }
+var results: [FinalEvaluation] = []
+for (index, result) in summary.best.enumerated() { results.append(evaluateFinal(train(points, labels, result.kernel, summary.matrices[index], result.coefficient, settings), input.training, input.testing, settings.tolerance)) }
+let selected = summary.selected, selectedResult = results[selected.kernelIndex], selectedMatrix = summary.matrices[selected.kernelIndex], calibration = calibrate(input.training, input.testing, selected, selectedResult.testingValues, settings.newtonIterations)
+var sections = [crossValidationLines(input.training.count, settings.foldCount, summary)] + results.map { $0.lines }
+sections += [trainingLog(selectedResult.model), coefficientPath(input.training, input.testing, selected, selectedMatrix, settings), learningCurve(input.training, input.testing, selected, selectedMatrix, settings), calibration.lines, pegasosResult.lines, mcnemarLines(input.testing, results, pegasosResult.values)]
+var modelLines: [String] = []
+for section in sections { if !modelLines.isEmpty { modelLines.append("") }; modelLines += section }
+try writeLines("model.txt", modelLines)
+try writeLines("cv_grid.csv", cvGridLines(summary, settings.foldCount, input.training.count))
+try writeLines("predictions.csv", predictionLines(input.testing, results, selected, pegasosResult.values, calibration.probabilities))

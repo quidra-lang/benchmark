@@ -1,0 +1,170 @@
+pub struct Annotation {
+    pub sample: usize,
+    pub label: u8,
+}
+
+pub struct Input {
+    pub ecg: Vec<i64>,
+    pub annotations: Vec<Annotation>,
+    pub params: BTreeMap<String, i64>,
+}
+
+pub fn read() -> Input {
+    let ecg = fs::read_to_string("input/ecg.csv").unwrap().lines().skip(1).map(|line| line.split_once(',').unwrap().1.parse().unwrap()).collect();
+    let annotations = fs::read_to_string("input/annotations.csv").unwrap().lines().skip(1).map(|line| {
+        let (sample, label) = line.split_once(',').unwrap();
+        Annotation { sample: sample.parse().unwrap(), label: label.as_bytes()[0] }
+    }).collect();
+    let params = fs::read_to_string("input/params.txt").unwrap().lines().map(|line| {
+        let (key, value) = line.split_once(' ').unwrap();
+        (key.into(), value.parse().unwrap())
+    }).collect();
+    Input { ecg, annotations, params }
+}
+struct Beat {
+    sample: usize,
+    rr: Option<i64>,
+    width: i64,
+    label: u8,
+    method: &'static str,
+    reference: Option<usize>,
+}
+
+fn beats(input: &Input, signals: &Signals, detection: &Detection) -> (Vec<Beat>, Vec<Option<usize>>) {
+    let mut beats: Vec<Beat> = Vec::new();
+    for &i in &detection.registered {
+        let peak = &detection.peaks[i];
+        let sample = peak.r.saturating_sub(21);
+        let rr = beats.last().map(|previous| 5 * (sample - previous.sample) as i64);
+        let width = detector::width(signals, peak);
+        let k = beats.len();
+        let premature = if k >= 9 {
+            let preceding: i64 = beats[k - 8..k].iter().map(|b| b.rr.unwrap()).sum();
+            800 * rr.unwrap() < input.params["premature_percent"] * preceding
+        } else { false };
+        let label = if premature { if width > input.params["qrs_width_ms"] { b'V' } else { b'A' } } else { b'N' };
+        beats.push(Beat { sample, rr, width, label, method: if peak.class == "qrs" { "threshold" } else { "searchback" }, reference: None });
+    }
+    let mut matched = vec![None; input.annotations.len()];
+    for (index, beat) in beats.iter_mut().enumerate() {
+        let reference = input.annotations.iter().enumerate().filter(|(i, annotation)| matched[*i].is_none() && annotation.sample.abs_diff(beat.sample) <= (input.params["match_ms"] / 5) as usize).min_by_key(|(_, annotation)| (annotation.sample.abs_diff(beat.sample), annotation.sample)).map(|(i, _)| i);
+        if let Some(reference) = reference { matched[reference] = Some(index); beat.reference = Some(reference); }
+    }
+    (beats, matched)
+}
+
+fn beat_lines(input: &Input, beats: &[Beat]) -> Vec<String> {
+    let mut lines = vec!["beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label".into()];
+    for (index, beat) in beats.iter().enumerate() {
+        let reference = beat.reference.map(|i| &input.annotations[i]);
+        lines.push(format!("{},{},{},{},{},{},{},{},{},{}", index + 1, beat.sample, 5 * beat.sample, missing(beat.rr), beat.rr.map_or_else(|| "-".into(), |rr| decimal2(rdiv(6000000, rr))), beat.width, beat.label as char, beat.method, reference.map_or_else(|| "-".into(), |r| r.sample.to_string()), reference.map_or_else(|| "-".into(), |r| (r.label as char).to_string())));
+    }
+    lines
+}
+
+fn matching_lines(input: &Input, beats: &[Beat], matched: &[Option<usize>]) -> Vec<String> {
+    let mut records = Vec::new();
+    for (i, annotation) in input.annotations.iter().enumerate() {
+        let line = if let Some(index) = matched[i] {
+            let beat = &beats[index];
+            format!("{},{},{},{},{},{},TP,{}", annotation.sample, annotation.label as char, index + 1, beat.sample, beat.label as char, 5 * (beat.sample as i64 - annotation.sample as i64), if annotation.label == beat.label { "yes" } else { "no" })
+        } else { format!("{},{},-,-,-,-,FN,-", annotation.sample, annotation.label as char) };
+        records.push((annotation.sample, 0, line));
+    }
+    for (i, beat) in beats.iter().enumerate().filter(|(_, b)| b.reference.is_none()) {
+        records.push((beat.sample, 1, format!("-,-,{},{},{},-,FP,-", i + 1, beat.sample, beat.label as char)));
+    }
+    records.sort_by_key(|record| (record.0, record.1));
+    let mut lines = vec!["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree".into()];
+    lines.extend(records.into_iter().map(|record| record.2));
+    lines
+}
+fn segments(length: usize, params: &BTreeMap<String, i64>) -> Vec<(usize, usize)> {
+    let width = (params["segment_ms"] / 5) as usize;
+    (0..length).step_by(width).map(|start| (start, (start + width).min(length))).collect()
+}
+
+fn performance(input: &Input, detection: &Detection, beats: &[Beat], matched: &[Option<usize>]) -> Vec<String> {
+    let tp = matched.iter().filter(|m| m.is_some()).count();
+    let fp = beats.len() - tp;
+    let fn_count = matched.len() - tp;
+    let label_count = |label| beats.iter().filter(|beat| beat.label == label).count();
+    let ref_count = |label| input.annotations.iter().filter(|r| r.label == label).count();
+        "MATCHING".into(), format!("tolerance_ms {}", input.params["match_ms"]),
+        format!("references {} N={} V={} A={}", input.annotations.len(), ref_count(b'N'), ref_count(b'V'), ref_count(b'A')),
+        format!("detections {} N={} V={} A={}", beats.len(), label_count(b'N'), label_count(b'V'), label_count(b'A')),
+        format!("true_positives {tp}"), format!("false_positives {fp}"), format!("false_negatives {fn_count}"),
+        format!("sensitivity {}", ratio(tp as i64, (tp + fn_count) as i64)), format!("positive_predictivity {}", ratio(tp as i64, (tp + fp) as i64)), format!("detection_error_rate {}", ratio((fp + fn_count) as i64, input.annotations.len() as i64))];
+    let method_counts = |method| (beats.iter().filter(|b| b.method == method && b.reference.is_some()).count(), beats.iter().filter(|b| b.method == method).count());
+    let (threshold_matched, threshold_total) = method_counts("threshold");
+    let (search_matched, search_total) = method_counts("searchback");
+    lines.push(format!("by_method threshold={threshold_matched}/{threshold_total} searchback={search_matched}/{search_total}"));
+    let offsets: Vec<_> = beats.iter().filter_map(|beat| beat.reference.map(|r| 5 * (beat.sample as i64 - input.annotations[r].sample as i64))).collect();
+    if offsets.is_empty() { lines.push("offset_ms none".into()); }
+    else { lines.push(format!("offset_ms mean={} mean_abs={} max_abs={}", decimal2(rdiv(100 * offsets.iter().sum::<i64>(), tp as i64)), decimal2(rdiv(100 * offsets.iter().map(|v| v.abs()).sum::<i64>(), tp as i64)), offsets.iter().map(|v| v.abs()).max().unwrap())); }
+    let mut confusion = [[0_i64; 3]; 3];
+    let mut misses = [0_i64; 3];
+    let mut extras = [0_i64; 3];
+    for (index, annotation) in input.annotations.iter().enumerate() {
+        let row = LABELS.iter().position(|&l| l == annotation.label).unwrap();
+        if let Some(beat) = matched[index] { confusion[row][LABELS.iter().position(|&l| l == beats[beat].label).unwrap()] += 1; }
+        else { misses[row] += 1; }
+    }
+    for beat in beats.iter().filter(|beat| beat.reference.is_none()) { extras[LABELS.iter().position(|&l| l == beat.label).unwrap()] += 1; }
+    lines.extend(["CONFUSION".into(), format!("ref  {:>6}{:>6}{:>6}  miss", "N", "V", "A")]);
+    for i in 0..3 { lines.push(format!("{}    {:6}{:6}{:6}{:6}", LABELS[i] as char, confusion[i][0], confusion[i][1], confusion[i][2], misses[i])); }
+    lines.push(format!("extra{:6}{:6}{:6}", extras[0], extras[1], extras[2]));
+    lines.extend([format!("veb_sensitivity {}", ratio(confusion[1][1], ref_count(b'V') as i64)), format!("veb_positive_predictivity {}", ratio(confusion[1][1], label_count(b'V') as i64)), format!("sveb_sensitivity {}", ratio(confusion[2][2], ref_count(b'A') as i64)), format!("sveb_positive_predictivity {}", ratio(confusion[2][2], label_count(b'A') as i64))]);
+    let segments = segments(input.ecg.len(), &input.params);
+    lines.push(format!("SEGMENTS segment_ms={} segments={}", input.params["segment_ms"], segments.len()));
+    for (start, end) in segments {
+        let references: Vec<_> = input.annotations.iter().enumerate().filter(|(_, r)| start <= r.sample && r.sample < end).collect();
+        let matched_count = references.iter().filter(|(i, _)| matched[*i].is_some()).count();
+        let false_positive = beats.iter().filter(|b| b.reference.is_none() && start <= b.sample && b.sample < end).count();
+        let noise = detection.peaks.iter().filter(|p| p.class == "noise" && start <= p.time && p.time < end).count();
+        lines.push(format!("{:6}-{:6} refs={} tp={} fp={} fn={} noise_peaks={}", 5 * start, 5 * end, references.len(), matched_count, false_positive, references.len() - matched_count, noise));
+    }
+    lines.push(format!("ERRORS count={}", fp + fn_count));
+    let mut errors: Vec<_> = beats.iter().enumerate().filter(|(_, beat)| beat.reference.is_none()).map(|(i, b)| (b.sample, 0, format!("false_positive beat={} sample={} time_ms={} label={}", i + 1, b.sample, 5 * b.sample, b.label as char))).collect();
+    errors.extend(input.annotations.iter().enumerate().filter(|(i, _)| matched[*i].is_none()).map(|(_, r)| (r.sample, 1, format!("false_negative sample={} time_ms={} label={}", r.sample, 5 * r.sample, r.label as char))));
+    errors.sort_by_key(|record| (record.0, record.1));
+    lines.extend(errors.into_iter().map(|record| record.2));
+    lines
+}
+fn rhythm(input: &Input, beats: &[Beat]) -> Vec<String> {
+    let start = (input.params["strip_start_ms"] / 5) as usize;
+    let length = (input.params["strip_ms"] / 5) as usize;
+    let columns = length / 10;
+    let mut detected = vec![b' '; columns];
+    let mut referenced = vec![b' '; columns];
+    for beat in beats.iter().filter(|b| start <= b.sample && b.sample < start + length) { detected[(beat.sample - start) / 10] = beat.label; }
+    for annotation in input.annotations.iter().filter(|r| start <= r.sample && r.sample < start + length) { referenced[(annotation.sample - start) / 10] = annotation.label; }
+    lines.push(format!(" beats |{}|", String::from_utf8(detected).unwrap()));
+    lines.push(format!("  refs |{}|", String::from_utf8(referenced).unwrap()));
+    lines
+}
+    let input = signal_io::read();
+    let signals = filters::apply(&input.ecg);
+    let detection = detect(&signals, &input.params);
+    let (beats, matched) = beats(&input, &signals, &detection);
+    signal_io::write("beats.csv", &beat_lines(&input, &beats));
+    signal_io::write("matching.csv", &matching_lines(&input, &beats, &matched));
+    signal_io::write("performance.txt", &performance(&input, &detection, &beats, &matched));
+    signal_io::write("rhythm_strip.txt", &rhythm(&input, &beats));
+pub fn rdiv(numerator: i64, denominator: i64) -> i64 { (2 * numerator + denominator).div_euclid(2 * denominator) }
+
+pub fn decimal2(value: i64) -> String {
+    format!("{}{}.{:02}", if value < 0 { "-" } else { "" }, value.abs() / 100, value.abs() % 100)
+}
+pub fn fraction(mut numerator: i64, mut denominator: i64) -> String {
+    let (mut a, mut b) = (numerator, denominator);
+    while b != 0 { (a, b) = (b, a % b); }
+    numerator /= a;
+    denominator /= a;
+    format!("{numerator}/{denominator}")
+}
+
+pub fn ratio(numerator: i64, denominator: i64) -> String {
+    if denominator == 0 { format!("{numerator}/0 none") }
+    else { format!("{numerator}/{denominator} reduced={} percent={}", fraction(numerator, denominator), decimal2(rdiv(10000 * numerator, denominator))) }
+}

@@ -1,0 +1,256 @@
+read_lines <- function(path) readLines(path, warn = FALSE)
+read_rows <- function(path, attributes, classes) {
+  lines <- read_lines(path)[-1L]
+  lapply(lines, function(line) {
+    fields <- strsplit(line, ",", fixed = TRUE)[[1L]]
+    values <- vapply(attributes, function(attribute) {
+      text <- fields[attribute$index + 1L]
+      if (text == "?") NA_real_
+      else if (attribute$integer) as.numeric(text)
+      else as.numeric(match(text, attribute$values))
+    }, numeric(1L))
+    list(id = fields[1L], values = values, label = match(fields[length(fields)], classes))
+  })
+}
+load_dataset <- function() {
+  schema <- lapply(read_lines("input/schema.txt"), strsplit, split = " ", fixed = TRUE)
+  schema <- lapply(schema, `[[`, 1L)
+  definitions <- schema[-length(schema)]
+  attributes <- lapply(seq_along(definitions), function(index) {
+    fields <- definitions[[index]]
+    list(index = index, name = fields[2L], integer = fields[3L] == "INT", values = fields[-seq_len(3L)])
+  })
+  target <- schema[[length(schema)]][2L]
+  classes <- schema[[length(schema)]][-seq_len(2L)]
+  settings <- list()
+  for (line in read_lines("input/params.txt")) {
+    fields <- strsplit(line, " ", fixed = TRUE)[[1L]]
+    settings[[tolower(fields[1L])]] <- as.numeric(fields[-1L])
+  }
+  list(attributes = attributes, target = target, classes = classes,
+       train = read_rows("input/train.csv", attributes, classes),
+       validation = read_rows("input/validation.csv", attributes, classes),
+       test = read_rows("input/test.csv", attributes, classes), settings = settings)
+}
+statistics <- function(rows, classes) {
+  labels <- vapply(rows, function(row) row$label, integer(1L))
+  counts <- as.numeric(tabulate(labels, nbins = classes))
+  selected <- which.max(counts)
+  list(size = as.numeric(length(rows)), counts = counts, squares = sum(counts * counts),
+       majority = selected, errors = length(rows) - counts[selected])
+}
+majority <- function(counts) which.max(counts)
+compare_fractions <- function(first, second) {
+  left <- first[1L] * second[2L]
+  right <- second[1L] * first[2L]
+  if (left < right) -1L else if (left > right) 1L else 0L
+}
+quality <- function(left, right) {
+  c(left$squares * right$size + right$squares * left$size, left$size * right$size)
+}
+improves <- function(value, parent) value[1L] * parent$size > parent$squares * value[2L]
+goes_left <- function(split, row) {
+  value <- row$values[split$attribute$index]
+  if (split$attribute$integer) 2 * value <= split$point else value == split$point
+}
+split_candidates <- function(rows, attribute) {
+  values <- sort(unique(vapply(rows, function(row) row$values[attribute$index], numeric(1L))), method = "radix")
+  if (length(values) < 2L) return(list())
+  points <- if (attribute$integer) values[-length(values)] + values[-1L] else values
+  lapply(points, function(point) list(attribute = attribute, point = point))
+}
+best_for_attribute <- function(rows, attribute, classes, settings) {
+  best <- NULL
+  for (split in split_candidates(rows, attribute)) {
+    selected <- vapply(rows, function(row) goes_left(split, row), logical(1L))
+    left <- rows[selected]
+    right <- rows[!selected]
+    if (length(left) < settings$min_samples_leaf || length(right) < settings$min_samples_leaf) next
+    value <- quality(statistics(left, classes), statistics(right, classes))
+    if (is.null(best) || compare_fractions(value, best$value) > 0L) {
+      best <- list(split = split, left = left, right = right, value = value)
+    }
+  }
+  best
+}
+best_split <- function(rows, attributes, classes, settings) {
+  best <- NULL
+  for (attribute in attributes) {
+    candidate <- best_for_attribute(rows, attribute, classes, settings)
+    if (!is.null(candidate) && (is.null(best) || compare_fractions(candidate$value, best$value) > 0L)) best <- candidate
+  }
+  best
+}
+find_surrogates <- function(rows, primary, attributes, limit, left_count, right_count) {
+  retained <- list()
+  primary_left <- vapply(rows, function(row) goes_left(primary, row), logical(1L))
+  for (attribute in attributes) {
+    if (attribute$index == primary$attribute$index) next
+    best <- NULL
+    for (split in split_candidates(rows, attribute)) {
+      agreement <- sum(vapply(rows, function(row) goes_left(split, row), logical(1L)) == primary_left)
+      left <- agreement >= length(rows) - agreement
+      score <- max(agreement, length(rows) - agreement)
+      if (is.null(best) || score > best$score) best <- list(split = split, left = left, score = score)
+    }
+    if (!is.null(best) && best$score > max(left_count, right_count)) retained[[length(retained) + 1L]] <- best
+  }
+  if (!length(retained) || limit == 0) return(list())
+  scores <- vapply(retained, function(item) item$score, numeric(1L))
+  indices <- vapply(retained, function(item) item$split$attribute$index, integer(1L))
+  retained[head(order(-scores, indices, method = "radix"), limit)]
+}
+grow_tree <- function(rows, attributes, classes, settings) {
+  grow <- function(sequence, number, depth) {
+    stats <- statistics(sequence, classes)
+    node <- list(number = number, depth = depth, stats = stats, split = NULL,
+                 surrogates = list(), default_left = TRUE, left = NULL, right = NULL)
+    if (stats$errors == 0 || depth == settings$max_depth || length(sequence) < settings$min_samples_split) return(node)
+    best <- best_split(sequence, attributes, classes, settings)
+    if (is.null(best) || !improves(best$value, stats)) return(node)
+    node$split <- best$split
+    node$default_left <- length(best$left) >= length(best$right)
+    node$surrogates <- find_surrogates(sequence, best$split, attributes, settings$max_surrogates, length(best$left), length(best$right))
+    node$left <- grow(best$left, 2 * number, depth + 1)
+    node$right <- grow(best$right, 2 * number + 1, depth + 1)
+    node
+  }
+  grow(rows, 1, 0)
+}
+tree_view <- function(root, cuts = numeric()) list(root = root, cuts = cuts)
+is_leaf <- function(node, tree) is.null(node$split) || node$number %in% tree$cuts
+route <- function(tree, row) {
+  node <- tree$root
+  path <- list()
+  steps <- list()
+  repeat {
+    path[[length(path) + 1L]] <- node
+    if (is_leaf(node, tree)) return(list(leaf = node, path = path, steps = steps))
+    left <- node$default_left
+    method <- "default"
+    if (!is.na(row$values[node$split$attribute$index])) {
+      left <- goes_left(node$split, row)
+      method <- "primary"
+    } else {
+      for (surrogate in node$surrogates) {
+        if (is.na(row$values[surrogate$split$attribute$index])) next
+        left <- goes_left(surrogate$split, row) == surrogate$left
+        method <- "surrogate"
+        break
+      }
+    }
+    steps[[length(steps) + 1L]] <- list(node = node, left = left, method = method)
+    node <- if (left) node$left else node$right
+  }
+}
+predict_tree <- function(tree, row) route(tree, row)$leaf$stats$majority
+correct_count <- function(tree, rows) sum(vapply(rows, function(row) predict_tree(tree, row) == row$label, logical(1L)))
+classification_lines <- function(title, classes, rows, predicted) {
+  matrix <- matrix(0, nrow = length(classes), ncol = length(classes))
+  correct <- 0
+  for (index in seq_along(rows)) {
+    label <- rows[[index]]$label
+    matrix[label, predicted[index]] <- matrix[label, predicted[index]] + 1
+    if (label == predicted[index]) correct <- correct + 1
+  }
+  lines <- c(paste("confusion", title, "correct", paste0(correct, "/", length(rows)), "accuracy", fraction_text(correct, length(rows))),
+             paste("actual\\predicted", paste(classes, collapse = " ")))
+  for (index in seq_along(classes)) lines <- c(lines, paste(classes[index], paste(matrix[index, ], collapse = " ")))
+  macro <- 0
+  defined <- 0
+  for (index in seq_along(classes)) {
+    hits <- matrix[index, index]
+    predicted_total <- sum(matrix[, index])
+    support <- sum(matrix[index, ])
+    denominator <- predicted_total + support
+    if (denominator > 0) {
+      macro <- macro + 2 * hits / denominator
+      defined <- defined + 1
+    }
+    lines <- c(lines, paste("class", classes[index], "precision", fraction_text(hits, predicted_total),
+                            "recall", fraction_text(hits, support), "f1", fraction_text(2 * hits, denominator), "support", support))
+  }
+  c(lines, paste("macro_f1", if (defined == 0) "-" else real_text(macro / defined)))
+}
+reduced_error_pruning <- function(root, validation) {
+  original <- tree_view(root)
+  maximum <- max(vapply(preorder(original), function(node) node$number, numeric(1L)))
+  visits <- numeric(maximum)
+  errors <- numeric(maximum)
+  for (row in validation) {
+    for (node in route(original, row)$path) {
+      visits[node$number] <- visits[node$number] + 1
+      errors[node$number] <- errors[node$number] + as.numeric(row$label != node$stats$majority)
+    }
+  }
+  cuts <- numeric()
+  decisions <- list()
+  decide <- function(node) {
+    leaf_error <- errors[node$number]
+    if (is.null(node$split)) return(leaf_error)
+    subtree_error <- decide(node$left) + decide(node$right)
+    pruned <- leaf_error <= subtree_error
+    decisions[[length(decisions) + 1L]] <<- list(node = node, rows = visits[node$number],
+        leaf_error = leaf_error, subtree_error = subtree_error, pruned = pruned)
+    if (pruned) {
+      cuts <<- c(cuts, node$number)
+      leaf_error
+    } else subtree_error
+  }
+  decide(root)
+  list(tree = tree_view(root, cuts), decisions = decisions)
+}
+accuracy <- function(tree, rows) ratio_text(correct_count(tree, rows), length(rows))
+build_analysis <- function(data) {
+  a <- list(data = data)
+  a$grown <- tree_view(grow_tree(data$train, data$attributes, length(data$classes), data$settings))
+  pruning <- reduced_error_pruning(a$grown$root, data$validation)
+  a$pruned <- pruning$tree
+  a$decisions <- pruning$decisions
+  models <- list(grown = a$grown, pruned = a$pruned, depth = a$depths[[a$selected_depth]]$tree,
+                 cost_complexity = a$sequence[[a$selected_index]]$tree)
+  a$predictions <- lapply(models, function(tree) vapply(data$test, function(row) predict_tree(tree, row), integer(1L)))
+  a$predictions$bagging <- vapply(seq_along(data$test), function(index) majority(a$test_votes[index, ]), integer(1L))
+  a
+}
+prediction_lines <- function(a) {
+  lines <- "id,predicted,actual,grown,leaf,path,missing"
+  data <- a$data
+  for (row in data$test) {
+    result <- route(a$pruned, row)
+    path <- paste(vapply(result$path, function(node) node$number, numeric(1L)), collapse = "-")
+    missing <- sum(vapply(result$steps, function(step) step$method != "primary", logical(1L)))
+    lines <- c(lines, paste(c(row$id, data$classes[result$leaf$stats$majority], data$classes[row$label],
+        data$classes[predict_tree(a$grown, row)], result$leaf$number, path, missing), collapse = ","))
+  }
+  lines
+}
+model_evaluation <- function(a, model) classification_lines(paste(model, "test"), a$data$classes, a$data$test, a$predictions[[model]])
+routing_lines <- function(a) {
+  nodes <- internal_nodes(a$pruned)
+  tally <- matrix(0, nrow = max(vapply(preorder(a$pruned), function(node) node$number, numeric(1L))), ncol = 3L)
+  groups <- list(list(), list())
+  for (row in a$data$test) {
+    for (step in route(a$pruned, row)$steps) {
+      method <- match(step$method, c("primary", "surrogate", "default"))
+      tally[step$node$number, method] <- tally[step$node$number, method] + 1
+    }
+    group <- if (anyNA(row$values)) 2L else 1L
+    groups[[group]][[length(groups[[group]]) + 1L]] <- row
+  }
+  lines <- "routing pruned test"
+  for (node in nodes) {
+    counts <- tally[node$number, ]
+    lines <- c(lines, paste("node", node$number, "rows", sum(counts), "primary", counts[1L],
+                            "surrogate", counts[2L], "default", counts[3L]))
+  }
+  c(lines, paste("complete rows", length(groups[[1L]]), "correct", accuracy(a$pruned, groups[[1L]])),
+    paste("incomplete rows", length(groups[[2L]]), "correct", accuracy(a$pruned, groups[[2L]])))
+}
+write_sections <- function(name, sections) writeLines(join_sections(sections), file.path("output", name), useBytes = TRUE)
+  a <- build_analysis(load_dataset())
+  write_sections("predictions.csv", list(prediction_lines(a)))
+  write_sections("evaluation.txt", list(
+      data_lines(a), c(summary_line(a, "grown", a$grown), summary_line(a, "pruned", a$pruned)),
+      model_evaluation(a, "grown"), model_evaluation(a, "pruned"), routing_lines(a), cross_validation_lines(a),
+      depth_lines(a), complexity_lines(a), bagging_lines(a), mcnemar_lines(a), auc_lines(a), learning_lines(a)))

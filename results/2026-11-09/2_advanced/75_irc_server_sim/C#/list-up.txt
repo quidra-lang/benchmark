@@ -1,0 +1,289 @@
+    public static void Send(Clients.Client client, string line) {
+        sent.Add(time + " " + client.identifier + " " + line);
+        client.sent++;
+    }
+    public static void Disconnect(Clients.Client client, string reason, string kind) {
+        if (!kind.Equals("closed")) {
+            Send(client, "ERROR :Closing Link: " + client.addressee + "[" + client.hostname +
+                             "] (" + reason + ")");
+            Add(statistics, "errors", 1);
+        }
+        if (client.registered)
+            Peers(client, ":" + client.prefix + " QUIT :" + reason);
+        foreach (Channels.Channel channel in new List<Channels.Channel>(client.channels))
+            RemoveMember(client, channel);
+        Add(statistics, "discarded", client.queue.Count);
+        client.queue.Clear();
+        clients.Remove(client.identifier);
+        clientOrder.Remove(client);
+        client.active = false;
+        gone.Add(new Gone(time, client.identifier, client.addressee, reason));
+        Add(disconnections, kind, 1);
+    }
+    public static void Process(Clients.Client client, string raw) {
+        Add(statistics, "processed", 1);
+        Protocol.Message message = Protocol.Parse(raw);
+        string command = message.command;
+        List<string> p = message.parameters;
+        if (command.Length == 0) {
+            Add(statistics, "empty", 1);
+            return;
+        }
+        Add(commands, command, 1);
+        if (!client.registered &&
+            !new HashSet<string> { "NICK", "USER", "PING", "PONG", "QUIT" }.Contains(command)) {
+            Error(client, 451);
+            return;
+        }
+        switch (command) {
+        case "NICK":
+            Nick(client, p);
+            break;
+        case "USER":
+            User(client, p);
+            break;
+        case "PING":
+            Ping(client, p);
+            break;
+        case "PONG":
+            break;
+        case "QUIT":
+            Disconnect(client, p.Count != 0 && p[0].Length != 0 ? "Quit: " + p[0] : "Client Quit",
+                       "quit");
+            break;
+        case "JOIN":
+            Join(client, p);
+            break;
+        case "PART":
+            Part(client, p);
+            break;
+        case "PRIVMSG":
+        case "NOTICE":
+            Message(client, p, command);
+            break;
+        case "TOPIC":
+            Topic(client, p);
+            break;
+        case "NAMES":
+            Names(client, p);
+            break;
+        case "WHOIS":
+            Whois(client, p);
+            break;
+        case "AWAY":
+            Away(client, p);
+            break;
+        case "INVITE":
+            Invite(client, p);
+            break;
+        case "KICK":
+            Kick(client, p);
+            break;
+        case "MODE":
+            if (Require(client, p, 1, "MODE")) {
+                if (p[0].StartsWith("#"))
+                    ChannelMode(client, p);
+                else
+                    UserMode(client, p);
+            }
+            break;
+        default:
+            Error(client, 421, command);
+            break;
+        }
+    }
+    public static void Arrival(Traffic record) {
+        string kind = record.kind;
+        if (kind.Equals("connect")) {
+            Clients.Client connectedClient = new Clients.Client(
+                record.identifier, record.body.Substring(8), time, Setting("BUCKET"));
+            clients[connectedClient.identifier] = connectedClient;
+            clientOrder.Add(connectedClient);
+            if (clients.Count > peakConnections) {
+                peakConnections = clients.Count;
+                peakConnectionsTime = time;
+            }
+            return;
+        }
+        Clients.Client client = clients.GetValueOrDefault(record.identifier);
+        if (kind.Equals("disconnect")) {
+            if (client != null)
+                Disconnect(client, "Remote host closed the connection", "closed");
+            return;
+        }
+        if (client == null) {
+            Add(statistics, "dropped", 1);
+            return;
+        }
+        client.received++;
+        client.lastReceived = time;
+        client.pingSent = -1;
+        if (client.queue.Count == 0 && client.tokens >= 1) {
+            client.UseToken(time, Setting("BUCKET"), Setting("REFILL"));
+            Process(client, record.body);
+        } else if (client.queue.Count >= Setting("QUEUE")) {
+            Add(statistics, "discarded", 1);
+            Disconnect(client, "Excess Flood", "flood");
+        } else {
+            client.queue.Enqueue(record.body);
+            Add(statistics, "queued", 1);
+        }
+    }
+    public static void Run() {
+        int position = 0;
+        for (time = 0; time <= end; time++) {
+            foreach (Clients.Client client in new List<Clients.Client>(clientOrder)) {
+                client.Refill(time, Setting("BUCKET"), Setting("REFILL"));
+                while (client.active && client.queue.Count != 0 && client.tokens >= 1) {
+                    client.UseToken(time, Setting("BUCKET"), Setting("REFILL"));
+                    Process(client, client.queue.Dequeue());
+                }
+            }
+            while (position < traffic.Count && traffic[position].time == time)
+                Arrival(traffic[position++]);
+            foreach (Clients.Client client in new List<Clients.Client>(clientOrder))
+                if (client.pingSent >= 0) {
+                    if (time - client.pingSent >= Setting("TIMEOUT"))
+                        Disconnect(client,
+                                   "Ping timeout: " + (time - client.lastReceived) + " seconds",
+                                   "timeout");
+                } else if (time - client.lastReceived >= Setting("PINGFREQ")) {
+                    Send(client, "PING :" + settings["NAME"]);
+                    Add(statistics, "pings", 1);
+                    client.pingSent = time;
+                }
+        }
+    }
+    public static List<string> ClientReport() {
+        List<string> lines = new();
+        int registered = 0, invisible = 0, away = 0;
+        foreach (Clients.Client client in clientOrder) {
+            if (client.registered)
+                registered++;
+            if (client.invisible)
+                invisible++;
+            if (client.away.Length != 0)
+                away++;
+            string joined = Joined(client, ",");
+            List<string> invites = new();
+            foreach (Channels.Channel channel in client.invites)
+                invites.Add(channel.name);
+            lines.Add("CLIENT " + client.identifier + " " + client.addressee + " " +
+                      (client.username == null ? "*" : client.username) + " " + client.hostname +
+                      " " + client.mode + " connected " + client.connectionTime + " signon " +
+                      (client.registered ? Convert.ToString(client.registrationTime) : "-") +
+                      " received " + client.received + " sent " + client.sent + " tokens " +
+                      client.tokens + " queue " + client.queue.Count + " channels " +
+                      (joined.Length == 0 ? "none" : joined) + " invites " +
+                      (invites.Count == 0 ? "none" : string.Join(",", invites)));
+            if (client.away.Length != 0)
+                lines.Add("AWAY " + client.identifier + " " + client.away);
+        }
+        lines.Add("TOTAL clients " + clients.Count + " registered " + registered + " invisible " +
+                  invisible + " away " + away);
+        return lines;
+    }
+    public static List<string> StatisticsReport() {
+        List<string> lines = new();
+        int pending = 0, numericTotal = 0;
+        foreach (Clients.Client client in clientOrder)
+            pending += client.queue.Count;
+        foreach (int count in numerics.Values)
+            numericTotal += count;
+        lines.Add("END " + end);
+        lines.Add("LINES total " + traffic.Count + " connect " +
+                  lineCounts.GetValueOrDefault("connect", 0) + " disconnect " +
+                  lineCounts.GetValueOrDefault("disconnect", 0) + " messages " +
+                  lineCounts.GetValueOrDefault("messages", 0));
+        lines.Add("MESSAGES dropped " + Stat("dropped") + " queued " + Stat("queued") +
+                  " processed " + Stat("processed") + " discarded " + Stat("discarded") +
+                  " pending " + pending + " empty " + Stat("empty"));
+        lines.Add("SENT lines " + sent.Count + " numerics " + numericTotal + " pings " +
+                  Stat("pings") + " errors " + Stat("errors"));
+        foreach (var entry in commands)
+            lines.Add("COMMAND " + entry.Key + " " + entry.Value);
+        foreach (var entry in numerics)
+            lines.Add("NUMERIC " + Number(entry.Key) + " " + entry.Value);
+        lines.Add("PEAK connections " + peakConnections + " at " + peakConnectionsTime);
+        lines.Add("PEAK registered " + peakRegistered + " at " + peakRegisteredTime);
+        List<string> kinds = new();
+        foreach (string kind in new List<string> { "quit", "closed", "flood", "timeout" })
+            kinds.Add(kind + " " + disconnections.GetValueOrDefault(kind, 0));
+        lines.Add("DISCONNECTS " + string.Join(" ", kinds));
+        foreach (Gone record in gone)
+            lines.Add("GONE " + record.time + " " + record.identifier + " " + record.addressee +
+                      " " + record.reason);
+        return lines;
+    }
+    public static void Main(string[] args) {
+        foreach (string line in File.ReadAllLines(Path.Combine("input", "server.txt")).ToList()) {
+            int separator = line.IndexOf(' ');
+            string key = line.Substring(0, separator - (0)), value = line.Substring(separator + 1);
+            if (key.Equals("MOTD"))
+                motd.Add(value);
+            else
+                settings[key] = value;
+        }
+        foreach (string line in File.ReadAllLines(Path.Combine("input", "traffic.txt")).ToList()) {
+            string[] fields = line.Split(" ", 3);
+            string body = fields[2], kind = "messages";
+            if (body.StartsWith("CONNECT ") && body.Substring(8).Matches("[A-Za-z0-9.-]{1,63}"))
+                kind = "connect";
+            else if (body.Equals("DISCONNECT"))
+                kind = "disconnect";
+            traffic.Add(new Traffic(int.Parse(fields[0]), fields[1], kind, body));
+            Add(lineCounts, kind, 1);
+        }
+        end = traffic[^1].time;
+        Run();
+        Directory.CreateDirectory(Path.Combine("output"));
+        Write("sent.txt", sent);
+        Write("channels.txt", ChannelReport());
+        Write("clients.txt", ClientReport());
+        Write("stats.txt", StatisticsReport());
+    }
+        public void UseToken(int time, int capacity, int interval) {
+            if (tokens == capacity)
+                refillTime = time + interval;
+            tokens--;
+        }
+        public void Refill(int time, int capacity, int interval) {
+            if (refillTime == time) {
+                tokens++;
+                refillTime = tokens < capacity ? time + interval : -1;
+            }
+        }
+    public static Message Parse(string raw) {
+        int position = 0;
+        if (raw.StartsWith(':')) {
+            position = raw.IndexOf(' ');
+            if (position < 0)
+                return new("", new());
+        }
+        while (position < raw.Length && raw[position] == ' ')
+            position++;
+        int start = position;
+        while (position < raw.Length && raw[position] != ' ')
+            position++;
+        string command = raw[start..position].ToUpperInvariant();
+        List<string> parameters = new();
+        while (position < raw.Length) {
+            while (position < raw.Length && raw[position] == ' ')
+                position++;
+            if (position == raw.Length)
+                break;
+            if (raw[position] == ':') {
+                parameters.Add(raw[(position + 1)..]);
+                break;
+            }
+            if (parameters.Count == 14) {
+                parameters.Add(raw[position..]);
+                break;
+            }
+            start = position;
+            while (position < raw.Length && raw[position] != ' ')
+                position++;
+            parameters.Add(raw[start..position]);
+        }
+        return new(command, parameters);
+    }

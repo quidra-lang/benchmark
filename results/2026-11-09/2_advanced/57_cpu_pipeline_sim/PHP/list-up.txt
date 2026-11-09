@@ -1,0 +1,222 @@
+function parseRegister(string $text): ?int
+{
+    if ($text === '-') return null;
+    return preg_match('/\Ar(?:[0-9]|[12][0-9]|3[01])\z/', $text) === 1 ? (int)substr($text, 1) : -1;
+    $config = ['predictors' => [], 'variants' => []];
+    foreach (file('input/config.txt', FILE_IGNORE_NEW_LINES) as $line) {
+        $words = explode(' ', $line);
+        $keyword = array_shift($words);
+            case 'VARIANT':
+                $config['variants'][] = ['name' => $words[0], 'forwarding' => $words[1] === 'ON',
+                    'resolution' => $words[2], 'latency' => (int)$words[3]];
+                break;
+            case 'PRIMARY': $config['primaryVariant'] = $words[0]; $config['primaryPredictor'] = $words[1]; break;
+            case 'WINDOW': $config['start'] = (int)$words[0]; $config['end'] = (int)$words[1]; break;
+    return ['lines' => file('input/trace.txt', FILE_IGNORE_NEW_LINES), 'config' => $config];
+function attachSources(array &$instructions): void
+{
+    $lastWriter = array_fill(0, 32, null);
+    foreach ($instructions as $i => &$instruction) {
+        $instruction['sources'] = [];
+        foreach (['rs1', 'rs2'] as $slot) {
+            $register = $instruction[$slot];
+            if ($register !== null && $register !== 0) {
+                $instruction['sources'][] = ['slot' => $slot, 'register' => $register, 'producer' => $lastWriter[$register]];
+            }
+        }
+        if ($instruction['rd'] !== null && $instruction['rd'] !== 0) $lastWriter[$instruction['rd']] = $i;
+    }
+    unset($instruction);
+}
+
+function idResolved(array $instruction, array $variant): bool
+{
+    if ($instruction['className'] === 'JUMP') return $instruction['rs1'] === null || $variant['resolution'] === 'ID';
+    return $instruction['className'] === 'BRANCH' && $variant['resolution'] === 'ID';
+}
+
+function readyCycle(array $source, array $consumer, array $variant, array $instructions, array $times): ?int
+{
+    if ($source['producer'] === null) return null;
+    $producer = $instructions[$source['producer']];
+    $time = $times[$source['producer']];
+    if (!$variant['forwarding']) return $time['W'] + 1;
+    return ($producer['className'] === 'LOAD' ? $time['W'] : $time['M']) + (idResolved($consumer, $variant) ? 1 : 0);
+function simulate(array $instructions, array $variant, array $mispredictions): array
+{
+    $times = [];
+    $records = [];
+    foreach ($instructions as $i => $instruction) {
+        $F = 1;
+        $D = 2;
+        $X = 3;
+        if ($i > 0) {
+            $previous = $times[$i - 1];
+            $F = $mispredictions[$i - 1] ? $previous['X'] + (idResolved($instructions[$i - 1], $variant) ? 0 : 1) : $previous['D'];
+            $D = max($F + 1, $previous['X']);
+            $X = max($D + 1, $previous['M']);
+            $base = $previous['X'] + 1;
+            $bounds = [
+                ['cause' => 'control', 'value' => $D + 1, 'producer' => null],
+                ['cause' => 'structural', 'value' => $previous['M'], 'producer' => null],
+                ['cause' => 'load_use', 'value' => $base, 'producer' => null],
+                ['cause' => 'raw', 'value' => $base, 'producer' => null]
+            ];
+            foreach ($instruction['sources'] as $source) {
+                if ($source['producer'] === null) continue;
+                $ready = readyCycle($source, $instruction, $variant, $instructions, $times);
+                $X = max($X, $ready);
+                $kind = $instructions[$source['producer']]['className'] === 'LOAD' ? 2 : 3;
+                if ($ready > $bounds[$kind]['value']) {
+                    $bounds[$kind]['value'] = $ready;
+                    $bounds[$kind]['producer'] = $source['producer'];
+                }
+            }
+            $current = $base;
+            foreach ($bounds as $cause => $bound) {
+                if ($bound['value'] > $current) {
+                    $records[] = ['cause' => $bound['cause'], 'cycles' => $bound['value'] - $current,
+                        'responsible' => $cause < 2 ? $i - 1 : $i, 'waiting' => $i, 'producer' => $bound['producer']];
+                    $current = $bound['value'];
+                }
+            }
+        }
+        $M = $X + ($instruction['className'] === 'MUL' ? $variant['latency'] : 1);
+        $times[] = compact('F', 'D', 'X', 'M') + ['W' => $M + 1];
+    }
+    return ['times' => $times, 'records' => $records, 'cycles' => $times[$last]['W']];
+function validateTrace(string $line, array $statics): array
+{
+    $fields = explode(' ', $line);
+    if (count($fields) !== 8 || in_array('', $fields, true)) return ['reason' => 'fields'];
+    [$pcText, $className, $rdText, $rs1Text, $rs2Text, $outcome, $targetText, $addressText] = $fields;
+    $pc = parseHex($pcText);
+    if ($pc === null || $pc % 4 !== 0) return ['reason' => 'pc'];
+    if (!in_array($className, CLASSES, true)) return ['reason' => 'class'];
+    $registers = array_map('parseRegister', [$rdText, $rs1Text, $rs2Text]);
+    [$rd, $rs1, $rs2] = $registers;
+    return ['instruction' => compact('pc', 'className', 'rd', 'rs1', 'rs2', 'outcome', 'target', 'address', 'control') +
+        ['nextPC' => $outcome === 'T' ? $target : $pc + 4]];
+function checkTrace(array $lines): array
+{
+    $instructions = $statics = $rejected = $gaps = [];
+    foreach ($lines as $index => $line) {
+        $result = validateTrace($line, $statics);
+        if (isset($result['reason'])) {
+            $rejected[] = ['line' => $index + 1, 'reason' => $result['reason']];
+            continue;
+        }
+        $instruction = $result['instruction'] + ['line' => $index + 1, 'number' => count($instructions) + 1];
+        if (!isset($statics[$instruction['pc']])) $statics[$instruction['pc']] = $instruction + ['executions' => []];
+        $statics[$instruction['pc']]['executions'][] = count($instructions);
+        $instructions[] = $instruction;
+    }
+    attachSources($instructions);
+    return ['lineCount' => count($lines), 'instructions' => $instructions, 'statics' => $statics, 'rejected' => $rejected, 'gaps' => $gaps];
+{
+    $stallCycles = zeros(CAUSES);
+    $stallEvents = zeros(CAUSES);
+    $totalStalls = 0;
+    foreach ($timing['records'] as $record) {
+        $stallCycles[$record['cause']] += $record['cycles'];
+        $stallEvents[$record['cause']]++;
+        $totalStalls += $record['cycles'];
+    }
+    return compact('stallCycles', 'stallEvents', 'totalStalls');
+}
+
+function allTimings(array $instructions, array $predictions, array $config): array
+{
+    $combinations = [];
+    $primary = null;
+    foreach ($config['variants'] as $variant) {
+        foreach ($predictions as $prediction) {
+            $timing = simulate($instructions, $variant, $prediction['flags']);
+            $combination = ['variant' => $variant, 'prediction' => $prediction, 'cycles' => $timing['cycles']] + aggregateTiming($timing);
+            $combinations[] = $combination;
+            if ($variant['name'] === $config['primaryVariant'] && $prediction['specification']['name'] === $config['primaryPredictor']) {
+                $primary = $combination + ['timing' => $timing];
+            }
+        }
+    }
+    return compact('combinations', 'primary');
+function stageSegment(int $stage, int $from, int $to, string $first, ?string $rest = null): array
+{
+    return compact('stage', 'from', 'to', 'first') + ['rest' => $rest ?? $first];
+function buildRows(array $instructions, array $primary): array
+{
+    $waiting = array_fill(0, count($instructions), []);
+    foreach ($primary['timing']['records'] as $record) if ($record['waiting'] !== null) $waiting[$record['waiting']][] = $record;
+    $rows = [];
+    $refetch = 0;
+    foreach ($instructions as $i => $instruction) {
+        $time = $primary['timing']['times'][$i];
+        $prediction = $primary['prediction']['results'][$i];
+        $annotation = '';
+        foreach ($waiting[$i] as $record) $annotation .= ' ' . $record['cause'] . ' ' . $record['cycles'];
+        $rows[] = ['number' => $i + 1, 'pc' => $instruction['pc'], 'className' => $instruction['className'], 'wrong' => false,
+            'segments' => [stageSegment(0, $time['F'], $time['D'] - 1, 'F', '*'), stageSegment(1, $time['D'], $time['X'] - 1, 'D', '*'),
+                stageSegment(2, $time['X'], $time['M'] - 1, 'X'), stageSegment(3, $time['M'], $time['M'], 'M'), stageSegment(4, $time['W'], $time['W'], 'W')],
+            'cancel' => null, 'annotation' => $annotation];
+    $classStalls = zeros(CLASSES);
+    $dependencyMap = [];
+    foreach ($primary['timing']['records'] as $record) {
+        $responsible = $instructions[$record['responsible']];
+        $classStalls[$responsible['className']] += $record['cycles'];
+        $pc = $responsible['pc'];
+        if (!isset($byPC[$pc])) $byPC[$pc] = ['pc' => $pc, 'className' => $responsible['className'], 'total' => 0] + zeros(CAUSES);
+        $byPC[$pc]['total'] += $record['cycles'];
+        $byPC[$pc][$record['cause']] += $record['cycles'];
+    $parts[] = ['timing variant=' . $primary['variant']['name'] . ' predictor=' . $primary['prediction']['specification']['name'],
+        'forwarding ' . ($primary['variant']['forwarding'] ? 'on' : 'off') . ' branch_stage ' . $primary['variant']['resolution'] . ' mul_latency ' . $primary['variant']['latency'],
+        'cycles ' . $C, 'cpi ' . fraction($C, $n) . ' ' . decimal($C, $n), 'ipc ' . decimal($n, $C),
+        'stall_cycles total ' . $primary['totalStalls'] . ' ' . namedCounts(CAUSES, $primary['stallCycles']),
+        'stall_events ' . namedCounts(CAUSES, $primary['stallEvents']), 'flushed ' . $diagram['refetch'],
+        'cycle_check ' . $n . ' + 4 + ' . $primary['totalStalls'] . ' = ' . ($n + 4 + $primary['totalStalls']),
+function segmentProfile(array $instructions, array $primary, int $top): array
+{
+    $groups = [];
+    $start = 0;
+    foreach ($instructions as $end => $instruction) {
+        if (!$instruction['control'] && $end !== count($instructions) - 1) continue;
+        $pc = $instructions[$start]['pc'];
+        if (!isset($groups[$pc])) $groups[$pc] = ['pc' => $pc, 'instances' => 0, 'instructions' => 0, 'cycles' => 0];
+        $groups[$pc]['instances']++;
+        $groups[$pc]['instructions'] += $end - $start + 1;
+        $groups[$pc]['cycles'] += $primary['timing']['times'][$end]['W'] - ($start === 0 ? 0 : $primary['timing']['times'][$start - 1]['W']);
+        $start = $end + 1;
+    }
+    $ranked = array_values($groups);
+    usort($ranked, fn($a, $b) => ($b['cycles'] <=> $a['cycles']) ?: ($a['pc'] <=> $b['pc']));
+    $lines = ['segments total ' . count($groups)];
+    foreach (array_slice($ranked, 0, $top) as $i => $group) {
+        $lines[] = ($i + 1) . ' ' . hexText($group['pc']) . ' instances ' . $group['instances'] . ' instructions ' . $group['instructions'] .
+            ' cycles ' . $group['cycles'] . ' cpi ' . decimal($group['cycles'], $group['instructions']);
+    }
+    return $lines;
+    $parts[] = segmentProfile($instructions, $primary, $config['top']);
+        $stalls = $analysis['byPC'][$instruction['pc']]['total'] ?? 0;
+        $staticLines[] = hexText($instruction['pc']) . ' ' . $instruction['className'] . ' ' . registerText($instruction['rd']) .
+            ' ' . registerText($instruction['rs1']) . ' ' . registerText($instruction['rs2']) .
+            ' executions ' . count($instruction['executions']) . ' stall_cycles ' . $stalls;
+    }
+    $parts[] = $indirect;
+    $parts[] = $staticLines;
+    return joinSections($parts);
+function main(): void
+{
+    $input = readInput();
+    $config = $input['config'];
+    $trace = checkTrace($input['lines']);
+    $instructions = $trace['instructions'];
+    $predictions = [];
+    foreach ($config['predictors'] as $specification) $predictions[] = predictTrace($instructions, $specification, $config);
+    $timings = allTimings($instructions, $predictions, $config);
+    $combinations = $timings['combinations'];
+    $primary = $timings['primary'];
+    $summary = traceSummary($trace);
+    $analysis = analyzePrimary($instructions, $primary, $config);
+    $diagram = buildRows($instructions, $primary);
+    writeReport('pipeline.txt', diagramReport($primary, $diagram, $config));
+    writeReport('stats.txt', statsReport($trace, $config, $predictions, $combinations, $primary, $summary, $analysis, $diagram, $whatifs));
+    writeReport('profile.txt', profileReport($instructions, $statics, $predictions, $primary, $analysis, $config));

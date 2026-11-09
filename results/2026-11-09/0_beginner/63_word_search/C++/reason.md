@@ -1,0 +1,5 @@
+The candidate is inline, without helper parameters. `word` is the current range element TIGER; enclosing main storage supplies board and direction arrays. r=0 and c=0 are the nested start-cell loop bindings; E is direction index 0 with offsets (0,1). Character position k supplies rr=r+dr*k and cc=c+dc*k (or direction[0/1]); comparison indexes the same enclosing board against the current word letter. At k=0 the cell is M and the expected letter T, so this candidate fails. No recursive or separately scoped name rebinding occurs.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

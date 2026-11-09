@@ -1,0 +1,5 @@
+Preserve the existing order: use current color to turn right on white or left on black, then invert that same cell. Replace modulo-wrapped coordinate commits with signed proposed row/column and a 0<=row<11, 0<=column<11 bounds test. Commit both only if valid; otherwise leave the original position while retaining turn and flip. An upward proposal from row 0 is -1, fails the test and leaves row 0 rather than wrapping to 10. The step and direction mapping are retained, while initial board content and final rendering are unnecessary.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

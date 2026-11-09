@@ -1,0 +1,336 @@
+def coefficients(terms, variables)
+  values = variables.to_h { |name| [name, Q::ZERO] }
+  terms.each { |name, coefficient| values[name] += coefficient }
+  variables.map { |name| values[name] }
+end
+def content_check(parsed)
+  return parsed if parsed[:error]
+  variables = []
+  ([parsed[:objective]] + parsed[:constraints].map { |row| row[:terms] }).each do |terms|
+    terms.each { |name, _| variables << name unless variables.include?(name) }
+  end
+  model = {name: parsed[:name], error: nil, direction: parsed[:direction], variables: variables,
+           constraints: parsed[:constraints], costs: coefficients(parsed[:objective], variables),
+           matrix: parsed[:constraints].map { |row| coefficients(row[:terms], variables) },
+           rhs: parsed[:constraints].map { |row| row[:rhs] },
+           comparisons: parsed[:constraints].map { |row| row[:op] },
+           lower: Array.new(variables.length, Q::ZERO), upper: Array.new(variables.length),
+           integer: Array.new(variables.length, false)}
+  model
+end
+def standard_form(model, lower, upper)
+  column_names, owners, directions, mappings = [], [], [], []
+  model[:variables].each_with_index do |name, j|
+    first = column_names.length
+    if lower[j]
+      kind, offset, columns, signs, names = :shift, lower[j], [first], [1], [name]
+    end
+    column_names.concat(names)
+    owners.concat(Array.new(columns.length, j))
+    directions.concat(signs)
+    mappings << {kind: kind, offset: offset, columns: columns, directions: signs, upper_row: nil}
+  end
+  offsets = mappings.map { |mapping| mapping[:offset] }
+  row_names = model[:constraints].map { |row| row[:name] }
+  matrix = model[:matrix].map { |row| owners.each_index.map { |k| directions[k] * row[owners[k]] } }
+  rhs = model[:rhs].each_index.map { |i| model[:rhs][i] - dot(model[:matrix][i], offsets) }
+  comparisons = model[:comparisons].dup
+  mappings.each_with_index do |mapping, j|
+    next unless mapping[:kind] == :shift && upper[j]
+  end
+  signs = Array.new(row_names.length, 1)
+  row_names.each_index do |i|
+    next unless rhs[i] < 0
+  end
+  slack, initial, artificial = Array.new(row_names.length), Array.new(row_names.length), {}
+  comparisons.each_with_index do |comparison, i|
+    next if comparison == '='
+  end
+  comparisons.each_with_index do |comparison, i|
+    next if comparison == '<='
+    column = column_names.length
+    artificial[column] = true
+    initial[i] = column
+    column_names << 'a:' + row_names[i]
+    matrix.each_with_index { |row, t| row << Rational(t == i ? 1 : 0) }
+  end
+  direction = model[:direction] == 'minimize' ? 1 : -1
+  phase2 = owners.each_index.map { |k| direction * directions[k] * model[:costs][owners[k]] }
+  phase2.concat(Array.new(column_names.length - phase2.length, Q::ZERO))
+  phase1 = column_names.each_index.map { |k| artificial[k] ? Q::ONE : Q::ZERO }
+  {column_names: column_names, row_names: row_names, mappings: mappings, matrix: matrix, rhs: rhs,
+   signs: signs, slack: slack, artificial: artificial, initial: initial, phase1: phase1,
+   phase2: phase2, constant: dot(model[:costs], offsets), direction: direction}
+end
+def tableau_solution(form, tableau)
+  columns = Array.new(form[:column_names].length, Q::ZERO)
+  tableau.basic.each_with_index { |column, i| columns[column] = tableau.beta[i] }
+  form[:mappings].map do |mapping|
+    change = mapping[:columns].each_index.sum(Q::ZERO) do |k|
+      mapping[:directions][k] * columns[mapping[:columns][k]]
+    end
+    mapping[:offset] + change
+  end
+end
+def solve_lp(model, lower, upper, number, level)
+  form = standard_form(model, lower, upper)
+  tableau = Tableau.new(form)
+  lines = []
+  emit = ->(required, line) { lines << line if required <= level }
+  phase2_value = ->(value) { form[:constant] + form[:direction] * value }
+  identity = ->(value) { value }
+  display = lambda do |heading, costs, objective|
+  end
+  emit.call(0, "SOLVE node #{number} rows #{form[:row_names].length} columns #{form[:column_names].length} artificials #{form[:artificial].length}")
+  form[:mappings].each_with_index do |mapping, j|
+    text = "MAP #{model[:variables][j]} #{mapping[:kind]}"
+    text += " #{Q.f(mapping[:offset])}" unless mapping[:kind] == :split
+    text += " upper #{Q.f(upper[j])}" if mapping[:kind] == :shift && upper[j]
+    emit.call(1, text)
+  end
+  form[:row_names].each_index { |i| emit.call(1, "FLIP #{form[:row_names][i]}") if form[:signs][i] == -1 }
+  phase1_count = phase2_count = drives = redundant = 0
+  infeasibility, status, unbounded = Q::ZERO, 'OPTIMAL', nil
+  unless form[:artificial].empty?
+    emit.call(1, 'PHASE 1')
+    phase = Simplex.phase(tableau, form[:phase1], form[:column_names].each_index.to_a, identity)
+    phase1_count = phase[:iterations]
+    phase[:lines].each { |line| emit.call(1, line) }
+    infeasibility = tableau.phase_value(form[:phase1])
+    emit.call(1, "PHASE 1 END objective #{Q.f(infeasibility)} iterations #{phase1_count}")
+    if infeasibility > 0
+      status = 'INFEASIBLE'
+    else
+      tableau.basic.each_index do |row|
+        basic = tableau.basic[row]
+        next unless form[:artificial][basic]
+        entering = tableau.values[row].each_index.find { |k| !form[:artificial][k] && tableau.values[row][k] != 0 }
+        if entering
+          leaving = form[:column_names][basic]
+          tableau.pivot(row, entering)
+          drives += 1
+          emit.call(1, "DRIVE row #{form[:row_names][row]} enter #{form[:column_names][entering]} leave #{leaving}")
+        else
+          redundant += 1
+          emit.call(1, "REDUNDANT row #{form[:row_names][row]}")
+        end
+      end
+    end
+  end
+  unless status == 'INFEASIBLE'
+    emit.call(1, 'PHASE 2')
+    candidates = form[:column_names].each_index.reject { |k| form[:artificial][k] }
+    phase = Simplex.phase(tableau, form[:phase2], candidates, phase2_value)
+    phase2_count = phase[:iterations]
+    phase[:lines].each { |line| emit.call(1, line) }
+    unbounded = phase[:unbounded]
+    if unbounded
+      status = 'UNBOUNDED'
+      emit.call(1, "UNBOUNDED enter #{form[:column_names][unbounded]}")
+    end
+    emit.call(1, "PHASE 2 END objective #{Q.f(phase2_value.call(tableau.phase_value(form[:phase2])))} iterations #{phase2_count}")
+  end
+  objective = status == 'OPTIMAL' ? phase2_value.call(tableau.phase_value(form[:phase2])) : nil
+  emit.call(0, "RESULT #{status} objective #{Q.f(objective)} phase1 #{phase1_count} phase2 #{phase2_count} drives #{drives} redundant #{redundant}")
+  {status: status, objective: objective, solution: tableau_solution(form, tableau), form: form,
+   tableau: tableau, unbounded: unbounded, infeasibility: infeasibility,
+   phase1: phase1_count, phase2: phase2_count, drives: drives, redundant: redundant,
+   pivots: phase1_count + phase2_count + drives, lines: lines}
+end
+def solve_model(model, level, limit)
+  solve = ->(lower, upper, number) { solve_lp(model, lower, upper, number, level) }
+  return BranchBound.search(model, limit, &solve) if model[:integer].any?
+  result = solve.call(model[:lower], model[:upper], 1)
+  {status: result[:status], objective: result[:objective],
+   solution: result[:status] == 'OPTIMAL' ? result[:solution] : nil,
+   solves: [result], root: result, nodes: 1, lines: []}
+end
+
+def solution_lines(model, result)
+  root, integer_count = result[:root], model[:integer].count(true)
+  lines = ["MODEL #{model[:name]} #{model[:direction]} variables #{model[:variables].length} constraints #{model[:constraints].length} integers #{integer_count}",
+           statistics_line(model), "STATUS #{result[:status]}"]
+  if result[:solution]
+    lines << "OBJECTIVE #{Q.f(result[:objective])} approx #{Q.approx(result[:objective])}"
+  end
+  values = result[:status] == 'UNBOUNDED' ? root[:solution] : result[:solution]
+  if values
+    model[:variables].zip(values).each { |name, value| lines << "VALUE #{name} #{Q.f(value)}" }
+  end
+  lines << "PIVOTS #{result[:solves].sum { |lp| lp[:pivots] }}"
+  lines
+end
+
+def main
+  settings = LPParser.read_settings
+  reports = %w[iterations solutions sensitivity bnb_tree].to_h { |name| [name, []] }
+  reports['summary'] = ['model,status,objective,approx,relaxation,nodes,pivots']
+  statuses = %w[OPTIMAL INFEASIBLE UNBOUNDED NODE_LIMIT ERROR].to_h { |status| [status, 0] }
+  total_solves = phase1 = phase2 = drives = analyzed = integer_models = integer_nodes = limited = 0
+  models = LPParser.read_models
+  models.each do |parsed|
+    model = content_check(parsed)
+    name = model[:name]
+    level = settings[:logs].fetch(name, settings[:level])
+    limit = settings[:limits].fetch(name, settings[:limit])
+    result = solve_model(model, level, limit)
+    statuses[result[:status]] += 1
+    reports['iterations'] << "MODEL #{name} level #{level}"
+    result[:solves].each do |lp|
+      reports['iterations'].concat(lp[:lines])
+      total_solves += 1
+      phase1 += lp[:phase1]
+      phase2 += lp[:phase2]
+      drives += lp[:drives]
+    end
+    reports['solutions'].concat(solution_lines(model, result))
+    approx = result[:objective] ? Q.approx(result[:objective]) : '-'
+    pivots = result[:solves].sum { |lp| lp[:pivots] }
+    reports['summary'] << [name, result[:status], Q.f(result[:objective]), approx,
+                           Q.f(result[:root][:objective]), result[:solves].length, pivots].join(',')
+  end
+  reports['iterations'] << "TOTAL solves #{total_solves} phase1 #{phase1} phase2 #{phase2} drives #{drives} pivots #{phase1 + phase2 + drives}"
+  reports['solutions'] << "SUMMARY models #{models.length} optimal #{statuses['OPTIMAL']} infeasible #{statuses['INFEASIBLE']} unbounded #{statuses['UNBOUNDED']} node_limit #{statuses['NODE_LIMIT']} error #{statuses['ERROR']}"
+  reports['sensitivity'] << "SUMMARY analyzed #{analyzed} skipped #{models.length - analyzed}"
+  reports['bnb_tree'] << "SUMMARY models #{integer_models} nodes #{integer_nodes} node_limit #{limited}"
+  reports.each do |name, lines|
+    extension = name == 'summary' ? 'csv' : 'txt'
+    File.write("output/#{name}.#{extension}", lines.map { |line| line.rstrip + "\n" }.join)
+  end
+end
+
+main if $PROGRAM_NAME == __FILE__
+  def self.expression(words)
+    position, sign, terms = 0, 1, []
+    if words[0] == '-'
+      position, sign = 1, -1
+    end
+    while position < words.length
+      coefficient = Q.read(words[position])
+      if coefficient
+        return nil unless name?(words[position + 1])
+        name = words[position + 1]
+        position += 2
+      elsif name?(words[position])
+        coefficient, name = Q::ONE, words[position]
+        position += 1
+      else
+        return nil
+      end
+      terms << [name, sign * coefficient]
+      return terms if position == words.length
+      return nil unless %w[+ -].include?(words[position])
+      sign = words[position] == '+' ? 1 : -1
+      position += 1
+    end
+    nil
+  end
+
+  def self.named_expression(words)
+    return nil if words.length < 2 || !words[0].end_with?(':')
+    name, terms = words[0][0...-1], expression(words.drop(1))
+    name?(name) && terms ? [name, terms] : nil
+  end
+
+  def self.constraint(words, line)
+    return nil if words.length < 4 || !%w[<= >= =].include?(words[-2])
+    rhs, named = Q.read(words[-1], true), named_expression(words[0...-2])
+    return nil unless rhs && named
+    {line: line, name: named[0], terms: named[1], op: words[-2], rhs: rhs}
+  end
+  def self.block(name, body, ending)
+    result = {name: name, error: nil, constraints: [], bounds: [], integers: [], binaries: []}
+    state = :a
+    body.each do |line, text|
+      words, accepted = text.split(' '), false
+      case state
+      when :a
+        if %w[maximize minimize].include?(text)
+          result[:direction], state, accepted = text, :b, true
+        end
+      when :b
+        named = named_expression(words)
+        result[:objective], state, accepted = named[1], :c, true if named
+      when :c
+        state, accepted = :d, true if text == 'subject to'
+      when :d, :e
+        if state == :e && %w[bounds integer binary].include?(text)
+          state, accepted = {'bounds'=>:f, 'integer'=>:g, 'binary'=>:h}[text], true
+        elsif (item = constraint(words, line))
+          result[:constraints] << item
+          state, accepted = :e, true
+        end
+      end
+    end
+    result[:error] = [ending, 'syntax error'] if %i[a b c d].include?(state)
+    result
+  end
+
+  def self.read_models
+    models, name, body = [], nil, []
+    File.foreach('input/models.lp', chomp: true).with_index(1) do |text, line|
+      next if text.empty? || text.start_with?('#')
+      if name.nil?
+        name, body = text.split(' ')[1], []
+      elsif text == 'end'
+        models << block(name, body, line)
+        name = nil
+      else
+        body << [line, text]
+      end
+    end
+    models
+  end
+module Simplex
+  def self.phase(tableau, costs, candidates, objective)
+    iterations, lines = 0, []
+    loop do
+      reduced = tableau.reduced(costs)
+      entering = candidates.find { |column| reduced[column] < 0 }
+      return {iterations: iterations, lines: lines, unbounded: nil} unless entering
+      eligible = tableau.basic.each_index.select { |row| tableau.values[row][entering] > 0 }
+      if eligible.empty?
+        return {iterations: iterations, lines: lines, unbounded: entering}
+      end
+      row = eligible.min_by { |i| [tableau.beta[i] / tableau.values[i][entering], tableau.basic[i]] }
+      ratio = tableau.beta[row] / tableau.values[row][entering]
+      leaving = tableau.columns[tableau.basic[row]]
+      tableau.pivot(row, entering)
+      iterations += 1
+      lines << "PIVOT #{iterations} enter #{tableau.columns[entering]} reduced #{Q.f(reduced[entering])} leave #{leaving} row #{tableau.rows[row]} ratio #{Q.f(ratio)} objective #{Q.f(objective.call(tableau.phase_value(costs)))}"
+    end
+  end
+end
+class Tableau
+  attr_reader :rows, :columns, :values, :beta, :basic
+  def initialize(form)
+    @rows, @columns = form.values_at(:row_names, :column_names)
+    @values = form[:matrix].map(&:dup)
+    @beta, @basic = form[:rhs].dup, form[:initial].dup
+  end
+
+  def reduced(costs)
+    costs.each_index.map do |column|
+      costs[column] - @basic.each_index.sum(Q::ZERO) { |row| costs[@basic[row]] * @values[row][column] }
+    end
+  end
+
+  def phase_value(costs)
+    @basic.each_index.sum(Q::ZERO) { |row| costs[@basic[row]] * @beta[row] }
+  end
+
+  def pivot(row, column)
+    divisor = @values[row][column]
+    @values[row].map! { |value| value / divisor }
+    @beta[row] /= divisor
+    @values.each_index do |other|
+      next if other == row
+      factor = @values[other][column]
+      @values[other].each_index { |k| @values[other][k] -= factor * @values[row][k] }
+      @beta[other] -= factor * @beta[row]
+    end
+    @basic[row] = column
+  end
+module Q
+  ZERO = Rational(0)
+  ONE = Rational(1)

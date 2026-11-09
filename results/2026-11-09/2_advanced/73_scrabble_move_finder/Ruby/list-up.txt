@@ -1,0 +1,499 @@
+class DictionaryTrie
+  Node = Struct.new(:children, :terminal) do
+    def initialize
+      super({}, false)
+    end
+  end
+  attr_reader :root, :nodes, :words
+
+  def initialize
+    @root = Node.new
+    @nodes, @words = 1, 0
+  end
+
+  def add(word)
+    node = root
+    word.each_char do |letter|
+      unless node.children.key?(letter)
+        node.children[letter] = Node.new
+        @nodes += 1
+      end
+      node = node.children[letter]
+    end
+    return false if node.terminal
+    node.terminal = true
+    @words += 1
+    true
+  end
+
+  def prefix(word)
+    node = root
+    word.each_char do |letter|
+      node = node.children[letter]
+      return unless node
+    end
+    node
+  end
+
+  def include?(word)
+    node = prefix(word)
+    node && node.terminal
+  end
+
+module Game
+  TILE_ORDER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ?'
+
+  class Minstd
+    def initialize(seed)
+      @state = seed
+    end
+
+    def next
+      @state = 48271 * @state % 2147483647
+    end
+  end
+
+  module_function
+
+  def shuffle(bag, random)
+    (bag.size - 1).downto(1) do |i|
+      j = random.next % (i + 1)
+      bag[i], bag[j] = bag[j], bag[i]
+    end
+    bag
+  end
+
+  def make_bag(counts, random)
+    shuffle(TILE_ORDER.chars.flat_map { |letter| Array.new(counts[letter], letter) }, random)
+  end
+
+  def draw(bag, count)
+    [count, bag.size].min.times.map { bag.pop }.join
+  end
+
+module MoveGenerator
+  LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  module_function
+
+  def anchors(board)
+    return [Board::CENTER].to_set if Board.tiles(board).empty?
+    result = Set.new
+    Board::SIZE.times do |row|
+      Board::SIZE.times do |column|
+        result.add([row, column]) if board[row][column] == '.' && Board.neighbors(row, column).any? { |r, c| board[r][c] != '.' }
+      end
+    end
+    result
+  end
+
+  def cross_checks(board, trie)
+    result = {}
+    Board::SIZE.times do |row|
+      Board::SIZE.times do |column|
+        next unless board[row][column] == '.'
+        first, last = row, row
+        first -= 1 while first > 0 && board[first - 1][column] != '.'
+        last += 1 while last + 1 < Board::SIZE && board[last + 1][column] != '.'
+        next if first == last
+        prefix = (first...row).map { |r| board[r][column] }.join.upcase
+        suffix = ((row + 1)..last).map { |r| board[r][column] }.join.upcase
+        result[[row, column]] = LETTERS.chars.select { |letter| trie.include?(prefix + letter + suffix) }.to_set
+      end
+    end
+    result
+  end
+
+  def across_moves(board, rack, trie, anchor_squares, checks)
+    result = []
+    counts = Hash.new(0).merge(rack.chars.tally)
+    anchor_squares.sort.each do |row, anchor|
+      extend_right = lambda do |node, column, word, start|
+        empty = column == Board::SIZE || board[row][column] == '.'
+        result << Board::Move.new(row, start, 0, word) if empty && column > anchor && node.terminal
+        return if column == Board::SIZE
+        unless empty
+          letter = board[row][column]
+          child = node.children[letter.upcase]
+          extend_right.call(child, column + 1, word + letter, start) if child
+          return
+        end
+        allowed = checks[[row, column]]
+        node.children.keys.sort.each do |letter|
+          next if allowed && !allowed.include?(letter)
+          [[letter, letter], ['?', letter.downcase]].each do |tile, written|
+            next unless counts[tile] > 0
+            counts[tile] -= 1
+            extend_right.call(node.children[letter], column + 1, word + written, start)
+            counts[tile] += 1
+          end
+        end
+      end
+      left_part = lambda do |node, prefix, remaining|
+        extend_right.call(node, anchor, prefix, anchor - prefix.size)
+        return if remaining == 0
+        node.children.keys.sort.each do |letter|
+          [[letter, letter], ['?', letter.downcase]].each do |tile, written|
+            next unless counts[tile] > 0
+            counts[tile] -= 1
+            left_part.call(node.children[letter], prefix + written, remaining - 1)
+            counts[tile] += 1
+          end
+        end
+      end
+      if anchor > 0 && board[row][anchor - 1] != '.'
+        first = anchor - 1
+        first -= 1 while first > 0 && board[row][first - 1] != '.'
+        prefix = board[row][first...anchor].join
+        node = trie.prefix(prefix.upcase)
+        extend_right.call(node, anchor, prefix, first) if node
+      else
+        first = anchor - 1
+        first -= 1 while first >= 0 && board[row][first] == '.' && !anchor_squares.include?([row, first])
+        left_part.call(trie.root, '', anchor - first - 1)
+      end
+    end
+    result
+  end
+
+  def generate(board, rack, trie)
+    anchor_squares = anchors(board)
+    across = across_moves(board, rack, trie, anchor_squares, cross_checks(board, trie))
+    transposed = Board.transpose(board)
+    down = across_moves(transposed, rack, trie, anchor_squares.map { |r, c| [c, r] }.to_set, cross_checks(transposed, trie))
+    moves = across + down.map { |move| Board::Move.new(move.column, move.row, 1, move.word) }
+    result = {}
+    moves.each do |move|
+      new_tiles = Scoring.placement(board, move)
+      if new_tiles.size == 1 && move.direction == 1
+        row, column = new_tiles.first
+        next if Board.run_at(Scoring.apply(board, new_tiles), row, column, 0).word.size >= 2
+      end
+      result[new_tiles.sort] = move
+    end
+    result.values
+  end
+end
+module Scoring
+  RACK_SIZE = 7
+  BINGO_BONUS = 50
+  module_function
+
+  def squares(move)
+    move.word.chars.each_with_index.map do |letter, offset|
+      [move.row + move.direction * offset, move.column + (1 - move.direction) * offset, letter]
+    end
+  end
+
+  def placement(board, move)
+    squares(move).select { |row, column, _| board[row][column] == '.' }
+  end
+
+  def apply(board, new_tiles)
+    result = board.map(&:dup)
+    new_tiles.each { |row, column, letter| result[row][column] = letter }
+    result
+  end
+
+  def cross_words(board, move)
+    new_tiles = placement(board, move)
+    after = apply(board, new_tiles)
+    new_tiles.filter_map do |row, column, _|
+      word = Board.run_at(after, row, column, 1 - move.direction)
+      word if word.word.size >= 2
+    end
+  end
+
+  def word_score(board, word, values)
+    score, multiplier = 0, 1
+    squares(word).each do |row, column, letter|
+      value = /[A-Z]/.match?(letter) ? values[letter] : 0
+      if board[row][column] == '.'
+        premium = Board::PREMIUMS[row][column]
+        value *= premium == '+' ? 2 : (premium == '^' ? 3 : 1)
+        multiplier *= premium == '*' ? 2 : (premium == '#' ? 3 : 1)
+      end
+      score += value
+    end
+    score * multiplier
+  end
+
+  def score_move(board, move, values)
+    words = [move, *cross_words(board, move)]
+    scores = words.map { |word| word_score(board, word, values) }
+    new_tiles = placement(board, move)
+    [scores.reduce(0, :+) + (new_tiles.size == RACK_SIZE ? BINGO_BONUS : 0), new_tiles, words.zip(scores)]
+  end
+end
+require 'set'
+
+module Board
+  SIZE = 15
+  CENTER = [7, 7].freeze
+  COLUMNS = 'ABCDEFGHIJKLMNO'
+  Move = Data.define(:row, :column, :direction, :word)
+  PREMIUMS = [
+    '# . . + . . . # . . . + . . #',
+    '. * . . . ^ . . . ^ . . . * .',
+    '. . * . . . + . + . . . * . .',
+    '+ . . * . . . + . . . * . . +',
+    '. . . . * . . . . . * . . . .',
+    '. ^ . . . ^ . . . ^ . . . ^ .',
+    '. . + . . . + . + . . . + . .',
+    '# . . + . . . * . . . + . . #',
+    '. . + . . . + . + . . . + . .',
+    '. ^ . . . ^ . . . ^ . . . ^ .',
+    '. . . . * . . . . . * . . . .',
+    '+ . . * . . . + . . . * . . +',
+    '. . * . . . + . + . . . * . .',
+    '. * . . . ^ . . . ^ . . . * .',
+    '# . . + . . . # . . . + . . #'
+  ].map(&:split).freeze
+  module_function
+
+  def inside?(row, column)
+    row >= 0 && row < SIZE && column >= 0 && column < SIZE
+  end
+
+  def square_name(row, column)
+    "#{COLUMNS[column]}#{row + 1}"
+  end
+
+  def position(move)
+    move.direction == 0 ? "#{move.row + 1}#{COLUMNS[move.column]}" : "#{COLUMNS[move.column]}#{move.row + 1}"
+  end
+
+
+  def transpose(board)
+    board.transpose
+  end
+
+  def transpose_tiles(tiles)
+    tiles.map { |row, column, letter| [column, row, letter] }
+  end
+
+  def tiles(board)
+    board.each_with_index.flat_map do |values, row|
+      values.each_with_index.filter_map { |letter, column| [row, column, letter] unless letter == '.' }
+    end
+  end
+
+  def neighbors(row, column)
+    [[row - 1, column], [row + 1, column], [row, column - 1], [row, column + 1]].select { |r, c| inside?(r, c) }
+  end
+
+  def run_at(board, row, column, direction)
+    dr, dc = direction, 1 - direction
+    while inside?(row - dr, column - dc) && board[row - dr][column - dc] != '.'
+      row -= dr
+      column -= dc
+    end
+    first_row, first_column, word = row, column, +''
+    while inside?(row, column) && board[row][column] != '.'
+      word << board[row][column]
+      row += dr
+      column += dc
+    end
+    Move.new(first_row, first_column, direction, word)
+  end
+
+
+class Scrabble
+  LETTERS = MoveGenerator::LETTERS
+  VOWELS = 'AEIOU'
+  STRATEGIES = %w[score tiles equity].freeze
+  Evaluated = Data.define(:move, :score, :new_tiles, :words, :leave, :value)
+
+  def self.read_inputs
+    values, counts, weights = {}, {}, {}
+    File.readlines('input/tiles.txt', chomp: true).each do |line|
+      next if line.empty? || line.start_with?('#')
+      letter, value, count, weight = line.split
+      values[letter], counts[letter], weights[letter] = value.to_i, count.to_i, weight.to_i
+    end
+    trie = DictionaryTrie.new
+    stats, lengths = Hash.new(0), Hash.new(0)
+    File.readlines('input/dictionary.txt', chomp: true).each do |line|
+      next if line.empty? || line.start_with?('#')
+      stats[:lines] += 1
+      if !/\A[A-Z]{2,15}\z/.match?(line)
+        stats[:skipped] += 1
+      elsif trie.add(line)
+        lengths[line.size] += 1
+      else
+        stats[:duplicates] += 1
+      end
+    end
+    jobs, current = [], nil
+    File.readlines('input/jobs.txt', chomp: true).each do |line|
+      if !current
+        current = [line] unless line.empty? || line.start_with?('#')
+      elsif line == 'END'
+        jobs << current
+        current = nil
+      else
+        current << line
+      end
+    end
+    dictionary_lines = ["DICTIONARY lines=#{stats[:lines]} words=#{trie.words} skipped=#{stats[:skipped]} duplicates=#{stats[:duplicates]} nodes=#{trie.nodes}",
+                        'lengths' + lengths.sort.map { |length, count| " #{length}=#{count}" }.join]
+    [values, counts, weights, trie, jobs, dictionary_lines]
+  end
+  def valid_name?(value)
+    /\A[a-z0-9_]{1,20}\z/.match?(value)
+  end
+  def valid_number?(value, low, high)
+    /\A(?:0|[1-9][0-9]*)\z/.match?(value) && value.to_i.between?(low, high)
+  end
+  def collection(value)
+    value.empty? ? '-' : value.chars.sort.join
+  end
+  def tile_kind(letter)
+    /[A-Z]/.match?(letter) ? letter : '?'
+  end
+  def remove_tiles(rack, removed)
+    counts = Hash.new(0).merge(rack.chars.tally)
+    removed.each { |letter| counts[letter] -= 1 }
+    counts.sort.map { |letter, count| letter * count }.join
+  end
+  def notation(evaluated)
+    "#{Board.position(evaluated.move)} #{evaluated.move.word}"
+  end
+  def standard_key(item)
+    move = item.move
+    [-item.score, move.row, move.column, move.direction, move.word]
+  end
+  def strategy_key(item, strategy)
+    prefix = case strategy
+             when 'tiles' then [-item.new_tiles.size]
+             when 'equity' then [-item.score - item.value]
+             else []
+             end
+    prefix + standard_key(item)
+  end
+  def job_error(job, seen)
+    kind, name, count, order = job.first.split
+    return 'bad name' unless valid_name?(name)
+    return 'duplicate name' if seen.include?(name)
+    if kind == 'TOPN'
+      return 'bad count' unless valid_number?(count, 1, 99)
+      return 'bad order' unless STRATEGIES.include?(order)
+      rack = job[1].split[1]
+      return 'bad rack' unless valid_rack?(rack)
+      return board_error(job.drop(3).map(&:chars), rack)
+    end
+    if kind == 'VALIDATE'
+      rows = job.drop(2).take_while { |line| !line.start_with?('MOVE') }.map(&:chars)
+      return board_error(rows, '')
+    end
+    return 'bad seed' unless valid_number?(count, 1, 2147483646)
+    return "bad player count #{job.size - 1}" unless (job.size - 1).between?(2, 4)
+    names = Set.new
+    job.drop(1).each_with_index do |line, index|
+      _, player, strategy, threshold = line.split
+      return "bad player #{index + 1}" unless valid_name?(player) && STRATEGIES.include?(strategy)
+      return "bad player #{index + 1}" if kind == 'GAME' && !valid_number?(threshold, 0, 99)
+      return "duplicate player #{index + 1}" if names.include?(player)
+      names.add(player)
+    end
+    nil
+  end
+  def leave_value(rack)
+    counts = Hash.new(0).merge(rack.chars.tally)
+    duplicates = LETTERS.each_char.reduce(0) { |total, letter| total + [0, counts[letter] - 1].max }
+    vowels = rack.each_char.count { |letter| VOWELS.include?(letter) }
+    consonants = rack.each_char.count { |letter| LETTERS.include?(letter) && !VOWELS.include?(letter) }
+    rack.each_char.reduce(0) { |total, letter| total + @weights[letter] } - 4 * duplicates - 3 * [0, (vowels - consonants).abs - 1].max
+  end
+  def evaluate(board, rack, move)
+    score, new_tiles, word_scores = Scoring.score_move(board, move, @values)
+    leave = remove_tiles(rack, new_tiles.map { |_, _, letter| tile_kind(letter) })
+    words = word_scores.map { |word, value| "#{word.word}:#{value}" }.join(',')
+    Evaluated.new(move, score, new_tiles, words, leave, leave_value(leave))
+  end
+  def legal_moves(board, rack)
+    MoveGenerator.generate(board, rack, @trie).map { |move| evaluate(board, rack, move) }.sort_by { |item| standard_key(item) }
+  end
+  def duplicate_game(job)
+    _, name, seed = job.first.split
+    random = Game::Minstd.new(seed.to_i)
+    bag = Game.make_bag(@counts, random)
+    board = Array.new(Board::SIZE) { Array.new(Board::SIZE, '.') }
+    rack = Game.draw(bag, 7)
+    players = job.drop(1).map { |line| line.split.drop(1) }
+    totals = Array.new(players.size, 0)
+    lines = ["DUPLICATE #{name} seed=#{seed.to_i} players=#{players.size}"]
+    players.each_with_index { |(player, strategy), index| lines << "player #{index + 1} #{player} strategy=#{strategy}" }
+    round, master_total, reason = 0, 0, 'stuck'
+    loop do
+      legal = legal_moves(board, rack)
+      break if legal.empty?
+      round += 1
+      master = legal.first
+      choices = players.map { |_, strategy| legal.min_by { |item| strategy_key(item, strategy) } }
+      choices.each_with_index { |item, index| totals[index] += item.score }
+      master_total += master.score
+      picks = choices.map(&:score).join(',')
+      lines << "round #{round} rack=#{collection(rack)} moves=#{legal.size} master #{notation(master)} score=#{master.score} picks=#{picks}"
+      board = Scoring.apply(board, master.new_tiles)
+      rack = master.leave + Game.draw(bag, 7 - master.leave.size)
+      if rack.empty?
+        reason = 'out'
+        break
+      end
+    end
+    suffix = reason == 'stuck' ? " rack=#{collection(rack)}" : ''
+    lines << "end reason=#{reason} rounds=#{round}#{suffix}"
+    lines << "master total=#{master_total}"
+    players.each_with_index do |(player, _), index|
+      percent = master_total >= 1 ? 100 * totals[index] / master_total : 0
+      lines << "final #{player} total=#{totals[index]} percent=#{percent}"
+    end
+    winners = players.each_with_index.filter_map { |(player, _), index| player if totals[index] == totals.max }
+    lines << 'winner ' + winners.join(',')
+    lines << position_summary(board)
+    lines.concat(Board.display(board))
+    @game_totals[:rounds] += round
+    lines
+  end
+  def process(jobs, dictionary_lines)
+    move_blocks, validation_blocks, game_blocks = [dictionary_lines], [], []
+    seen = Set.new
+    jobs.each do |job|
+      kind, name = job.first.split.first(2)
+      destination, totals, key = case kind
+                                 when 'TOPN' then [move_blocks, @topn_totals, :jobs]
+                                 when 'VALIDATE' then [validation_blocks, @validation_totals, :jobs]
+                                 else [game_blocks, @game_totals, kind == 'GAME' ? :games : :duplicates]
+                                 end
+      totals[key] += 1
+      error = job_error(job, seen)
+      seen.add(name)
+      if error
+        destination << ["#{kind} #{name}", "error #{error}"]
+        totals[:errors] += 1
+      else
+        destination << case kind
+                       when 'TOPN' then topn(job)
+                       when 'VALIDATE' then validate(job)
+                       when 'GAME' then ordinary_game(job)
+                       else duplicate_game(job)
+                       end
+      end
+    end
+    [[move_blocks, @topn_totals, %i[jobs errors moves bingos]],
+     [validation_blocks, @validation_totals, %i[jobs errors moves valid invalid loss]],
+     [game_blocks, @game_totals, %i[games duplicates errors turns rounds plays exchanges passes bingos]]].each do |blocks, totals, keys|
+      blocks << ['SUMMARY ' + keys.map { |key| "#{key}=#{totals[key]}" }.join(' ')]
+    end
+    [move_blocks, validation_blocks, game_blocks]
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  values, counts, weights, trie, jobs, dictionary_lines = Scrabble.read_inputs
+  reports = Scrabble.new(values, counts, weights, trie).process(jobs, dictionary_lines)
+  FileUtils.mkdir_p('output')
+  %w[moves.txt validation.txt game.txt].zip(reports).each do |filename, blocks|
+    File.write(File.join('output', filename), blocks.map { |block| block.join("\n") }.join("\n\n") + "\n", encoding: 'US-ASCII')
+  end
+end

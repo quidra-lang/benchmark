@@ -1,0 +1,269 @@
+struct Problem: Error {
+    let text: String
+}
+func fail(_ reason: String) throws -> Never {
+    throw Problem(text: reason)
+}
+func time(_ s: String) -> Int {
+    let p = s.components(separatedBy: ":")
+    return Int(p[0])! * 60 + Int(p[1])!
+}
+struct Segment: Hashable {
+    let a: String, b: String
+    init(_ x: String, _ y: String) {
+        a = min(x,y)
+        b = max(x,y)
+    }
+}
+struct Station {
+    let zone: Int, name: String
+    var transfer = 0, closed = false
+}
+struct Line {
+    let first: Int, last: Int, headway: Int, stops: [String], offsets: [Int]
+    var delay = 0, suspended = false
+    var total: Int {
+        offsets.last!
+    }
+    var trips: Int {
+        (last - first) / headway + 1
+    }
+    func direction(_ reverse: Bool) -> ([String],[Int]) {
+        reverse ? (Array(stops.reversed()),offsets.reversed().map {
+            total - $0
+        }) : (stops,offsets)
+    }
+    func next(_ offset: Int, _ ready: Int) -> Int? {
+        let delta = ready - first - delay - offset, q = delta <= 0 ? 0 : (delta + headway - 1) / headway
+        return q < trips ? q : nil
+    }
+    func at(_ q: Int, _ offset: Int) -> Int {
+        first + delay + q * headway + offset
+    }
+}
+enum Leg {
+    case ride(line: String, terminal: String, from: String, departure: Int, to: String, arrival: Int, stops: Int)
+    case walk(from: String, departure: Int, to: String, arrival: Int)
+    case stay(station: String, start: Int, end: Int)
+    var isRide: Bool {
+        if case .ride = self {
+            return true
+        }
+        return false
+    }
+struct Label {
+    let arrival: Int, journey: [Leg]
+}
+typealias Labels = [String: Label]
+struct Tariff {
+    let discount: Int, window: Int, prices: [Int]
+}
+@discardableResult func relax(_ labels: inout Labels, _ station: String, _ arrival: Int, _ journey: [Leg], _ leg: Leg) -> Bool {
+    if let old = labels[station], old.arrival <= arrival {
+        return false
+    }
+    labels[station] = Label(arrival: arrival,journey: journey + [leg])
+    return true
+}
+final class Planner {
+    var stations: [String: Station] = [:], lines: [String: Line] = [:], walks: [Segment: Int] = [:], closed = Set<Segment>(), tariff: Tariff? = nil
+    func station(_ s: String) throws -> Station {
+        guard let station = stations[s] else {
+            try fail("unknown station " + s)
+        }
+        return station
+    }
+    func line(_ s: String) throws -> Line {
+        guard let line = lines[s] else {
+            try fail("unknown line " + s)
+        }
+        return line
+    }
+    func openStation(_ s: String) throws {
+        if try station(s).closed {
+            try fail("station \(s) is closed")
+        }
+    }
+    func common(_ a: String, _ b: String) throws {
+        _ = try station(a)
+        _ = try station(b)
+        if a == b {
+            try fail("origin and destination are the same")
+        }
+        try openStation(a)
+        try openStation(b)
+    }
+    func neighbors(_ s: String) -> [(String,Int)] {
+        walks.compactMap {
+            key,t -> (String,Int)? in key.a == s ? (key.b,t) : (key.b == s ? (key.a,t) : nil)
+        }.sorted {
+            $0.0 < $1.0
+        }
+    }
+    func earliest(_ origin: String, _ departure: Int) -> Labels {
+        var labels = [origin: Label(arrival: departure,journey: [])], settled = Set<String>()
+        while let entry = labels.filter({
+            !settled.contains($0.key)
+        }).min(by: {
+            a,b in a.value.arrival == b.value.arrival ? a.key < b.key : a.value.arrival < b.value.arrival
+        }) {
+            let u = entry.key, label = entry.value, ready = label.arrival + (u == origin ? 0 : stations[u]!.transfer)
+            settled.insert(u)
+            for id in lines.keys.sorted() {
+                let line = lines[id]!
+                if line.suspended || !line.stops.contains(u) {
+                    continue
+                }
+                for reverse in [false,true] {
+                    let (stops,offsets) = line.direction(reverse), i = stops.firstIndex(of: u)!
+                    if i + 1 == stops.count {
+                        continue
+                    }
+                    guard let q = line.next(offsets[i],ready) else {
+                        continue
+                    }
+                    let d = line.at(q,offsets[i])
+                    for j in (i + 1)..<stops.count {
+                        if closed.contains(Segment(stops[j - 1],stops[j])) {
+                            break
+                        }
+                        if stations[stops[j]]!.closed {
+                            continue
+                        }
+                        let t = line.at(q,offsets[j])
+                        relax(&labels,stops[j],t,label.journey,.ride(line: id,terminal: stops.last!,from: u,departure: d,to: stops[j],arrival: t,stops: j - i))
+                    }
+                }
+            }
+            for (v,w) in neighbors(u) {
+                let t = label.arrival + w
+                if !stations[v]!.closed && t <= 1440 {
+                    relax(&labels,v,t,label.journey,.walk(from: u,departure: label.arrival,to: v,arrival: t))
+                }
+            }
+        }
+        return labels
+    }
+    func fare(_ journey: [Leg], _ child: Bool) -> (Int,[String]) {
+        let tariff = tariff!
+        func half(_ n: Int) -> Int {
+            (n + 19) / 20 * 10
+        }
+        let cap = child ? half(tariff.discount) : tariff.discount
+        var previous: Int? = nil, total = 0, tickets: [String] = []
+        for leg in journey {
+            if case .ride(let id,_,let from,let departure,let to,let arrival,_) = leg {
+                let stops = lines[id]!.stops, a = stops.firstIndex(of: from)!, b = stops.firstIndex(of: to)!, zones = Set(stops[min(a,b)...max(a,b)].map {
+                    stations[$0]!.zone
+                }).count
+                var price = tariff.prices[min(zones,tariff.prices.count) - 1]
+                if child {
+                    price = half(price)
+                }
+                let reduction = previous.map {
+                    departure - $0 <= tariff.window
+                } == true ? min(cap,price) : 0, pay = price - reduction
+                total += pay
+                previous = arrival
+                tickets.append("TICKET \(id) \(from) \(to) zones \(zones) price \(price) discount \(reduction) pay \(pay)")
+            }
+        }
+        return (total,tickets)
+    }
+    func command(_ w: [String]) throws -> [String] {
+        let c = w[0], a = Array(w.dropFirst())
+        func num(_ i: Int) -> Int {
+            Int(a[i])!
+        }
+        var out: [String] = []
+        switch c {
+            case "STATION":
+            if stations[a[0]] != nil {
+                try fail("station \(a[0]) already exists")
+            }
+            stations[a[0]] = Station(zone: num(1),name: a[2])
+            case "LINE":
+            if lines[a[0]] != nil {
+                try fail("line \(a[0]) already exists")
+            }
+            let stops = stride(from: 4,to: a.count,by: 2).map {
+                a[$0]
+            }
+            for s in stops {
+                _ = try station(s)
+            }
+            var seen = Set<String>()
+            for s in stops {
+                if !seen.insert(s).inserted {
+                    try fail("station \(s) appears twice on line \(a[0])")
+                }
+            }
+            let first = time(a[1]), last = time(a[2])
+            var offsets = [0]
+            for i in stride(from: 5,to: a.count,by: 2) {
+                offsets.append(offsets.last! + num(i))
+            }
+            if first > last {
+                try fail("line \(a[0]) first departure is after last departure")
+            }
+            if last + offsets.last! > 1440 {
+                try fail("line \(a[0]) runs past 24:00")
+            }
+            let line = Line(first: first,last: last,headway: num(3),stops: stops,offsets: offsets)
+            lines[a[0]] = line
+            case "WALK":
+            _ = try station(a[0])
+            _ = try station(a[1])
+            if a[0] == a[1] {
+                try fail("walk from \(a[0]) to itself")
+            }
+            let old = walks.updateValue(num(2),forKey: Segment(a[0],a[1]))
+            case "TARIFF":
+            let prices = (2..<a.count).map(num)
+            if zip(prices,prices.dropFirst()).contains(where: {
+                $0.0 > $0.1
+            }) {
+                try fail("tariff prices must not decrease")
+            }
+            tariff = Tariff(discount: num(0),window: num(1),prices: prices)
+            case "ROUTE","FEWEST","PARETO","FARE","LASTTRAIN","ARRIVEBY","PROFILE":
+            try common(a[0],a[1])
+            if c == "FARE" {
+                if !["ADULT","CHILD"].contains(a[3]) {
+                    try fail("unknown fare class " + a[3])
+                }
+                if tariff == nil {
+                    try fail("no tariff")
+                }
+            }
+            let heading = "\(c) \(a[0]) \(a[1])"
+            } else {
+                let start = time(a[2])
+                if let label = earliest(a[0],start)[a[1]] {
+                    if c == "FARE" {
+                        let (total,tickets) = fare(label.journey,a[3] == "CHILD")
+                        out.append("\(heading) \(a[2]) \(a[3]) rides \(label.journey.filter(\.isRide).count) total \(total)")
+                        out += tickets
+                    }
+                } else {
+                    out.append("\(heading) \(a[2])" + (c == "FARE" ? " " + a[3] : "") + " unreachable")
+                }
+            }
+        }
+        return out
+    }
+}
+let planner = Planner()
+for _ in 0..<Int(readLine()!)! {
+    do {
+        for line in try planner.command(readLine()!.components(separatedBy: " ")) {
+            print(line)
+        }
+    }
+    catch let p as Problem {
+        print("ERROR " + p.text)
+    }
+    catch {
+        fatalError("unexpected error")
+    }
+}

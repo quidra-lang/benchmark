@@ -1,0 +1,9 @@
+The current question asks: Connect the food-item subtotal aggregation with category-level tax truncation and the final payment calculation. Use the actual food items to derive the food category total and its integer tax, identify where truncation occurs, and explain why applying it after aggregation differs from truncating each item's tax. Show how that food tax combines with untaxed item subtotals and the general-category tax without taxing an amount twice.
+
+Answer and source evidence: Food subtotals are milk 396, bread 248, apple 512 and eggs 268, totaling 1424. Integer 1424*8/100 truncates to tax 113 after aggregation; truncating each item separately would give 31+19+40+21=111. General subtotal 932 yields 93 tax. The final payment adds untaxed subtotals plus the two category taxes once, totaling 2562.
+
+Selection: `main.swift` lines 1, 2, 3, 4, 5, 6, 7, 9, 10, 13. Keep food data/category mapping, subtotal accumulation, category-level integer division and the final sum. General item literals may be omitted where a question supplies only the dependency, but fused data lines and the general-tax expression remain needed for this combined final calculation.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

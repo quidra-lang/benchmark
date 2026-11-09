@@ -1,0 +1,175 @@
+const TOC_MARKER = "\0toc\0";
+function escapeHtml(string $text): string
+{
+    return strtr($text, ['&' => '&amp;', '<' => '&lt;', '>' => '&gt;', '"' => '&quot;']);
+}
+function stripTags(string $text): string
+{
+    return preg_replace('/<[^>]*>/', '', $text);
+}
+function atxHeading(string $line): ?array
+{
+    if (!preg_match('/\A(#{1,6})(?: |\z)/', $line, $match)) {
+        return null;
+    }
+    $text = trim(substr($line, strlen($match[1])), ' ');
+    $trimmed = rtrim($text, '#');
+    if ($trimmed === '' || str_ends_with($trimmed, ' ')) {
+        $text = trim($trimmed, ' ');
+    }
+    return ['kind' => 'heading', 'text' => $text, 'number' => strlen($match[1])];
+}
+final class BlockParser
+    public function parse(array $lines): array
+    {
+        $blocks = [];
+        $at = 0;
+        while ($at < count($lines)) {
+            $line = $lines[$at];
+            if ($line === '') {
+                $at++;
+                continue;
+            }
+            if (!str_starts_with($line, ' ')) {
+                if (($heading = atxHeading($line)) !== null) {
+                    $blocks[] = $heading;
+                    $at++;
+                    continue;
+                }
+                if (str_starts_with($line, '>')) {
+                    $content = [];
+                    while ($at < count($lines) && str_starts_with($lines[$at], '>')) {
+                        $row = substr($lines[$at++], 1);
+                        $content[] = str_starts_with($row, ' ') ? substr($row, 1) : $row;
+                    }
+                    $alert = preg_match('/\A\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\z/', $content[0], $match) === 1;
+                    if ($alert) {
+                        array_shift($content);
+                    }
+                    $blocks[] = ['kind' => $alert ? 'alert' : 'quote', 'text' => $alert ? $match[1] : '', 'children' => $this->parse($content)];
+                    continue;
+                }
+            $text = [ltrim($line, ' ')];
+            $at++;
+            $level = null;
+            while ($at < count($lines) && $lines[$at] !== '') {
+            }
+            $text = implode("\n", $text);
+            $blocks[] = ['kind' => $level !== null ? 'heading' : ($text === '[TOC]' ? 'toc' : 'paragraph'), 'text' => $text, 'number' => $level];
+        }
+        return $blocks;
+    }
+function emphasis(array $pieces, int $start = 0, ?int $end = null): string
+{
+    $end ??= count($pieces);
+    $html = '';
+    for ($at = $start; $at < $end; $at++) {
+        $piece = $pieces[$at];
+        if (is_string($piece)) {
+            $html .= $piece;
+            continue;
+        }
+    }
+    return $html;
+}
+final class Renderer
+{
+    private array $usedIds = [];
+    private array $headings = [];
+    private array $noteNumbers = [];
+    public function __construct(private array $references, private array $footnotes) {}
+    private function inline(string $text, bool $links = true, bool $notes = true): string
+    {
+        $pieces = [];
+        $at = 0;
+        while ($at < strlen($text)) {
+            $char = $text[$at];
+            if (str_contains('*_~', $char)) {
+            } else {
+                $pieces[] = escapeHtml($char);
+                $at++;
+            }
+        }
+        return emphasis($pieces);
+    }
+    public function document(array $blocks): string
+    {
+        $html = $this->renderBlocks($blocks);
+        $html = str_replace(TOC_MARKER, $this->tableOfContents(), $html);
+        return $html . ($this->noteNumbers === [] ? '' : $this->footnoteList());
+    }
+    private function renderBlocks(array $blocks): string
+    {
+        return implode('', array_map(fn(array $block): string => $this->render($block) . "\n", $blocks));
+    }
+    private function render(array $block): string
+    {
+        switch ($block['kind']) {
+            case 'heading': return $this->heading($block['number'], $block['text']);
+            case 'quote': return "<blockquote>\n" . $this->renderBlocks($block['children']) . '</blockquote>';
+            case 'toc': return TOC_MARKER;
+        }
+    }
+    private function heading(int $level, string $text): string
+    {
+        $start = strrpos($text, ' {#');
+        $candidate = $start !== false && str_ends_with($text, '}') ? substr($text, $start + 3, -1) : '';
+        if (preg_match('/\A[A-Za-z0-9_-]+\z/', $candidate)) {
+            $id = $candidate;
+            $text = rtrim(substr($text, 0, $start), ' ');
+        } else {
+            $base = str_replace([' ', "\n"], '-', preg_replace('/[^a-z0-9_ \n-]/', '', strtolower($text)));
+            if ($base === '') {
+                $base = 'heading';
+            }
+            $id = $base;
+            for ($suffix = 1; isset($this->usedIds[$id]); $suffix++) {
+                $id = "$base-$suffix";
+            }
+        }
+        $this->usedIds[$id] = true;
+        $html = $this->inline($text);
+        $this->headings[] = ['level' => $level, 'id' => $id, 'label' => stripTags($html), 'children' => []];
+        return "<h$level id=\"$id\">$html</h$level>";
+    }
+    private function tocList(array $indices): string
+    {
+        $html = "<ul>\n";
+        foreach ($indices as $index) {
+            $entry = $this->headings[$index];
+            $html .= '<li><a href="#' . $entry['id'] . '">' . $entry['label'] . '</a>';
+            if ($entry['children'] !== []) {
+                $html .= "\n" . $this->tocList($entry['children']) . "\n";
+            }
+            $html .= "</li>\n";
+        }
+        return $html . '</ul>';
+    }
+    private function tableOfContents(): string
+    {
+        $roots = [];
+        $parents = [];
+        foreach ($this->headings as $index => $entry) {
+            while ($parents !== [] && $this->headings[$parents[array_key_last($parents)]]['level'] >= $entry['level']) {
+                array_pop($parents);
+            }
+            if ($parents === []) {
+                $roots[] = $index;
+            } else {
+                $this->headings[$parents[array_key_last($parents)]]['children'][] = $index;
+            }
+            $parents[] = $index;
+        }
+        return "<nav class=\"toc\">\n" . $this->tocList($roots) . "\n</nav>";
+    }
+$lines = [];
+while (($line = fgets(STDIN)) !== false) {
+    $line = rtrim($line, "\r\n");
+    if ($line === '@@END@@') {
+        break;
+    }
+    $lines[] = $line;
+}
+$parser = new BlockParser();
+$blocks = $parser->parse($lines);
+echo (new Renderer($parser->references, $parser->footnotes))->document($blocks);

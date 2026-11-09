@@ -1,0 +1,9 @@
+Answer requirements (the same across all languages): Identify how a goal absent from grounded facts and not initially true as a static atom is represented separately from valid fact numbers, and the guard preventing search; distinguish an initially true static goal, which is ignored rather than marked unreachable.
+
+Selected evidence for Ruby: grounding.rb: 97–107; main.rb: 408.
+
+A successful grounded-fact lookup inserts that fact number into the goal state. A failed lookup appends the original atom to the unreachable collection only if the predicate is fluent/not static or the atom is absent from the initial atoms. Thus the scenario in the question produces a nonempty unreachable collection, not a fabricated fact number. The selected controller tests that collection and returns an unreachable-goal result without calling search. An already true static goal fails both parts of the append condition, contributes no dynamic goal and no unreachable atom, and therefore does not suppress search.
+
+Language/library semantics: Array#empty? is used explicitly because even an empty array is truthy in Ruby.
+
+Necessity and alternatives: Both the failed-lookup classification and the call-site guard are necessary: either alone leaves the static-true exception or search suppression unsupported. Grounding enumeration, heuristics, graph expansion and report construction add no evidence to this local distinction and are omitted. Complete source lines are retained verbatim and in file order; disjoint ranges omit operations not needed for this question. The excerpt was reread independently against every answer requirement: each named value and operation needed for the explanation is supplied by the selected lines or the stated language/library guarantees. No proposed modification was implemented. Task A was source-reviewed for the relevant behavior and approved language version; no claim of compilation or execution is made.

@@ -1,0 +1,9 @@
+The current question asks: Suppose a name field may contain leading/trailing ASCII spaces, such as " Tanaka ", and those outer spaces must be discarded while preserving letter case. Identify where and how a local normalization expression should act on the name before its existing consumers, using the actual field binding. Do not change scores or ranking rules.
+
+Answer and source evidence: Trim ASCII space from both ends of the name before sorting and output consumers, preserving case and internal spaces. Go can assign students[i].name = strings.Trim(students[i].name," ") in the existing index loop. Rust replaces the record tuple's *name expression with name.trim_matches(' '). Swift replaces the record name expression $0.0 with $0.0.trimmingCharacters(in: CharacterSet(charactersIn:" ")). Leave scores, totals and ranking comparisons unchanged.
+
+Selection: `main.swift` lines 4, 6, 7, 9, 13. The actual name binding/construction and its existing consumers locate one normalization point. Score values and rank calculations do not need to be copied. The retained binding/constructor lines explicitly connect the consumer variables or tree child fields to their source data.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

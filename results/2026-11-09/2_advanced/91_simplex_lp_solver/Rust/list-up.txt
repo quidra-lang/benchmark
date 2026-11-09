@@ -1,0 +1,299 @@
+fn content(name: &str, parsed: &lp_parser::Parsed) -> Result<Model, (usize, String)> {
+    let mut names = Vec::new();
+    for (name, _) in parsed.objective.iter().chain(parsed.constraints.iter().flat_map(|c| c.terms.iter())) {
+        if !names.contains(name) { names.push(name.clone()); }
+    }
+    let index: BTreeMap<_, _> = names.iter().enumerate().map(|(i, name)| (name.clone(), i)).collect();
+    let coefficients = |terms: &lp_parser::Terms| {
+        let mut values = vec![F::zero(); names.len()];
+        for (name, value) in terms { values[index[name]] = values[index[name]] + *value; }
+        values
+    };
+    let c = coefficients(&parsed.objective);
+    let a = parsed.constraints.iter().map(|c| coefficients(&c.terms)).collect();
+    let mut seen = BTreeSet::new();
+    for constraint in &parsed.constraints {
+        if !seen.insert(constraint.name.clone()) { return Err((constraint.line, format!("duplicate constraint {}", constraint.name))); }
+    }
+    let mut bounds = vec![(Some(F::zero()), None); names.len()];
+    let mut integer = vec![false; names.len()];
+    Ok(Model { name: name.into(), maximize: parsed.maximize, names, c, a, rhs: parsed.constraints.iter().map(|c| c.rhs).collect(), comparisons: parsed.constraints.iter().map(|c| c.comparison.clone()).collect(), row_names: parsed.constraints.iter().map(|c| c.name.clone()).collect(), bounds, integer })
+}
+fn standard(model: &Model, bounds: &Bounds) -> (Standard, tableau::Tableau) {
+    let mut columns = Vec::new();
+    let mut substitutions = Vec::new();
+    let mut costs = Vec::new();
+    for j in 0..model.names.len() {
+        let (lower, upper) = bounds[j];
+        let mut parts = Vec::new();
+        let (kind, offset) = if let Some(lower) = lower {
+            parts.push((columns.len(), F::integer(1)));
+            columns.push(model.names[j].clone()); costs.push(model.c[j]); ("shift", lower)
+        };
+        substitutions.push(Substitution { kind, offset, columns: parts });
+    }
+    let variable_columns = columns.len();
+    let mut rows = model.row_names.clone();
+    let mut comparisons = model.comparisons.clone();
+    let mut coefficients = Vec::new();
+    let mut beta = Vec::new();
+    for i in 0..model.a.len() {
+        let mut row = vec![F::zero(); variable_columns];
+        let mut rhs = model.rhs[i];
+        for j in 0..model.names.len() {
+            rhs = rhs - model.a[i][j] * substitutions[j].offset;
+            for &(k, direction) in &substitutions[j].columns { row[k] = direction * model.a[i][j]; }
+        }
+        coefficients.push(row); beta.push(rhs);
+    }
+    let mut upper_rows = vec![None; model.names.len()];
+    for j in 0..model.names.len() {
+        if substitutions[j].kind == "shift" {
+            if let Some(upper) = bounds[j].1 {
+    }
+    let mut signs = vec![F::integer(1); rows.len()];
+    for i in 0..rows.len() {
+        if beta[i] < F::zero() {
+    let mut initial = vec![usize::MAX; rows.len()];
+    let mut slacks = vec![None; rows.len()];
+    for i in 0..rows.len() {
+        if comparisons[i] != "=" {
+    }
+    let mut artificial = BTreeSet::new();
+    for i in 0..rows.len() {
+        if comparisons[i] != "<=" {
+            let k = columns.len(); columns.push(format!("a:{}", rows[i])); costs.push(F::zero());
+            for row in &mut coefficients { row.push(F::zero()); }
+            coefficients[i][k] = F::integer(1); initial[i] = k; artificial.insert(k);
+        }
+    }
+    let sign = F::integer(if model.maximize { -1 } else { 1 });
+    let constant = (0..model.names.len()).fold(F::zero(), |sum, j| sum + model.c[j] * substitutions[j].offset);
+    let phase1 = (0..columns.len()).map(|k| F::integer(if artificial.contains(&k) { 1 } else { 0 })).collect();
+    let phase2 = costs.iter().map(|&value| sign * value).collect();
+    let tableau = tableau::Tableau { t: coefficients, beta, basis: initial.clone() };
+    (Standard { columns, rows, signs, initial, slacks, artificial, phase1, phase2, constant, sign, substitutions, upper_rows }, tableau)
+}
+pub struct LpResult {
+    standard: Standard, tableau: tableau::Tableau, pub status: &'static str, pub value: F, pub solution: Vec<F>,
+    pub phase1: usize, pub phase2: usize, pub drives: usize, infeasibility: F, multipliers: Vec<F>, ray: Vec<F>, rate: F
+}
+impl LpResult { pub fn pivots(&self) -> usize { self.phase1 + self.phase2 + self.drives } }
+fn recover(standard: &Standard, columns: &[F], offset: bool) -> Vec<F> {
+    standard.substitutions.iter().map(|value| value.columns.iter().fold(if offset { value.offset } else { F::zero() }, |sum, &(k, direction)| sum + direction * columns[k])).collect()
+}
+pub fn solve_lp(model: &Model, bounds: &Bounds, node: usize, level: usize, log: &mut Vec<String>) -> LpResult {
+    let (s, mut t) = standard(model, bounds);
+    log.push(format!("SOLVE node {} rows {} columns {} artificials {}", node, s.rows.len(), s.columns.len(), s.artificial.len()));
+    if level >= 1 {
+        for (j, value) in s.substitutions.iter().enumerate() {
+            let mut line = format!("MAP {} {}", model.names[j], value.kind);
+            if value.kind != "split" {
+                line.push_str(&format!(" {}", value.offset));
+                if value.kind == "shift" { if let Some(upper) = bounds[j].1 { line.push_str(&format!(" upper {}", upper)); } }
+            }
+            log.push(line);
+        }
+        for (i, &sign) in s.signs.iter().enumerate() { if sign < F::zero() { log.push(format!("FLIP {}", s.rows[i])); } }
+    }
+    let (mut phase1, mut phase2, mut drives, mut redundant) = (0, 0, 0, 0);
+    let (mut status, mut infeasibility, mut unbounded) = ("OPTIMAL", F::zero(), None);
+    if !s.artificial.is_empty() {
+        if level >= 1 { log.push("PHASE 1".into()); }
+        let candidates: Vec<_> = (0..s.columns.len()).collect();
+        phase1 = simplex::phase(&mut t, &s.phase1, &candidates, &s.columns, &s.rows, F::zero(), F::integer(1), level, log).0;
+        infeasibility = t.value(&s.phase1);
+        if level >= 1 { log.push(format!("PHASE 1 END objective {} iterations {}", infeasibility, phase1)); }
+        if infeasibility > F::zero() {
+            status = "INFEASIBLE";
+        } else {
+            for i in 0..s.rows.len() {
+                if !s.artificial.contains(&t.basis[i]) { continue; }
+                let enter = (0..s.columns.len()).find(|k| !s.artificial.contains(k) && t.t[i][*k] != F::zero());
+                if let Some(k) = enter {
+                    if level >= 1 { log.push(format!("DRIVE row {} enter {} leave {}", s.rows[i], s.columns[k], s.columns[t.basis[i]])); }
+                    t.pivot(i, k); drives += 1;
+                } else {
+                    redundant += 1;
+                    if level >= 1 { log.push(format!("REDUNDANT row {}", s.rows[i])); }
+                }
+            }
+        }
+    }
+    if status != "INFEASIBLE" {
+        if level >= 1 { log.push("PHASE 2".into()); }
+        let candidates: Vec<_> = (0..s.columns.len()).filter(|k| !s.artificial.contains(k)).collect();
+        let (count, column) = simplex::phase(&mut t, &s.phase2, &candidates, &s.columns, &s.rows, s.constant, s.sign, level, log);
+        phase2 = count; unbounded = column;
+        if let Some(k) = column {
+            status = "UNBOUNDED";
+            if level >= 1 { log.push(format!("UNBOUNDED enter {}", s.columns[k])); }
+        }
+        if level >= 1 { log.push(format!("PHASE 2 END objective {} iterations {}", s.constant + s.sign * t.value(&s.phase2), phase2)); }
+    }
+    let value = s.constant + s.sign * t.value(&s.phase2);
+    let mut column_values = vec![F::zero(); s.columns.len()];
+    for i in 0..s.rows.len() { column_values[t.basis[i]] = t.beta[i]; }
+    let solution = recover(&s, &column_values, true);
+    let multipliers = if status == "INFEASIBLE" {
+        let reduced = t.reduced(&s.phase1);
+        s.initial.iter().enumerate().map(|(i, &k)| s.signs[i] * (s.phase1[k] - reduced[k])).collect()
+    } else { Vec::new() };
+    let mut ray = Vec::new();
+    let mut rate = F::zero();
+    if let Some(q) = unbounded {
+        let mut direction = vec![F::zero(); s.columns.len()]; direction[q] = F::integer(1);
+        for i in 0..s.rows.len() { direction[t.basis[i]] = -t.t[i][q]; }
+        ray = recover(&s, &direction, false);
+        rate = model.c.iter().zip(&ray).fold(F::zero(), |sum, (&c, &d)| sum + c * d);
+    }
+    log.push(format!("RESULT {} objective {} phase1 {} phase2 {} drives {} redundant {}", status, if status == "OPTIMAL" { value.to_string() } else { "-".into() }, phase1, phase2, drives, redundant));
+    LpResult { standard: s, tableau: t, status, value, solution, phase1, phase2, drives, infeasibility, multipliers, ray, rate }
+}
+fn write(name: &str, lines: &[String]) {
+    fs::create_dir_all("output").unwrap();
+    fs::write(format!("output/{}", name), if lines.is_empty() { String::new() } else { lines.join("\n") + "\n" }).unwrap();
+}
+fn main() {
+    let blocks = lp_parser::read();
+    let params = lp_parser::params();
+    let (mut iterations, mut solutions, mut sensitivity_lines, mut tree) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut csv = vec!["model,status,objective,approx,relaxation,nodes,pivots".into()];
+    let mut statuses = [0usize; 5];
+    let mut totals = [0usize; 4];
+    let (mut analyzed, mut integer_models, mut integer_nodes, mut limits) = (0, 0, 0, 0);
+    for block in &blocks {
+        let model = if let Some(error) = &block.error { Err(error.clone()) } else { content(&block.name, block.parsed.as_ref().unwrap()) };
+        let model = match model {
+            Ok(model) => model,
+        let integer = model.integer.iter().any(|&value| value);
+        let level = params.levels.get(&model.name).copied().unwrap_or(params.level);
+        let limit = params.limits.get(&model.name).copied().unwrap_or(params.limit);
+        iterations.push(format!("MODEL {} level {}", model.name, level));
+        let outcome = if integer { branch_bound::solve(&model, limit, level, &mut iterations) } else {
+            let root = solve_lp(&model, &model.bounds, 1, level, &mut iterations);
+            branch_bound::Outcome { status: root.status, solution: if root.status == "OPTIMAL" { Some(root.solution.clone()) } else { None }, objective: if root.status == "OPTIMAL" { Some(root.value) } else { None }, nodes: 1, phase1: root.phase1, phase2: root.phase2, drives: root.drives, root, lines: Vec::new() }
+        };
+        let root = &outcome.root;
+        let status = outcome.status;
+        statuses[match status { "OPTIMAL" => 0, "INFEASIBLE" => 1, "UNBOUNDED" => 2, _ => 3 }] += 1;
+        totals[0] += outcome.nodes; totals[1] += outcome.phase1; totals[2] += outcome.phase2; totals[3] += outcome.drives;
+        solutions.push(format!("MODEL {} {} variables {} constraints {} integers {}", model.name, if model.maximize { "maximize" } else { "minimize" }, model.names.len(), model.a.len(), model.integer.iter().filter(|&&v| v).count()));
+        solutions.push(statistics(&model)); solutions.push(format!("STATUS {}", status));
+        if let Some(value) = outcome.objective { solutions.push(format!("OBJECTIVE {} approx {}", value, value.approximate())); }
+        if outcome.solution.is_some() || status == "UNBOUNDED" {
+            for (j, value) in outcome.solution.as_ref().unwrap_or(&root.solution).iter().enumerate() { solutions.push(format!("VALUE {} {}", model.names[j], value)); }
+        }
+        solutions.push(format!("PIVOTS {}", outcome.pivots()));
+        csv.push(format!("{},{},{},{},{},{},{}", model.name, status, outcome.objective.map_or_else(|| "-".into(), |v| v.to_string()), outcome.objective.map_or_else(|| "-".into(), F::approximate), if root.status == "OPTIMAL" { root.value.to_string() } else { "-".into() }, outcome.nodes, outcome.pivots()));
+    iterations.push(format!("TOTAL solves {} phase1 {} phase2 {} drives {} pivots {}", totals[0], totals[1], totals[2], totals[3], totals[1] + totals[2] + totals[3]));
+    solutions.push(format!("SUMMARY models {} optimal {} infeasible {} unbounded {} node_limit {} error {}", blocks.len(), statuses[0], statuses[1], statuses[2], statuses[3], statuses[4]));
+    sensitivity_lines.push(format!("SUMMARY analyzed {} skipped {}", analyzed, blocks.len() - analyzed));
+    tree.push(format!("SUMMARY models {} nodes {} node_limit {}", integer_models, integer_nodes, limits));
+    write("iterations.txt", &iterations); write("solutions.txt", &solutions); write("sensitivity.txt", &sensitivity_lines); write("bnb_tree.txt", &tree); write("summary.csv", &csv);
+}
+fn expression(items: &[&str]) -> Option<Terms> {
+    let mut i = 0;
+    let mut sign = F::integer(1);
+    if items.first() == Some(&"-") { sign = -sign; i += 1; }
+    let mut result = Vec::new();
+    loop {
+        let word = *items.get(i)?;
+        let (coefficient, variable) = if !word.starts_with('-') {
+            if let Some(number) = F::parse(word) {
+                let variable = *items.get(i + 1)?;
+                if !name(variable) { return None; }
+                i += 2;
+                (number, variable)
+            } else if name(word) { i += 1; (F::integer(1), word) }
+            else { return None; }
+        } else { return None; };
+        result.push((variable.into(), coefficient * sign));
+        if i == items.len() { return Some(result); }
+        sign = match items[i] { "+" => F::integer(1), "-" => F::integer(-1), _ => return None };
+        i += 1;
+    }
+}
+#[derive(Clone)]
+pub struct Constraint { pub line: usize, pub name: String, pub terms: Terms, pub comparison: String, pub rhs: F }
+fn constraint(items: &[&str], line: usize) -> Option<Constraint> {
+    if items.len() < 4 { return None; }
+    let label = items[0].strip_suffix(':')?;
+    if !name(label) || !["<=", ">=", "="].contains(&items[items.len() - 2]) { return None; }
+    Some(Constraint { line, name: label.into(), terms: expression(&items[1..items.len() - 2])?, comparison: items[items.len() - 2].into(), rhs: F::parse(items[items.len() - 1])? })
+}
+fn parse_body(body: &[(usize, String)], end: usize) -> Result<Parsed, (usize, String)> {
+    let mut parsed = Parsed { maximize: false, objective: Vec::new(), constraints: Vec::new(), bounds: Vec::new(), integers: Vec::new(), binaries: Vec::new() };
+    let mut state = 0;
+    for (line, text) in body {
+        let items: Vec<_> = text.split(' ').collect();
+        let valid = match state {
+            0 => if text == "maximize" || text == "minimize" { parsed.maximize = text == "maximize"; state = 1; true } else { false },
+            1 => if items.len() >= 2 && items[0].strip_suffix(':').map_or(false, name) {
+                if let Some(terms) = expression(&items[1..]) { parsed.objective = terms; state = 2; true } else { false }
+            } else { false },
+            2 => if text == "subject to" { state = 3; true } else { false },
+            3 | 4 => if state == 4 && ["bounds", "integer", "binary"].contains(&text.as_str()) {
+                state = match text.as_str() { "bounds" => 5, "integer" => 6, _ => 7 }; true
+            } else if let Some(c) = constraint(&items, *line) { parsed.constraints.push(c); state = 4; true } else { false },
+        if !valid { return Err((*line, "syntax error".into())); }
+    }
+    if state < 4 { Err((end, "syntax error".into())) } else { Ok(parsed) }
+}
+pub fn read() -> Vec<Block> {
+    let mut result = Vec::new();
+    let mut model = String::new();
+    let mut body = Vec::new();
+    for (i, line) in fs::read_to_string("input/models.lp").unwrap().lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if let Some(name) = line.strip_prefix("model ") { model = name.into(); body.clear(); }
+        else if line == "end" {
+            let (parsed, error) = match parse_body(&body, i + 1) { Ok(parsed) => (Some(parsed), None), Err(error) => (None, Some(error)) };
+            result.push(Block { name: model.clone(), parsed, error });
+        } else { body.push((i + 1, line.to_string())); }
+    }
+    result
+}
+pub fn phase(tableau: &mut Tableau, costs: &[F], candidates: &[usize], columns: &[String], rows: &[String], constant: F, sign: F, level: usize, log: &mut Vec<String>) -> (usize, Option<usize>) {
+    let mut iterations = 0;
+    loop {
+        let reduced = tableau.reduced(costs);
+        let q = match candidates.iter().copied().find(|&k| reduced[k] < F::zero()) { Some(q) => q, None => return (iterations, None) };
+        let p = (0..tableau.t.len()).filter(|&i| tableau.t[i][q] > F::zero()).min_by_key(|&i| (tableau.beta[i] / tableau.t[i][q], tableau.basis[i]));
+        if let Some(p) = p {
+            let leaving = tableau.basis[p];
+            let ratio = tableau.beta[p] / tableau.t[p][q];
+            let r = reduced[q];
+            tableau.pivot(p, q);
+            iterations += 1;
+            if level >= 1 { log.push(format!("PIVOT {} enter {} reduced {} leave {} row {} ratio {} objective {}", iterations, columns[q], r, columns[leaving], rows[p], ratio, constant + sign * tableau.value(costs))); }
+        } else { return (iterations, Some(q)); }
+    }
+}
+pub struct Tableau { pub t: Vec<Vec<F>>, pub beta: Vec<F>, pub basis: Vec<usize> }
+impl Tableau {
+    pub fn reduced(&self, costs: &[F]) -> Vec<F> {
+        (0..costs.len()).map(|k| costs[k] - (0..self.t.len()).fold(F::zero(), |sum, i| sum + costs[self.basis[i]] * self.t[i][k])).collect()
+    }
+    pub fn value(&self, costs: &[F]) -> F {
+        (0..self.t.len()).fold(F::zero(), |sum, i| sum + costs[self.basis[i]] * self.beta[i])
+    }
+    pub fn pivot(&mut self, p: usize, q: usize) {
+        let value = self.t[p][q];
+        for cell in &mut self.t[p] { *cell = *cell / value; }
+        self.beta[p] = self.beta[p] / value;
+        let row = self.t[p].clone();
+        let beta = self.beta[p];
+        for i in 0..self.t.len() {
+            if i == p { continue; }
+            let f = self.t[i][q];
+            for k in 0..row.len() { self.t[i][k] = self.t[i][k] - f * row[k]; }
+            self.beta[i] = self.beta[i] - f * beta;
+        }
+        self.basis[p] = q;
+    }
+pub struct Outcome {
+    pub status: &'static str, pub root: LpResult, pub solution: Option<Vec<F>>, pub objective: Option<F>,
+    pub nodes: usize, pub phase1: usize, pub phase2: usize, pub drives: usize, pub lines: Vec<String>
+}
+impl Outcome { pub fn pivots(&self) -> usize { self.phase1 + self.phase2 + self.drives } }

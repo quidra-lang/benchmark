@@ -1,0 +1,183 @@
+local function words(text)
+    local result = {}
+    for word in text:gmatch("[^ ]+") do
+        result[#result + 1] = word
+    end
+    return result
+local schemas = {
+    PRINT = "",
+    MERGE = "0:60000",
+local modifying = {}
+for _, command in ipairs(words("SHIFT SHIFTFROM SCALE SYNC SNAP FIXOVERLAP EXTEND TIME SORT RENUMBER MERGE SPLIT INSERT DELETE TEXT BALANCE STRIP CLEANHI REPLACE")) do
+    modifying[command] = true
+local function fail(message)
+    error(message, 0)
+local function dialogue(cue)
+    for _, line in ipairs(cue.lines) do
+        if line:sub(1, 2) == "- " then
+            return true
+        end
+    end
+    return false
+local function time_value(text)
+    local h, m, s, ms = text:match("^(%d%d):(%d%d):(%d%d),(%d%d%d)$")
+    if not h or tonumber(m) > 59 or tonumber(s) > 59 then
+        fail("bad arguments")
+    end
+    return tonumber(h) * 3600000 + tonumber(m) * 60000 + tonumber(s) * 1000 + tonumber(ms)
+local function time_text(t, kind)
+    return string.format("%02d:%02d:%02d%s%03d", t // 3600000, (t // 60000) % 60, (t // 1000) % 60,
+        kind == "VTT" and "." or ",", t % 1000)
+local function unsigned_arg(text, low, high)
+    if not text:match("^%d+$") or #text > 9 then
+        fail("bad arguments")
+    end
+    local value = tonumber(text)
+    if value < (low or 0) or value > (high or 999999999) then
+        fail("bad arguments")
+    end
+    return value
+local function typed_arg(text, kind)
+    local low, high = kind:match("^(%d+):(%d+)$")
+    return unsigned_arg(text, tonumber(low), tonumber(high))
+local function arguments(line, cues)
+    local command = line:match("^[^ ]+")
+    if schemas[command] == nil then
+        fail("unknown command")
+    end
+    local args, kinds = {}, {}
+    if command == "DELETE" then
+    else
+        kinds = words(schemas[command])
+        local position = #command + 2
+        local raw = {}
+        for i = 1, #kinds do
+            if position > #line then
+                fail("bad arguments")
+            end
+            if i == #kinds and (kinds[i] == "string" or kinds[i] == "text" or kinds[i] == "replace") then
+            else
+                local ending = line:find(" ", position, true)
+                if ending then
+                    raw[i] = line:sub(position, ending - 1)
+                    position = ending + 1
+                else
+                    raw[i] = line:sub(position)
+                    position = #line + 2
+                end
+            end
+        end
+        if position <= #line or (#kinds == 0 and #line ~= #command) then
+            fail("bad arguments")
+        end
+        for i, kind in ipairs(kinds) do
+            args[i] = typed_arg(raw[i], kind)
+        end
+    end
+    return command, args
+local function wrap_lines(lines, width)
+    local output = {}
+    for _, word in ipairs(words(table.concat(lines, " "))) do
+        if #output > 0 and #output[#output] + 1 + #word <= width then
+            output[#output] = output[#output] .. " " .. word
+        else
+            output[#output + 1] = word
+        end
+    end
+    return output
+local function inspect(command, args, cues)
+    local output, n = {}, #cues
+    if command == "LIST" or command == "AT" then
+    elseif command == "PRINT" then
+        for _, cue in ipairs(cues) do
+            output[#output + 1] = tostring(cue.index)
+            output[#output + 1] = time_text(cue.start) .. " --> " .. time_text(cue.stop)
+            table.move(cue.lines,1,#cue.lines,#output+1,output)
+            output[#output + 1] = ""
+        end
+    end
+    return output
+local function modify(command, args, cues)
+    local output, n = {}, #cues
+    if command == "SHIFT" or command == "SHIFTFROM" or command == "SCALE" or command == "SYNC" or command == "SNAP" then
+    elseif command == "MERGE" then
+        local result, merged = {}, 0
+        for _, cue in ipairs(cues) do
+            local previous = result[#result]
+            local joined = false
+            if previous and cue.start - previous.stop < args[1] and not dialogue(previous) and not dialogue(cue) then
+                local lines = {table.unpack(previous.lines)}
+                table.move(cue.lines,1,#cue.lines,#lines+1,lines)
+                lines = wrap_lines(lines, 42)
+                if #lines <= 2 then
+                    previous.stop = math.max(previous.stop, cue.stop)
+                    previous.lines = lines
+                    merged = merged + 1
+                    joined = true
+                end
+            end
+            if not joined then
+                result[#result + 1] = cue
+            end
+        end
+        cues = result
+        output[1] = "MERGE merged=" .. merged .. " cues=" .. #cues
+    end
+    return cues, output
+local function load_block(block, k, cues)
+    if not block[1]:match("^%d+$") or #block[1] > 6 then
+        return "BAD CUE " .. k .. ": index"
+    end
+    if not block[2] or #block[2] ~= 29 or block[2]:sub(13, 17) ~= " --> " then
+        return "BAD CUE " .. k .. ": time"
+    end
+    local valid_start, start = pcall(time_value, block[2]:sub(1, 12))
+    local valid_stop, stop = pcall(time_value, block[2]:sub(18, 29))
+    if not valid_start or not valid_stop then
+        return "BAD CUE " .. k .. ": time"
+    end
+    if #block < 3 then
+        return "BAD CUE " .. k .. ": no text"
+    end
+    local lines = {table.unpack(block,3)}
+    cues[#cues + 1] = {index = tonumber(block[1]), start = start, stop = stop, lines = lines}
+    return nil
+local cues, block, blocks, bad = {}, {}, 0, 0
+while true do
+    local line = io.read("l")
+    if line == "" or line == "###" then
+        if #block > 0 then
+            blocks = blocks + 1
+            local problem = load_block(block, blocks, cues)
+            if problem then
+                io.write(problem, "\n")
+                bad = bad + 1
+            end
+            block = {}
+        end
+        if line == "###" then
+            break
+        end
+    else
+        block[#block + 1] = line
+    end
+end
+io.write("LOAD cues=", #cues, " bad=", bad, "\n")
+local function execute(line)
+    local command, args = arguments(line, cues)
+    if command == "UNDO" then
+    elseif modifying[command] then
+        local output
+        cues, output = modify(command, args, cues)
+        return output
+    end
+    return inspect(command, args, cues)
+local count = tonumber(io.read("l"))
+for i = 1, count do
+    local valid, output = pcall(execute, io.read("l"))
+    if valid then
+        for _, line in ipairs(output) do
+            io.write(line, "\n")
+        end
+    else
+        io.write("ERROR ", output, "\n")

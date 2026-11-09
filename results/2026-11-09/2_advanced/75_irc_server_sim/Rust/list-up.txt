@@ -1,0 +1,258 @@
+    fn read() -> Self {
+        let mut values = BTreeMap::new();
+        let mut motd = Vec::new();
+        for line in fs::read_to_string("input/server.txt").unwrap().lines() {
+            let (key,value) = line.split_once(' ').unwrap();
+            if key == "MOTD" {
+                motd.push(value.to_owned());
+            } else {
+                values.insert(key.to_owned(),value.to_owned());
+            }
+        }
+        Self {
+            values,
+            motd
+        }
+    }
+    fn send(&mut self, i: usize, line: String) {
+        let client = self.clients[i].as_mut().unwrap();
+        client.sent += 1;
+        self.sent.push(format!("{} {} {}",self.time,client.id,line));
+    }
+    fn disconnect(&mut self, i: usize, reason: String, kind: usize) {
+        if kind != 1 {
+            self.errors += 1;
+            self.send(i,format!("ERROR :Closing Link: {}[{}] ({})",self.client(i).addressee(),self.client(i).host,reason));
+        }
+        if self.client(i).registered {
+            let line = format!(":{} QUIT :{}",self.client(i).prefix(),reason);
+            for peer in self.peers(i) {
+                self.send(peer,line.clone());
+            }
+        }
+        let joined = self.client(i).channels.clone();
+        for channel in joined {
+            self.remove_member(i,channel);
+        }
+        self.message_counts[3] += self.client(i).queue.len();
+        let client = self.clients[i].take().unwrap();
+        self.gone.push(format!("GONE {} {} {} {}",self.time,client.id,client.addressee(),reason));
+        self.disconnects[kind] += 1;
+    }
+    fn process(&mut self, i: usize, raw: String) {
+        self.message_counts[2] += 1;
+        let Some((command,p)) = protocol::parse(&raw) else {
+            self.message_counts[4] += 1;
+            return;
+        };
+        *self.commands.entry(command.clone()).or_insert(0) += 1;
+        if !self.client(i).registered && !["NICK","USER","PING","PONG","QUIT"].contains(&command.as_str()) {
+            self.error(i,451,"");
+            return;
+        }
+        match command.as_str() {
+            "PONG" => (), "QUIT" => {
+                let reason = p.first().filter(|s| !s.is_empty()).map_or_else(|| "Client Quit".to_owned(),|s| format!("Quit: {}",s));
+                self.disconnect(i,reason,0);
+            }
+            "INVITE" => self.invite(i,&p), "KICK" => self.kick(i,&p), "MODE" => self.mode(i,&p), _ => self.error(i,421,&command)
+        }
+    }
+    fn arrive(&mut self, id: &str, body: &str) {
+        self.line_counts[0] += 1;
+        if let Some(host) = body.strip_prefix("CONNECT ") {
+            self.line_counts[1] += 1;
+            self.clients.push(Some(Client::new(id.to_owned(),host.to_owned(),self.time,self.settings.number("BUCKET"))));
+            let count = self.clients.iter().flatten().count();
+            if count > self.peaks[0].0 {
+                self.peaks[0] = (count,self.time);
+            }
+        } else if body == "DISCONNECT" {
+            self.line_counts[2] += 1;
+            if let Some(i) = self.find_connection(id) {
+                self.disconnect(i,"Remote host closed the connection".to_owned(),1);
+            }
+        } else {
+            self.line_counts[3] += 1;
+            let Some(i) = self.find_connection(id) else {
+                self.message_counts[0] += 1;
+                return;
+            };
+            let c = self.clients[i].as_mut().unwrap();
+            c.received += 1;
+            c.last_received = self.time;
+            c.ping = None;
+            if c.queue.is_empty() && c.tokens > 0 {
+                c.use_token(self.time,self.settings.number("BUCKET"),self.settings.number("REFILL"));
+                self.process(i,body.to_owned());
+            } else if c.queue.len() >= self.settings.number("QUEUE") {
+                self.message_counts[3] += 1;
+                self.disconnect(i,"Excess Flood".to_owned(),2);
+            } else {
+                c.queue.push_back(body.to_owned());
+                self.message_counts[1] += 1;
+            }
+        }
+    }
+    fn run(&mut self) -> usize {
+        let traffic: Vec<_> = fs::read_to_string("input/traffic.txt").unwrap().lines().map(|line| {
+            let mut w = line.splitn(3,' ');
+            (w.next().unwrap().parse::<usize>().unwrap(),w.next().unwrap().to_owned(),w.next().unwrap().to_owned())
+        }).collect();
+        let end = traffic.last().unwrap().0;
+        let mut next = 0;
+        for time in 0..=end {
+            self.time = time;
+            let clients: Vec<_> = self.clients.iter().enumerate().filter(|(_,c)| c.is_some()).map(|(i,_)| i).collect();
+            for i in clients {
+                self.clients[i].as_mut().unwrap().refill(time,self.settings.number("BUCKET"),self.settings.number("REFILL"));
+                loop {
+                    let raw = if let Some(c) = self.clients[i].as_mut() {
+                        if c.tokens > 0 && !c.queue.is_empty() {
+                            c.use_token(time,self.settings.number("BUCKET"),self.settings.number("REFILL"));
+                            c.queue.pop_front()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(raw) = raw {
+                        self.process(i,raw);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            while next < traffic.len() && traffic[next].0 == time {
+                self.arrive(&traffic[next].1,&traffic[next].2);
+                next += 1;
+            }
+            let clients: Vec<_> = self.clients.iter().enumerate().filter(|(_,c)| c.is_some()).map(|(i,_)| i).collect();
+            for i in clients {
+                if let Some(sent) = self.client(i).ping {
+                    if time-sent >= self.settings.number("TIMEOUT") {
+                        self.disconnect(i,format!("Ping timeout: {} seconds",time-self.client(i).last_received),3);
+                    }
+                } else if time-self.client(i).last_received >= self.settings.number("PINGFREQ") {
+                    self.pings += 1;
+                    self.send(i,format!("PING :{}",self.settings.text("NAME")));
+                    self.clients[i].as_mut().unwrap().ping = Some(time);
+                }
+            }
+        }
+        end
+    }
+    fn reports(&self, end: usize) -> [(String,Vec<String>);4] {
+        let mut channel_lines = Vec::new();
+        let mut total_members = 0;
+        let mut total_bans = 0;
+        for channel in self.channels.iter().flatten() {
+            total_members += channel.members.len();
+            total_bans += channel.bans.len();
+            channel_lines.push(format!("CHANNEL {} created {} members {} peak {} messages {} modes {}",channel.name,channel.created,channel.members.len(),channel.peak,channel.messages,channel.mode(true)));
+            channel_lines.push(if channel.topic.is_empty() {
+                "TOPIC none".to_owned()
+            } else {
+                format!("TOPIC {} {} {}",channel.setter,channel.topic_time,channel.topic)
+            });
+            for ban in &channel.bans {
+                channel_lines.push(format!("BAN {} {} {}",ban.mask,ban.setter,ban.time));
+            }
+            channel_lines.push(format!("MEMBERS {}",channel.members.iter().map(|m| channel.display(m.client,self.client(m.client).addressee())).collect::<Vec<_>>().join(" ")));
+        }
+        channel_lines.push(format!("TOTAL channels {} members {} bans {}",self.channels.iter().flatten().count(),total_members,total_bans));
+        let mut client_lines = Vec::new();
+        for (i,client) in self.clients.iter().enumerate().filter_map(|(i,c)| c.as_ref().map(|c| (i,c))) {
+            let joined = self.joined_names(i,",");
+            let invites = client.invites.iter().map(|&s| self.channel(s).name.as_str()).collect::<Vec<_>>().join(",");
+            client_lines.push(format!("CLIENT {} {} {} {} {} connected {} signon {} received {} sent {} tokens {} queue {} channels {} invites {}",client.id,client.addressee(),client.username.as_deref().unwrap_or("*"),client.host,client.mode(),client.connected,client.signon.map_or_else(|| "-".to_owned(),|t| t.to_string()),client.received,client.sent,client.tokens,client.queue.len(),if joined.is_empty() {
+                "none"
+            } else {
+                &joined
+            },if invites.is_empty() {
+                "none"
+            } else {
+                &invites
+            }));
+            if !client.away.is_empty() {
+                client_lines.push(format!("AWAY {} {}",client.id,client.away));
+            }
+        }
+        client_lines.push(format!("TOTAL clients {} registered {} invisible {} away {}",self.clients.iter().flatten().count(),self.clients.iter().flatten().filter(|c| c.registered).count(),self.clients.iter().flatten().filter(|c| c.invisible).count(),self.clients.iter().flatten().filter(|c| !c.away.is_empty()).count()));
+        let counts = self.line_counts;
+        let messages = self.message_counts;
+        let mut statistics = vec![format!("END {}",end),format!("LINES total {} connect {} disconnect {} messages {}",counts[0],counts[1],counts[2],counts[3]),format!("MESSAGES dropped {} queued {} processed {} discarded {} pending {} empty {}",messages[0],messages[1],messages[2],messages[3],self.clients.iter().flatten().map(|c| c.queue.len()).sum::<usize>(),messages[4]),format!("SENT lines {} numerics {} pings {} errors {}",self.sent.len(),self.numerics.values().sum::<usize>(),self.pings,self.errors)];
+        for (command,count) in &self.commands {
+            statistics.push(format!("COMMAND {} {}",command,count));
+        }
+        for (number,count) in &self.numerics {
+            statistics.push(format!("NUMERIC {:03} {}",number,count));
+        }
+        statistics.push(format!("PEAK connections {} at {}",self.peaks[0].0,self.peaks[0].1));
+        statistics.push(format!("PEAK registered {} at {}",self.peaks[1].0,self.peaks[1].1));
+        statistics.push(format!("DISCONNECTS quit {} closed {} flood {} timeout {}",self.disconnects[0],self.disconnects[1],self.disconnects[2],self.disconnects[3]));
+        statistics.extend(self.gone.clone());
+        [("sent.txt".to_owned(),self.sent.clone()),("channels.txt".to_owned(),channel_lines),("clients.txt".to_owned(),client_lines),("stats.txt".to_owned(),statistics)]
+    }
+fn main() {
+    let mut server = Server::new();
+    let end = server.run();
+    fs::create_dir_all("output").unwrap();
+    for (name,lines) in server.reports(end) {
+        let content = if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n")+"\n"
+        };
+        fs::write(format!("output/{}",name),content).unwrap();
+    }
+}
+    pub fn use_token(&mut self, time: usize, capacity: usize, interval: usize) {
+        if self.tokens == capacity {
+            self.refill = Some(time+interval);
+        }
+        self.tokens -= 1;
+    }
+    pub fn refill(&mut self, time: usize, capacity: usize, interval: usize) {
+        if self.refill == Some(time) {
+            self.tokens += 1;
+            self.refill = if self.tokens < capacity {
+                Some(time+interval)
+            } else {
+                None
+            };
+        }
+    }
+pub fn parse(raw: &str) -> Option<(String,Vec<String>)> {
+    let mut rest = raw;
+    if rest.starts_with(':') {
+        rest = rest.find(' ').map(|i| &rest[i..])?;
+    }
+    rest = rest.trim_start_matches(' ');
+    if rest.is_empty() {
+        return None;
+    }
+    let end = rest.find(' ').unwrap_or(rest.len());
+    let command = rest[..end].to_ascii_uppercase();
+    rest = &rest[end..];
+    let mut parameters = Vec::new();
+    loop {
+        rest = rest.trim_start_matches(' ');
+        if rest.is_empty() {
+            break;
+        }
+        if rest.starts_with(':') {
+            parameters.push(rest[1..].to_owned());
+            break;
+        }
+        if parameters.len() == 14 {
+            parameters.push(rest.to_owned());
+            break;
+        }
+        let end = rest.find(' ').unwrap_or(rest.len());
+        parameters.push(rest[..end].to_owned());
+        rest = &rest[end..];
+    }
+    Some((command,parameters))
+}

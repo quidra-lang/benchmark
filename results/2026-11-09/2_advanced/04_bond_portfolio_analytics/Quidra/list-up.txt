@@ -1,0 +1,621 @@
+bool leap(int year)
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+int year_length(int year)
+    return if leap(year) then 366 else 365
+
+int month_length(int year, int month)
+    lengths := [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return if month == 2 and leap(year) then 29 else lengths[month - 1]
+
+class Civil(int year, int month, int day)
+
+Civil split_date(string text)
+    return Civil(int(text[0:<4]), int(text[5:<7]), int(text[8:<10]))
+
+bool valid(string text)
+    value := split_date(text)
+    return 2001 <= value.year <= 2099 and 1 <= value.month <= 12 and 1 <= value.day <= month_length(value.year, value.month)
+
+int day_number(int year, int month, int day)
+    result := day - 1
+    if year >= 2000
+        for: 2000 <= current < year
+            result += year_length(current)
+    else
+        for: year <= current < 2000
+            result -= year_length(current)
+    for: 1 <= current < month
+        result += month_length(year, current)
+    return result
+
+int parse(string text)
+    value := split_date(text)
+    return day_number(value.year, value.month, value.day)
+
+Civil civil_date(int number)
+    year := 2000
+    while number < 0
+        year -= 1
+        number += year_length(year)
+    while number >= year_length(year)
+        number -= year_length(year)
+        year += 1
+    month := 1
+    while number >= month_length(year, month)
+        number -= month_length(year, month)
+        month += 1
+    return Civil(year, month, number + 1)
+
+string pad(int number, int width)
+    result := string(number)
+    while int(#result) < width
+        result = "0" + result
+    return result
+
+string format_date(int number)
+    value := civil_date(number)
+    return "{pad(value.year, 4)}-{pad(value.month, 2)}-{pad(value.day, 2)}"
+
+class Calendar(int[] holidays)
+    bool is_business_day(int number)
+        weekday := (number + 5) % 7
+        if weekday < 0
+            weekday += 7
+        if weekday >= 5
+            return false
+        for holiday := holidays[]
+            if holiday == number
+                return false
+        return true
+
+    int following(int number)
+        while not is_business_day(number)
+            number += 1
+        return number
+
+    int preceding(int number)
+        while not is_business_day(number)
+            number -= 1
+        return number
+
+    int adjust(int number, string convention)
+        if convention == "FOLLOWING"
+            return following(number)
+        if convention == "PRECEDING"
+            return preceding(number)
+        if convention == "MODIFIED_FOLLOWING"
+            next := following(number)
+            return if civil_date(next).month == civil_date(number).month then next else preceding(number)
+        return number
+
+    int business_days(int number, int count, int direction)
+        while count > 0
+            number += direction
+            if is_business_day(number)
+                count -= 1
+        return number
+class Fraction(int numerator, int denominator)
+    real64 value()
+        return real64(numerator) / real64(denominator)
+
+Fraction year_fraction(string convention, int start, int finish)
+    left := dates.civil_date(start)
+    right := dates.civil_date(finish)
+    if convention == "30/360" or convention == "30E/360"
+        if convention == "30/360"
+            left_february := left.month == 2 and left.day == dates.month_length(left.year, 2)
+            right_february := right.month == 2 and right.day == dates.month_length(right.year, 2)
+            if left_february and right_february
+                right.day = 30
+            if left_february
+                left.day = 30
+            if right.day == 31 and left.day >= 30
+                right.day = 30
+            if left.day == 31
+                left.day = 30
+        else
+            if left.day == 31
+                left.day = 30
+            if right.day == 31
+                right.day = 30
+        return Fraction(360 * (right.year - left.year) + 30 * (right.month - left.month) + right.day - left.day, 360)
+class RiskMeasures(real64 macaulay, real64 modified, real64 convexity, real64 dv01)
+
+class YieldPricer(int[] flows, real64 fraction, int frequency, int outstanding)
+    real64[] present_values(real64 rate)
+        first := 1.0 + fraction * rate / real64(frequency)
+        growth := 1.0 + rate / real64(frequency)
+        real64 factor := 1.0
+        real64[] values := []
+        for cash_flow := flows[]
+            values = values.append(real64(cash_flow) / (first * factor))
+            factor *= growth
+        return values
+
+    real64 dirty(real64 rate)
+        real64 total := 0.0
+        for value := present_values(rate)[]
+            total += value
+        return total * 100.0 / real64(outstanding)
+
+    bool in_range(real64 target)
+        return dirty(0.0) > target > dirty(1.0)
+
+    real64 solve(real64 target)
+        real64 low := 0.0
+        real64 high := 1.0
+        for: iteration < 80
+            middle := (low + high) / 2.0
+            if dirty(middle) > target
+                low = middle
+            else
+                high = middle
+        return (low + high) / 2.0
+
+    RiskMeasures risk(real64 rate)
+        growth := 1.0 + rate / real64(frequency)
+        real64 total := 0.0
+        real64 weighted := 0.0
+        real64 curvature := 0.0
+        real64[] values := present_values(rate)
+        for: index < #values
+            years := (real64(index) + fraction) / real64(frequency)
+            total += values[index]
+            weighted += years * values[index]
+            curvature += years * (years + 1.0 / real64(frequency)) * values[index]
+        macaulay := weighted / total
+        convexity := curvature / (total * growth * growth)
+        real64 dv01 := (dirty(rate - 0.0001) - dirty(rate + 0.0001)) / 2.0
+        return RiskMeasures(macaulay, macaulay / growth, convexity, dv01)
+int[] coupon_schedule(int issue, int maturity, int frequency, end_of_month := false, long_stub := false)
+    anchor := dates.civil_date(maturity)
+    eom := end_of_month and anchor.day == dates.month_length(anchor.year, anchor.month)
+    int[] result := []
+    boundary := maturity
+    count := 0
+    while boundary > issue
+        result = result.append(boundary)
+        count += 1
+        index := anchor.year * 12 + anchor.month - 1 - (12 / frequency) * count
+        year := index / 12
+        month := index % 12 + 1
+        last := dates.month_length(year, month)
+        day := if eom or anchor.day > last then last else anchor.day
+        boundary = dates.day_number(year, month, day)
+    if long_stub and boundary != issue and #result >= 2
+        result = result[0:<#result - 1]
+    return result.append(issue).sorted()
+class Flow(int days, real64 amount)
+
+class Pillar(int maturity, int coupon, int frequency)
+
+class ZeroCurve(int[] days, real64[] rates)
+    real64 zero_rate(int day)
+        if day <= days[0]
+            return rates[0]
+        if day >= days[-1]
+            return rates[-1]
+        index := 1
+        while days[index] < day
+            index += 1
+        if days[index] == day
+            return rates[index]
+        weight := real64(day - days[index - 1]) / real64(days[index] - days[index - 1])
+        return rates[index - 1] + (rates[index] - rates[index - 1]) * weight
+    real64 discount(int day, real64 spread := 0.0)
+        real64 rate := zero_rate(day) + spread
+        years := day / 365
+        remainder := day % 365
+        real64 growth := 1.0
+        for: iteration < years
+            growth *= 1.0 + rate
+        return 1.0 / (growth * (1.0 + rate * real64(remainder) / 365.0))
+    real64 present_value(Flow[] flows, real64 spread := 0.0)
+        real64 total := 0.0
+        for flow := flows[]
+            total += flow.amount * discount(flow.days, spread)
+        return total
+    real64 z_spread(Flow[] flows, real64 target)
+        real64 low := -0.5
+        real64 high := 0.5
+        for: iteration < 80
+            middle := (low + high) / 2.0
+            if present_value(flows, middle) > target
+                low = middle
+            else
+                high = middle
+        return (low + high) / 2.0
+Flow[] par_bond_flows(int settlement, Pillar pillar)
+    dates := schedule.coupon_schedule(settlement, pillar.maturity, pillar.frequency)
+    Flow[] result := []
+    for: 1 <= index < int(#dates)
+        fraction := daycount.year_fraction("30/360", dates[index - 1], dates[index])
+        amount := real64(pillar.coupon) * real64(fraction.numerator) / (10000.0 * real64(fraction.denominator))
+        if index == int(#dates) - 1
+            amount += 1.0
+        result = result.append(Flow(dates[index] - settlement, amount))
+    return result
+ZeroCurve bootstrap(int settlement, Pillar[] pillars)
+    int[] days := []
+    real64[] rates := []
+    for pillar := pillars[]
+        flows := par_bond_flows(settlement, pillar)
+        days = days.append(pillar.maturity - settlement)
+        real64 low := 0.0
+        real64 high := 1.0
+        for: iteration < 80
+            middle := (low + high) / 2.0
+            trial := ZeroCurve(days, rates.append(middle))
+            if trial.present_value(flows) > 1.0
+                low = middle
+            else
+                high = middle
+        rates = rates.append((low + high) / 2.0)
+    return ZeroCurve(days, rates)
+bool has_word(string[] words, string target)
+    for word := words[]
+        if word == target
+            return true
+    return false
+bool has_day(int[] days, int target)
+    for day := days[]
+        if day == target
+            return true
+    return false
+bool valid_frequency(int frequency)
+    return frequency == 1 or frequency == 2 or frequency == 4 or frequency == 12
+int round_half_up(int numerator, int denominator)
+    return (2 * numerator + denominator) / (2 * denominator)
+string format_decimal(real64 value, int digits)
+    magnitude := if value < 0.0 then -value else value
+    real64 threshold := if digits == 2 then 0.005 elif digits == 4 then 0.00005 else 0.0000005
+    if magnitude < threshold
+        value = 0.0
+    if digits == 2
+        return "{value:.2}"
+    if digits == 4
+        return "{value:.4}"
+    return "{value:.6}"
+string format_percent(real64 value)
+    return format_decimal(value * 100.0, 4)
+int thousandths(string text)
+    pieces := text.split(".")
+    return 1000 * int(pieces[0]) + int(pieces[1])
+string[] read_lines(string name)
+    string source := string.from_utf8(file.read_bin("input/" + name))
+    lines := source.split(NL)
+    return lines[0:<#lines - 1]
+Row[] read_rows(string name)
+    lines := read_lines(name)
+    Row[] result := []
+    for: 1 <= index < int(#lines)
+        result = result.append(Row(index + 1, lines[index].split(",")))
+    return result
+class Params()
+    valuation := 0
+    settlement_days := 0
+    ScenarioInput[] scenarios := []
+    string[][] limits := []
+
+Params read_params()
+    result := Params()
+    lines := read_lines("params.txt")
+    for: index < #lines
+        words := lines[index].split(" ")
+        if words[0] == "valuation_date"
+            result.valuation = dates.parse(words[1])
+        elif words[0] == "settlement_days"
+            result.settlement_days = int(words[1])
+        elif words[0] == "scenario"
+            int[] shifts := []
+            for: 2 <= offset < int(#words)
+                shifts = shifts.append(int(words[offset]))
+            result.scenarios = result.scenarios.append(ScenarioInput(int(index) + 1, words[1], shifts))
+        else
+            result.limits = result.limits.append(words[1:<#words])
+    return result
+curve.Pillar[] validate_pillars(int settlement, string[] &errors)
+    string[] seen := []
+    curve.Pillar[] result := []
+    for row := read_rows("curve_quotes.csv")[]
+        key := row.fields[0]
+        failure := ""
+        maturity := 0
+        frequency := int(row.fields[2])
+        if has_word(seen, key)
+            failure = "duplicate pillar"
+        elif not dates.valid(key)
+            failure = "invalid date"
+        else
+            maturity = dates.parse(key)
+            if maturity <= settlement
+                failure = "pillar not after settlement"
+            elif not valid_frequency(frequency)
+                failure = "invalid frequency"
+        seen = seen.append(key)
+        if failure != ""
+            errors = errors.append("curve_quotes.csv:{row.number}: {key}: {failure}")
+        else
+            result = result.append(curve.Pillar(maturity, int(row.fields[1]), frequency))
+    maturity_keys := [for pillar := result[] then pillar.maturity]
+    return result.sorted(by = maturity_keys)
+class OptionDate(string text, int amount)
+
+class Special(int day, int amount)
+
+class Options()
+    end_of_month := false
+    long_stub := false
+    lag := 0
+    cap := 1200
+    floor := 0
+    OptionDate[] sinks := []
+    OptionDate[] calls := []
+Options | error parse_options(string kind, string text)
+    result := Options()
+    allowed := ["EOM", "LONG"]
+    if kind == "FIXED"
+        allowed = allowed.append("CALL")
+    elif kind == "AMORT"
+        allowed = allowed.append("SINK")
+    elif kind == "FRN"
+        allowed = allowed.concat(["LAG", "CAP", "FLOOR"])
+    string[] seen := []
+    if text != "-"
+        for item := text.split(";")[]
+            pieces := item.split("=")
+            key := pieces[0]
+            if not has_word(allowed, key) or (has_word(seen, key) and key != "SINK" and key != "CALL")
+                return error("invalid option")
+            seen = seen.append(key)
+            if key == "EOM"
+                result.end_of_month = true
+            elif key == "LONG"
+                result.long_stub = true
+            elif key == "LAG"
+                result.lag = int(pieces[1])
+            elif key == "CAP"
+                result.cap = int(pieces[1])
+            elif key == "FLOOR"
+                result.floor = int(pieces[1])
+            else
+                value := pieces[1].split(":")
+                if key == "SINK"
+                    result.sinks = result.sinks.append(OptionDate(value[0], int(value[1])))
+                else
+                    result.calls = result.calls.append(OptionDate(value[0], thousandths(value[1])))
+    if kind == "FRN" and (result.lag < 1 or result.lag > 5 or result.cap > 1200 or result.floor > result.cap)
+        return error("invalid option")
+    return result
+Special[] | error validate_schedule(OptionDate[] items, int[] schedule, bool calls)
+    Special[] result := []
+    previous := -1
+    failure := if calls then "invalid call schedule" else "invalid sinking fund"
+    for item := items[]
+        if not dates.valid(item.text)
+            return error(failure)
+        day := dates.parse(item.text)
+        if not has_day(schedule[1:<#schedule - 1], day) or day <= previous
+            return error(failure)
+        if (calls and (item.amount < 100000 or item.amount > 110000)) or (not calls and item.amount == 0)
+            return error(failure)
+        result = result.append(Special(day, item.amount))
+        previous = day
+    return result
+class Period(int number, int start, int finish, int payment, int numerator, int denominator, int rate, int opening, int principal)
+    coupon := round_half_up(opening * rate * numerator, 10000 * denominator)
+    cash_flow := coupon + principal
+class Bond(string code, string kind, int issue, int maturity, int coupon, int frequency, string daycount, string bdc, int face, Options options)
+    int[] schedule := []
+    Special[] sinks := []
+    Special[] calls := []
+    Period[] periods := []
+Bond | error parse_bond(string[] fields, bool duplicate, dates.Calendar calendar, Fixings fixings)
+    if duplicate
+        return error("duplicate id")
+    kind := fields[1]
+    if not has_word(["FIXED", "ZERO", "AMORT", "FRN"], kind)
+        return error("unknown type")
+    if not dates.valid(fields[2]) or not dates.valid(fields[3])
+        return error("invalid date")
+    issue := dates.parse(fields[2])
+    maturity := dates.parse(fields[3])
+    if maturity <= issue
+        return error("maturity not after issue")
+    frequency := int(fields[5])
+    if not valid_frequency(frequency)
+        return error("invalid frequency")
+    if not has_word(["30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT"], fields[6])
+        return error("unknown day count")
+    if not has_word(["FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED"], fields[7])
+        return error("unknown business day rule")
+    face := int(fields[8])
+    if face % 100000 != 0 or face > 10000000
+        return error("invalid face")
+    coupon := int(fields[4])
+    if coupon > 1200 or (kind == "ZERO" and coupon != 0)
+        return error("invalid coupon")
+    options := try parse_options(kind, fields[9])
+    result := Bond(fields[0], kind, issue, maturity, coupon, frequency, fields[6], fields[7], face, options)
+    result.schedule = sched.coupon_schedule(issue, maturity, frequency, options.end_of_month, options.long_stub)
+    result.sinks = try validate_schedule(options.sinks, result.schedule, false)
+    sink_total := 0
+    for sink := result.sinks[]
+        sink_total += sink.amount
+    if kind == "AMORT" and (sink_total == 0 or sink_total >= face)
+        return error("invalid sinking fund")
+    result.calls = try validate_schedule(options.calls, result.schedule, true)
+    opening := face
+    for: 1 <= number < int(#result.schedule)
+        start := result.schedule[number - 1]
+        finish := result.schedule[number]
+        rate := coupon
+        if kind == "ZERO"
+            rate = 0
+        elif kind == "FRN"
+            reset := calendar.business_days(calendar.adjust(start, result.bdc), options.lag, -1)
+            index_rate := fixings.latest(reset)
+            if index_rate < 0
+                return error("missing fixing")
+            rate += index_rate
+            if rate < options.floor
+                rate = options.floor
+            if rate > options.cap
+                rate = options.cap
+        principal := 0
+        if number == int(#result.schedule) - 1
+            principal = opening
+        else
+            for sink := result.sinks[]
+                if sink.day == finish
+                    principal = sink.amount
+        fraction := dc.year_fraction(result.daycount, start, finish)
+        result.periods = result.periods.append(Period(number, start, finish, calendar.adjust(finish, result.bdc), fraction.numerator, fraction.denominator, rate, opening, principal))
+        opening -= principal
+    return result
+Bond[] validate_bonds(dates.Calendar calendar, Fixings fixings, string[] &errors)
+    string[] seen := []
+    Bond[] result := []
+    for row := read_rows("bonds.csv")[]
+        duplicate := has_word(seen, row.fields[0])
+        seen = seen.append(row.fields[0])
+        match parse_bond(row.fields, duplicate, calendar, fixings)
+            Bond bond
+                result = result.append(bond)
+            error problem
+                errors = errors.append("bonds.csv:{row.number}: {row.fields[0]}: {problem.message}")
+    return result
+int bond_index(Bond[] bonds, string code)
+    for: index < #bonds
+        if bonds[index].code == code
+            return int(index)
+    return -1
+class Valuation(Bond bond, int clean, local int settlement)
+    local current := 0
+    while bond.periods[current].finish <= settlement
+        current += 1
+    local first := bond.periods[current]
+    Period[] remaining := bond.periods[current:<#bond.periods]
+    int outstanding := first.opening
+    local accrued_fraction := dc.year_fraction(bond.daycount, first.start, settlement)
+    real64 accrued := real64(first.rate * accrued_fraction.numerator) / real64(100 * accrued_fraction.denominator)
+    int accrued_amount := round_half_up(outstanding * first.rate * accrued_fraction.numerator, 10000 * accrued_fraction.denominator)
+    clean_amount := round_half_up(outstanding * clean, 100000)
+    unit_value := clean_amount + accrued_amount
+    target := real64(clean) / 1000.0 + accrued
+    local remaining_fraction := dc.year_fraction(bond.daycount, settlement, first.finish)
+    real64 fraction := real64(bond.frequency * remaining_fraction.numerator) / real64(remaining_fraction.denominator)
+    Period[] cash_flows := []
+    curve.Flow[] flows := []
+    local int[] amounts := []
+    for period := remaining[]
+        amounts = amounts.append(period.cash_flow)
+        if period.cash_flow > 0
+            cash_flows = cash_flows.append(period)
+            flows = flows.append(curve.Flow(period.payment - settlement, real64(period.cash_flow)))
+    pricer := pricing.YieldPricer(amounts, fraction, bond.frequency, outstanding)
+    real64 ytm := 0.0
+    risk := pricing.RiskMeasures(0.0, 0.0, 0.0, 0.0)
+    real64 ytw := 0.0
+    int workout := bond.maturity
+    real64 wal := 0.0
+    int next_payment := cash_flows[0].payment
+    real64 curve_clean := 0.0
+    real64 zspread := 0.0
+
+    real64 yield_to_call(Special call)
+        int[] values := []
+        for period := remaining[]
+            amount := period.coupon
+            if period.finish == call.day
+                amount += round_half_up(period.opening * call.amount, 100000)
+            values = values.append(amount)
+            if period.finish == call.day
+                break
+        callable := pricing.YieldPricer(values, fraction, bond.frequency, outstanding)
+        return callable.solve(target)
+
+    void .analyze(curve.ZeroCurve zero, int evaluation_day)
+        ytm = pricer.solve(target)
+        risk = pricer.risk(ytm)
+        ytw = ytm
+        for call := bond.calls[]
+            if call.day > evaluation_day
+                real64 yield_value := yield_to_call(call)
+                if yield_value < ytw
+                    ytw = yield_value
+                    workout = call.day
+        principal_days := 0
+        for: index < #cash_flows
+            principal_days += cash_flows[index].principal * flows[index].days
+        wal = real64(principal_days) / real64(365 * outstanding)
+        curve_clean = zero.present_value(flows) * 100.0 / real64(outstanding) - accrued
+        zspread = zero.z_spread(flows, real64(unit_value))
+Valuation[] validate_prices(Bond[] bonds, int settlement, string[] &errors)
+    string[] seen := []
+    Valuation[] result := []
+    for row := read_rows("prices.csv")[]
+        code := row.fields[0]
+        index := bond_index(bonds, code)
+        failure := ""
+        if index < 0
+            failure = "unknown bond"
+        elif has_word(seen, code)
+            failure = "duplicate price"
+        elif not (bonds[index].issue <= settlement < bonds[index].maturity)
+            failure = "not outstanding"
+        else
+            value := Valuation(bonds[index], thousandths(row.fields[1]), settlement)
+            if not value.pricer.in_range(value.target)
+                failure = "yield out of range"
+            else
+                result = result.append(value)
+        seen = seen.append(code)
+        if failure != ""
+            errors = errors.append("prices.csv:{row.number}: {code}: {failure}")
+    return result
+string[] cashflow_lines(Bond[] bonds)
+    lines := ["bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal"]
+    string[] codes := []
+    for bond := bonds[]
+        codes = codes.append(bond.code)
+    for code := codes.sorted()[]
+        bond := bonds[bond_index(bonds, code)]
+        for period := bond.periods[]
+            if period.cash_flow > 0
+                fraction := real64(period.numerator) / real64(period.denominator)
+                lines = lines.append("{code},{period.number},{dates.format_date(period.start)},{dates.format_date(period.finish)},{dates.format_date(period.payment)},{format_decimal(fraction, 6)},{period.rate},{period.opening},{period.coupon},{period.principal}")
+    return lines
+string[] analytics_lines(Valuation[] valuations)
+    lines := ["bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread"]
+    string[] codes := []
+    for value := valuations[]
+        codes = codes.append(value.bond.code)
+    for code := codes.sorted()[]
+        value := valuations[valuation_index(valuations, code)]
+        lines = lines.append("{code},{format_decimal(real64(value.clean) / 1000.0, 6)},{format_decimal(value.accrued, 6)},{format_decimal(value.target, 6)},{format_percent(value.ytm)},{format_percent(value.ytw)},{dates.format_date(value.workout)},{dates.format_date(value.next_payment)},{format_decimal(value.wal, 4)},{format_decimal(value.risk.macaulay, 4)},{format_decimal(value.risk.modified, 4)},{format_decimal(value.risk.convexity, 4)},{format_decimal(value.risk.dv01, 6)},{format_decimal(value.curve_clean, 6)},{format_percent(value.zspread)}")
+    return lines
+void write_lines(string name, string[] lines)
+    writer1 := file.write("output/" + name)
+    .writer1(if #lines == 0 then "" else lines.join(NL) + NL)
+    int[] holidays := []
+    for line := read_lines("calendar.txt")[]
+        holidays = holidays.append(dates.parse(line))
+    calendar := dates.Calendar(holidays)
+    fixings := read_fixings()
+    settlement := calendar.business_days(params.valuation, params.settlement_days, 1)
+    string[] errors := []
+    pillars := validate_pillars(settlement, &errors)
+    scenarios := validate_scenarios(params.scenarios, int(#pillars), &errors)
+    bonds := validate_bonds(calendar, fixings, &errors)
+    valuations := validate_prices(bonds, settlement, &errors)
+    zero := curve.bootstrap(settlement, pillars)
+    for: index < #valuations
+    write_lines("errors.txt", errors)
+    write_lines("cashflows.csv", cashflow_lines(bonds))
+    write_lines("analytics.csv", analytics_lines(valuations))
+    write_lines("curve.txt", curve_lines(params.valuation, settlement, pillars, zero))
+    write_lines("portfolio.txt", report)
+    write_lines("scenarios.csv", scenario_rows)
+    write_lines("compliance.txt", compliance)

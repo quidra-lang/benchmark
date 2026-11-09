@@ -1,0 +1,230 @@
+class CircuitError < StandardError
+end
+
+Element = Struct.new(:name, :type, :nodes, :value, :reference)
+
+def fraction(value)
+  value.denominator == 1 ? value.numerator.to_s : "#{value.numerator}/#{value.denominator}"
+end
+
+def formatted(value)
+  scaled = value.numerator.abs * 1_000_000 / value.denominator
+  decimal = (value.negative? ? '-' : '') + (scaled / 1_000_000).to_s + '.' + (scaled % 1_000_000).to_s.rjust(6, '0')
+  fraction(value) + ' (' + decimal + ')'
+end
+
+def rational_number(text)
+  multiplier = Rational(1)
+  { 'meg' => Rational(1_000_000), 'k' => Rational(1000), 'm' => Rational(1, 1000), 'u' => Rational(1, 1_000_000) }.each do |suffix, value|
+    next unless text.end_with?(suffix)
+    text = text.delete_suffix(suffix)
+    multiplier = value
+    break
+  end
+  return nil unless text.match?(/\A-?[0-9]+(?:\.[0-9]+|\/[0-9]+)?\z/)
+  return nil if text.include?('/') && text.split('/')[1].to_i == 0
+  Rational(text) * multiplier
+end
+
+def solve(matrix, rhs)
+  n = rhs.length
+  rows = matrix.each_with_index.map { |row, i| row + [rhs[i]] }
+  n.times do |k|
+    pivot = (k...n).find { |i| rows[i][k] != 0 }
+    return nil unless pivot
+    rows[k], rows[pivot] = rows[pivot], rows[k] if pivot != k
+    divisor = rows[k][k]
+    rows[k] = rows[k].map { |entry| entry / divisor }
+    n.times do |i|
+      next if i == k || rows[i][k] == 0
+      factor = rows[i][k]
+      rows[i] = rows[i].each_with_index.map { |entry, j| entry - factor * rows[k][j] }
+    end
+  end
+  rows.map(&:last)
+end
+
+def reachable(start, edges)
+  seen = Set[start]
+  queue = [start]
+  until queue.empty?
+    node = queue.shift
+    edges.each do |a, b|
+      next unless a == node || b == node
+      other = a == node ? b : a
+      next if seen.include?(other)
+      seen << other
+      queue << other
+    end
+  end
+  seen
+end
+
+class Groups
+  def initialize(nodes)
+    @parent = nodes.to_h { |node| [node, node] }
+  end
+
+  def find(node)
+    @parent[node] = find(@parent[node]) unless @parent[node] == node
+    @parent[node]
+  end
+
+  def join(a, b)
+    a, b = find(a), find(b)
+    @parent[[a, b].max] = [a, b].min
+  end
+end
+
+class Circuit
+  COUNTS = { '.OP' => 0, '.CURRENT' => 1, '.VOLTAGE' => 2, '.POWER' => 0, '.KCL' => 1,
+             '.THEVENIN' => 2, '.NORTON' => 2, '.MAXPOWER' => 2, '.TF' => 2, '.SENS' => 1,
+             '.ZPARAM' => 4, '.SUPERPOSITION' => 1, '.SWEEP' => 5, '.MATRIX' => 0, '.REQ' => 2,
+             '.REDUCE' => 2, '.CHECK' => 0, '.ALTER' => 2, '.DELETE' => 1, '.CLEAR' => 0,
+             '.NODES' => 0, '.PRINT' => 0 }.freeze
+  def initialize
+    @elements = []
+  end
+
+  def nodes
+    @elements.flat_map(&:nodes).uniq.reject { |node| node == '0' }.sort
+  end
+
+  def sources
+    @elements.select { |element| %w[V E H].include?(element.type) }
+  end
+
+  def element(name)
+    @elements.find { |item| item.name == name } || raise(CircuitError, "unknown element #{name}")
+  end
+
+  def node(name)
+    raise CircuitError, "unknown node #{name}" unless name == '0' || nodes.include?(name)
+  end
+
+  def number(text)
+    rational_number(text) || raise(CircuitError, "invalid value #{text}")
+  end
+
+  def add(words)
+    name = words[0]
+    type = name[0]
+    raise CircuitError, "unknown element type #{name}" unless %w[R V I E G F H].include?(type)
+    count = %w[E G].include?(type) ? 6 : %w[F H].include?(type) ? 5 : 4
+    raise CircuitError, "wrong field count for #{name}" unless words.length == count
+    raise CircuitError, "duplicate element #{name}" if @elements.any? { |item| item.name == name }
+    terminals = words[1, %w[E G].include?(type) ? 4 : 2]
+    terminals.each do |terminal|
+      raise CircuitError, "invalid node #{terminal}" unless terminal.match?(/\A(?:0|[a-z][a-z0-9]{0,7})\z/)
+    end
+    reference = %w[F H].include?(type) ? words[3] : nil
+    value = number(words[-1])
+    raise CircuitError, "nonpositive resistance #{name}" if type == 'R' && value <= 0
+    @elements << Element.new(name, type, terminals, value, reference)
+    []
+  end
+
+  def grounding
+    reachable('0', @elements.select { |item| %w[R V E H].include?(item.type) }.map { |item| item.nodes[0, 2] })
+  end
+
+  def voltage_loops
+    groups = Groups.new(['0'] + nodes)
+    result = []
+    sources.each do |item|
+      a, b = item.nodes
+      result << item.name if groups.find(a) == groups.find(b)
+      groups.join(a, b)
+    end
+    result
+  end
+
+  def structure_check
+    names = nodes
+    raise CircuitError, 'no nodes' if names.empty?
+    grounded = grounding
+    floating = names.find { |name| !grounded.include?(name) }
+    raise CircuitError, "floating node #{floating}" if floating
+    loop_name = voltage_loops.first
+    raise CircuitError, "voltage source loop at #{loop_name}" if loop_name
+  end
+
+  def equations(overrides = {})
+    labels = nodes + sources.map(&:name)
+    index = labels.each_with_index.to_h
+    n = labels.length
+    matrix = Array.new(n) { Array.new(n, Rational(0)) }
+    rhs = Array.new(n, Rational(0))
+    put = lambda do |row, column, value|
+      matrix[index[row]][index[column]] += value if row != '0' && column != '0'
+    end
+    put_rhs = lambda do |row, value|
+      rhs[index[row]] += value unless row == '0'
+    end
+    @elements.each do |item|
+      a, b, c, d = item.nodes
+      value = overrides.fetch(item.name, item.value)
+      case item.type
+      when 'R'
+        g = 1 / value
+        put.call(a, a, g)
+        put.call(b, b, g)
+        put.call(a, b, -g)
+        put.call(b, a, -g)
+      when 'I'
+        put_rhs.call(a, -value)
+        put_rhs.call(b, value)
+      when 'G'
+        put.call(a, c, value)
+        put.call(b, d, value)
+        put.call(a, d, -value)
+        put.call(b, c, -value)
+      end
+    end
+    [matrix, rhs, labels, index]
+  end
+
+  def potential(solution, index, name)
+    name == '0' ? Rational(0) : solution[index[name]]
+  end
+  def command(words)
+    cmd, *args = words
+    raise CircuitError, "unknown command #{cmd}" unless COUNTS.key?(cmd)
+    raise CircuitError, "wrong argument count for #{cmd}" unless args.length == COUNTS[cmd]
+    case cmd
+    when '.SWEEP'
+      item = element(args[0])
+      from, to, step = args[1, 3].map { |value| number(value) }
+      node(args[4])
+      raise CircuitError, 'invalid sweep step' if step <= 0
+      raise CircuitError, 'invalid sweep range' if from > to
+      count = ((to - from) / step).floor + 1
+      raise CircuitError, 'too many sweep points' if count > 20
+      raise CircuitError, "nonpositive resistance #{item.name}" if item.type == 'R' && from <= 0
+      structure_check
+      Array.new(count) do |k|
+        x = from + k * step
+        matrix, rhs, _, index = equations(item.name => x)
+        solution = solve(matrix, rhs)
+        prefix = "#{item.name} = #{fraction(x)}: "
+        prefix + (solution ? "V(#{args[4]}) = #{formatted(potential(solution, index, args[4]))}" : 'singular matrix')
+      end
+    end
+  end
+  def run
+    STDIN.each_line.with_index(1) do |input, number|
+      line = input.delete_suffix("\n")
+      break if line == '.END'
+      next if line.start_with?('*')
+      begin
+        output = line.start_with?('.') ? command(line.split(' ')) : add(line.split(' '))
+        output.each { |text| puts text }
+      rescue CircuitError => error
+        puts "error: line #{number}: #{error.message}"
+      end
+    end
+  end
+end
+
+require 'set'
+Circuit.new.run

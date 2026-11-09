@@ -1,0 +1,408 @@
+part 'lz77.dart';
+part 'huffman.dart';
+part 'arith_coder.dart';
+
+const methods = ['STORE', 'LZW', 'LZ77', 'LZH', 'ARITH'];
+const statuses = [
+  'ok',
+  'repaired',
+  'checksum',
+  'error',
+  'unsupported',
+  'truncated',
+  'bad_header',
+];
+
+class Parameters {
+  final int b, k, m;
+  Parameters(this.b, this.k, this.m);
+}
+class Encoding {
+  final String name;
+  final List<int> data;
+  final List<List<int>> payloads;
+  final int best;
+  Encoding(
+    this.name,
+    this.data,
+    this.payloads,
+    this.best,
+    this.lzw,
+    this.lz,
+    this.lzh,
+    this.arith,
+  );
+  List<int> get payload => payloads[best];
+}
+class Entry {
+  final int number, offset;
+  String status = '', name = '';
+  bool valid = false;
+  int method = 0,
+      original = 0,
+      compressed = 0,
+      checksum = 0,
+      start = 0,
+      end = 0,
+      computed = 0;
+  List<int> data = [];
+  DecodeError? error;
+  (int, int, int) repair = (0, 0, 0);
+  Entry(this.number, this.offset);
+}
+
+class ParsedArchive {
+  final int size;
+  int b = 0, k = 0, declared = 0, trailing = 0;
+  final entries = <Entry>[];
+  String error = '';
+  bool stopped = false;
+  ParsedArchive(this.size);
+  List<Entry> get intact =>
+      entries.where((e) => e.status == 'ok' || e.status == 'repaired').toList();
+}
+
+(Parameters, List<NamedFile>, List<int>) readInputs() {
+  final lines = File('input/manifest.txt').readAsLinesSync(),
+      values = [
+        for (final line in lines.take(3)) int.parse(line.split(' ')[1]),
+      ],
+  final text = File('input/archive.hex').readAsLinesSync().join(),
+      archive = [
+        for (var i = 0; i < text.length; i += 2)
+          int.parse(text.substring(i, i + 2), radix: 16),
+      ];
+  return (Parameters(values[0], values[1], values[2]), files, archive);
+}
+String methodName(int method) => method < 5 ? methods[method] : '#$method';
+int adler(List<int> data) {
+  var a = 1, b = 0;
+  for (final x in data) {
+    a = (a + x) % 65521;
+    b = (b + a) % 65521;
+  }
+  return b * 65536 + a;
+}
+
+int modPower(int a, int exponent) {
+  var v = 1;
+  while (exponent > 0) {
+    if ((exponent & 1) != 0) v = v * a % 65521;
+    a = a * a % 65521;
+    exponent >>= 1;
+  }
+  return v;
+}
+
+(List<int>, (int, int, int))? repairOneByte(
+  List<int> data,
+  int stored,
+  int computed,
+) {
+  final deltaA = (stored % 65536 - computed % 65536) % 65521,
+      deltaB = (stored ~/ 65536 - computed ~/ 65536) % 65521;
+  var delta = deltaA;
+  if (1 <= deltaA && deltaA <= 255) {
+  } else if (65266 <= deltaA && deltaA <= 65520) {
+    delta -= 65521;
+  } else {
+    return null;
+  }
+  final inverse = modPower(delta % 65521, 65519), t = deltaB * inverse % 65521;
+  if (t < 1 || t > data.length) return null;
+  final position = data.length - t,
+      before = data[position],
+      after = before + delta;
+  if (after < 0 || after > 255) return null;
+  final result = [...data];
+  result[position] = after;
+  if (adler(result) != stored) return null;
+  return (result, (position, before, after));
+}
+(List<int>, LZHStats) encodeLZH(List<Token> tokens, Parameters p) {
+  final (lit, lh) = limitedLengths(litFreq, p.m);
+  final (dist, dh) = limitedLengths(distFreq, p.m);
+List<int> decodePayload(int method, List<int> payload, int n, int b, int k) {
+  switch (method) {
+    case 0:
+      if (payload.length < n) throw DecodeError('end_of_data', payload.length);
+      return payload.sublist(0, n);
+    case 1:
+      return decodeLZW(payload, n);
+    case 2:
+      return decodeLZ77(payload, n, b, k);
+    case 3:
+      return decodeLZH(payload, n, b, k);
+    case 4:
+      return decodeArith(payload, n);
+    default:
+      throw StateError('unsupported method');
+  }
+}
+
+Encoding encodeFile(String name, List<int> data, Parameters p) {
+  final tokens = tokenize(data, p.b, p.k);
+  final (zw, zws) = encodeLZW(data);
+  final (zh, zhs) = encodeLZH(tokens, p);
+  final (arith, arithStats) = encodeArith(data);
+  final payloads = [data, zw, encodeLZ77(tokens, p.b, p.k), zh, arith];
+  var best = 0;
+  for (var k = 1; k < 5; k++) {
+    if (payloads[k].length < payloads[best].length) best = k;
+  }
+  return Encoding(name, data, payloads, best, zws, zs, zhs, arithStats);
+}
+void appendBig(List<int> data, int value, int width) {
+  for (var shift = 8 * (width - 1); shift >= 0; shift -= 8) {
+    data.add((value >> shift) & 255);
+  }
+}
+
+int readBig(List<int> data, int start, int width) {
+  var value = 0;
+  for (var i = 0; i < width; i++) {
+    value = 256 * value + data[start + i];
+  }
+  return value;
+}
+
+List<int> buildArchive(List<Encoding> encodings, Parameters p) {
+  final archive = [...('TXAR'.codeUnits), p.b, p.k];
+  appendBig(archive, encodings.length, 2);
+  for (final e in encodings) {
+    final header = [e.name.length, ...e.name.codeUnits, e.best];
+    appendBig(header, e.data.length, 4);
+    appendBig(header, e.payload.length, 4);
+    appendBig(header, adler(e.data), 4);
+    header.add(header.fold(0, (a, b) => a + b) % 256);
+    archive.addAll(header);
+    archive.addAll(e.payload);
+  }
+  return archive;
+}
+
+Entry readEntryHeader(List<int> x, int number, int pos) {
+  final m = x[pos],
+      name = x.sublist(pos + 1, pos + 1 + m),
+      cursor = pos + 1 + m,
+      start = pos + 15 + m;
+  var valid = 1 <= m && m <= 32;
+  for (final b in name) {
+    if (!(b >= 97 && b <= 122 ||
+        b >= 48 && b <= 57 ||
+        b == 46 ||
+        b == 95 ||
+        b == 45))
+      valid = false;
+  }
+  var check = 0;
+  for (var i = pos; i < start - 1; i++) {
+    check += x[i];
+  }
+  valid = valid && check % 256 == x[start - 1];
+  return Entry(number, pos)
+    ..valid = valid
+    ..name = String.fromCharCodes(name)
+    ..method = x[cursor]
+    ..original = readBig(x, cursor + 1, 4)
+    ..compressed = readBig(x, cursor + 5, 4)
+    ..checksum = readBig(x, cursor + 9, 4)
+    ..start = start
+    ..end = start + readBig(x, cursor + 5, 4);
+}
+
+void examinePayload(Entry e, List<int> x, int b, int k) {
+  try {
+    e.data = decodePayload(
+      e.method,
+      x.sublist(e.start, e.end),
+      e.original,
+      b,
+      k,
+    );
+  } on DecodeError catch (error) {
+    e.status = 'error';
+    e.error = error;
+    return;
+  }
+  e.computed = adler(e.data);
+  if (e.computed == e.checksum) {
+    e.status = 'ok';
+    return;
+  }
+  final repair = repairOneByte(e.data, e.checksum, e.computed);
+  if (repair == null) {
+    e.status = 'checksum';
+  } else {
+    e.status = 'repaired';
+    e.data = repair.$1;
+    e.repair = repair.$2;
+  }
+}
+
+ParsedArchive parseArchive(List<int> x) {
+  final p = ParsedArchive(x.length);
+  if (x.length < 8 || String.fromCharCodes(x.take(4)) != 'TXAR') {
+    p.error = 'bad_magic';
+    return p;
+  }
+  p.b = x[4];
+  p.k = x[5];
+  if (p.b < 6 || p.b > 12 || p.k < 2 || p.k > 5) {
+    p.error = 'bad_params';
+    return p;
+  }
+  p.declared = readBig(x, 6, 2);
+  var pos = 8;
+  for (var number = 1; number <= p.declared; number++) {
+    if (pos >= x.length || pos + 15 + x[pos] > x.length) {
+      p.entries.add(Entry(number, pos)..status = 'truncated');
+      p.stopped = true;
+      break;
+    }
+    final e = readEntryHeader(x, number, pos);
+    p.entries.add(e);
+    if (!e.valid) {
+      e.status = 'bad_header';
+      pos = e.end;
+      if (pos > x.length) {
+        p.stopped = true;
+        break;
+      }
+      continue;
+    }
+    if (e.end > x.length) {
+      e.status = 'truncated';
+      p.stopped = true;
+      break;
+    }
+    if (e.method >= 5) {
+      e.status = 'unsupported';
+    } else {
+      examinePayload(e, x, p.b, p.k);
+    }
+    pos = e.end;
+  }
+  if (!p.stopped) p.trailing = x.length - pos;
+  return p;
+}
+bool sameBytes(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+(int, int) verifyArchive(List<int> archive, List<Encoding> encodings) {
+  final p = parseArchive(archive);
+  var verified = 0;
+  for (var i = 0; i < p.entries.length && i < encodings.length; i++) {
+    final e = p.entries[i];
+    if (e.status == 'ok' && sameBytes(e.data, encodings[i].data)) verified++;
+  }
+  return (p.entries.length, verified);
+}
+String entryTestLine(Entry e, int size) {
+  final prefix = 'entry ${e.number} offset ${e.offset}';
+  if (!e.valid)
+    return '$prefix status ${e.status == 'bad_header' ? 'bad_header' : 'truncated header'}';
+  var line =
+      '$prefix name ${e.name} method ${methodName(e.method)} status ${e.status}';
+  switch (e.status) {
+    case 'repaired':
+      line += ' byte ${e.repair.$1} from ${e.repair.$2} to ${e.repair.$3}';
+    case 'checksum':
+      line += ' stored ${hex8(e.checksum)} computed ${hex8(e.computed)}';
+    case 'error':
+      line += ' ${e.error!.kind} at ${e.error!.position}';
+    case 'truncated':
+      line += ' payload have ${size - e.start} need ${e.compressed}';
+  }
+  return line;
+}
+
+List<String> testReport(
+  ParsedArchive p,
+  List<Encoding> salvaged,
+  List<int> archive,
+  int verified,
+) {
+  final lines = <String>[];
+  if (p.error.isNotEmpty) {
+    lines.add('archive error ${p.error}');
+  } else {
+    final counts = {for (final status in statuses) status: 0};
+    for (final e in p.entries) {
+      lines.add(entryTestLine(e, p.size));
+      counts[e.status] = counts[e.status]! + 1;
+    }
+    lines.add(
+      [
+        'summary entries ${p.declared} checked ${p.entries.length}',
+        for (final status in statuses) '$status ${counts[status]}',
+        'missing ${p.declared - p.entries.length} trailing ${p.trailing}',
+      ].join(' '),
+    );
+  }
+  final intact = p.intact;
+  var total = 0;
+  for (var i = 0; i < salvaged.length; i++) {
+    final e = salvaged[i], old = intact[i];
+    lines.add(
+      'salvage ${e.name} method ${methods[e.best]} compressed ${e.payload.length} was ${methodName(old.method)} ${old.compressed}',
+    );
+    total += e.data.length;
+  }
+  lines.add(
+    'salvaged entries ${salvaged.length} bytes ${archive.length} original $total verified $verified',
+  );
+  return lines;
+}
+
+List<String> textLines(List<int> data) {
+  if (data.isEmpty) return [];
+  final lines = String.fromCharCodes(data).split('\n');
+  lines.removeLast();
+  return lines;
+}
+
+List<String> extractionReport(List<Entry> entries) {
+  final lines = <String>[];
+  for (final e in entries) {
+    final contents = textLines(e.data);
+    var words = 0, longest = 0;
+    for (final line in contents) {
+      longest = math.max(longest, line.length);
+      words += line.split(' ').where((s) => s.isNotEmpty).length;
+    }
+    lines.add(
+      'file ${e.name} bytes ${e.data.length} lines ${contents.length} words $words longest $longest',
+    );
+    lines.addAll(contents);
+  }
+  return lines;
+}
+void writeHex(String name, List<int> data) {
+  writeLines(name, [
+    for (var i = 0; i < data.length; i += 32)
+      data
+          .sublist(i, math.min(i + 32, data.length))
+          .map((x) => x.toRadixString(16).padLeft(2, '0'))
+          .join(),
+  ]);
+}
+  final (p, files, supplied) = readInputs();
+  final parsed = parseArchive(supplied),
+      sp = parsed.error.isEmpty ? Parameters(parsed.b, parsed.k, p.m) : p,
+      salvaged = [
+        for (final e in parsed.intact) encodeFile(e.name, e.data, sp),
+      ],
+      salvage = buildArchive(salvaged, sp);
+  final (_, salvageVerified) = verifyArchive(salvage, salvaged);
+  writeLines(
+    'test_report.txt',
+    testReport(parsed, salvaged, salvage, salvageVerified),
+  );
+  writeLines('extracted.txt', extractionReport(parsed.intact));
+  writeHex('salvaged.hex', salvage);

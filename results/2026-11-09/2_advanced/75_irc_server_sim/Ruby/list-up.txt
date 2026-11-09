@@ -1,0 +1,195 @@
+  def self.read_inputs
+    settings = { 'MOTD' => [] }
+    File.foreach('input/server.txt', chomp: true) do |line|
+      key, _, value = line.partition(' ')
+      if key == 'MOTD'
+        settings[key] << value
+      else
+        settings[key] = INTEGER_SETTINGS.include?(key) ? value.to_i : value
+      end
+    end
+    traffic = File.readlines('input/traffic.txt', chomp: true).map do |line|
+      time, identifier, body = line.split(' ', 3)
+      kind = 'messages'
+      if body.start_with?('CONNECT ')
+        host = body[8..]
+        if host.length.between?(1, 63) && host.each_char.all? { |character| (Protocol::LETTERS + '0123456789.-').include?(character) }
+          kind = 'connect'
+        end
+      elsif body == 'DISCONNECT'
+        kind = 'disconnect'
+      end
+      [time.to_i, identifier, kind, body]
+    end
+    [settings, traffic]
+  end
+  def send_line(client, line)
+    @sent << "#{@time} #{client.identifier} #{line}"
+    client.sent += 1
+  end
+  def disconnect(client, reason, kind)
+    if kind != 'closed'
+      send_line(client, "ERROR :Closing Link: #{client.addressee}[#{client.hostname}] (#{reason})")
+      @statistics['errors'] += 1
+    end
+    send_peers(client, ":#{client.prefix} QUIT :#{reason}") if client.registered
+    client.channels.dup.each { |channel| remove_member(client, channel) }
+    @statistics['discarded'] += client.queue.length
+    client.queue.clear
+    @clients.delete(client.identifier)
+    client.active = false
+    @gone << [@time, client.identifier, client.addressee, reason]
+    @disconnections[kind] += 1
+  end
+  def arrival(record)
+    _, identifier, kind, body = record
+    if kind == 'connect'
+      @clients[identifier] = Client.new(identifier, body[8..], @time, @settings['BUCKET'])
+      count = @clients.length
+      @peak_connections = [count, @time] if count > @peak_connections[0]
+      return
+    end
+    client = @clients[identifier]
+    if kind == 'disconnect'
+      disconnect(client, 'Remote host closed the connection', 'closed') if client
+      return
+    end
+    unless client
+      @statistics['dropped'] += 1
+      return
+    end
+    client.received += 1
+    client.last_received = @time
+    client.ping_sent = nil
+    if client.queue.empty? && client.tokens.positive?
+      client.use_token(@time, @settings['BUCKET'], @settings['REFILL'])
+      process(client, body)
+    elsif client.queue.length >= @settings['QUEUE']
+      @statistics['discarded'] += 1
+      disconnect(client, 'Excess Flood', 'flood')
+    else
+      client.queue << body
+      @statistics['queued'] += 1
+    end
+  end
+  def run
+    position = 0
+    (0..@end_time).each do |time|
+      @time = time
+      @clients.values.each do |client|
+        client.refill(time, @settings['BUCKET'], @settings['REFILL'])
+        while client.active && !client.queue.empty? && client.tokens.positive?
+          client.use_token(time, @settings['BUCKET'], @settings['REFILL'])
+          process(client, client.queue.shift)
+        end
+      end
+      while position < @traffic.length && @traffic[position][0] == time
+        arrival(@traffic[position])
+        position += 1
+      end
+      @clients.values.each do |client|
+        if client.ping_sent
+          if time - client.ping_sent >= @settings['TIMEOUT']
+            disconnect(client, "Ping timeout: #{time - client.last_received} seconds", 'timeout')
+          end
+        elsif time - client.last_received >= @settings['PINGFREQ']
+          send_line(client, "PING :#{@settings['NAME']}")
+          @statistics['pings'] += 1
+          client.ping_sent = time
+        end
+      end
+    end
+  end
+  def process(client, raw)
+    @statistics['processed'] += 1
+    command, parameters = Protocol.parse(raw)
+    if command.empty?
+      @statistics['empty'] += 1
+      return
+    end
+    @commands[command] += 1
+    if !client.registered && !%w[NICK USER PING PONG QUIT].include?(command)
+      numeric(client, 451)
+    elsif %w[PRIVMSG NOTICE].include?(command)
+      message(client, parameters, command)
+    elsif HANDLERS.include?(command)
+      public_send(command.downcase, client, parameters)
+    else
+      numeric(client, 421, command: command)
+    end
+  end
+  def client_report
+    lines = []
+    @clients.each_value do |client|
+      channels = joined_channels(client, ',')
+      invites = client.invites.map(&:name).join(',')
+      channels = 'none' if channels.empty?
+      invites = 'none' if invites.empty?
+      signon = client.registered ? client.registration_time : '-'
+      lines << "CLIENT #{client.identifier} #{client.addressee} #{client.username || '*'} #{client.hostname} #{client.mode} connected #{client.connection_time} signon #{signon} received #{client.received} sent #{client.sent} tokens #{client.tokens} queue #{client.queue.length} channels #{channels} invites #{invites}"
+      lines << "AWAY #{client.identifier} #{client.away}" unless client.away.empty?
+    end
+    registered = @clients.values.count(&:registered)
+    invisible = @clients.values.count(&:invisible)
+    away = @clients.values.count { |client| !client.away.empty? }
+    lines << "TOTAL clients #{@clients.length} registered #{registered} invisible #{invisible} away #{away}"
+    lines
+  end
+  def statistics_report
+    counts = @statistics
+    pending = @clients.values.sum { |client| client.queue.length }
+    lines = ["END #{@end_time}",
+             "LINES total #{@traffic.length} connect #{@line_counts['connect']} disconnect #{@line_counts['disconnect']} messages #{@line_counts['messages']}",
+             "MESSAGES dropped #{counts['dropped']} queued #{counts['queued']} processed #{counts['processed']} discarded #{counts['discarded']} pending #{pending} empty #{counts['empty']}",
+             "SENT lines #{@sent.length} numerics #{@numerics.values.sum} pings #{counts['pings']} errors #{counts['errors']}"]
+    @commands.keys.sort.each { |command| lines << "COMMAND #{command} #{@commands[command]}" }
+    @numerics.keys.sort.each { |number| lines << "NUMERIC #{format('%03d', number)} #{@numerics[number]}" }
+    lines << "PEAK connections #{@peak_connections[0]} at #{@peak_connections[1]}"
+    lines << "PEAK registered #{@peak_registered[0]} at #{@peak_registered[1]}"
+    lines << 'DISCONNECTS ' + %w[quit closed flood timeout].map { |kind| "#{kind} #{@disconnections[kind]}" }.join(' ')
+    @gone.each { |record| lines << 'GONE ' + record.join(' ') }
+    lines
+  end
+  def write_outputs
+    Dir.mkdir('output') unless Dir.exist?('output')
+    { 'sent.txt' => @sent, 'channels.txt' => channel_report,
+      'clients.txt' => client_report, 'stats.txt' => statistics_report }.each do |filename, lines|
+      File.write(File.join('output', filename), lines.empty? ? '' : lines.join("\n") + "\n")
+    end
+  end
+  def use_token(time, capacity, interval)
+    @refill_time = time + interval if @tokens == capacity
+    @tokens -= 1
+  end
+  def refill(time, capacity, interval)
+    return unless @refill_time == time
+    @tokens += 1
+    @refill_time = @tokens < capacity ? time + interval : nil
+  end
+  def self.parse(raw)
+    position = 0
+    if raw.start_with?(':')
+      position = raw.index(' ')
+      return ['', []] unless position
+    end
+    position += 1 while raw[position] == ' '
+    start = position
+    position += 1 while position < raw.length && raw[position] != ' '
+    command = raw[start...position].upcase
+    parameters = []
+    while position < raw.length
+      position += 1 while raw[position] == ' '
+      break if position == raw.length
+      if raw[position] == ':'
+        parameters << raw[position + 1..]
+        break
+      elsif parameters.length == 14
+        parameters << raw[position..]
+        break
+      end
+      start = position
+      position += 1 while position < raw.length && raw[position] != ' '
+      parameters << raw[start...position]
+    end
+    [command, parameters]
+  end

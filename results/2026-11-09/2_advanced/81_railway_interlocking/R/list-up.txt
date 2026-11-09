@@ -1,0 +1,137 @@
+start_throw <- function(simulation, point, target) {
+    point$moving <- TRUE
+    point$target <- target
+    point$completion <- simulation$time + simulation$throw_time
+    log_event(simulation, sprintf("MOVE %s %s until %d", point$name, target, point$completion))
+}
+add_request <- function(simulation, name, requester) {
+    simulation$request_count <- simulation$request_count + 1L
+    request <- new.env(parent = emptyenv())
+    request$number <- simulation$request_count
+    request$route <- name
+    request$time <- simulation$time
+    request$reason <- ""
+    simulation$queue[[length(simulation$queue) + 1L]] <- request
+    simulation$routes[[name]]$requests <- simulation$routes[[name]]$requests + 1L
+    log_event(simulation, sprintf("REQUEST q%d %s %s", request$number, name, requester))
+}
+cancel_route <- function(simulation, name) {
+    removed <- Filter(function(request) request$route == name, simulation$queue)
+    if (length(removed)) {
+        for (request in removed) {
+            log_event(simulation, sprintf("DROP q%d %s", request$number, name))
+            simulation$dropped <- simulation$dropped + 1L
+        }
+        simulation$queue <- Filter(function(request) request$route != name, simulation$queue)
+        return(invisible(NULL))
+    }
+    route <- simulation$routes[[name]]
+    if (route$state == "LOCKED") {
+        route$cancels <- route$cancels + 1L
+        signal <- simulation$layout$signals[[route$start]]
+        if (signal$aspect != "RED" && track_occupied(simulation, signal$section)) {
+            route$state <- "APPROACH"
+            route$release_time <- simulation$time + route$approach_time
+            log_event(simulation, sprintf("CANCEL %s approach until %d", name, route$release_time))
+        } else {
+            release_route(simulation$layout, route)
+            log_event(simulation, paste("CANCEL", name, "released"))
+        }
+    } else {
+        log_event(simulation, paste("CANCEL", name, if (nzchar(route$state)) "refused" else "none"))
+    }
+}
+request_reason <- function(simulation, route) {
+    if (nzchar(route$state)) return("busy")
+    for (name in route$conflicts) if (simulation$routes[[name]]$state %in% c(
+        "LOCKED",
+        "APPROACH"
+    )) return(paste("conflict", name))
+    for (name in route$sections) {
+        section <- simulation$layout$sections[[name]]
+        if (track_occupied(simulation, name)) return(paste("occupied", name))
+        if (nzchar(section$route_lock) || opposite_lock(
+            simulation,
+            section$overlap_locks,
+            route
+        )) return(paste("locked", name))
+    }
+    for (name in route$overlap) {
+        section <- simulation$layout$sections[[name]]
+        if (track_occupied(simulation, name)) return(paste("occupied", name))
+        locks <- section$overlap_locks
+        if (nzchar(section$route_lock)) locks <- union(locks, section$route_lock)
+        if (opposite_lock(simulation, locks, route)) return(paste("locked", name))
+    }
+    for (entry in route$requirements) {
+        name <- entry$name
+        target <- entry$position
+        point <- simulation$layout$points[[name]]
+        if (any(vapply(
+            point$locks,
+            function(lock) lock$position != target,
+            FALSE
+        ))) return(paste("point", name, "locked"))
+        if ((!point$moving && point$position == target) || (point$moving && point$target == target)) next
+        if (point$failed) return(paste("point", name, "failed"))
+        if (point$moving) return(paste("point", name, "moving"))
+        if (track_occupied(simulation, point$common)) return(paste("point", name, "occupied"))
+    }
+    NULL
+}
+judge_requests <- function(simulation) {
+    waiting <- list()
+    for (request in simulation$queue) {
+        route <- simulation$routes[[request$route]]
+        reason <- request_reason(simulation, route)
+        if (!is.null(reason)) {
+            if (reason != request$reason) {
+                log_event(simulation, sprintf("WAIT q%d %s %s", request$number, route$name, reason))
+                request$reason <- reason
+            }
+            waiting[[length(waiting) + 1L]] <- request
+            next
+        }
+        lock_route(simulation$layout, route)
+        wait <- simulation$time - request$time
+        route$grants <- route$grants + 1L
+        route$wait <- route$wait + wait
+        route$maxwait <- max(route$maxwait, wait)
+        log_event(simulation, sprintf("GRANT q%d %s wait %d", request$number, route$name, wait))
+        for (entry in route$requirements) {
+            point <- simulation$layout$points[[entry$name]]
+            if (!point$moving && point$position != entry$position) start_throw(
+                simulation,
+                point,
+                entry$position
+            )
+        }
+    }
+    simulation$queue <- waiting
+}
+        for (request in simulation$planned[[as.character(time)]]) add_request(
+            simulation,
+            request$route,
+            request$train
+        )
+        execute_events(simulation)
+        judge_requests(simulation)
+lock_route <- function(layout, route) {
+    route$state <- "LOCKED"
+    route$release_time <- -1L
+    route$passed <- character()
+    route$overlap_locked <- TRUE
+    route$overlap_counter <- 0L
+    for (name in route$sections) layout$sections[[name]]$route_lock <- route$name
+    for (name in route$overlap) layout$sections[[name]]$overlap_locks <- union(
+        layout$sections[[name]]$overlap_locks,
+        route$name
+    )
+    for (entry in route$requirements) layout$points[[entry$name]]$locks[[paste(
+        route$name,
+        entry$position
+    )]] <- list(
+        route = route$name,
+        position = entry$position
+    )
+}

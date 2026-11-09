@@ -1,0 +1,568 @@
+    static int CompareInt(int first, int second) => first.CompareTo(second);
+    sealed record Entry(Transaction transaction, int fee, int arrival);
+        public void Refresh() {
+            mainChain = Chain.Sequence(tip);
+            confirmed.Clear();
+            foreach (BlockRecord record in mainChain)
+                foreach (Transaction transaction in record.block.transactions)
+                    confirmed[transaction.txid] = record.block.height;
+        }
+        public void Log(string line) {
+            logs.Add(now + " " + line);
+        }
+        public int Height() {
+            return tip.block.height + 1;
+        }
+        public int Reward(int height) {
+            return Chain.Reward(height, settings.Value("REWARD"), settings.Value("REWARD", 1));
+        }
+        public int Difficulty(BlockRecord parent) {
+            return Chain.Difficulty(parent, settings.Value("DIFFICULTY"), settings.Value("RETARGET"),
+                                    settings.Value("RETARGET", 1));
+        }
+        public bool Mature(Coin coin) {
+            return coin.Mature(Height(), settings.Value("MATURITY"));
+        }
+        public HashSet<Reference> Locked() {
+            HashSet<Reference> references = new();
+            foreach (Entry entry in mempool)
+                references.UnionWith(entry.transaction.inputs);
+            return references;
+        }
+        public List<Entry> Ranked() {
+            List<Entry> entries = mempool.ToList();
+            entries.Sort((first, second) => {
+                int rate =
+                    CompareInt(second.fee * first.transaction.Size(), first.fee * second.transaction.Size());
+                return rate != 0 ? rate
+                                 : string.CompareOrdinal(first.transaction.txid, second.transaction.txid);
+            });
+            return entries;
+        }
+        public Entry Find(string txid) {
+            foreach (Entry entry in mempool)
+                if (entry.transaction.txid.Equals(txid))
+                    return entry;
+            return null;
+        }
+        public Acceptance Acceptance(Transaction transaction) {
+            if (transaction.Coinbase())
+                return new Acceptance("coinbase", 0, []);
+            if (confirmed.ContainsKey(transaction.txid) || Find(transaction.txid) != null)
+                return new Acceptance("duplicate", 0, []);
+            Check check = Transactions.Check(transaction, tip.utxo, new HashSet<Reference>(), Height(),
+                                             owners, settings.Value("MATURITY"));
+            if (check.reason != null)
+                return new Acceptance(check.reason, 0, []);
+            int fee = check.fee, size = transaction.Size();
+            if (fee * 1000 < settings.Value("MINFEERATE") * size)
+                return new Acceptance("low-fee", 0, []);
+            HashSet<Reference> inputs = transaction.inputs.ToHashSet();
+            List<Entry> conflicts = new();
+            int fees = 0;
+            bool higher = true;
+            foreach (Entry entry in mempool) {
+                if (!inputs.Overlaps(entry.transaction.inputs))
+                    continue;
+                conflicts.Add(entry);
+                fees += entry.fee;
+                if (fee * entry.transaction.Size() <= entry.fee * size)
+                    higher = false;
+            }
+            if (conflicts.Count != 0 && (fee <= fees || !higher))
+                return new Acceptance("conflict", 0, []);
+            return new Acceptance(null, fee, conflicts);
+        }
+        public void RecordDrop(string txid, string reason) {
+            drops[txid] = reason;
+            Log("DROP " + Hashing.ShortId(txid) + " " + reason);
+        }
+        public void Drop(Entry entry, string reason) {
+            mempool.Remove(entry);
+            RecordDrop(entry.transaction.txid, reason);
+        }
+        public void Register(Transaction transaction, Acceptance result, int arrival) {
+            foreach (Entry entry in result.conflicts)
+                Drop(entry, "replaced");
+            mempool.Add(new Entry(transaction, result.fee, arrival));
+            if (mempool.Count > settings.Value("MEMPOOL"))
+                Drop(Ranked()[^1], "mempool-full");
+        }
+        public void Rebuild(List<Transaction> returned) {
+            List<Entry> previous = mempool.ToList();
+            mempool.Clear();
+            foreach (Transaction transaction in returned)
+                RebuildEntry(transaction, now, true);
+            foreach (Entry entry in previous)
+                RebuildEntry(entry.transaction, entry.arrival, false);
+        }
+        public void RebuildEntry(Transaction transaction, int arrival, bool returned) {
+            if (confirmed.ContainsKey(transaction.txid))
+                return;
+            Acceptance result = Acceptance(transaction);
+            if (result.reason != null) {
+                RecordDrop(transaction.txid, result.reason);
+                return;
+            }
+            if (returned)
+                Log("RETURN " + Hashing.ShortId(transaction.txid));
+            Register(transaction, result, arrival);
+        }
+        public void SwitchTip(BlockRecord target) {
+            BlockRecord old = tip, fork = Chain.Fork(old, target);
+            int disconnected = old.block.height - fork.block.height,
+                connected = target.block.height - fork.block.height;
+            string targetText =
+                target.block.height + " " + Hashing.ShortId(target.block.hash) + " work " + target.work;
+            if (disconnected > settings.Value("MAXREORG")) {
+                Log("REFUSE " + targetText + " fork " + fork.block.height + " depth " + disconnected);
+                return;
+            }
+            List<Transaction> returned = new();
+            foreach (BlockRecord record in mainChain.GetRange(fork.block.height + 1,
+                                                              mainChain.Count - (fork.block.height + 1)))
+                returned.AddRange(
+                    record.block.transactions.GetRange(1, record.block.transactions.Count - (1)));
+            tip = target;
+            Refresh();
+            if (disconnected == 0)
+                Log("TIP " + targetText);
+            else {
+                Log("REORG " + targetText + " fork " + fork.block.height + " disconnected " + disconnected +
+                    " connected " + connected);
+                reorganizations.Add(new Reorganization(now, fork.block.height, disconnected, connected,
+                                                       old.block.hash, target.block.hash));
+            }
+            Rebuild(returned);
+        }
+        public void Process(string[] fields, List<string> texts) {
+            now = int.Parse(fields[0]);
+            foreach (Entry entry in mempool.ToList())
+                if (now - entry.arrival >= settings.Value("EXPIRY"))
+                    Drop(entry, "expired");
+            switch (fields[1]) {
+            default: {
+                Peer peer = GetPeer(fields[2]);
+                if (peer.score >= settings.Value("BAN")) {
+                    peer.ignored++;
+                    Log("IGNORE " + peer.name + " " + fields[1]);
+                } else if (fields[1].Equals("TX"))
+                    ReceiveTransaction(peer, Transactions.Parse(fields[3]));
+                else
+                    ReceiveBlock(peer, Blocks.Parse(fields, texts));
+                break;
+            }
+            }
+        }
+        public void ReceiveBlock(Peer peer, Block block) {
+            bool orphaned = false;
+            foreach (Orphan orphan in orphans)
+                if (orphan.block.hash.Equals(block.hash))
+                    orphaned = true;
+            if (records.ContainsKey(block.hash) || orphaned || rejected.Contains(block.hash)) {
+                peer.rejectedBlocks++;
+                Tally("block", "duplicate");
+                Log("BLOCK " + peer.name + " " + block.height + " " + Hashing.ShortId(block.hash) +
+                    " rejected duplicate");
+                return;
+            }
+            string reason = Blocks.Error(block, settings.Value("MAXBLOCK"));
+            if (reason == null && rejected.Contains(block.previous))
+                reason = "bad-parent";
+            if (reason != null) {
+                RejectBlock("BLOCK", block, peer, reason);
+                Resolve(block.hash);
+                return;
+            }
+            if (!records.ContainsKey(block.previous)) {
+                orphans.Add(new Orphan(block, peer));
+                peer.orphans++;
+                Log("BLOCK " + peer.name + " " + block.height + " " + Hashing.ShortId(block.hash) +
+                    " orphan parent " + Hashing.ShortId(block.previous));
+                if (orphans.Count > settings.Value("ORPHANS"))
+                    Log("EVICT " + Hashing.ShortId(RemoveFirst(orphans).block.hash) + " orphan-limit");
+                return;
+            }
+            Connect("BLOCK", block, peer);
+            Resolve(block.hash);
+        }
+        public Validation Validate(Block block, BlockRecord parent) {
+            string reason = null;
+            if (block.height != parent.block.height + 1)
+                reason = "bad-height";
+            else if (block.difficulty != Difficulty(parent))
+                reason = "bad-difficulty";
+            else if (block.timestamp <= Chain.Median(parent))
+                reason = "time-too-old";
+            else if (block.timestamp > now + settings.Value("DRIFT"))
+                reason = "time-too-new";
+            if (reason != null)
+                return new Validation(reason, null, null);
+            Dictionary<Reference, Coin> utxo = new Dictionary<Reference, Coin>(parent.utxo);
+            HashSet<Reference> spent = new();
+            List<int> fees = new();
+            int total = 0;
+            for (int i = 1; i < block.transactions.Count; i++) {
+                Transaction transaction = block.transactions[i];
+                Check check = Transactions.Check(transaction, utxo, spent, block.height, owners,
+                                                 settings.Value("MATURITY"));
+                if (check.reason != null)
+                    return new Validation(check.reason + " tx " + (i + 1), null, null);
+                spent.UnionWith(transaction.inputs);
+                Transactions.Apply(utxo, transaction, block.height);
+                fees.Add(check.fee);
+                total += check.fee;
+            }
+            Transaction coinbase = block.transactions[0];
+            foreach (Payment output in coinbase.outputs)
+                if (!owners.ContainsKey(output.address) || output.amount == 0)
+                    return new Validation("bad-output tx 1", null, null);
+            if (coinbase.Total() > Reward(block.height) + total)
+                return new Validation("bad-coinbase", null, null);
+            Transactions.Apply(utxo, coinbase, block.height);
+            return new Validation(null, utxo, fees);
+        }
+        public void Connect(string kind, Block block, Peer peer) {
+            BlockRecord parent = records[block.previous];
+            Validation result = Validate(block, parent);
+            if (result.reason != null) {
+                RejectBlock(kind, block, peer, result.reason);
+                return;
+            }
+            BlockRecord record = new BlockRecord(block, parent, result.utxo, result.fees, peer.name);
+            records[block.hash] = record;
+            peer.blocks++;
+            Log(kind + " " + peer.name + " " + block.height + " " + Hashing.ShortId(block.hash) +
+                " accepted work " + record.work);
+            if (record.work > tip.work)
+                SwitchTip(record);
+        }
+        public void Resolve(string start) {
+            Queue<string> queue = new();
+            queue.Enqueue(start);
+            while (queue.Count != 0) {
+                string parent = queue.Dequeue();
+                List<Orphan> children = new();
+                foreach (Orphan orphan in orphans)
+                    if (orphan.block.previous.Equals(parent))
+                        children.Add(orphan);
+                foreach (Orphan orphan in children) {
+                    orphans.Remove(orphan);
+                    if (rejected.Contains(parent))
+                        RejectBlock("UNORPHAN", orphan.block, orphan.peer, "bad-parent");
+                    else
+                        Connect("UNORPHAN", orphan.block, orphan.peer);
+                    queue.Enqueue(orphan.block.hash);
+                }
+            }
+        }
+        public List<string> ChainLines() {
+            List<string> lines = new();
+            lines.Add("TIP " + tip.block.height + " " + tip.block.hash + " work " + tip.work + " stored " +
+                      records.Count + " orphans " + orphans.Count);
+            HashSet<string> mainHashes = new();
+            foreach (BlockRecord record in mainChain) {
+                Block block = record.block;
+                mainHashes.Add(block.hash);
+                string miner = block.height == 0 ? "-" : owners[Miner(record)].name;
+                lines.Add("BLOCK " + block.height + " " + block.hash + " prev " +
+                          Hashing.ShortId(block.previous) + " time " + block.timestamp + " bits " +
+                          block.difficulty + " nonce " + block.nonce + " txs " + block.transactions.Count +
+                          " size " + block.Size() + " fees " + record.fees + " miner " + miner + " source " +
+                          record.source + " work " + record.work);
+            }
+            List<BlockRecord> stale = new();
+            foreach (BlockRecord record in records.Values)
+                if (!mainHashes.Contains(record.block.hash))
+                    stale.Add(record);
+            stale.Sort(Comparer<BlockRecord>.Create(
+                (first, second) => first.block.height != second.block.height
+                                       ? first.block.height.CompareTo(second.block.height)
+                                       : string.CompareOrdinal(first.block.hash, second.block.hash)));
+            foreach (BlockRecord record in stale)
+                lines.Add("STALE " + record.block.height + " " + record.block.hash + " prev " +
+                          Hashing.ShortId(record.block.previous) + " source " + record.source + " work " +
+                          record.work);
+            foreach (Reorganization entry in reorganizations)
+                lines.Add("REORG " + entry.time + " fork " + entry.fork + " disconnected " +
+                          entry.disconnected + " connected " + entry.connected + " old " +
+                          Hashing.ShortId(entry.oldHash) + " new " + Hashing.ShortId(entry.newHash));
+            List<Entry> entries = Ranked();
+            for (int i = 0; i < entries.Count; i++) {
+                Entry entry = entries[i];
+                lines.Add("MEMPOOL " + (i + 1) + " " + entry.transaction.txid + " fee " + entry.fee +
+                          " size " + entry.transaction.Size() + " time " + entry.arrival);
+            }
+            return lines;
+        }
+        public List<string> BalanceLines() {
+            List<string> lines = new(["wallet,address,balance,immature,locked,incoming,utxos"]);
+            HashSet<Reference> locked = Locked();
+            foreach (Wallet wallet in wallets) {
+                int total = 0, immature = 0, lockedAmount = 0, incoming = 0, count = 0;
+                foreach (KeyValuePair<Reference, Coin> pair in tip.utxo)
+                    if (pair.Value.address.Equals(wallet.address)) {
+                        Coin coin = pair.Value;
+                        total += coin.amount;
+                        count++;
+                        if (!Mature(coin))
+                            immature += coin.amount;
+                        if (locked.Contains(pair.Key))
+                            lockedAmount += coin.amount;
+                    }
+                foreach (Entry entry in mempool)
+                    foreach (Payment output in entry.transaction.outputs)
+                        if (output.address.Equals(wallet.address))
+                            incoming += output.amount;
+                lines.Add(wallet.name + "," + wallet.address + "," + total + "," + immature + "," +
+                          lockedAmount + "," + incoming + "," + count);
+            }
+            return lines;
+        }
+        public List<string> UtxoLines() {
+            List<string> lines = new();
+            HashSet<Reference> locked = Locked();
+            List<Reference> references = tip.utxo.Keys.ToList();
+            references.Sort();
+            int total = 0;
+            foreach (Reference reference in references) {
+                Coin coin = tip.utxo[reference];
+                total += coin.amount;
+                string category = coin.height == 0 ? "genesis"
+                                  : coin.coinbase  ? "coinbase"
+                                                   : "payment",
+                       state = !Mature(coin)                ? "immature"
+                               : locked.Contains(reference) ? "locked"
+                                                            : "free";
+                lines.Add(reference + " " + owners[coin.address].name + " " + coin.amount + " height " +
+                          coin.height + " " + category + " " + state);
+            }
+            string root = Hashing.Merkle(lines.Select(Hashing.Digest).ToList());
+            lines.Add("TOTAL " + references.Count + " " + total);
+            lines.Add("ROOT " + root);
+            return lines;
+        }
+        public List<string> HistoryLines() {
+            List<string> lines = new();
+            Dictionary<string, Transaction> transactions = new();
+            foreach (BlockRecord record in mainChain)
+                foreach (Transaction transaction in record.block.transactions)
+                    transactions[transaction.txid] = transaction;
+            foreach (Wallet wallet in wallets) {
+                lines.Add("WALLET " + wallet.name + " " + wallet.address);
+                int count = 0, spentTotal = 0, receivedTotal = 0, balance = 0, pending = 0;
+                foreach (BlockRecord record in mainChain)
+                    foreach (Transaction transaction in record.block.transactions) {
+                        int spent = 0, received = 0;
+                        bool involved = false;
+                        foreach (Reference reference in transaction.inputs) {
+                            Payment output = transactions[reference.txid].outputs[reference.index];
+                            if (output.address.Equals(wallet.address)) {
+                                spent += output.amount;
+                                involved = true;
+                            }
+                        }
+                        foreach (Payment output in transaction.outputs)
+                            if (output.address.Equals(wallet.address)) {
+                                received += output.amount;
+                                involved = true;
+                            }
+                        if (!involved)
+                            continue;
+                        count++;
+                        spentTotal += spent;
+                        receivedTotal += received;
+                        balance += received - spent;
+                        string category = transaction.Coinbase()
+                                              ? (record.block.height == 0 ? "genesis" : "coinbase")
+                                              : "payment";
+                        lines.Add(record.block.height + " " + Hashing.ShortId(transaction.txid) + " " +
+                                  category + " spent " + spent + " received " + received + " net " +
+                                  Signed(received - spent) + " balance " + balance);
+                    }
+                foreach (Entry entry in Ranked()) {
+                    Transaction transaction = entry.transaction;
+                    int spent = 0, received = 0;
+                    foreach (Reference reference in transaction.inputs) {
+                        Coin coin = tip.utxo[reference];
+                        if (coin.address.Equals(wallet.address))
+                            spent += coin.amount;
+                    }
+                    foreach (Payment output in transaction.outputs)
+                        if (output.address.Equals(wallet.address))
+                            received += output.amount;
+                    if (spent != 0 || received != 0) {
+                        pending++;
+                        lines.Add("pending " + Hashing.ShortId(transaction.txid) + " spent " + spent +
+                                  " received " + received + " net " + Signed(received - spent));
+                    }
+                }
+                lines.Add("END " + wallet.name + " txs " + count + " spent " + spentTotal + " received " +
+                          receivedTotal + " balance " + balance + " pending " + pending);
+            }
+            return lines;
+        }
+        List<string> lines = File.ReadAllLines(Path.Combine("input/events.txt"), Encoding.ASCII).ToList();
+        for (int position = 0; position < lines.Count;) {
+            string[] fields = lines[position].Split(" ");
+            int count = fields[1].Equals("BLOCK") ? int.Parse(fields[9]) : 0;
+            node.Process(fields, lines.GetRange(position + 1, position + 1 + count - (position + 1)));
+            position += count + 1;
+        }
+        Directory.CreateDirectory(Path.Combine("output"));
+        Write("log.txt", node.logs);
+        Write("chain.txt", node.ChainLines());
+        Write("balances.csv", node.BalanceLines());
+        Write("utxo.txt", node.UtxoLines());
+        Write("history.txt", node.HistoryLines());
+sealed class BlockRecord {
+    public readonly Block block;
+    public readonly BlockRecord parent;
+    public readonly Dictionary<Reference, Coin> utxo;
+    public readonly List<int> transactionFees;
+    public readonly string source;
+    public readonly int fees, work;
+    public BlockRecord(Block block, BlockRecord parent, Dictionary<Reference, Coin> utxo,
+                       List<int> transactionFees, string source) {
+        this.block = block;
+        this.parent = parent;
+        this.utxo = utxo;
+        this.transactionFees = transactionFees;
+        this.source = source;
+        fees = transactionFees.Sum();
+        work = parent == null ? 1 : parent.work + (1 << (4 * block.difficulty));
+    }
+    public static BlockRecord Ancestor(BlockRecord record, int height) {
+        while (record.block.height > height)
+            record = record.parent;
+        return record;
+    }
+    public static List<BlockRecord> Sequence(BlockRecord record) {
+        List<BlockRecord> records = new();
+        while (record != null) {
+            records.Add(record);
+            record = record.parent;
+        }
+        records.Reverse();
+        return records;
+    }
+    public static BlockRecord Fork(BlockRecord first, BlockRecord second) {
+        int height = Math.Min(first.block.height, second.block.height);
+        first = Ancestor(first, height);
+        second = Ancestor(second, height);
+        while (first != second) {
+            first = first.parent;
+            second = second.parent;
+        }
+        return first;
+    }
+sealed class Block {
+    public readonly int height, timestamp, difficulty, nonce;
+    public readonly string previous, merkle, hash;
+    public readonly List<Transaction> transactions;
+    public Block(int height, string previous, string merkle, int timestamp, int difficulty, int nonce,
+                 List<Transaction> transactions) {
+        this.height = height;
+        this.previous = previous;
+        this.merkle = merkle;
+        this.timestamp = timestamp;
+        this.difficulty = difficulty;
+        this.nonce = nonce;
+        this.transactions = transactions;
+        hash = Hashing.Digest(Blocks.Header(height, previous, merkle, timestamp, difficulty, nonce));
+    }
+    public int Size() {
+        int size = 0;
+        foreach (Transaction transaction in transactions.GetRange(1, transactions.Count - (1)))
+            size += transaction.Size();
+        return size;
+    }
+    public List<string> Txids() {
+        return transactions.Select(transaction => transaction.txid).ToList();
+    }
+}
+static class Blocks {
+    public static string Header(int height, string previous, string merkle, int timestamp, int difficulty,
+                                int nonce) {
+        return height + "|" + previous + "|" + merkle + "|" + timestamp + "|" + difficulty + "|" + nonce;
+    }
+    public static Block Parse(string[] fields, List<string> texts) {
+        return new Block(int.Parse(fields[3]), fields[4], fields[5], int.Parse(fields[6]),
+                         int.Parse(fields[7]), int.Parse(fields[8]),
+                         texts.Select(Transactions.Parse).ToList());
+    }
+    public static string Error(Block block, int maximum) {
+        if (!block.hash.StartsWith(new string('0', block.difficulty)))
+            return "bad-pow";
+        if (!Hashing.Merkle(block.Txids()).Equals(block.merkle))
+            return "bad-merkle";
+        Transaction first = block.transactions[0];
+        if (!first.Coinbase() || first.coinbaseHeight != block.height)
+            return "bad-structure";
+        foreach (Transaction transaction in block.transactions.GetRange(1, block.transactions.Count - (1)))
+            if (transaction.Coinbase())
+                return "bad-structure";
+        return block.Size() > maximum ? "too-large" : null;
+    }
+sealed record Reference(string txid, int index) : IComparable<Reference> {
+    public int CompareTo(Reference other) {
+        int order = string.CompareOrdinal(txid, other.txid);
+        return order != 0 ? order : index.CompareTo(other.index);
+    }
+    public override string ToString() {
+        return txid + ":" + index;
+    }
+}
+sealed record Coin(string address, int amount, int height, bool coinbase) {
+    public bool Mature(int at, int maturity) {
+        return !coinbase || height == 0 || at >= height + maturity;
+    }
+}
+sealed record Check(string reason, int fee);
+    public bool Coinbase() {
+        return coinbaseHeight != null;
+    }
+    public int Size() {
+        return text.Length;
+    }
+    public int Total() {
+        int total = 0;
+        foreach (Payment output in outputs)
+            total += output.amount;
+        return total;
+    }
+    public static Check Check(Transaction transaction, Dictionary<Reference, Coin> utxo,
+                              HashSet<Reference> spent, int height, Dictionary<string, Wallet> owners,
+                              int maturity) {
+        foreach (Payment output in transaction.outputs)
+            if (!owners.ContainsKey(output.address) || output.amount == 0)
+                return new Check("bad-output", 0);
+        HashSet<Reference> seen = new();
+        int total = 0;
+        for (int i = 0; i < transaction.inputs.Count; i++) {
+            Reference reference = transaction.inputs[i];
+            if (spent.Contains(reference) || seen.Contains(reference))
+                return new Check("double-spend", 0);
+            utxo.TryGetValue(reference, out Coin coin);
+            if (coin == null)
+                return new Check("missing-input", 0);
+            if (!coin.Mature(height, maturity))
+                return new Check("immature", 0);
+            if (!transaction.signatures[i].Equals(
+                    Wallets.Sign(owners[coin.address].secret, i, transaction.body)))
+                return new Check("bad-sig", 0);
+            seen.Add(reference);
+            total += coin.amount;
+        }
+        return total < transaction.Total() ? new Check("overspend", 0)
+                                           : new Check(null, total - transaction.Total());
+    }
+    public static void Apply(Dictionary<Reference, Coin> utxo, Transaction transaction, int height) {
+        foreach (Reference reference in transaction.inputs)
+            utxo.Remove(reference);
+        for (int i = 0; i < transaction.outputs.Count; i++) {
+            Payment output = transaction.outputs[i];
+            utxo[new Reference(transaction.txid, i)] =
+                new Coin(output.address, output.amount, height, transaction.Coinbase());
+        }
+    }

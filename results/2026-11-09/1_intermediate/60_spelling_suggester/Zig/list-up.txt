@@ -1,0 +1,233 @@
+const std = @import("std");
+const WordCounts = std.StringHashMapUnmanaged(usize);
+const adjacent_keys = [26][]const u8{
+    "qswz",   "ghnv",  "dfvx", "cefrsx", "drsw", "cdgrtv", "bfhtvy", "bgjnuy", "jkou",
+    "hikmnu", "ijlmo", "kop",  "jkn",    "bhjm", "iklp",   "lo",     "aw",     "deft",
+    "adewxz", "fgry",  "hijy", "bcfg",   "aeqs", "cdsz",   "ghtu",   "asx",
+};
+const max_word_length = 30;
+const max_listed = 20;
+fn equal(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn less(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+fn all(text: []const u8, comptime predicate: fn (u8) bool) bool {
+    for (text) |c| {
+        if (!predicate(c)) return false;
+    }
+    return true;
+fn head(comptime T: type, items: []const T, count: usize) []const T {
+    return items[0..@min(items.len, count)];
+fn gapCost(keyboard: bool) usize {
+    return if (keyboard) 2 else 1;
+fn substitutionCost(first: u8, second: u8, keyboard: bool) usize {
+    if (first == second) return 0;
+    if (!keyboard) return 1;
+    return if (std.mem.findScalar(u8, adjacent_keys[first - 'a'], second) != null) 1 else 2;
+}
+
+fn isSwap(a: []const u8, b: []const u8, i: usize, j: usize) bool {
+    return i >= 2 and j >= 2 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1];
+}
+
+const Table = struct {
+    cells: []usize,
+    width: usize,
+
+    fn get(table: Table, i: usize, j: usize) usize {
+        return table.cells[i * table.width + j];
+    }
+
+    fn set(table: Table, i: usize, j: usize, value: usize) void {
+        table.cells[i * table.width + j] = value;
+    }
+
+    fn row(table: Table, i: usize) []const usize {
+        return table.cells[i * table.width ..][0..table.width];
+    }
+
+    fn deinit(table: Table, gpa: Allocator) void {
+        gpa.free(table.cells);
+    }
+};
+
+fn distanceTable(gpa: Allocator, a: []const u8, b: []const u8, keyboard: bool) !Table {
+    const gap = gapCost(keyboard);
+    const width = b.len + 1;
+    const table: Table = .{ .cells = try gpa.alloc(usize, (a.len + 1) * width), .width = width };
+    for (0..a.len + 1) |i| table.set(i, 0, i * gap);
+    for (0..b.len + 1) |j| table.set(0, j, j * gap);
+    for (1..a.len + 1) |i| {
+        for (1..b.len + 1) |j| {
+            var best = @min(
+                table.get(i - 1, j) + gap,
+                table.get(i, j - 1) + gap,
+                table.get(i - 1, j - 1) + substitutionCost(a[i - 1], b[j - 1], keyboard),
+            );
+            if (isSwap(a, b, i, j)) best = @min(best, table.get(i - 2, j - 2) + 1);
+            table.set(i, j, best);
+        }
+    }
+    return table;
+fn prefixDistance(gpa: Allocator, a: []const u8, b: []const u8, keyboard: bool) !usize {
+    const table = try distanceTable(gpa, a, b, keyboard);
+    defer table.deinit(gpa);
+    return std.mem.min(usize, table.row(a.len));
+const WordCount = struct { word: []const u8, count: usize };
+fn wordCounts(gpa: Allocator, counts: WordCounts) ![]WordCount {
+    const result = try gpa.alloc(WordCount, counts.count());
+    var iterator = counts.iterator();
+    var i: usize = 0;
+    while (iterator.next()) |entry| : (i += 1) {
+        result[i] = .{ .word = entry.key_ptr.*, .count = entry.value_ptr.* };
+    }
+    return result;
+const Candidate = struct { word: []const u8, distance: usize, frequency: usize };
+
+fn candidateLess(_: void, a: Candidate, b: Candidate) bool {
+    if (a.distance != b.distance) return a.distance < b.distance;
+    if (a.frequency != b.frequency) return a.frequency > b.frequency;
+    return less({}, a.word, b.word);
+const Command = enum {
+    COMPLETE,
+    KEYBOARD,
+    SET,
+    fn arity(command: Command) ?usize {
+        return switch (command) {
+            .CHECK, .CORRECT, .FIX, .PROFILE, .LEARN => null,
+            .RULES, .UNDO, .REPORT, .HISTORY, .STATS => 0,
+            .DIST, .PREFIX, .COMPLETE, .LIST, .ADD, .RULE, .SET => 2,
+            else => 1,
+        };
+const SpellChecker = struct {
+    gpa: Allocator,
+    scratch: Allocator,
+    out: *Writer,
+    dictionary: WordCounts,
+    keyboard: bool = false,
+    base_limit: usize = 2,
+    fn wordArgument(checker: *SpellChecker, text: []const u8) ![]const u8 {
+        if (text.len == 0 or text.len > max_word_length or !all(text, std.ascii.isAlphabetic)) {
+            return checker.fail("BAD WORD {s}", .{text});
+        }
+        return std.ascii.allocLowerString(checker.scratch, text);
+    }
+
+    fn numberArgument(checker: *SpellChecker, text: []const u8, minimum: usize, maximum: usize) !usize {
+        if (text.len >= 1 and text.len <= 7 and all(text, std.ascii.isDigit)) {
+            const value = std.fmt.parseInt(usize, text, 10) catch unreachable;
+            if (minimum <= value and value <= maximum) return value;
+        }
+        return checker.fail("BAD NUMBER {s}", .{text});
+    fn limit(checker: SpellChecker) usize {
+        return if (checker.keyboard) 2 * checker.base_limit else checker.base_limit;
+    fn dictionaryEntries(checker: *SpellChecker) ![]WordCount {
+        return wordCounts(checker.scratch, checker.dictionary);
+    fn complete(checker: *SpellChecker, raw_word: []const u8, raw_count: []const u8) !void {
+        const word = try checker.wordArgument(raw_word);
+        const count = try checker.numberArgument(raw_count, 1, max_listed);
+        const threshold = checker.limit() / 2;
+        var matches: std.ArrayList(Candidate) = .empty;
+        for (try checker.dictionaryEntries()) |entry| {
+            const distance = try prefixDistance(checker.scratch, word, entry.word, checker.keyboard);
+            if (distance <= threshold) {
+                try matches.append(checker.scratch, .{
+                    .word = entry.word,
+                    .distance = distance,
+                    .frequency = entry.count,
+                });
+            }
+        }
+        std.mem.sort(Candidate, matches.items, {}, candidateLess);
+        try checker.out.print("COMPLETE {s} count={d}", .{ word, matches.items.len });
+        for (head(Candidate, matches.items, count)) |match| {
+            try checker.out.print(" {s}:{d}", .{ match.word, match.distance });
+        }
+        try checker.out.writeByte('\n');
+    fn keyboardMode(checker: *SpellChecker, mode: []const u8) !void {
+        if (!equal(mode, "ON") and !equal(mode, "OFF")) return checker.fail("BAD MODE {s}", .{mode});
+        checker.keyboard = equal(mode, "ON");
+        try checker.out.print("KEYBOARD {s}\n", .{mode});
+    }
+
+    fn setOption(checker: *SpellChecker, option: []const u8, raw_value: []const u8) !void {
+        const Option = enum { LIMIT, SUGGESTIONS };
+        const selected = std.meta.stringToEnum(Option, option) orelse
+            return checker.fail("BAD OPTION {s}", .{option});
+        const maximum: usize = switch (selected) {
+            .LIMIT => 3,
+            .SUGGESTIONS => 10,
+        };
+        const value = try checker.numberArgument(raw_value, 1, maximum);
+        switch (selected) {
+            .LIMIT => checker.base_limit = value,
+            .SUGGESTIONS => checker.suggestion_count = value,
+        }
+        try checker.out.print("SET {s} {d}\n", .{ option, value });
+    fn execute(checker: *SpellChecker, line: []const u8) !void {
+        const space = std.mem.findScalar(u8, line, ' ');
+        const name = line[0 .. space orelse line.len];
+        const rest = if (space) |index| line[index + 1 ..] else "";
+        const command = std.meta.stringToEnum(Command, name) orelse
+            return checker.fail("UNKNOWN COMMAND {s}", .{name});
+        var arguments: std.ArrayList([]const u8) = .empty;
+        if (command.arity()) |expected| {
+            if (space != null) {
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                while (parts.next()) |part| try arguments.append(checker.scratch, part);
+            }
+            if (arguments.items.len != expected) return checker.fail("BAD ARGUMENTS {s}", .{name});
+        } else if (space == null) {
+            return checker.fail("BAD ARGUMENTS {s}", .{name});
+        }
+        const args = arguments.items;
+        switch (command) {
+            .COMPLETE => try checker.complete(args[0], args[1]),
+            .KEYBOARD => try checker.keyboardMode(args[0]),
+            .SET => try checker.setOption(args[0], args[1]),
+fn readLine(gpa: Allocator, input: *std.Io.Reader) ![]const u8 {
+    var line: Writer.Allocating = .init(gpa);
+    _ = try input.streamDelimiterEnding(&line.writer, '\n');
+    if (input.seek < input.end) {
+        input.toss(1);
+    } else if (line.written().len == 0) {
+        return error.EndOfStream;
+    }
+    return line.toOwnedSlice();
+pub fn main(init: std.process.Init) !void {
+    var storage = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const gpa = storage.allocator();
+    var input_buffer: [4096]u8 = undefined;
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output_buffer: [4096]u8 = undefined;
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const reader = &input.interface;
+    var dictionary: WordCounts = .empty;
+    const word_count = try std.fmt.parseInt(usize, try readLine(gpa, reader), 10);
+    for (0..word_count) |_| {
+        var fields = std.mem.tokenizeScalar(u8, try readLine(gpa, reader), ' ');
+        const word = fields.next().?;
+        try dictionary.put(gpa, word, try std.fmt.parseInt(usize, fields.next().?, 10));
+    }
+    var checker: SpellChecker = .{
+        .gpa = gpa,
+        .scratch = gpa,
+        .out = &output.interface,
+        .dictionary = dictionary,
+    };
+    const command_count = try std.fmt.parseInt(usize, try readLine(gpa, reader), 10);
+    for (0..command_count) |_| {
+        var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer scratch.deinit();
+        checker.scratch = scratch.allocator();
+        const line = try readLine(checker.scratch, reader);
+        checker.execute(line) catch |err| {
+            if (err != error.Command) return err;
+            try checker.out.print("ERROR {s}\n", .{checker.problem});
+        };
+    }
+    try output.interface.flush();

@@ -1,0 +1,226 @@
+import 'dart:io';
+import 'dart:math' as math;
+
+class Station {
+  final String id, name;
+  final int zone;
+  int transfer = 0;
+  bool closed = false;
+  final Map<String, int> walks = {};
+  Station(this.id, this.zone, this.name);
+}
+class Line {
+  final String id;
+  final int first, last, headway;
+  final List<String> stops;
+  final List<int> offsets;
+  int delay = 0;
+  bool suspended = false;
+  Line(this.id, this.first, this.last, this.headway, this.stops, this.offsets);
+}
+class Direction {
+  final Line line;
+  final int order;
+  final List<String> stops;
+  final List<int> offsets;
+  Direction(this.line, this.order, this.stops, this.offsets);
+}
+sealed class Leg {
+  final int departure, arrival;
+  Leg(this.departure, this.arrival);
+}
+class Ride extends Leg {
+  final String line, terminal, from, to;
+  final int stops;
+  Ride(this.line, this.terminal, this.from, int departure, this.to,
+      int arrival, this.stops) : super(departure, arrival);
+}
+class Walk extends Leg {
+  final String from, to;
+  Walk(this.from, int departure, this.to, int arrival) : super(departure, arrival);
+}
+class Label {
+  final int time;
+  final List<Leg> journey;
+  Label(this.time, this.journey);
+}
+class Tariff {
+  final int discount, window;
+  final List<int> prices;
+  Tariff(this.discount, this.window, this.prices);
+}
+class MetroError implements Exception {
+  final String message;
+  MetroError(this.message);
+}
+final stations = <String, Station>{};
+final lines = <String, Line>{};
+final closed = <String>{};
+final output = <String>[];
+Tariff? tariff;
+Never fail(String message) => throw MetroError('ERROR $message');
+int time(String word) {
+  final parts = word.split(':').map(int.parse).toList();
+  return parts[0] * 60 + parts[1];
+}
+String pair(String a, String b) => a.compareTo(b) < 0 ? '$a-$b' : '$b-$a';
+Station station(String id) {
+  final result = stations[id];
+  if (result == null) fail('unknown station $id');
+  return result;
+}
+void openStation(String id) {
+  if (stations[id]!.closed) fail('station $id is closed');
+}
+void common(String origin, String destination) {
+  station(origin);
+  station(destination);
+  if (origin == destination) fail('origin and destination are the same');
+  openStation(origin);
+  openStation(destination);
+}
+List<Line> orderedLines() => lines.values.toList()..sort((a, b) => a.id.compareTo(b.id));
+List<Direction> directions(Line item) {
+  final total = item.offsets.last;
+  return [Direction(item, 0, item.stops, item.offsets),
+    Direction(item, 1, item.stops.reversed.toList(),
+        item.offsets.reversed.map((offset) => total - offset).toList())];
+}
+int trips(Line item) => (item.last - item.first) ~/ item.headway + 1;
+int? nextTrain(Direction direction, int at, int ready) {
+  final item = direction.line;
+  final q = math.max(0, ((ready - item.first - item.delay - direction.offsets[at]) / item.headway).ceil());
+  return q < trips(item) ? q : null;
+}
+int trainTime(Direction direction, int q, int at) =>
+    direction.line.first + direction.line.delay + q * direction.line.headway + direction.offsets[at];
+Ride ride(Direction direction, int boarding, int alighting, int q) =>
+    Ride(direction.line.id, direction.stops.last, direction.stops[boarding],
+        trainTime(direction, q, boarding), direction.stops[alighting],
+        trainTime(direction, q, alighting), alighting - boarding);
+bool update(Map<String, Label> labels, String id, Label candidate) {
+  final old = labels[id];
+  if (old == null || old.time > candidate.time) {
+    labels[id] = candidate;
+    return true;
+  }
+  return false;
+}
+Map<String, Label> earliest(String origin, int departure) {
+  final labels = <String, Label>{origin: Label(departure, [])};
+  final settled = <String>{}, service = orderedLines();
+  while (true) {
+    final choices = labels.keys.where((id) => !settled.contains(id)).toList();
+    if (choices.isEmpty) return labels;
+    choices.sort((a, b) {
+      final order = labels[a]!.time.compareTo(labels[b]!.time);
+      return order == 0 ? a.compareTo(b) : order;
+    });
+    final u = choices.first, label = labels[choices.first]!, s = stations[choices.first]!;
+    settled.add(u);
+    final ready = label.time + (u == origin ? 0 : s.transfer);
+    for (final item in service) {
+      if (item.suspended || !item.stops.contains(u)) continue;
+      for (final direction in directions(item)) {
+        final i = direction.stops.indexOf(u), last = direction.stops.length - 1;
+        if (i == last) continue;
+        final q = nextTrain(direction, i, ready);
+        if (q == null) continue;
+        for (var j = i + 1; j <= last; j++) {
+          final v = direction.stops[j];
+          if (closed.contains(pair(direction.stops[j - 1], v))) break;
+          if (stations[v]!.closed) continue;
+          final leg = ride(direction, i, j, q);
+          update(labels, v, Label(leg.arrival, [...label.journey, leg]));
+        }
+      }
+    }
+    for (final v in s.walks.keys.toList()..sort()) {
+      final arrival = label.time + s.walks[v]!;
+      if (!stations[v]!.closed && arrival <= 1440) {
+        final leg = Walk(u, label.time, v, arrival);
+        update(labels, v, Label(arrival, [...label.journey, leg]));
+      }
+    }
+  }
+}
+void printFare(String origin, String destination, String word, String fareClass, Label label) {
+  final tickets = <String>[];
+  var total = 0;
+  Ride? previous;
+  int half(int value) => ((value + 19) ~/ 20) * 10;
+  for (final leg in label.journey.whereType<Ride>()) {
+    final item = lines[leg.line]!;
+    final direction = directions(item).firstWhere((d) => d.stops.last == leg.terminal);
+    final start = direction.stops.indexOf(leg.from), end = direction.stops.indexOf(leg.to);
+    final zones = direction.stops.sublist(start, end + 1).map((id) => stations[id]!.zone).toSet().length;
+    final base = tariff!.prices[math.min(zones, tariff!.prices.length) - 1];
+    final price = fareClass == 'CHILD' ? half(base) : base;
+    final cap = fareClass == 'CHILD' ? half(tariff!.discount) : tariff!.discount;
+    final discount = previous != null && leg.departure - previous.arrival <= tariff!.window ? math.min(cap, price) : 0;
+    final payment = price - discount;
+    total += payment;
+    tickets.add('TICKET ${leg.line} ${leg.from} ${leg.to} zones $zones price $price discount $discount pay $payment');
+    previous = leg;
+  }
+  output.add('FARE $origin $destination $word $fareClass rides ${tickets.length} total $total');
+  output.addAll(tickets);
+}
+void execute(String commandLine) {
+  final words = commandLine.split(' '), command = words.first, args = words.skip(1).toList();
+  final a = args.isEmpty ? '' : args[0], b = args.length < 2 ? '' : args[1];
+  switch (command) {
+    case 'STATION':
+      if (stations.containsKey(a)) fail('station $a already exists');
+      stations[a] = Station(a, int.parse(b), args[2]);
+    case 'LINE':
+      if (lines.containsKey(a)) fail('line $a already exists');
+      final stops = <String>[], offsets = <int>[0];
+      for (var i = 4; i < args.length; i += 2) { stops.add(args[i]); }
+      for (final id in stops) { station(id); }
+      final seen = <String>{};
+      for (final id in stops) {
+        if (!seen.add(id)) fail('station $id appears twice on line $a');
+      }
+      for (var i = 5; i < args.length; i += 2) { offsets.add(offsets.last + int.parse(args[i])); }
+      final first = time(b), last = time(args[2]), headway = int.parse(args[3]), total = offsets.last;
+      if (first > last) fail('line $a first departure is after last departure');
+      if (last + total > 1440) fail('line $a runs past 24:00');
+      final item = Line(a, first, last, headway, stops, offsets);
+      lines[a] = item;
+    case 'WALK':
+      final x = station(a), y = station(b), duration = int.parse(args[2]);
+      if (a == b) fail('walk from $a to itself');
+      x.walks[b] = duration;
+      y.walks[a] = duration;
+    case 'TARIFF':
+      final prices = args.skip(2).map(int.parse).toList();
+      for (var i = 1; i < prices.length; i++) {
+        if (prices[i] < prices[i - 1]) fail('tariff prices must not decrease');
+      }
+      tariff = Tariff(int.parse(a), int.parse(b), prices);
+    case 'FARE':
+      common(a, b);
+      if (command == 'FARE') {
+        if (args[3] != 'ADULT' && args[3] != 'CHILD') fail('unknown fare class ${args[3]}');
+        if (tariff == null) fail('no tariff');
+      }
+      } else {
+        final departure = time(args[2]), label = earliest(a, departure)[b];
+        if (label == null) {
+          output.add('$command $a $b ${args[2]}${command == 'FARE' ? ' ${args[3]}' : ''} unreachable');
+        } else if (command == 'FARE') {
+          printFare(a, b, args[2], args[3], label);
+        }
+      }
+void main() {
+  final count = int.parse(stdin.readLineSync()!);
+  for (var i = 0; i < count; i++) {
+    try {
+      execute(stdin.readLineSync()!);
+    } on MetroError catch (error) {
+      output.add(error.message);
+    }
+  }
+  if (output.isNotEmpty) stdout.write('${output.join('\n')}\n');
+}

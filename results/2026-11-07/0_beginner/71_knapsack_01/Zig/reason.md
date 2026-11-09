@@ -1,0 +1,5 @@
+Zero initialization supplies all zero-item and zero-capacity states. Tent has weight 10/value 120, so first-stage capacities below 10 keep 0 and capacities at least 10 compare 0+120 against 0. Both skipping and taking refer to item stage i-1, so no item can feed its own transition twice. Traceback starts at named capacity limit 20, compares adjacent item stages, marks a chosen item and reduces remaining capacity when different. Although traced backward, chosen flags are later read with names in original forward order. Input weights/names, initialization, recurrence and traceback/output mapping establish these dependencies.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

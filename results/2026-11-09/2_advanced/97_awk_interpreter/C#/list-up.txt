@@ -1,0 +1,659 @@
+static class Lexer {
+    public static bool Letter(char c) => c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z';
+    public static bool Digit(char c) => c >= '0' && c <= '9';
+    public static List<Token> Lex(string text) {
+        List<Position> positions = new();
+        int line = 1, column = 1;
+        foreach (char c in text) {
+            positions.Add(new(line, column));
+            if (c == 10) {
+                line++;
+                column = 1;
+            } else column++;
+        }
+        positions.Add(new(line, column));
+        List<Token> result = new();
+        int i = 0;
+        HashSet<string> keywords = new(new[] {
+            "BEGIN", "END", "function", "if", "else", "while", "for", "do", "break", "continue", "next", "exit", "return", "delete", "in", "getline", "print", "printf"
+        }, StringComparer.Ordinal);
+        HashSet<string> builtins = new(new[] {
+            "length", "substr", "index", "split", "sprintf", "toupper", "tolower", "close", "int"
+        }, StringComparer.Ordinal);
+        HashSet<string> symbols = new(new[] {
+            "+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=", "!=", "++", "--", "&&", "||", ">>"
+        }, StringComparer.Ordinal);
+        while (i < text.Length) {
+            if (text[i] == ' ') {
+                i++;
+                continue;
+            }
+            if (text[i] == 92 && i + 1 < text.Length && text[i + 1] == 10) {
+                i += 2;
+                continue;
+            }
+            if (text[i] == '#') {
+                while (i < text.Length && text[i] != 10) i++;
+                continue;
+            }
+            int start = i;
+            string kind = "symbol", value = "";
+            if (text[i] == 10) {
+                i++;
+                kind = "newline";
+            }
+            else if (Digit(text[i])) {
+                while (i < text.Length && Digit(text[i])) i++;
+                kind = "number";
+            }
+            else if (Letter(text[i]) || text[i] == '_') {
+                while (i < text.Length && (Letter(text[i]) || Digit(text[i]) || text[i] == '_')) i++;
+                string name = text[start..i];
+                kind = keywords.Contains(name) ? "keyword" : builtins.Contains(name) ? "builtin" : i < text.Length && text[i] == '(' ? "function" : "name";
+            } else if (text[i] == 34) {
+                i++;
+                bool closed = false;
+                StringBuilder decoded = new();
+                while (i < text.Length) {
+                    if (text[i] == 10) throw new SyntaxError(positions[start]);
+                    if (text[i] == 34) {
+                        i++;
+                        closed = true;
+                        break;
+                    }
+                    if (text[i] == 92) {
+                        int slash = i++;
+                        if (i == text.Length) throw new SyntaxError(positions[start]);
+                        decoded.Append(text[i] switch {
+                            'n' => (char)10, 't' => (char)9, (char)92 or (char)34 or '/' => text[i], _ => throw new SyntaxError(positions[slash])
+                        });
+                        i++;
+                    }
+                    else decoded.Append(text[i++]);
+                }
+                if (!closed) throw new SyntaxError(positions[start]);
+                kind = "string";
+                value = decoded.ToString();
+            } else if (i + 1 < text.Length && symbols.Contains(text.Substring(i, 2))) i += 2;
+            else if ("+-*/%^!><?:=()[]{},;$".Contains(text[i])) i++;
+            else throw new SyntaxError(positions[i]);
+            result.Add(new(kind, text[start..i], value, positions[start]));
+        }
+        result.Add(new("end", "", "", positions.Last()));
+        return result;
+    }
+}
+abstract record ExprKind;
+sealed record NumberExpr(int Value) : ExprKind;
+sealed record TextExpr(string Value) : ExprKind;
+sealed record NameExpr(string Name) : ExprKind;
+sealed record IndexExpr(string Name, List<Expr> Indices) : ExprKind;
+sealed record FieldExpr(Expr Index) : ExprKind;
+sealed record ParenthesesExpr(Expr Body) : ExprKind;
+sealed record UnaryExpr(string Op, Expr Body) : ExprKind;
+sealed record BinaryExpr(string Op, Expr Left, Expr Right) : ExprKind;
+sealed record AssignmentExpr(string Op, Expr Target, Expr Right) : ExprKind;
+sealed record IncrementExpr(int Delta, bool Prefix, Expr Target) : ExprKind;
+sealed record ConditionalExpr(Expr Condition, Expr Yes, Expr No) : ExprKind;
+sealed record MemberExpr(List<Expr> Indices, string Name, Position NamePosition) : ExprKind;
+sealed record CallExpr(string Name, bool Builtin, List<Expr> Arguments) : ExprKind;
+sealed record GetlineExpr(Expr? Target, Expr? File) : ExprKind;
+sealed record Stmt(Position Position, StmtKind Kind);
+sealed class Parser(List<Token> tokens) {
+    int index, loops;
+    bool function, special;
+    Token Peek => tokens[index];
+    string Text => Peek.Text;
+    Token Take() {
+        Token token = Peek;
+        if (token.Kind != "end") index++;
+        return token;
+    }
+    Token Expect(string text) {
+        if (Text != text || Peek.Kind == "end") throw new SyntaxError(Peek.Position);
+        return Take();
+    }
+    Token Name() {
+        if (Peek.Kind != "name") throw new SyntaxError(Peek.Position);
+        return Take();
+    }
+    void Newlines() {
+        while (Peek.Kind == "newline") Take();
+    }
+    void Terminator() {
+        if (Text == ";" || Peek.Kind == "newline") Take();
+        else if (Text != "}") throw new SyntaxError(Peek.Position);
+    }
+    List<Expr> Expressions(bool suppress) {
+        List<Expr> result = new() {
+            Expression(suppress)
+        };
+        while (Text == ",") {
+            Take();
+            Newlines();
+            result.Add(Expression(suppress));
+        } return result;
+    }
+    Expr Expression(bool suppress = false) {
+        Expr left = Conditional(suppress);
+        if (left.Lvalue && new[] {
+            "=", "+=", "-=", "*=", "/=", "%=", "^="
+        }.Contains(Text)) {
+            Token token = Take();
+            return new(token.Position, new AssignmentExpr(token.Text, left, Expression(suppress)));
+        } return left;
+    }
+    Expr Conditional(bool suppress) {
+        Expr condition = Binary(1, suppress);
+        if (Text == "?") {
+        } return condition;
+    Expr Binary(int minimum, bool suppress) {
+        Expr left = Unary(suppress);
+        while (true) {
+            int explicitPriority = Text switch {
+                "||" => 1, "&&" => 2, "in" => 3, "<" or "<=" or "==" or "!=" or ">=" => 4, ">" => suppress ? 0 : 4, "+" or "-" => 6, "*" or "/" or "%" => 7, _ => 0
+            };
+            bool concat = explicitPriority == 0 && (new[] {
+                "number", "string", "name", "function", "builtin"
+            }.Contains(Peek.Kind) || new[] {
+                "$", "(", "++", "--"
+            }.Contains(Text));
+            int priority = concat ? 5 : explicitPriority;
+            if (priority == 0 || priority < minimum) return left;
+    Expr Unary(bool suppress) {
+        if (Text is "!" or "-" or "+") {
+        } Expr left = Postfix(suppress);
+        if (Text == "^") {
+        } return left;
+    }
+    Expr Postfix(bool suppress) {
+        if (Text is "++" or "--") return Prefix(suppress);
+        Expr body = Atom(suppress);
+        if (body.Lvalue && Text is "++" or "--") {
+            Token token = Take();
+            return new(token.Position, new IncrementExpr(token.Text == "++" ? 1 : -1, false, body));
+        } return body;
+    }
+    Expr Lvalue(bool suppress) {
+        if (Peek.Kind != "name" && Text != "$") throw new SyntaxError(Peek.Position);
+        return Atom(suppress);
+    }
+    Expr Atom(bool suppress) {
+        Token token = Peek;
+        ExprKind kind;
+        switch (token.Kind) {
+            case "number": Take();
+            kind = new NumberExpr(int.Parse(token.Text));
+            break;
+            case "string": Take();
+            kind = new TextExpr(token.Value);
+            break;
+            case "name": Take();
+            if (Text == "[") {
+                Take();
+                List<Expr> indices = Expressions(false);
+                Expect("]");
+                kind = new IndexExpr(token.Text, indices);
+            } else kind = new NameExpr(token.Text);
+            break;
+            default:
+            switch (token.Text) {
+                case "$": Take();
+                kind = new FieldExpr(Text is "++" or "--" ? Prefix(suppress) : Atom(suppress));
+                break;
+            break;
+        }
+        return new(token.Position, kind);
+    }
+    Stmt Block() {
+        Position position = Expect("{").Position;
+        List<Stmt> statements = new();
+        while (Text != "}") {
+            if (Peek.Kind == "newline" || Text == ";") Take();
+            else statements.Add(Statement());
+        } Expect("}");
+        return new(position, new BlockStmt(statements));
+    }
+    Stmt Statement() {
+        Token token = Peek;
+        Position position = token.Position;
+        StmtKind kind;
+        switch (Text) {
+            case "{": return Block();
+            case ";": Take();
+            return new(position, new EmptyStmt());
+            case "if": {
+                return new(position, new ForStmt(initial, condition, update, LoopBody()));
+            }
+            case "print": case "printf": {
+                Take();
+                bool printf = token.Text == "printf", empty = new[] {
+                    ";", ((char)10).ToString(), "}", ">", ">>"
+                }.Contains(Text), parenthesized = false;
+                if (Text == "(") {
+                    int depth = 0;
+                if (empty && printf) throw new SyntaxError(Peek.Position);
+                List<Expr> arguments;
+                if (empty) arguments = new();
+                else if (parenthesized) {
+                    Take();
+                    arguments = Expressions(false);
+                    Expect(")");
+                } else arguments = Expressions(true);
+                Redirect? redirect = null;
+                if (Text is ">" or ">>") {
+                    Token op = Take();
+                    redirect = new(op.Text == ">>", Binary(5, false), op.Position);
+                } kind = new OutputStmt(printf, arguments, redirect);
+                break;
+            default: kind = new ExpressionStmt(Expression());
+            break;
+        }
+        Terminator();
+        return new(position, kind);
+    }
+    public AwkProgram Program() {
+        List<Rule> rules = new();
+        List<Function> functions = new();
+        while (Peek.Kind != "end") {
+            if (Text == ";" || Peek.Kind == "newline") {
+                Take();
+                continue;
+            } Position position = Peek.Position;
+            } else if (Text is "BEGIN" or "END") {
+                string kind = Take().Text;
+                special = true;
+                Stmt action = Block();
+                special = false;
+                rules.Add(new(kind, position, null, null, action));
+            }
+            else if (Text == "{") rules.Add(new("all", position, null, null, Block()));
+        }
+        return new(rules, functions);
+    }
+enum ValueKind {
+    Number, Text, Numeric, Uninitialized
+}
+sealed record Value(ValueKind Kind, int NumericValue = 0, string StringValue = "") {
+    public static readonly Value Uninitialized = new(ValueKind.Uninitialized);
+    public static Value Number(int value) => new(ValueKind.Number, value);
+    public static Value Text(string value) => new(ValueKind.Text, 0, value);
+    public static bool Whitespace(char c) => c is ' ' or (char)9 or (char)10;
+    public static Value Input(string text) {
+        string raw = text.Trim(' ', (char)9, (char)10);
+        string digits = raw.StartsWith('+') || raw.StartsWith('-') ? raw[1..] : raw;
+        return digits.Length > 0 && digits.All(Lexer.Digit) ? new(ValueKind.Numeric, Text(text).NumberValue, text) : Text(text);
+    }
+    public int NumberValue {
+        get {
+            if (Kind is ValueKind.Number or ValueKind.Numeric) return NumericValue;
+            if (Kind == ValueKind.Uninitialized) return 0;
+            int i = 0;
+            while (i < StringValue.Length && Whitespace(StringValue[i])) i++;
+            bool negative = i < StringValue.Length && StringValue[i] == '-';
+            if (i < StringValue.Length && StringValue[i] is '+' or '-') i++;
+            int n = 0;
+            while (i < StringValue.Length && Lexer.Digit(StringValue[i])) n = n * 10 + StringValue[i++] - '0';
+            return negative ? -n : n;
+        }
+    }
+    public string String => Kind == ValueKind.Number ? NumericValue.ToString() : Kind == ValueKind.Uninitialized ? "" : StringValue;
+    public string Display => Kind switch {
+        ValueKind.Number => NumericValue.ToString(), ValueKind.Text => ValuesFields.Quote(StringValue), ValueKind.Numeric => ValuesFields.Quote(StringValue) + " (strnum)", _ => "(uninitialized)"
+    };
+    public static string Quote(string text) {
+        StringBuilder result = new();
+        result.Append((char)34);
+        foreach (char c in text) {
+            switch ((int)c) {
+                case 34: case 92: result.Append((char)92).Append(c);
+                break;
+                case 10: result.Append((char)92).Append('n');
+                break;
+                case 9: result.Append((char)92).Append('t');
+                break;
+                case >= 32 and <= 126: result.Append(c);
+                break;
+                default: result.Append((char)92).Append(Convert.ToString(c, 8).PadLeft(3, '0'));
+                break;
+            }
+        }
+        return result.Append((char)34).ToString();
+    }
+    public static List<string> Split(string text, string separator) {
+        if (separator.Length == 0) return text.Select(c => c.ToString()).ToList();
+        return text.Length == 0 ? new() : text.Split(separator, StringSplitOptions.None).ToList();
+    }
+sealed class Fields {
+    public Value Record = Value.Text("");
+    public List<Value> Values = new();
+    public void Set(string text, string separator) {
+        Record = Value.Input(text);
+        Values = ValuesFields.Split(text, separator).Select(Value.Input).ToList();
+    }
+    public Value Get(int index) => index == 0 ? Record : index <= Values.Count ? Values[index - 1] : Value.Uninitialized;
+    void Rebuild(string separator) {
+        Record = Value.Input(string.Join(separator, Values.Select(value => value.String)));
+    }
+    public void Assign(int index, Value value, string fs, string ofs) {
+        if (index == 0) Set(value.String, fs);
+        else {
+            while (Values.Count < index) Values.Add(Value.Text(""));
+            Values[index - 1] = value;
+            Rebuild(ofs);
+        }
+    }
+    public void Nf(int size, string ofs) {
+        if (size < Values.Count) Values.RemoveRange(size, Values.Count - size);
+        while (Values.Count < size) Values.Add(Value.Text(""));
+        Rebuild(ofs);
+    }
+}
+sealed record AssignmentOperand(string Name, string Value) : Operand;
+sealed record FileOperand(string Name, int Index) : Operand;
+sealed class FileCount(string name) {
+    public string Name = name;
+    public int Records;
+}
+sealed class Arguments {
+    public List<(string Name, string Value)> Options = new();
+    public List<Operand> Operands = new();
+    public List<FileCount> Files = new();
+    public static Arguments Parse(string text) {
+        Arguments result = new();
+        static (string Name, string Value)? Assignment(string source) {
+            int i = source.IndexOf('=');
+            return i < 0 ? null : (source[..i], source[(i + 1)..]);
+        }
+        static bool Variable(string name) => name.Length > 0 && (Lexer.Letter(name[0]) || name[0] == '_') && name.All(c => Lexer.Letter(c) || Lexer.Digit(c) || c == '_');
+        foreach (string line in text.Split((char)10).Where(line => line.Length > 0)) {
+            if (line.StartsWith("-F ", StringComparison.Ordinal)) result.Options.Add(("FS", line[3..]));
+            else if (line.StartsWith("-v ", StringComparison.Ordinal)) result.Options.Add(Assignment(line[3..])!.Value);
+            else {
+                var pair = Assignment(line);
+                if (pair.HasValue && Variable(pair.Value.Name)) result.Operands.Add(new AssignmentOperand(pair.Value.Name, pair.Value.Value));
+                else {
+                    result.Operands.Add(new FileOperand(line, result.Files.Count));
+                    result.Files.Add(new(line));
+                }
+            }
+        }
+        return result;
+    }
+sealed class Streams {
+    public string Stdout = "";
+    public int Writes;
+    public List<OutputStream> Outputs = new();
+    public List<InputStream> Inputs = new();
+    public static bool ValidFile(string text) => text.Length > 0 && !text.StartsWith('.') && text.All(c => Lexer.Letter(c) || Lexer.Digit(c) || "._-".Contains(c));
+    public static List<string>? ReadFile(string name) => ValidFile(name) && File.Exists("input/" + name) ? File.ReadAllLines("input/" + name).ToList() : null;
+    public void Output(string? name, bool append, string text) {
+        if (name == null) {
+            Stdout += text;
+            Writes++;
+            return;
+        }
+        OutputStream output = Outputs.FirstOrDefault(candidate => candidate.Name == name) ?? new(name);
+        if (!Outputs.Contains(output)) Outputs.Add(output);
+    public void Save() {
+        Directory.CreateDirectory("output");
+        File.WriteAllText("output/stdout.txt", Stdout);
+        foreach (OutputStream output in Outputs) File.WriteAllText("output/" + output.Name, output.Text);
+    }
+}
+sealed class Preparation(AwkProgram program) {
+    public HashSet<string> Globals = new(new[] {
+        "FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"
+    }, StringComparer.Ordinal);
+    public HashSet<NameKey> Arrays = new();
+    readonly List<(NameKey Key, Position Position)> uses = new();
+    readonly List<CallSite> calls = new();
+    public Dictionary<int, int> Lines = new();
+    public Dictionary<string, int> Functions = new(StringComparer.Ordinal);
+    NameKey Key(int? scope, string name) => new(scope.HasValue && program.Functions[scope.Value].Parameters.Any(parameter => parameter.Name == name) ? scope : null, name);
+    void Name(int? scope, string name, Position position, bool array) {
+        NameKey key = Key(scope, name);
+        if (!key.Scope.HasValue) Globals.Add(name);
+        if (array) Arrays.Add(key);
+        uses.Add((key, position));
+    }
+    void Expression(Expr expression, int? scope) {
+        switch (expression.Kind) {
+            case NameExpr n: Name(scope, n.Name, expression.Position, false);
+            break;
+            case FieldExpr n: Expression(n.Index, scope);
+            break;
+            case AssignmentExpr n: Expression(n.Target, scope);
+            Expression(n.Right, scope);
+            break;
+            case ConditionalExpr n: Expression(n.Condition, scope);
+    void Statement(Stmt statement, int? scope) {
+        if (statement.Kind is not (BlockStmt or EmptyStmt)) Lines[statement.Position.Line] = 0;
+        switch (statement.Kind) {
+            case BlockStmt n: foreach (Stmt child in n.Statements) Statement(child, scope);
+            break;
+            case ExpressionStmt n: Expression(n.Expression, scope);
+            break;
+            case OutputStmt n: foreach (Expr argument in n.Arguments) Expression(argument, scope);
+            if (n.Redirect != null) Expression(n.Redirect.Expression, scope);
+            break;
+    public void Analyze() {
+        List<(Position Position, int Priority, string Message)> errors = new();
+        foreach (Rule rule in program.Rules) {
+            if (rule.Start != null) Expression(rule.Start, null);
+            if (rule.End != null) Expression(rule.End, null);
+            if (rule.Action != null) Statement(rule.Action, null);
+        }
+        foreach (var (key, position) in uses) {
+            if (Functions.ContainsKey(key.Name)) errors.Add((position, 2, $"function {key.Name} used as variable"));
+        }
+        if (errors.Count > 0) {
+            var error = errors.OrderBy(entry => entry.Position).ThenBy(entry => entry.Priority).First();
+            throw new StaticError(error.Position, error.Message);
+        }
+    readonly Preparation preparation;
+    readonly Arguments arguments;
+    readonly Fields fields = new();
+    readonly Streams streams = new();
+    readonly Dictionary<string, Cell> globals = new(StringComparer.Ordinal);
+    readonly List<Dictionary<string, Cell>> locals = new();
+    int operand;
+    MainInput? current;
+    string phase = "BEGIN";
+    public int Status;
+    readonly int[] rules, calls, active, depths;
+    readonly bool[] ranges;
+    public AwkRuntime(AwkProgram program, Preparation preparation, Arguments arguments) {
+        this.program = program;
+        this.preparation = preparation;
+        this.arguments = arguments;
+        rules = new int[program.Rules.Count];
+        ranges = new bool[program.Rules.Count];
+        calls = new int[program.Functions.Count];
+        active = new int[calls.Length];
+        depths = new int[calls.Length];
+        foreach (string name in preparation.Globals) globals[name] = preparation.Arrays.Contains(new(null, name)) ? new ArrayCell(new()) : new ScalarCell(Value.Uninitialized);
+        foreach (var (name, value) in new[] {
+            ("FS", Value.Text(" ")), ("OFS", Value.Text(" ")), ("ORS", Value.Text(((char)10).ToString())), ("SUBSEP", Value.Text(((char)28).ToString())), ("NR", Value.Number(0)), ("FNR", Value.Number(0)), ("FILENAME", Value.Text(""))
+        }) globals[name] = new ScalarCell(value);
+    }
+    int? Frame(string name) => locals.Count > 0 && locals.Last().ContainsKey(name) ? locals.Count - 1 : null;
+    Cell? Cell(int? frame, string name) => frame.HasValue ? locals[frame.Value].GetValueOrDefault(name) : globals.GetValueOrDefault(name);
+    Value GetValue(int? frame, string name) => !frame.HasValue && name == "NF" ? Value.Number(fields.Values.Count) : Cell(frame, name) is ScalarCell cell ? cell.Value : Value.Uninitialized;
+    Value Global(string name) => GetValue(null, name);
+    Location Locate(Expr expression) {
+        switch (expression.Kind) {
+            case NameExpr n: return new VariableLocation(Frame(n.Name), n.Name);
+            case FieldExpr n: {
+                int number = Expression(n.Index).NumberValue;
+                if (number < 0) throw new RuntimeError(expression.Position, "negative field index");
+                return new FieldLocation(number);
+            }
+            default: throw new InvalidOperationException();
+        }
+    }
+    Value Read(Location location) {
+        switch (location) {
+            case VariableLocation n: return GetValue(n.Frame, n.Name);
+            case FieldLocation n: return fields.Get(n.Index);
+            default: throw new InvalidOperationException();
+        }
+    }
+    Value Store(Location location, Value value, Position position) {
+        switch (location) {
+            case VariableLocation n:
+            if (!n.Frame.HasValue && n.Name == "NF") {
+                int size = value.NumberValue;
+                if (size < 0) throw new RuntimeError(position, "negative NF");
+                fields.Nf(size, Global("OFS").String);
+            }
+            else if (n.Frame.HasValue) locals[n.Frame.Value][n.Name] = new ScalarCell(value);
+            else {
+                preparation.Globals.Add(n.Name);
+                globals[n.Name] = new ScalarCell(value);
+            } break;
+            case FieldLocation n: fields.Assign(n.Index, value, Global("FS").String, Global("OFS").String);
+            break;
+        }
+        return Read(location);
+    }
+    Value Expression(Expr expression) {
+        Position position = expression.Position;
+        switch (expression.Kind) {
+            case NumberExpr n: return Value.Number(n.Value);
+            case TextExpr n: return Value.Text(n.Value);
+            case NameExpr or IndexExpr or FieldExpr: return Read(Locate(expression));
+            case ParenthesesExpr n: return Expression(n.Body);
+            case AssignmentExpr n: {
+                Location location = Locate(n.Target);
+                Value b = Expression(n.Right), value = n.Op == "=" ? b : Arithmetic(n.Op[..1], Read(location).NumberValue, b.NumberValue, position);
+                return Store(location, value, position);
+            }
+    void Output(bool printf, List<Expr> arguments, Redirect? redirect, Position position) {
+        List<Value> values = arguments.Select(Expression).ToList();
+        string text = printf ? Builtins.Format(values, position) : string.Join(Global("OFS").String, (values.Count == 0 ? new List<Value> {
+            fields.Record
+        } : values).Select(value => value.String)) + Global("ORS").String;
+        } else streams.Output(null, false, text);
+    }
+    void Statement(Stmt statement) {
+        Position position = statement.Position;
+        if (statement.Kind is not (BlockStmt or EmptyStmt)) preparation.Lines[position.Line]++;
+        switch (statement.Kind) {
+            case BlockStmt n: foreach (Stmt child in n.Statements) Statement(child);
+            break;
+            case EmptyStmt: break;
+            case ExpressionStmt n: Expression(n.Expression);
+            break;
+            case OutputStmt n: Output(n.Printf, n.Arguments, n.Redirect, position);
+            break;
+    string? NextRecord() {
+        while (true) {
+            if (current != null && current.Position < current.Lines.Count) {
+                string line = current.Lines[current.Position++];
+                arguments.Files[current.File].Records++;
+                int nr = Global("NR").NumberValue + 1, fnr = Global("FNR").NumberValue + 1;
+                globals["NR"] = new ScalarCell(Value.Number(nr));
+                globals["FNR"] = new ScalarCell(Value.Number(fnr));
+                return line;
+            }
+            if (operand == arguments.Operands.Count) return null;
+            switch (arguments.Operands[operand++]) {
+                case AssignmentOperand n: preparation.Globals.Add(n.Name);
+                globals[n.Name] = new ScalarCell(Value.Input(n.Value));
+                break;
+                case FileOperand n: globals["FILENAME"] = new ScalarCell(Value.Text(n.Name));
+                globals["FNR"] = new ScalarCell(Value.Number(0));
+                current = new(n.Index, Streams.ReadFile(n.Name)!);
+                break;
+            }
+        }
+    }
+    bool TestRule(Rule rule, int index) {
+        if (rule.Kind == "all") return true;
+        if (rule.Kind == "range") {
+    public void Execute() {
+        foreach (var (name, value) in arguments.Options) {
+            preparation.Globals.Add(name);
+            globals[name] = new ScalarCell(Value.Input(value));
+        }
+        bool exiting = false;
+        for (int i = 0; i < program.Rules.Count; i++) {
+            Rule rule = program.Rules[i];
+            if (rule.Kind != "BEGIN") continue;
+            rules[i]++;
+            try {
+                Statement(rule.Action!);
+            } catch (Flow flow) when (flow.Kind == "exit") {
+                exiting = true;
+                break;
+            }
+        }
+        phase = "rules";
+        if (!exiting && program.Rules.Any(rule => rule.Kind != "BEGIN")) {
+            while (true) {
+                string? record = NextRecord();
+                if (record == null) break;
+                fields.Set(record, Global("FS").String);
+                bool stop = false;
+                for (int i = 0; i < program.Rules.Count; i++) {
+                    Rule rule = program.Rules[i];
+                    if (rule.Kind is "BEGIN" or "END") continue;
+                    try {
+                        if (TestRule(rule, i)) {
+                            rules[i]++;
+                            if (rule.Action != null) Statement(rule.Action);
+                            else streams.Output(null, false, fields.Record.String + Global("ORS").String);
+                        }
+                    }
+                    catch (Flow flow) when (flow.Kind == "next") {
+                        break;
+                    }
+                    catch (Flow flow) when (flow.Kind == "exit") {
+                        stop = true;
+                        break;
+                    }
+                }
+                if (stop) break;
+            }
+        }
+    public void Report(string status) {
+        streams.Save();
+        List<string> lines = new() {
+            status, "[inputs]"
+        };
+        foreach (FileCount file in arguments.Files) lines.Add($"{file.Name} records={file.Records}");
+        lines.Add("[rules]");
+        for (int i = 0; i < program.Rules.Count; i++) {
+            Rule rule = program.Rules[i];
+            lines.Add($"{rule.Position} {rule.Kind} count={rules[i]}");
+        } lines.Add("[functions]");
+        lines.Add("[outputs]");
+        lines.Add($"stdout.txt writes={streams.Writes} bytes={streams.Stdout.Length}");
+        lines.Add("[lines]");
+        foreach (int line in preparation.Lines.Keys.OrderBy(value => value)) lines.Add($"{line} count={preparation.Lines[line]}");
+        lines.Add("[globals]");
+        foreach (string name in preparation.Globals.OrderBy(value => value, StringComparer.Ordinal)) {
+            string value = globals.GetValueOrDefault(name) is ArrayCell cell ? $"array ({cell.Array.Elements.Count})" : Global(name).Display;
+            lines.Add($"{name} = {value}");
+        }
+        Program.SaveStats(lines);
+    }
+    public static void SaveStats(List<string> lines) {
+        Directory.CreateDirectory("output");
+        File.WriteAllText("output/stats.txt", string.Join("\n", lines) + "\n");
+    }
+    static void Main() {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        AwkProgram program;
+        try {
+            program = new Parser(Lexer.Lex(File.ReadAllText("input/program.awk"))).Program();
+        Preparation preparation = new(program);
+        try {
+            preparation.Analyze();
+        AwkRuntime runtime = new(program, preparation, Arguments.Parse(File.ReadAllText("input/args.txt")));
+        string status;
+        try {
+            runtime.Execute();
+            status = $"status: exit {runtime.Status}";
+        runtime.Report(status);

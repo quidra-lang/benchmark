@@ -1,0 +1,229 @@
+suppressPackageStartupMessages(library(gmp))
+categories <- c("ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+                "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE")
+strategies <- c("KIND", "STRAIGHT", "HIGH", "UPPER")
+commands <- c("RULE", "GAME", "BOT", "LOAD", "ROLL", "HOLD", "KEEP", "SCORE", "WHATIF",
+              "UNDO", "REDO", "SUGGEST", "ODDS", "ADVISE", "AUTO", "STATUS", "CARD",
+              "BONUS", "STATS", "LOG", "FACES", "STANDINGS", "END", "RECORDS", "SIM")
+emit <- function(...) cat(paste(..., sep = " "), "\n", sep = "")
+fail <- function(reason) {
+  stop(structure(list(message = reason, call = NULL),
+                 class = c("command_error", "error", "condition")))
+}
+
+integer_word <- function(text, minimum, maximum) {
+  if (!grepl("^-?(0|[1-9][0-9]*)$", text, perl = TRUE) || text == "-0") fail(paste("bad value", text))
+  value <- as.bigz(text)
+  if (value < minimum || value > maximum) fail(paste("bad value", text))
+  as.integer(as.character(value))
+}
+
+player_name <- function(text) {
+  if (!grepl("^[A-Z]{1,8}$", text, perl = TRUE)) fail(paste("bad name", text))
+  text
+category_word <- function(text) {
+  index <- match(text, categories)
+  if (is.na(index)) fail(paste("bad category", text))
+  index
+}
+
+hold_pattern <- function(text) {
+  if (!grepl("^[01]{5}$", text)) fail(paste("bad pattern", text))
+  strsplit(text, "", fixed = TRUE)[[1L]] == "1"
+}
+
+face_words <- function(tokens) vapply(tokens, integer_word, integer(1L), minimum = 1L, maximum = 6L)
+faces_text <- function(dice) if (length(dice)) paste(dice, collapse = " ") else "-"
+pattern_text <- function(holds) paste(as.integer(holds), collapse = "")
+face_counts <- function(dice) tabulate(dice, nbins = 6L)
+candidates <- function(card, counts, joker_rule) {
+  allowed <- card < 0L
+  joker <- joker_rule != "OFF" && any(counts == 5L) && card[12L] >= 0L
+  requirement <- ""
+  if (joker && joker_rule == "FORCED") {
+  upper <- seq_len(6L) * counts
+  total <- sum(upper)
+  maximum <- max(counts)
+  small <- any(vapply(1:3, function(start) all(counts[start:(start + 3L)] > 0L), logical(1L)))
+  large <- any(vapply(1:2, function(start) all(counts[start:(start + 4L)] > 0L), logical(1L)))
+  points <- c(upper, if (maximum >= 3L) total else 0L, if (maximum >= 4L) total else 0L,
+              if (any(counts == 3L) && any(counts == 2L)) 25L else 0L,
+              if (small) 30L else 0L, if (large) 40L else 0L,
+              if (maximum == 5L) 50L else 0L, total)
+  if (joker) points[9:11] <- c(25L, 30L, 40L)
+  points[!allowed] <- 0L
+  open <- which(card < 0L)
+  list(allowed = allowed, points = points, best = open[which.max(points[open])],
+       joker = joker, requirement = requirement)
+new_turn <- function(player) list(player = player, rolls = 0L, dice = integer(), holds = rep(FALSE, 5L))
+new_game <- function(seed, names, rules, bots = rep("KIND", length(names)), silent = FALSE) {
+  list(names = names, bots = bots, rules = rules, cards = matrix(-1L, length(names), 13L),
+       ybonus = integer(length(names)), turn = new_turn(1L), state = as.bigz(seed),
+       loaded = integer(), loaded_head = 1L, face_totals = integer(6L),
+       entries = list(), redo = list(), silent = silent)
+}
+
+upper_subtotals <- function(game) as.integer(rowSums(pmax(game$cards[, 1:6, drop = FALSE], 0L)))
+player_totals <- function(game) {
+  as.integer(rowSums(pmax(game$cards, 0L))) + 35L * (upper_subtotals(game) >= 63L) + game$ybonus
+player_round <- function(game, player) sum(game$cards[player, ] >= 0L) + 1L
+game_emit <- function(game, ...) if (!game$silent) emit(...)
+
+require_game <- function(app) {
+  if (is.null(app$game)) fail("no game")
+  app$game
+}
+turn_check <- function(game) if (game$turn$player == 0L) fail("game over")
+rolled_check <- function(game) {
+  turn_check(game)
+  if (game$turn$rolls == 0L) fail("not rolled")
+}
+rolls_left_check <- function(game) {
+  rolled_check(game)
+  if (game$turn$rolls == game$rules$rolls) fail("no rolls left")
+}
+turn_text <- function(game) {
+  player <- game$turn$player
+  if (player == 0L) "game over" else paste("turn", player_round(game, player), game$names[player])
+}
+
+roll_dice <- function(game) {
+  if (game$turn$rolls == 0L) game$turn$dice <- integer(5L)
+  for (die in which(!game$turn$holds)) {
+    if (game$loaded_head <= length(game$loaded)) {
+      face <- game$loaded[game$loaded_head]
+      game$loaded_head <- game$loaded_head + 1L
+    } else {
+      game$state <- (game$state * 48271L) %% 2147483647L
+      face <- as.integer(as.character(game$state %% 6L)) + 1L
+    }
+    game$turn$dice[die] <- face
+    game$face_totals[face] <- game$face_totals[face] + 1L
+  }
+  game$turn$rolls <- game$turn$rolls + 1L
+  game$redo <- list()
+  game_emit(game, game$names[game$turn$player], "roll", paste0(game$turn$rolls, ":"), faces_text(game$turn$dice))
+  game
+}
+
+set_holds <- function(game, holds) {
+  game$turn$holds <- holds
+  game$redo <- list()
+  game_emit(game, game$names[game$turn$player], "holds", paste0(pattern_text(holds), ":"),
+            faces_text(game$turn$dice[holds]))
+  game
+}
+
+score_details <- function(game, category) {
+  player <- game$turn$player
+  counts <- face_counts(game$turn$dice)
+  options <- candidates(game$cards[player, ], counts, game$rules$joker)
+  bonus <- if (any(counts == 5L) && game$cards[player, 12L] == 50L) 100L else 0L
+  list(turn = game$turn, category = category, points = options$points[category],
+       ybonus = bonus, joker = options$joker)
+}
+
+score_check <- function(game, category) {
+  rolled_check(game)
+  card <- game$cards[game$turn$player, ]
+  if (card[category] >= 0L) fail(paste(categories[category], "already used"))
+  options <- candidates(card, face_counts(game$turn$dice), game$rules$joker)
+  if (!options$allowed[category]) fail(paste("joker requires", options$requirement))
+}
+
+score_text <- function(game, entry, hypothetical = FALSE) {
+  player <- entry$turn$player
+  upper <- upper_subtotals(game)[player]
+  after <- upper + (if (entry$category <= 6L) entry$points else 0L)
+  added <- if (upper < 63L && after >= 63L) 35L else 0L
+  text <- paste(game$names[player], if (hypothetical) "would score" else "scores",
+                entry$points, "in", categories[entry$category])
+  if (entry$joker) text <- paste(text, "joker")
+  if (entry$ybonus) text <- paste(text, "ybonus 100")
+  if (added) text <- paste(text, "ubonus 35")
+  paste(text, "total", player_totals(game)[player] + entry$points + entry$ybonus + added)
+}
+
+enter_score <- function(game, category) {
+  entry <- score_details(game, category)
+  game_emit(game, score_text(game, entry))
+  player <- entry$turn$player
+  game$cards[player, category] <- entry$points
+  game$ybonus[player] <- game$ybonus[player] + entry$ybonus
+  game$entries[[length(game$entries) + 1L]] <- entry
+  game$redo <- list()
+  next_player <- if (length(game$entries) == 13L * length(game$names)) 0L else player %% length(game$names) + 1L
+  game$turn <- new_turn(next_player)
+  game_emit(game, turn_text(game))
+  game
+game_command <- function(app, tokens) {
+  op <- tokens[1L]
+  } else if (op %in% c("LOAD", "KEEP")) {
+    faces <- face_words(tokens[-1L])
+  } else if (op %in% c("HOLD", "ODDS")) {
+    holds <- hold_pattern(tokens[2L])
+  } else if (op %in% c("SCORE", "WHATIF")) {
+    category <- category_word(tokens[2L])
+  game <- require_game(app)
+  } else if (op == "LOAD") {
+    game$loaded <- c(game$loaded, faces)
+    emit("loaded", length(game$loaded) - game$loaded_head + 1L)
+  } else if (op == "ROLL") {
+    turn_check(game)
+    if (game$turn$rolls == game$rules$rolls) fail("no rolls left")
+    if (all(game$turn$holds)) fail("all dice held")
+    game <- roll_dice(game)
+  } else if (op == "HOLD") {
+    rolls_left_check(game)
+    game <- set_holds(game, holds)
+  } else if (op %in% c("SCORE", "WHATIF")) {
+    score_check(game, category)
+    if (op == "WHATIF") {
+      emit(score_text(game, score_details(game, category), TRUE))
+    } else game <- enter_score(game, category)
+  } else if (op == "UNDO") {
+    if (!length(game$entries)) fail("nothing to undo")
+    entry <- game$entries[[length(game$entries)]]
+    game$redo[[length(game$redo) + 1L]] <- list(resume = game$turn, entry = entry)
+    game$entries <- game$entries[-length(game$entries)]
+    game$cards[entry$turn$player, entry$category] <- -1L
+    game$ybonus[entry$turn$player] <- game$ybonus[entry$turn$player] - entry$ybonus
+    game$turn <- entry$turn
+    emit("undo", game$names[entry$turn$player], categories[entry$category], entry$points)
+  } else if (op == "REDO") {
+    if (!length(game$redo)) fail("nothing to redo")
+    saved <- game$redo[[length(game$redo)]]
+    game$redo <- game$redo[-length(game$redo)]
+    entry <- saved$entry
+    game$cards[entry$turn$player, entry$category] <- entry$points
+    game$ybonus[entry$turn$player] <- game$ybonus[entry$turn$player] + entry$ybonus
+    game$entries[[length(game$entries) + 1L]] <- entry
+    game$turn <- saved$resume
+    emit("redo", game$names[entry$turn$player], categories[entry$category], entry$points)
+  app$game <- game
+  invisible(NULL)
+execute <- function(app, tokens) {
+  op <- tokens[1L]
+  if (!op %in% commands) fail(paste("unknown command", op))
+  } else if (op == "GAME") {
+    seed <- integer_word(tokens[2L], 1L, 2147483646L)
+    names <- tokens[-c(1L, 2L)]
+    for (name in names) player_name(name)
+    if (length(names) > 6L) fail("too many players")
+    if (!is.null(app$game)) fail("game in progress")
+    duplicates <- which(duplicated(names))
+    if (length(duplicates)) fail(paste("duplicate name", names[duplicates[1L]]))
+    app$game <- new_game(seed, names, app$rules)
+    emit("game seed", seed, "players", paste(names, collapse = " "))
+    emit("turn 1", names[1L])
+  } else game_command(app, tokens)
+input <- file("stdin", open = "r")
+command_count <- as.integer(readLines(input, n = 1L, warn = FALSE))
+app <- new.env(parent = emptyenv())
+app$rules <- list(rolls = 3L, joker = "FORCED")
+app$game <- NULL
+for (command_number in seq_len(command_count)) {
+  tokens <- strsplit(readLines(input, n = 1L, warn = FALSE), " ", fixed = TRUE)[[1L]]
+  tryCatch(execute(app, tokens), command_error = function(problem) emit("error:", conditionMessage(problem)))
+}
+close(input)

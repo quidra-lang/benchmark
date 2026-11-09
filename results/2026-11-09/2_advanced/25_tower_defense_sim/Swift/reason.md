@@ -1,0 +1,7 @@
+With no eligible enemy, target selection returns nil. The result represents a zero-based enemy index inside Int?; the immediate firing guard is if let target, so no shot is created for an empty choice. It cannot be confused with the first enemy’s number: absence is a separate sentinel/optional value, and where the result is an index its mapping to an enemy is shown in the firing path.
+
+Optional<Int> separates nil from0; enumerated indexes start at0 and optional binding fires only with a real index.
+
+Evidence: towers.swift: 52–55, 58–61; main.swift: 228–231. The selected complete lines contain the decision and its necessary data dependencies. The initialization/empty collection result, eligibility filtering, return and immediate guard establish the complete empty-set path. Target-priority arithmetic is irrelevant when no candidate survives, so its internal formulas are omitted where they would add lines; there is no need to inspect projectile travel or damage.
+
+Excerpt-only review: reread the saved lines in source order against every requested outcome and removed unrelated work. The selected excerpt is 335 tokenizer tokens. The full selected source file(s) would be 11072 tokens; that alternative adds unrelated behavior without supporting another requested answer. Task A sources are retained; this is source review under the benchmark compilation/correctness assumption, not execution verification.

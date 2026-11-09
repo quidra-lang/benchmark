@@ -1,0 +1,754 @@
+global using Order = System.Collections.Generic.List<System.Collections.Generic.List<int>>;
+sealed class Settings
+{
+    public static readonly string[] Names = ["layering", "width", "promotion", "heuristic", "sweeps", "node_sep", "dummy_sep", "layer_gap", "direction", "sifting", "reduce", "restarts", "seed"];
+    public List<string> Values {
+        get;
+        private set;
+    } = new() {
+        "longest", "4", "off", "barycenter", "12", "2", "1", "3", "TB", "off", "off", "0", "1"
+    };
+    public Settings Copy() => new() {
+        Values = new(Values)
+    };
+    public string Text(string name) => Values[Array.IndexOf(Names, name)];
+    public int Integer(string name) => int.Parse(Text(name), CultureInfo.InvariantCulture);
+    public bool On(string name) => Text(name) == "on";
+    public bool Set(string name, string value)
+    {
+        int index = Array.IndexOf(Names, name);
+        if (index < 0) return false;
+        string[] words = name switch
+        {
+            "layering" => ["longest", "coffman"], "promotion" or "sifting" or "reduce" => ["on", "off"],
+            "heuristic" => ["barycenter", "median"], "direction" => ["TB", "BT", "LR", "RL"], _ => []
+        };
+        if (words.Length > 0)
+        {
+            if (!words.Contains(value)) return false;
+            Values[index] = value;
+            return true;
+        }
+        var (low, high) = name switch
+        {
+            "width" => (1L, 40L), "sweeps" => (0L, 50L), "node_sep" or "dummy_sep" => (1L, 9L),
+            "layer_gap" => (2L, 9L), "restarts" => (0L, 9L), _ => (1L, 2147483646L)
+        };
+        if (value.Length is < 1 or > 10 || !value.All(c => c is >= '0' and <= '9') || !long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out long number) || number < low || number > high) return false;
+        Values[index] = number.ToString(CultureInfo.InvariantCulture);
+        return true;
+    }
+}
+sealed record Node(int Id, string Label);
+readonly record struct Edge(int A, int B);
+sealed class Graph(string name, Settings settings)
+{
+    public string Name {
+        get;
+    } = name;
+    public Settings Settings {
+        get;
+    } = settings;
+    public List<Node> Nodes {
+        get;
+        set;
+    } = new();
+    public List<Edge> Edges {
+        get;
+        set;
+    } = new();
+    public Edge? Path {
+        get;
+        set;
+    }
+    public int Loops {
+        get;
+        set;
+    }
+    public int Duplicates {
+        get;
+        set;
+    }
+    public (string Kind, int Line)? Error {
+        get;
+        set;
+    }
+}
+static class GraphIO
+{
+    public static List<Graph> Read()
+    {
+        Settings defaults = new();
+        foreach (string line in File.ReadLines("input/params.txt").Where(l => l.Length > 0 && !l.StartsWith('#')))
+        {
+            string[] a = line.Split(' ');
+            defaults.Set(a[0], a[1]);
+        }
+        List<Graph> result = new();
+        Graph? current = null;
+        Dictionary<int, string> nodes = new();
+        string[] lines = File.ReadAllLines("input/graphs.txt");
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            string[] a = line.Split(' ');
+            if (a[0] == "GRAPH") {
+                current = new Graph(a[1], defaults.Copy());
+                nodes = new();
+                continue;
+            }
+            Graph graph = current!;
+            if (a[0] == "END")
+            {
+                if (graph.Error is null && nodes.Count == 0) graph.Error = ("no_nodes", i + 1);
+                graph.Nodes = nodes.OrderBy(p => p.Key).Select(p => new Node(p.Key, p.Value)).ToList();
+                if (graph.Error is null)
+                {
+                    Dictionary<int, int> numbering = graph.Nodes.Select((n, index) => (n.Id, Index: index)).ToDictionary(p => p.Id, p => p.Index);
+                    graph.Edges = graph.Edges.Select(e => new Edge(numbering[e.A], numbering[e.B])).ToList();
+                }
+                result.Add(graph);
+                current = null;
+                continue;
+            }
+            if (graph.Error is not null) continue;
+            string? error = null;
+            switch (a[0])
+            {
+                case "OPTION": if (!graph.Settings.Set(a[1], a[2])) error = "bad_option";
+                break;
+                case "NODE":
+                int id = int.Parse(a[1]);
+                if (nodes.ContainsKey(id)) error = "duplicate_node";
+                else if (nodes.Count == 40) error = "too_many_nodes";
+                else nodes[id] = a[2];
+                break;
+                case "EDGE":
+                Edge edge = new(int.Parse(a[1]), int.Parse(a[2]));
+                if (!nodes.ContainsKey(edge.A) || !nodes.ContainsKey(edge.B)) error = "unknown_node";
+                else if (edge.A == edge.B) graph.Loops++;
+                else if (graph.Edges.Contains(edge)) graph.Duplicates++;
+                else graph.Edges.Add(edge);
+                break;
+            }
+            if (error is not null) graph.Error = (error, i + 1);
+        }
+        return result;
+    }
+}
+sealed record Promotion(int Round, int Vertex, int Diff);
+sealed record Layering(int[] Heights, int[] Labels, int Before, int Rounds, List<Promotion> Promotions);
+static class AcyclicLayering
+{
+    public static List<int> Sequence(int n, List<Edge> edges)
+    {
+        HashSet<int> remaining = Enumerable.Range(0, n).ToHashSet();
+        List<int> head = new(), tail = new();
+        while (remaining.Count > 0)
+        {
+            var degrees = remaining.Order().Select(v => (Vertex: v, Out: edges.Count(e => e.A == v && remaining.Contains(e.B)), In: edges.Count(e => e.B == v && remaining.Contains(e.A)))).ToList();
+            int chosen;
+            var sinks = degrees.Where(d => d.Out == 0).ToList();
+            var sources = degrees.Where(d => d.In == 0).ToList();
+            if (sinks.Count > 0) {
+                chosen = sinks[0].Vertex;
+                tail.Insert(0, chosen);
+            }
+            else if (sources.Count > 0) {
+                chosen = sources[0].Vertex;
+                head.Add(chosen);
+            }
+            else {
+                chosen = degrees.OrderByDescending(d => d.Out - d.In).ThenBy(d => d.Vertex).First().Vertex;
+                head.Add(chosen);
+            }
+            remaining.Remove(chosen);
+        }
+        return head.Concat(tail).ToList();
+    }
+    public static Layering Assign(int n, List<Edge> edges, bool coffman, int width, bool promotion)
+    {
+        Order upper = Enumerable.Range(0, n).Select(_ => new List<int>()).ToList(), lower = Enumerable.Range(0, n).Select(_ => new List<int>()).ToList();
+        foreach (var (a, b) in edges) {
+            upper[b].Add(a);
+            lower[a].Add(b);
+        }
+        for (int i = 0; i < n; i++) {
+            upper[i].Sort();
+            lower[i].Sort();
+        }
+        int[] labels = new int[n], heights = Enumerable.Repeat(-1, n).ToArray();
+        if (coffman)
+        }
+        else
+        {
+            int Height(int v)
+            {
+                if (heights[v] >= 0) return heights[v];
+                return heights[v] = lower[v].Select(u => Height(u) + 1).DefaultIfEmpty(0).Max();
+            }
+            for (int v = 0; v < n; v++) Height(v);
+        }
+        int before = edges.Sum(e => heights[e.A] - heights[e.B] - 1), rounds = 0;
+        List<Promotion> promotions = new();
+        if (promotion)
+        }
+        return new Layering(heights, labels, before, rounds, promotions);
+    }
+}
+sealed record Segment(int P, int Q, int Edge);
+static class Crossing
+{
+    public static int[] Positions(Order order, int n)
+    {
+        int[] positions = new int[n];
+        foreach (List<int> row in order) for (int i = 0; i < row.Count; i++) positions[row[i]] = i;
+        return positions;
+    }
+    public static int Count(List<Segment> segments, int[] positions, int width)
+    {
+        var pairs = segments.Select(s => (P: positions[s.P], Q: positions[s.Q])).OrderBy(p => p.P).ThenBy(p => p.Q);
+        int c = 1, count = 0;
+        while (c < width) c *= 2;
+        int[] tree = new int[2 * c - 1];
+        foreach (var (_, q) in pairs)
+        {
+            int k = q + c - 1;
+            tree[k]++;
+            while (k > 0) {
+                if (k % 2 == 1) count += tree[k + 1];
+                k = (k - 1) / 2;
+                tree[k]++;
+            }
+        }
+        return count;
+    }
+    public static bool Crosses(Segment a, Segment b, int[] positions) => positions[a.P] < positions[b.P] && positions[a.Q] > positions[b.Q] || positions[a.P] > positions[b.P] && positions[a.Q] < positions[b.Q];
+    public static int Brute(List<Segment> segments, int[] positions)
+    {
+        int count = 0;
+        for (int i = 0; i < segments.Count; i++) for (int j = i + 1; j < segments.Count; j++) if (Crosses(segments[i], segments[j], positions)) count++;
+        return count;
+    }
+    public static int Total(List<List<Segment>> gaps, Order order, int n)
+    {
+        int[] positions = Positions(order, n);
+        return gaps.Select((g, i) => Count(g, positions, order[i + 1].Count)).Sum();
+    }
+    public static int Adjacent(int v, int w, Order upper, Order lower, int[] positions) => upper[v].Sum(a => upper[w].Count(b => positions[a] > positions[b])) + lower[v].Sum(a => lower[w].Count(b => positions[a] > positions[b]));
+}
+sealed record Coordinates(int[] X, List<int[]> Aligned, List<int> Blocks, List<int> Widths, int Smallest, int Conflicts, int[] Left, int[] Right)
+{
+    public static int FloorHalf(int value) => value / 2 - (value % 2 < 0 ? 1 : 0);
+    public static Coordinates Assign(int n, Order order, List<int> layer, Order upper, Order lower, List<int> width, bool vertical, int nodeSep, int dummySep)
+    {
+        int vertices = layer.Count;
+        int[] positions = Crossing.Positions(order, vertices);
+        int[] left = width.Select(w => vertical ? (w - 1) / 2 : 0).ToArray(), right = width.Select((w, i) => vertical ? w - 1 - left[i] : 0).ToArray();
+        int[] final = Enumerable.Range(0, vertices).Select(v => {
+            int[] sorted = layouts.Select(a => a[v]).Order().ToArray();
+            return FloorHalf(sorted[1] + sorted[2]);
+        }).ToArray();
+        int minimum = Enumerable.Range(0, vertices).Min(v => final[v] - left[v]);
+        for (int v = 0; v < vertices; v++) final[v] -= minimum;
+        return new Coordinates(final, layouts, blocks, widths, smallest, marked.Count, left, right);
+    }
+readonly record struct Cell(int Row, int Column);
+sealed class Canvas
+{
+    readonly int main;
+    readonly string direction;
+    readonly bool vertical;
+    readonly byte[,] lines;
+    readonly char[,] arrows;
+    readonly char[,] boxes;
+    readonly bool[,] highlighted;
+    public int Rows {
+        get;
+    }
+    public int Columns {
+        get;
+    }
+    public Canvas(int main, int secondary, string direction)
+    {
+        this.main = main;
+        this.direction = direction;
+        vertical = direction is "TB" or "BT";
+        Rows = vertical ? main : secondary;
+        Columns = vertical ? secondary : main;
+        lines = new byte[Rows, Columns];
+        arrows = new char[Rows, Columns];
+        boxes = new char[Rows, Columns];
+        highlighted = new bool[Rows, Columns];
+    }
+    public Cell Map(int m, int secondary)
+    {
+        int mapped = direction is "BT" or "RL" ? main - 1 - m : m;
+        return vertical ? new Cell(mapped, secondary) : new Cell(secondary, mapped);
+    }
+    public void Line(int m, int c, bool mainLine)
+    {
+        Cell p = Map(m, c);
+        lines[p.Row, p.Column] |= (byte)(mainLine == vertical ? 1 : 2);
+    }
+    public void Corner(int m, int c) {
+        Cell p = Map(m, c);
+        lines[p.Row, p.Column] |= 4;
+    }
+    public void Arrow(int m, int c, bool reversed)
+    {
+        Cell p = Map(m, c);
+        arrows[p.Row, p.Column] = (direction, reversed) switch {
+            ("TB", false) or ("BT", true) => 'v', ("TB", true) or ("BT", false) => '^', ("LR", false) or ("RL", true) => '>', _ => '<'
+        };
+    }
+    public void Label(int row, int column, string text) {
+        for (int i = 0; i < text.Length; i++) boxes[row, column + i] = text[i];
+    }
+    public int Crossings()
+    {
+        int count = 0;
+        for (int r = 0; r < Rows; r++) for (int c = 0; c < Columns; c++) if ((lines[r, c] & 3) == 3) count++;
+        return count;
+    }
+    public List<string> Report()
+    {
+        List<string> result = new() {
+            "    " + string.Concat(Enumerable.Range(0, Columns).Select(c => (c % 10).ToString(CultureInfo.InvariantCulture)))
+        };
+        for (int row = 0; row < Rows; row++)
+        {
+            StringBuilder text = new(row.ToString(CultureInfo.InvariantCulture).PadLeft(3) + " ");
+            for (int column = 0; column < Columns; column++)
+            {
+                char c = boxes[row, column] != '\0' ? boxes[row, column] : arrows[row, column] != '\0' ? arrows[row, column] : highlighted[row, column] ? '#' : lines[row, column] switch {
+                    0 => ' ', 1 => '|', 2 => '-', _ => '+'
+                };
+                text.Append(c);
+            }
+            result.Add(text.ToString().TrimEnd(' '));
+        }
+        return result;
+    }
+}
+sealed record Model(List<int> Layer, List<int> Width, Order Chains, List<List<Segment>> Gaps, Order Upper, Order Lower, Order Initial);
+sealed record Analysis(int Sources, int Sinks, int Isolated, int Components, Order Scc);
+sealed record Reduction(Order Order, List<string> Records, List<string> Csv, int Initial, int Swept, int Run, int Sweep);
+sealed record Bus(int Lo, int Hi, int Side, int X, List<int> Members);
+sealed record Geometry(List<int> Tracks, List<int> Gaps, List<int?[]> Offsets, int[] Thickness, int[] Starts, int Main, int Secondary);
+sealed record Drawing(Canvas Canvas, List<List<Cell>> Routes, int[] Lengths, int[] Bends);
+sealed record Processed(List<string> Layout, List<string> Stats, List<string> Csv, List<string> Drawings, int[] Totals);
+static class Program
+{
+    static Order CopyOrder(Order order) => order.Select(r => new List<int>(r)).ToList();
+    static bool SameOrder(Order a, Order b) => a.Count == b.Count && a.Zip(b).All(p => p.First.SequenceEqual(p.Second));
+    static Model BuildModel(Graph graph, int[] heights, List<Edge> dag, bool[] removed)
+    {
+        int n = graph.Nodes.Count, h = heights.Max();
+        int[] raw = heights.Select(v => h - v).ToArray();
+        HashSet<int> used = raw.ToHashSet();
+        for (int i = 0; i < dag.Count; i++) if (!removed[i]) for (int level = raw[dag[i].A] + 1; level < raw[dag[i].B]; level++) used.Add(level);
+        Dictionary<int, int> numbering = used.Order().Select((v, i) => (Value: v, Index: i)).ToDictionary(p => p.Value, p => p.Index);
+        List<int> layer = raw.Select(v => numbering[v]).ToList(), width = graph.Nodes.Select(node => node.Label.Length + 2).ToList();
+        Order chains = graph.Edges.Select(_ => new List<int>()).ToList();
+        for (int i = 0; i < dag.Count; i++) if (!removed[i])
+        {
+            var (a, b) = dag[i];
+            chains[i].Add(a);
+            for (int l = layer[a] + 1; l < layer[b]; l++) {
+                chains[i].Add(layer.Count);
+                layer.Add(l);
+                width.Add(1);
+            }
+            chains[i].Add(b);
+        }
+        List<List<Segment>> gaps = Enumerable.Range(0, Math.Max(0, used.Count - 1)).Select(_ => new List<Segment>()).ToList();
+        Order upper = layer.Select(_ => new List<int>()).ToList(), lower = layer.Select(_ => new List<int>()).ToList();
+        for (int i = 0; i < chains.Count; i++) for (int j = 1; j < chains[i].Count; j++)
+        {
+            int p = chains[i][j - 1], q = chains[i][j];
+            gaps[layer[p]].Add(new Segment(p, q, i));
+            upper[q].Add(p);
+            lower[p].Add(q);
+        }
+        Order initial = Enumerable.Range(0, used.Count).Select(_ => new List<int>()).ToList();
+        bool[] visited = new bool[layer.Count];
+        void Visit(int v)
+        {
+            if (visited[v]) return;
+            visited[v] = true;
+            initial[layer[v]].Add(v);
+            foreach (int w in lower[v]) Visit(w);
+        }
+        for (int v = 0; v < n; v++) Visit(v);
+        return new Model(layer, width, chains, gaps, upper, lower, initial);
+    }
+    static Reduction ReduceCrossings(Graph graph, Model model)
+    {
+        int n = model.Layer.Count;
+        long random = graph.Settings.Integer("seed");
+        List<string> records = new(), csv = new();
+        Order adopted = CopyOrder(model.Initial);
+        int bestCount = int.MaxValue, bestRun = 0, bestSweep = 0, initial = 0;
+        for (int run = 0; run <= graph.Settings.Integer("restarts"); run++)
+        {
+            Order order = CopyOrder(model.Initial);
+            if (run > 0) foreach (List<int> row in order) for (int j = row.Count - 1; j >= 1; j--)
+            {
+                random = 48271L * random % 2147483647L;
+                int k = (int)(random % (j + 1));
+                (row[j], row[k]) = (row[k], row[j]);
+            }
+            int count = Crossing.Total(model.Gaps, order, n);
+            if (run == 0) initial = count;
+            int runCount = count, runSweep = 0;
+            Order runOrder = CopyOrder(order);
+            List<Order> history = new() {
+                CopyOrder(order)
+            };
+            List<int> counts = new() {
+                count
+            };
+            records.Add($"sweep {run} 0 initial crossings {count}");
+            csv.Add($"{graph.Name},{run},0,{count}");
+            for (int sweep = 1; sweep <= graph.Settings.Integer("sweeps"); sweep++)
+            {
+                int last = sweep - 1;
+                if (counts[last] == 0 || last >= 2 && SameOrder(history[last], history[last - 2])) break;
+                int[] old = Crossing.Positions(order, n);
+                List<int> layers = sweep % 2 == 1 ? Enumerable.Range(1, Math.Max(0, order.Count - 1)).ToList() : Enumerable.Range(0, Math.Max(0, order.Count - 1)).Reverse().ToList();
+                Order reference = sweep % 2 == 1 ? model.Upper : model.Lower;
+                foreach (int i in layers)
+                {
+                    int[] pos = Crossing.Positions(order, n);
+                    (int P, int Q) Key(int v)
+                    {
+                        List<int> values = reference[v].Select(u => pos[u]).Order().ToList();
+                        return graph.Settings.Text("heuristic") == "median" ? (values[(values.Count - 1) / 2] + values[values.Count / 2], 1) : (values.Sum(), values.Count);
+                    }
+                    List<int> moving = order[i].Where(v => reference[v].Count > 0).OrderBy(v => v, Comparer<int>.Create((a, b) =>
+                    {
+                        var x = Key(a);
+                        var y = Key(b);
+                        int comparison = (x.P * y.Q).CompareTo(y.P * x.Q);
+                        return comparison != 0 ? comparison : pos[a].CompareTo(pos[b]);
+                    })).ToList();
+                    int next = 0;
+                    for (int j = 0; j < order[i].Count; j++) if (reference[order[i][j]].Count > 0) order[i][j] = moving[next++];
+                }
+                int[] positions = Crossing.Positions(order, n);
+                int moved = Enumerable.Range(0, n).Count(v => positions[v] != old[v]), swaps = 0;
+                while (true)
+                {
+                    bool changed = false;
+                    for (int i = 0; i < order.Count; i++) for (int j = 0; j < order[i].Count - 1; j++)
+                    {
+                        int v = order[i][j], w = order[i][j + 1];
+                        if (Crossing.Adjacent(v, w, model.Upper, model.Lower, positions) > Crossing.Adjacent(w, v, model.Upper, model.Lower, positions))
+                        {
+                            order[i][j] = w;
+                            order[i][j + 1] = v;
+                            positions[v] = j + 1;
+                            positions[w] = j;
+                            swaps++;
+                            changed = true;
+                        }
+                    }
+                    if (!changed) break;
+                }
+                int currentCount = Crossing.Total(model.Gaps, order, n);
+                history.Add(CopyOrder(order));
+                counts.Add(currentCount);
+                records.Add($"sweep {run} {sweep} {(sweep % 2 == 1 ? "down" : "up")} moved {moved} swaps {swaps} crossings {currentCount}");
+                csv.Add($"{graph.Name},{run},{sweep},{currentCount}");
+                if (currentCount < runCount) {
+                    runCount = currentCount;
+                    runSweep = sweep;
+                    runOrder = CopyOrder(order);
+                }
+            }
+            if (runCount < bestCount) {
+                bestCount = runCount;
+                bestRun = run;
+                bestSweep = runSweep;
+                adopted = runOrder;
+            }
+        }
+        records.Add($"best run {bestRun} sweep {bestSweep} crossings {bestCount}");
+        if (graph.Settings.On("sifting"))
+        {
+            int round = 0;
+            while (true)
+            {
+                round++;
+                int moves = 0;
+                for (int v = 0; v < n; v++)
+                {
+                    int i = model.Layer[v], old = adopted[i].IndexOf(v);
+                    List<int> basis = new(adopted[i]);
+                    basis.RemoveAt(old);
+                    List<int> costs = new();
+                    for (int p = 0; p <= basis.Count; p++)
+                    {
+                        List<int> row = new(basis);
+                        row.Insert(p, v);
+                        adopted[i] = row;
+                        costs.Add(Crossing.Total(model.Gaps, adopted, n));
+                    }
+                    int minimum = costs.Min(), position = costs[old] == minimum ? old : costs.IndexOf(minimum);
+                    basis.Insert(position, v);
+                    adopted[i] = basis;
+                    if (position != old) moves++;
+                }
+                records.Add($"sift {round} moves {moves} crossings {Crossing.Total(model.Gaps, adopted, n)}");
+                if (moves == 0) break;
+            }
+        }
+        return new Reduction(adopted, records, csv, initial, bestCount, bestRun, bestSweep);
+    }
+    static Geometry BuildGeometry(Graph graph, Model model, Order order, Coordinates coordinates)
+    {
+        int[] x = coordinates.X;
+        List<int> tracks = new(), gaps = new();
+        List<int?[]> offsets = new();
+        foreach (List<Segment> segments in model.Gaps)
+        {
+            Dictionary<int, int> counts = segments.Where(s => x[s.P] != x[s.Q]).GroupBy(s => s.P).ToDictionary(g => g.Key, g => g.Count());
+            var groups = Enumerable.Range(0, segments.Count).Where(i => x[segments[i].P] != x[segments[i].Q]).GroupBy(i => counts[segments[i].P] >= 2 ? new VertexPair(0, segments[i].P) : new VertexPair(1, segments[i].Q));
+            List<Bus> buses = groups.Select(g => new Bus(g.Min(i => Math.Min(x[segments[i].P], x[segments[i].Q])), g.Max(i => Math.Max(x[segments[i].P], x[segments[i].Q])), g.Key.A, x[g.Key.B], g.ToList())).OrderBy(b => b.Lo).ThenBy(b => b.Hi).ThenBy(b => b.Side).ThenBy(b => b.X).ToList();
+            List<int> ends = new();
+            int?[] assignments = new int?[segments.Count];
+            foreach (Bus bus in buses)
+            {
+                int track = ends.FindIndex(e => e + 1 < bus.Lo);
+                if (track < 0) {
+                    track = ends.Count;
+                    ends.Add(bus.Hi);
+                } else ends[track] = bus.Hi;
+                foreach (int k in bus.Members) assignments[k] = track + 1;
+            }
+            int gap = Math.Max(graph.Settings.Integer("layer_gap"), ends.Count + 2);
+            tracks.Add(ends.Count);
+            gaps.Add(gap);
+            offsets.Add(assignments.Select(a => a is {
+            } v ? (int?)(v + (gap - 2 - ends.Count) / 2) : null).ToArray());
+        }
+        bool vertical = graph.Settings.Text("direction") is "TB" or "BT";
+        int[] thickness = order.Select(row => vertical ? 1 : row.Max(v => model.Width[v])).ToArray(), starts = new int[order.Count];
+        for (int i = 1; i < order.Count; i++) starts[i] = starts[i - 1] + thickness[i - 1] + gaps[i - 1];
+        return new Geometry(tracks, gaps, offsets, thickness, starts, starts[^1] + thickness[^1], Enumerable.Range(0, model.Layer.Count).Max(v => x[v] + coordinates.Right[v]) + 1);
+    }
+    static List<int>? ShortestPath(Graph graph, bool[] removed)
+    {
+        if (graph.Path is not {
+        } endpoints) return null;
+    }
+    static Drawing Draw(Graph graph, Model model, Coordinates c, Geometry geo, bool[] reversed, bool[] removed, List<int>? path)
+    {
+        string direction = graph.Settings.Text("direction");
+        bool vertical = direction is "TB" or "BT";
+        Canvas canvas = new(geo.Main, geo.Secondary, direction);
+        for (int v = 0; v < model.Layer.Count; v++)
+        {
+            int i = model.Layer[v];
+            if (v >= graph.Nodes.Count) for (int j = 0; j < geo.Thickness[i]; j++) canvas.Line(geo.Starts[i] + j, c.X[v], true);
+            else if (!vertical && model.Lower[v].Count > 0) for (int j = model.Width[v]; j < geo.Thickness[i]; j++) canvas.Line(geo.Starts[i] + j, c.X[v], true);
+        }
+        for (int i = 0; i < model.Gaps.Count; i++)
+        {
+            List<Segment> segments = model.Gaps[i];
+            int g0 = geo.Starts[i] + geo.Thickness[i], gap = geo.Gaps[i];
+            for (int k = 0; k < segments.Count; k++)
+            {
+                Segment segment = segments[k];
+                int p = c.X[segment.P], q = c.X[segment.Q];
+                if (geo.Offsets[i][k] is {
+                } offset)
+                {
+                    for (int j = 0; j < offset; j++) canvas.Line(g0 + j, p, true);
+                    canvas.Corner(g0 + offset, p);
+                    canvas.Corner(g0 + offset, q);
+                    for (int x = Math.Min(p, q) + 1; x < Math.Max(p, q); x++) canvas.Line(g0 + offset, x, false);
+                    for (int j = offset + 1; j < gap; j++) canvas.Line(g0 + j, q, true);
+                }
+                else for (int j = 0; j < gap; j++) canvas.Line(g0 + j, p, true);
+            }
+        }
+        List<List<Cell>> routes = graph.Edges.Select(_ => new List<Cell>()).ToList();
+        int[] lengths = new int[graph.Edges.Count], bends = new int[graph.Edges.Count];
+        for (int e = 0; e < model.Chains.Count; e++) if (!removed[e])
+        {
+            List<int> chain = model.Chains[e];
+            int a = chain[0], b = chain[^1];
+            var upper = (Main: geo.Starts[model.Layer[a]] + (vertical ? 1 : model.Width[a]), Secondary: c.X[a]);
+            var lower = (Main: geo.Starts[model.Layer[b]] - 1, Secondary: c.X[b]);
+            List<(int Main, int Secondary)> points = new() {
+                upper
+            };
+            for (int j = 1; j < chain.Count; j++)
+            {
+                int p = chain[j - 1], q = chain[j], i = model.Layer[p];
+                int k = model.Gaps[i].FindIndex(s => s.P == p && s.Q == q);
+                if (geo.Offsets[i][k] is {
+                } offset)
+                {
+                    int main = geo.Starts[i] + geo.Thickness[i] + offset;
+                    points.Add((main, c.X[p]));
+                    points.Add((main, c.X[q]));
+                    bends[e] += 2;
+                }
+            }
+            points.Add(lower);
+            List<Cell> mapped = points.Select(p => canvas.Map(p.Main, p.Secondary)).ToList();
+            if (reversed[e]) {
+                mapped.Reverse();
+                canvas.Arrow(upper.Main, upper.Secondary, true);
+            }
+            else canvas.Arrow(lower.Main, lower.Secondary, false);
+            lengths[e] = 1 + Enumerable.Range(1, mapped.Count - 1).Sum(j => Math.Abs(mapped[j - 1].Row - mapped[j].Row) + Math.Abs(mapped[j - 1].Column - mapped[j].Column));
+            routes[e] = mapped;
+        }
+        HashSet<int> onPath = path?.ToHashSet() ?? new();
+        for (int v = 0; v < graph.Nodes.Count; v++)
+        {
+            int i = model.Layer[v];
+            string label = (onPath.Contains(v) ? "{" : "[") + graph.Nodes[v].Label + (onPath.Contains(v) ? "}" : "]");
+            Cell cell = vertical ? canvas.Map(geo.Starts[i], c.X[v] - c.Left[v]) : direction == "LR" ? new Cell(c.X[v], geo.Starts[i]) : new Cell(c.X[v], geo.Main - geo.Starts[i] - model.Width[v]);
+            canvas.Label(cell.Row, cell.Column, label);
+        }
+        return new Drawing(canvas, routes, lengths, bends);
+    }
+    static Processed Process(Graph graph)
+    {
+        int n = graph.Nodes.Count;
+        string Id(int v) => graph.Nodes[v].Id.ToString(CultureInfo.InvariantCulture);
+        string EdgeName(int e) => Id(graph.Edges[e].A) + "->" + Id(graph.Edges[e].B);
+        Analysis analysis = Analyze(graph);
+        List<int> sequence = AcyclicLayering.Sequence(n, graph.Edges);
+        int[] position = new int[n];
+        for (int i = 0; i < sequence.Count; i++) position[sequence[i]] = i;
+        bool[] reversed = graph.Edges.Select(e => position[e.A] > position[e.B]).ToArray();
+        List<Edge> dag = graph.Edges.Select((e, i) => reversed[i] ? new Edge(e.B, e.A) : e).ToList();
+        bool[,] reachable = Reachability(n, dag);
+        bool[] removed = dag.Select((e, i) => graph.Settings.On("reduce") && !reversed[i] && dag.Any(f => f.A == e.A && f.B != e.B && reachable[f.B, e.B])).ToArray();
+        List<Edge> drawn = dag.Where((_, i) => !removed[i]).ToList();
+        Layering layering = AcyclicLayering.Assign(n, drawn, graph.Settings.Text("layering") == "coffman", graph.Settings.Integer("width"), graph.Settings.On("promotion"));
+        Model model = BuildModel(graph, layering.Heights, dag, removed);
+        Reduction reduced = ReduceCrossings(graph, model);
+        Coordinates c = Coordinates.Assign(n, reduced.Order, model.Layer, model.Upper, model.Lower, model.Width, graph.Settings.Text("direction") is "TB" or "BT", graph.Settings.Integer("node_sep"), graph.Settings.Integer("dummy_sep"));
+        Geometry geo = BuildGeometry(graph, model, reduced.Order, c);
+        List<int>? path = ShortestPath(graph, removed);
+        Drawing drawing = Draw(graph, model, c, geo, reversed, removed, path);
+        Canvas canvas = drawing.Canvas;
+        int vertices = model.Layer.Count;
+        string Name(int v) => v < n ? Id(v) : "d" + (v - n + 1).ToString(CultureInfo.InvariantCulture);
+        int[] positions = Crossing.Positions(reduced.Order, vertices), counts = model.Gaps.Select((g, i) => Crossing.Count(g, positions, reduced.Order[i + 1].Count)).ToArray();
+        int finalCount = counts.Sum(), brute = model.Gaps.Sum(g => Crossing.Brute(g, positions));
+        int[] edgeCrossings = new int[graph.Edges.Count];
+        foreach (List<Segment> gap in model.Gaps) for (int i = 0; i < gap.Count; i++) for (int j = i + 1; j < gap.Count; j++) if (Crossing.Crosses(gap[i], gap[j], positions)) {
+            edgeCrossings[gap[i].Edge]++;
+            edgeCrossings[gap[j].Edge]++;
+        }
+        string settings = string.Join(" ", Settings.Names.Zip(graph.Settings.Values, (name, value) => name + "=" + value));
+        List<string> layout = new() {
+            "graph " + graph.Name, "settings " + settings, "acyclic " + string.Join(" ", sequence.Select(Id))
+        };
+        layout.AddRange(reduced.Records);
+        for (int i = 0; i < reduced.Order.Count; i++)
+        {
+            List<int> row = reduced.Order[i];
+            int start = geo.Starts[i], end = start + geo.Thickness[i] - 1;
+            bool backwards = graph.Settings.Text("direction") is "BT" or "RL";
+            int bandLo = backwards ? geo.Main - 1 - end : start, bandHi = backwards ? geo.Main - 1 - start : end;
+            int lo = row.Min(v => c.X[v] - c.Left[v]), hi = row.Max(v => c.X[v] + c.Right[v]);
+            layout.Add($"layer {i} band {bandLo} {bandHi} extent {lo} {hi} : " + string.Join(" ", row.Select(v => $"{Name(v)}@{c.X[v]}")));
+        }
+        for (int i = 0; i < model.Gaps.Count; i++) layout.Add($"between {i} {i + 1} segments {model.Gaps[i].Count} crossings {counts[i]} tracks {geo.Tracks[i]} gap {geo.Gaps[i]}");
+        string[] variants = ["ul", "ur", "dl", "dr"];
+        layout.Add($"bk conflicts {c.Conflicts} " + string.Join(" ", Enumerable.Range(0, 4).Select(i => $"{variants[i]}={c.Blocks[i]}/{c.Widths[i]}")) + " smallest " + variants[c.Smallest]);
+        foreach (List<int> row in reduced.Order) foreach (int v in row) layout.Add($"vertex {Name(v)} layer {model.Layer[v]} pos {positions[v]} ul {c.Aligned[0][v]} ur {c.Aligned[1][v]} dl {c.Aligned[2][v]} dr {c.Aligned[3][v]} x {c.X[v]}");
+        for (int e = 0; e < graph.Edges.Count; e++)
+        {
+            var (a, b) = graph.Edges[e];
+            if (removed[e]) layout.Add($"edge {Id(a)} {Id(b)} transitive");
+            else
+            {
+                List<int> chain = (reversed[e] ? model.Chains[e].AsEnumerable().Reverse() : model.Chains[e]).ToList();
+                string pathText = string.Join(" ", chain.Select(v => c.X[v])), route = string.Join(" ", drawing.Routes[e].Select(p => $"{p.Row},{p.Column}"));
+                layout.Add($"edge {Id(a)} {Id(b)}{(reversed[e] ? " reversed" : "")} span {chain.Count - 1} crossings {edgeCrossings[e]} bends {drawing.Bends[e]} path {pathText} route {route}");
+            }
+        }
+        layout.Add("end");
+        List<string> stats = new() {
+            "graph " + graph.Name, $"nodes {n} edges {graph.Edges.Count} self_loops {graph.Loops} duplicates {graph.Duplicates}", $"sources {analysis.Sources} sinks {analysis.Sinks} isolated {analysis.Isolated} components {analysis.Components}"
+        };
+        foreach (List<int> component in analysis.Scc) stats.Add("scc " + string.Join(" ", component.Select(Id)));
+        foreach (var (label, flags) in new[] {
+            ("reversed", reversed), ("transitive", removed)
+        })
+        {
+            List<string> names = Enumerable.Range(0, graph.Edges.Count).Where(i => flags[i]).Select(EdgeName).ToList();
+            stats.Add($"{label} {names.Count}" + (names.Count == 0 ? "" : " " + string.Join(" ", names)));
+        }
+        stats.Add($"layers {reduced.Order.Count} max_nodes {reduced.Order.Max(row => row.Count(v => v < n))} max_vertices {reduced.Order.Max(row => row.Count)}");
+        stats.Add(graph.Settings.On("promotion") ? $"promotion rounds {layering.Rounds} accepted {layering.Promotions.Count} dummies_before {layering.Before}" : "promotion off");
+        var spans = model.Chains.Where(chain => chain.Count > 0).GroupBy(chain => chain.Count - 1).OrderBy(g => g.Key).ToList();
+        int spanTotal = model.Chains.Where(chain => chain.Count > 0).Sum(chain => chain.Count - 1);
+        stats.Add($"dummies {vertices - n} span_total {spanTotal} span_max {(spans.Count == 0 ? 0 : spans.Max(g => g.Key))}");
+        stats.Add("spans " + (spans.Count == 0 ? "none" : string.Join(" ", spans.Select(g => $"{g.Key}:{g.Count()}"))));
+        Order longEdges = model.Chains.Where(chain => chain.Count >= 3).ToList();
+        int vertical = longEdges.Count(chain => chain.Skip(1).Take(chain.Count - 2).All(v => c.X[v] == c.X[chain[1]]));
+        stats.Add($"long_edges {longEdges.Count} vertical {vertical}");
+        stats.Add($"crossings initial {reduced.Initial} swept {reduced.Swept} best_run {reduced.Run} best_sweep {reduced.Sweep} final {finalCount} brute {brute}");
+        List<Segment> segments = model.Gaps.SelectMany(g => g).ToList();
+        int straight = segments.Count(s => c.X[s.P] == c.X[s.Q]), offset = segments.Sum(s => Math.Abs(c.X[s.P] - c.X[s.Q]));
+        stats.Add($"segments {segments.Count} straight {straight} bent {segments.Count - straight} offset {offset}");
+        int[] longest = Enumerable.Range(0, graph.Edges.Count).Where(i => !removed[i]).OrderByDescending(i => drawing.Lengths[i]).ThenBy(i => i).Take(1).ToArray();
+        stats.Add($"routes length {drawing.Lengths.Sum()} bends {drawing.Bends.Sum()}" + (longest.Length == 0 ? "" : $" longest {EdgeName(longest[0])} {drawing.Lengths[longest[0]]}"));
+        stats.Add($"canvas width {canvas.Columns} height {canvas.Rows} crossing_cells {canvas.Crossings()}");
+        stats.Add("end");
+        List<string> drawings = new() {
+            $"graph {graph.Name} {canvas.Columns}x{canvas.Rows}"
+        };
+        drawings.AddRange(canvas.Report());
+        return new Processed(layout, stats, reduced.Csv, drawings, new[] {
+            n, graph.Edges.Count, vertices - n, reduced.Initial, finalCount
+        });
+    }
+    static void Write(string name, List<string> lines)
+    {
+        Directory.CreateDirectory("output");
+        File.WriteAllText("output/" + name, lines.Count == 0 ? "" : string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+    }
+    static void Main()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+        List<Graph> graphs = GraphIO.Read();
+        List<string> layout = new(), stats = new(), drawings = new(), csv = new() {
+            "graph,run,sweep,crossings"
+        };
+        foreach (Graph graph in graphs)
+        {
+            if (drawings.Count > 0) drawings.Add("");
+            if (graph.Error is {
+            } error)
+            }
+            else
+            {
+                Processed output = Process(graph);
+                layout.AddRange(output.Layout);
+                stats.AddRange(output.Stats);
+                csv.AddRange(output.Csv);
+                drawings.AddRange(output.Drawings);
+                for (int i = 0; i < 5; i++) totals[i] += output.Totals[i];
+            }
+        }
+        stats.Add($"summary graphs {graphs.Count} laid_out {graphs.Count - errors} errors {errors} nodes {totals[0]} edges {totals[1]} dummies {totals[2]} crossings_initial {totals[3]} crossings_final {totals[4]}");
+        Write("layout.txt", layout);
+        Write("stats.txt", stats);
+        Write("crossings.csv", csv);
+        Write("drawings.txt", drawings);
+    }
+}

@@ -1,0 +1,288 @@
+    var dynamic=false;
+    var fixedBits=0;
+    var tableBits=0;
+private fun lzh(tokens: List<Lz77.Token>,b: Int,k: Int,maximum: Int): Lzh {
+    val p=Huffman.limited(pf,maximum);
+    val q=Huffman.limited(qf,maximum);
+private fun decode(method: Int,payload: IntArray,size: Long,b: Int,k: Int): IntArray {
+    if(method==1)return Lzw.decode(payload,size);
+    if(method==4)return ArithCoder.decode(payload,size);
+    val output=mutableListOf<Int>();
+    if(method==0) {
+        for(value in payload) {
+            if(output.size.toLong()==size)break;
+            output+=value
+        };
+        if(output.size<size)throw BitIo.DecodeError("end_of_data",output.size);
+        return output.toIntArray()
+    };
+private class Encoded(val payloads: Array<IntArray>,val best: Int,val lzw: Lzw.Statistics,val tokens: List<Lz77.Token>,
+    val lzh: Lzh,val arith: ArithCoder.Encoded)
+private fun encode(data: IntArray,b: Int,k: Int,m: Int): Encoded {
+    val tokens=Lz77.split(data,b,k);
+    val lzw=Lzw.encode(data);
+    val lzh=lzh(tokens,b,k,m);
+    val arith=ArithCoder.encode(data);
+    val payloads=arrayOf(data.copyOf(),lzw.payload,lz77(tokens,b,k),lzh.payload,arith.payload);
+    var best=0;
+    for(i in 1..4)if(payloads[i].size<payloads[best].size)best=i;
+    return Encoded(payloads,best,lzw.stats,tokens,lzh,arith)
+}
+private fun adler(data: IntArray): Long {
+    var s1=1L;
+    var s2=0L;
+    for(x in data) {
+        s1=(s1+x)%65521;
+        s2=(s2+s1)%65521
+    };
+    return s2*65536+s1
+}
+private fun mod(value: Long)=Math.floorMod(value,65521L)
+private fun power(value: Long,exponent: Int): Long {
+    var base=value;
+    var exp=exponent;
+    var result=1L;
+    while(exp>0) {
+        if((exp and 1)!=0)result=result*base%65521;
+        base=base*base%65521;
+        exp=exp ushr 1
+    };
+    return result
+}
+private data class Repair(val position: Int,val before: Int,val after: Int)
+private fun repair(data: IntArray,stored: Long,computed: Long): Repair? {
+    val a=mod(stored%65536-computed%65536);
+    val b=mod(stored/65536-computed/65536);
+    val delta=if(a in 1L..255L)a.toInt() else if(a in 65266L..65520L)a.toInt()-65521 else return null;
+    val t=b*power(mod(delta.toLong()),65519)%65521;
+    if(t<1||t>data.size)return null;
+    val p=data.size-t.toInt();
+    val before=data[p];
+    val after=before+delta;
+    if(after !in 0..255)return null;
+    data[p]=after;
+    if(adler(data)==stored)return Repair(p,before,after);
+    data[p]=before;
+    return null
+}
+private fun integer(output: MutableList<Int>,value: Long,width: Int) {
+    for(i in width-1 downTo 0)output+=((value ushr (8*i)) and 255).toInt()
+}
+private fun integer(data: IntArray,position: Int,width: Int): Long {
+    var value=0L;
+    for(i in 0 until width)value=value*256+data[position+i];
+    return value
+}
+private fun ascii(text: String)=IntArray(text.length) {
+    text[it].code
+}
+private data class Item(val name: String,val data: IntArray,val encoded: Encoded)
+private fun archive(items: List<Item>,b: Int,k: Int): IntArray {
+    val output=ascii("TXAR").toMutableList();
+    output+=b;
+    output+=k;
+    integer(output,items.size.toLong(),2);
+    for(item in items) {
+        val start=output.size;
+        val method=item.encoded.best;
+        output+=item.name.length;
+        output.addAll(ascii(item.name).toList());
+        output+=method;
+        integer(output,item.data.size.toLong(),4);
+        val payload=item.encoded.payloads[method];
+        integer(output,payload.size.toLong(),4);
+        integer(output,adler(item.data),4);
+        var sum=0;
+        for(i in start until output.size)sum+=output[i];
+        output+=sum%256;
+        output.addAll(payload.toList())
+    };
+    return output.toIntArray()
+}
+private class Entry(val number: Int,val offset: Long) {
+    var method=0;
+    var start=0L;
+    var original=0L;
+    var compressed=0L;
+    var stored=0L;
+    var computed=0L;
+    var name="";
+    var status="";
+    var detail="";
+    var valid=false;
+    var headerTruncated=false;
+    var data=intArrayOf()
+}
+private class Parsed(val length: Int) {
+    var error: String?=null;
+    var b=0;
+    var k=0;
+    var declared=0;
+    var trailing=0;
+    var stopped=false;
+    val entries=mutableListOf<Entry>()
+}
+private fun parse(data: IntArray): Parsed {
+    val result=Parsed(data.size);
+    if(data.size<8||data[0]!='T'.code||data[1]!='X'.code||data[2]!='A'.code||data[3]!='R'.code) {
+        result.error="bad_magic";
+        return result
+    };
+    result.b=data[4];
+    result.k=data[5];
+    if(result.b !in 6..12||result.k !in 2..5) {
+        result.error="bad_params";
+        return result
+    };
+    result.declared=integer(data,6,2).toInt();
+    var position=8L;
+    for(number in 1..result.declared) {
+        val e=Entry(number,position);
+        result.entries+=e;
+        if(position>=data.size||position+15+data[position.toInt()]>data.size) {
+            e.status="truncated";
+            e.headerTruncated=true;
+            result.stopped=true;
+            break
+        };
+        val pos=position.toInt();
+        val m=data[pos];
+        e.name=buildString {
+            for(i in 0 until m)append(data[pos+1+i].toChar())
+        };
+        var cursor=pos+1+m;
+        e.method=data[cursor++];
+        e.original=integer(data,cursor,4);
+        cursor+=4;
+        e.compressed=integer(data,cursor,4);
+        cursor+=4;
+        e.stored=integer(data,cursor,4);
+        cursor+=4;
+        var sum=0;
+        for(i in pos until cursor)sum+=data[i];
+        e.start=(cursor+1).toLong();
+        val next=e.start+e.compressed;
+        if(sum%256!=data[cursor]||!Regex("[a-z0-9._-]{1,32}").matches(e.name)) {
+            e.status="bad_header";
+            position=next;
+            if(position>data.size) {
+                result.stopped=true;
+                break
+            };
+            continue
+        };
+        e.valid=true;
+        if(next>data.size) {
+            e.status="truncated";
+            result.stopped=true;
+            break
+        };
+        if(e.method>=5)e.status="unsupported" else {
+            try {
+                e.data=decode(e.method,data.copyOfRange(e.start.toInt(),next.toInt()),e.original,result.b,result.k);
+                e.computed=adler(e.data);
+                if(e.computed==e.stored)e.status="ok" else {
+                    val repaired=repair(e.data,e.stored,e.computed);
+                    if(repaired==null) {
+                        e.status="checksum";
+                        e.detail=" stored ${hex(e.stored,8)} computed ${hex(e.computed,8)}"
+                    }else {
+                        e.status="repaired";
+                        e.detail=" byte ${repaired.position} from ${repaired.before} to ${repaired.after}"
+                    }
+                }
+            }catch(error: BitIo.DecodeError) {
+                e.status="error";
+                e.detail=" ${error.kind} at ${error.position}"
+            }
+        };
+        position=next
+    };
+    result.trailing=if(result.stopped)0 else data.size-position.toInt();
+    return result
+}
+private fun verify(parsed: Parsed,items: List<Item>)=parsed.entries.indices.count {
+    parsed.entries[it].status=="ok"&&parsed.entries[it].data.contentEquals(items[it].data)
+}
+private fun hex(value: Long,width: Int)=value.toString(16).padStart(width,'0')
+private fun hexadecimal(data: IntArray): List<String> {
+    val lines=mutableListOf<String>();
+    for(start in data.indices step 32)lines+=buildString {
+        for(i in start until minOf(data.size,start+32))append(hex(data[i].toLong(),2))
+    };
+    return lines
+}
+private fun ratio(compressed: Long,original: Long)=if(original==0L)"-" else (1000*compressed/original).toString()
+private fun method(number: Int)=if(number<5)METHODS[number] else "#$number"
+private fun textLines(data: IntArray): List<String> {
+    if(data.isEmpty())return emptyList();
+    val text=buildString {
+        for(value in data)append(value.toChar())
+    };
+    return text.dropLast(1).split('\n')
+}
+private fun testReport(p: Parsed): MutableList<String> {
+    val output=mutableListOf<String>();
+    if(p.error!=null) {
+        output+="archive error ${p.error}";
+        return output
+    };
+    val counts=p.entries.groupingBy {
+        it.status
+    }.eachCount();
+    for(e in p.entries) {
+        var line="entry ${e.number} offset ${e.offset}";
+        if(!e.valid) {
+            line+=" status "+(if(e.headerTruncated)"truncated header" else "bad_header")
+        } else {
+            line+=" name ${e.name} method ${method(e.method)} status ${e.status}";
+            line+=if(e.status=="truncated")" payload have ${p.length-e.start} need ${e.compressed}" else e.detail
+        };
+        output+=line
+    };
+    var line="summary entries ${p.declared} checked ${p.entries.size}";
+    for(status in STATUSES)line+=" $status ${counts.getOrDefault(status,0)}";
+    output+="$line missing ${p.declared-p.entries.size} trailing ${p.trailing}";
+    return output
+}
+private fun salvage(parsed: Parsed,originals: Map<String,IntArray>,manifestB: Int,manifestK: Int,maximum: Int) {
+    val salvaged=mutableListOf<Item>();
+    val extracted=mutableListOf<String>();
+    val comparison=mutableListOf<String>();
+    val report=testReport(parsed);
+    val present=mutableSetOf<String>();
+    val b=if(parsed.error==null)parsed.b else manifestB;
+    val k=if(parsed.error==null)parsed.k else manifestK;
+    var total=0L;
+    for(e in parsed.entries)if(e.status=="ok"||e.status=="repaired") {
+        present+=e.name;
+        val lines=textLines(e.data);
+        var words=0;
+        var longest=0;
+        for(line in lines) {
+            longest=maxOf(longest,line.length);
+            for(i in line.indices)if(line[i]!=' '&&(i==0||line[i-1]==' '))words++
+        };
+        extracted+="file ${e.name} bytes ${e.data.size} lines ${lines.size} words $words longest $longest";
+        extracted+=lines;
+        val encoded=encode(e.data,b,k,maximum);
+        salvaged+=Item(e.name,e.data,encoded);
+        total+=e.data.size;
+        report+="salvage ${e.name} method ${method(encoded.best)} compressed ${encoded.payloads[encoded.best].size} was ${method(e.method)} ${e.compressed}"
+    };
+    val archive=archive(salvaged,b,k);
+    report+="salvaged entries ${salvaged.size} bytes ${archive.size} original $total verified ${verify(parse(archive),salvaged)}";
+    write("test_report.txt",report);
+    write("extracted.txt",extracted);
+    write("compare.txt",comparison);
+    write("salvaged.hex",hexadecimal(archive))
+    val manifest=File("input/manifest.txt").readLines(Charsets.US_ASCII);
+    val b=manifest[0].split(' ')[1].toInt();
+    val k=manifest[1].split(' ')[1].toInt();
+    val m=manifest[2].split(' ')[1].toInt();
+    val hex=File("input/archive.hex").readLines(Charsets.US_ASCII).joinToString("");
+    val given=IntArray(hex.length/2) {
+        hex.substring(2*it,2*it+2).toInt(16)
+    };
+    val parsed=parse(given);
+    salvage(parsed,originals,b,k,m)

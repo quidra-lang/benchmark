@@ -1,0 +1,405 @@
+export interface Attribute {
+  name: string;
+  kind: 'INT' | 'CAT';
+  values: string[];
+}
+export interface Row {
+  id: string;
+  values: (number | null)[];
+  label: number;
+}
+export interface Settings {
+  maxDepth: number;
+  minSamplesSplit: number;
+  minSamplesLeaf: number;
+  maxSurrogates: number;
+function lines(path: string): string[] {
+  return readFileSync(path, 'ascii').slice(0, -1).split('\n');
+}
+export function readDataset(): Dataset {
+  const schema = lines('input/schema.txt').map((line) => line.split(' '));
+  const attributes: Attribute[] = schema.slice(0, -1).map((fields) => ({
+    name: fields[1],
+    kind: fields[2] === 'INT' ? 'INT' : 'CAT',
+    values: fields.slice(3),
+  }));
+  const last = schema[schema.length - 1];
+  const classes = last.slice(2);
+  function readRows(path: string): Row[] {
+    return lines(path)
+      .slice(1)
+      .map((line) => {
+        const fields = line.split(',');
+        const values = attributes.map((attribute, index) => {
+          const text = fields[index + 1];
+          return text === '?'
+            ? null
+            : attribute.kind === 'INT'
+              ? Number(text)
+              : attribute.values.indexOf(text);
+        });
+        return { id: fields[0], values, label: classes.indexOf(fields[fields.length - 1]) };
+      });
+  }
+  const params = lines('input/params.txt').map((line) => line.split(' ').slice(1).map(Number));
+  const settings: Settings = {
+    maxDepth: params[0][0],
+    minSamplesSplit: params[1][0],
+    minSamplesLeaf: params[2][0],
+    maxSurrogates: params[3][0],
+  };
+  return {
+    attributes,
+    classes,
+    target: last[1],
+    settings,
+    train: readRows('input/train.csv'),
+    validation: readRows('input/validation.csv'),
+    test: readRows('input/test.csv'),
+  };
+}
+export function majority(counts: number[]): number {
+  let best = 0;
+  for (let i = 1; i < counts.length; i++) if (counts[i] > counts[best]) best = i;
+  return best;
+}
+export function statistics(rows: Row[], classes: number): Statistics {
+  const counts: number[] = Array(classes).fill(0);
+  for (const row of rows) counts[row.label]++;
+  const predicted = majority(counts);
+  return {
+    n: rows.length,
+    counts,
+    sumSquares: counts.reduce((sum, c) => sum + c * c, 0),
+    majority: predicted,
+    error: rows.length - counts[predicted],
+  };
+}
+export function evaluationValue(left: Statistics, right: Statistics): Fraction {
+  return {
+    numerator: left.sumSquares * right.n + right.sumSquares * left.n,
+    denominator: left.n * right.n,
+  };
+}
+export function compareFractions(a: Fraction, b: Fraction): number {
+  const left = a.numerator * b.denominator;
+  const right = b.numerator * a.denominator;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+export function improves(value: Fraction, stats: Statistics): boolean {
+  return value.numerator * stats.n > stats.sumSquares * value.denominator;
+}
+export type Split =
+  | { attribute: number; kind: 'INT'; threshold: number }
+  | { attribute: number; kind: 'CAT'; value: number };
+export type Direction = 'left' | 'right';
+export interface Surrogate {
+  split: Split;
+  direction: Direction;
+  score: number;
+}
+export function candidates(rows: Row[], attribute: Attribute, index: number): Split[] {
+  const present = new Set<number>();
+  for (const row of rows) {
+    const value = row.values[index];
+    if (value !== null) present.add(value);
+  }
+  const values = [...present].sort((a, b) => a - b);
+  if (values.length < 2) return [];
+  if (attribute.kind === 'CAT') {
+    return values.map((value) => ({ attribute: index, kind: 'CAT', value }));
+  }
+  return values
+    .slice(0, -1)
+    .map((value, i) => ({ attribute: index, kind: 'INT', threshold: value + values[i + 1] }));
+}
+export function goesLeft(split: Split, row: Row): boolean {
+  const value = row.values[split.attribute];
+  if (value === null) throw new Error('A split requires an observed value');
+  return split.kind === 'INT' ? 2 * value <= split.threshold : value === split.value;
+}
+export function bestForAttribute(
+  rows: Row[],
+  attribute: Attribute,
+  index: number,
+  minLeaf: number,
+  classes: number,
+): SplitCandidate | null {
+  let best: SplitCandidate | null = null;
+  for (const split of candidates(rows, attribute, index)) {
+    const left: Row[] = [];
+    const right: Row[] = [];
+    for (const row of rows) (goesLeft(split, row) ? left : right).push(row);
+    if (left.length < minLeaf || right.length < minLeaf) continue;
+    const value = evaluationValue(statistics(left, classes), statistics(right, classes));
+    if (best === null || compareFractions(value, best.value) > 0) {
+      best = { split, left, right, value };
+    }
+  }
+  return best;
+}
+export function bestSplit(
+  rows: Row[],
+  attributes: Attribute[],
+  minLeaf: number,
+  classes: number,
+): SplitCandidate | null {
+  let best: SplitCandidate | null = null;
+  for (let i = 0; i < attributes.length; i++) {
+    const candidate = bestForAttribute(rows, attributes[i], i, minLeaf, classes);
+    if (candidate && (best === null || compareFractions(candidate.value, best.value) > 0)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+function findSurrogates(
+  rows: Row[],
+  primary: Split,
+  attributes: Attribute[],
+  limit: number,
+  leftCount: number,
+  rightCount: number,
+): Surrogate[] {
+  const retained: Surrogate[] = [];
+  const directions = rows.map((row) => goesLeft(primary, row));
+  for (let a = 0; a < attributes.length; a++) {
+    if (a === primary.attribute) continue;
+    let best: Surrogate | null = null;
+    for (const split of candidates(rows, attributes[a], a)) {
+      let agreement = 0;
+      rows.forEach((row, i) => {
+        if (goesLeft(split, row) === directions[i]) agreement++;
+      });
+      const reverse = rows.length - agreement;
+      const direction = agreement >= reverse ? 'left' : 'right';
+      const score = Math.max(agreement, reverse);
+      if (best === null || score > best.score) best = { split, direction, score };
+    }
+    if (best && best.score > Math.max(leftCount, rightCount)) retained.push(best);
+  }
+  retained.sort((a, b) => b.score - a.score || a.split.attribute - b.split.attribute);
+  return retained.slice(0, limit);
+}
+export function growTree(
+  rows: Row[],
+  attributes: Attribute[],
+  classes: number,
+  settings: Settings,
+): TreeNode {
+  function grow(sequence: Row[], number: number, depth: number): TreeNode {
+    const stats = statistics(sequence, classes);
+    const leaf: LeafNode = { ...stats, number, depth, kind: 'leaf' };
+    if (
+      stats.error === 0 ||
+      depth === settings.maxDepth ||
+      sequence.length < settings.minSamplesSplit
+    ) {
+      return leaf;
+    }
+    const best = bestSplit(sequence, attributes, settings.minSamplesLeaf, classes);
+    if (best === null || !improves(best.value, stats)) return leaf;
+    return {
+      ...stats,
+      number,
+      depth,
+      kind: 'branch',
+      split: best.split,
+      defaultDirection: best.left.length >= best.right.length ? 'left' : 'right',
+      surrogates: findSurrogates(
+        sequence,
+        best.split,
+        attributes,
+        settings.maxSurrogates,
+        best.left.length,
+        best.right.length,
+      ),
+      left: grow(best.left, 2 * number, depth + 1),
+      right: grow(best.right, 2 * number + 1, depth + 1),
+    };
+  }
+  return grow(rows, 1, 0);
+}
+export function isBranch(node: TreeNode, view: TreeView): node is BranchNode {
+  return node.kind === 'branch' && !view.cuts.has(node.number);
+}
+export function route(view: TreeView, row: Row): Route {
+  const path: TreeNode[] = [];
+  const steps: RouteStep[] = [];
+  let node = view.root;
+  while (true) {
+    path.push(node);
+    if (!isBranch(node, view)) return { leaf: node, prediction: node.majority, path, steps };
+    let left: boolean;
+    let method: RoutingMethod;
+    if (row.values[node.split.attribute] !== null) {
+      left = goesLeft(node.split, row);
+      method = 'primary';
+    } else {
+      const surrogate = node.surrogates.find((item) => row.values[item.split.attribute] !== null);
+      if (surrogate) {
+        left = goesLeft(surrogate.split, row) === (surrogate.direction === 'left');
+        method = 'surrogate';
+      } else {
+        left = node.defaultDirection === 'left';
+        method = 'default';
+      }
+    }
+    steps.push({ node, left, method });
+    node = left ? node.left : node.right;
+  }
+}
+export function predict(view: TreeView, row: Row): number {
+  return route(view, row).prediction;
+}
+export function correctCount(view: TreeView, rows: Row[]): number {
+  return rows.reduce((sum, row) => sum + Number(predict(view, row) === row.label), 0);
+}
+export function classificationLines(
+  title: string,
+  rows: Row[],
+  predictions: number[],
+  classes: string[],
+): string[] {
+  const matrix: number[][] = Array.from({ length: classes.length }, () =>
+    Array(classes.length).fill(0),
+  );
+  let correct = 0;
+  rows.forEach((row, i) => {
+    matrix[row.label][predictions[i]]++;
+    if (row.label === predictions[i]) correct++;
+  });
+  const lines = [
+    `confusion ${title} correct ${correct}/${rows.length} accuracy ${reducedFraction(correct, rows.length)}`,
+    `actual\\predicted ${classes.join(' ')}`,
+  ];
+  matrix.forEach((counts, i) => lines.push(`${classes[i]} ${counts.join(' ')}`));
+  let macro = 0;
+  let defined = 0;
+  for (let k = 0; k < classes.length; k++) {
+    const tp = matrix[k][k];
+    let predicted = 0;
+    let actual = 0;
+    for (let j = 0; j < classes.length; j++) {
+      predicted += matrix[j][k];
+      actual += matrix[k][j];
+    }
+    lines.push(
+      `class ${classes[k]} precision ${reducedFraction(tp, predicted)} recall ${reducedFraction(tp, actual)} f1 ${reducedFraction(2 * tp, predicted + actual)} support ${actual}`,
+    );
+    if (predicted + actual > 0) {
+      macro += (2 * tp) / (predicted + actual);
+      defined++;
+    }
+  }
+  lines.push(`macro_f1 ${defined === 0 ? '-' : formatReal(macro / defined)}`);
+  return lines;
+}
+export function reducedError(root: TreeNode, validation: Row[]): PruningResult {
+  const original: TreeView = { root, cuts: new Set() };
+  const visits = new Map<number, Row[]>(preorder(original).map((node) => [node.number, []]));
+  for (const row of validation) {
+    for (const node of route(original, row).path) visits.get(node.number)!.push(row);
+  }
+  const cuts = new Set<number>();
+  const decisions: PruningDecision[] = [];
+  function visit(node: TreeNode): number {
+    const rows = visits.get(node.number)!;
+    const leafError = rows.reduce((sum, row) => sum + Number(row.label !== node.majority), 0);
+    if (node.kind === 'leaf') return leafError;
+    const subtreeError = visit(node.left) + visit(node.right);
+    const pruned = leafError <= subtreeError;
+    if (pruned) cuts.add(node.number);
+    decisions.push({ node, rows: rows.length, leafError, subtreeError, pruned });
+    return pruned ? leafError : subtreeError;
+  }
+  visit(root);
+  return { view: { root, cuts }, decisions };
+}
+function predictionLines(data: Dataset, grown: Route[], pruned: Route[]): string[] {
+  return [
+    'id,predicted,actual,grown,leaf,path,missing',
+    ...data.test.map((row, i) => {
+      const result = pruned[i];
+      return [
+        row.id,
+        data.classes[result.prediction],
+        data.classes[row.label],
+        data.classes[grown[i].prediction],
+        result.leaf.number,
+        result.path.map((node) => node.number).join('-'),
+        result.steps.filter((step) => step.method !== 'primary').length,
+      ].join(',');
+    }),
+  ];
+}
+function routingLines(data: Dataset, pruned: TreeView, routes: Route[]): string[] {
+  const nodes = preorder(pruned).filter((node) => isBranch(node, pruned));
+  const tallies = new Map(
+    nodes.map((node) => [node.number, { rows: 0, primary: 0, surrogate: 0, default: 0 }]),
+  );
+  const groups = [
+    { rows: 0, correct: 0 },
+    { rows: 0, correct: 0 },
+  ];
+  routes.forEach((result, i) => {
+    for (const step of result.steps) {
+      const tally = tallies.get(step.node.number)!;
+      tally.rows++;
+      tally[step.method]++;
+    }
+    const group = groups[data.test[i].values.includes(null) ? 1 : 0];
+    group.rows++;
+    if (result.prediction === data.test[i].label) group.correct++;
+  });
+  const lines = ['routing pruned test'];
+  for (const node of nodes) {
+    const tally = tallies.get(node.number)!;
+    lines.push(
+      `node ${node.number} rows ${tally.rows} primary ${tally.primary} surrogate ${tally.surrogate} default ${tally.default}`,
+    );
+  }
+  groups.forEach((group, i) =>
+    lines.push(
+      `${i === 0 ? 'complete' : 'incomplete'} rows ${group.rows} correct ${ratio(group.correct, group.rows)}`,
+    ),
+  );
+  return lines;
+}
+function writeBlocks(name: string, blocks: string[][]): void {
+  writeFileSync(
+    `output/${name}`,
+    blocks.map((lines) => lines.join('\n')).join('\n\n') + '\n',
+    'ascii',
+  );
+}
+function main(): void {
+  const data = readDataset();
+  const root = growTree(data.train, data.attributes, data.classes.length, data.settings);
+  const grown: TreeView = { root, cuts: new Set() };
+  const pruning = reducedError(root, data.validation);
+  const pruned = pruning.view;
+  const grownRoutes = data.test.map((row) => route(grown, row));
+  const prunedRoutes = data.test.map((row) => route(pruned, row));
+  const predictions: Record<ModelName, number[]> = {
+    grown: grownRoutes.map((result) => result.prediction),
+    pruned: prunedRoutes.map((result) => result.prediction),
+    depth: data.test.map((row) => predict(depth.view, row)),
+    cost_complexity: data.test.map((row) => predict(sequence.view, row)),
+    bagging: bag.predictions,
+  };
+  writeBlocks('predictions.csv', [predictionLines(data, grownRoutes, prunedRoutes)]);
+  writeBlocks('evaluation.txt', [
+    dataLines(data),
+    treeComparisonLines(data, grown, pruned),
+    classificationLines('grown test', data.test, predictions.grown, data.classes),
+    classificationLines('pruned test', data.test, predictions.pruned, data.classes),
+    routingLines(data, pruned, prunedRoutes),
+    cross.lines,
+    depth.lines,
+    sequence.lines,
+    bag.lines,
+    mcnemarLines(data, predictions),
+    aucLines(data, grownRoutes, prunedRoutes, bag.votes),
+    learningCurveLines(data),
+  ]);

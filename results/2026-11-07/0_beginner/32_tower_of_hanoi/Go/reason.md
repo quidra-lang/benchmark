@@ -1,0 +1,9 @@
+The current question asks: Explain the recursive Hanoi operation from its disk-count and peg-role arguments to its emitted moves and move count. Use the top-level four-disk call to show the two recursive subproblems, the intervening move and the base case. Identify how the first recursive call reassigns source/target/auxiliary roles and whether those label arguments change caller bindings or shared peg storage in this implementation. Ground the count combination and sharing behavior in the source.
+
+Answer and source evidence: The four-disk call starts source A, target C, auxiliary B. It first solves (3,A,B,C), emits disk 4 from A to C, then solves (3,B,C,A). A zero-disk call returns zero and emits nothing. Counts combine first count+1+second count, giving 2^4-1=15. Peg labels are passed by value as rune/char/String; role reassignment binds new call parameters and does not alter caller bindings or shared peg storage.
+
+Selection: `main.go` lines 5, 6, 7, 8, 9, 10, 11, 15. The callable signature establishes value parameter types, while its full short recursive body establishes roles, base case, count and emission. The top-level call supplies the concrete roles.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,12 @@
+main =: 3 : 0
+  phrases =. 'Never odd or even';'Race a car';'Was it a car or a cat I saw?';'Hello, World!';'Step on no pets.';'No lemon, no melon'
+  for_box. phrases do.
+    phrase =. >box
+    text =. tolower phrase
+    cleaned =. (text e. 'abcdefghijklmnopqrstuvwxyz')#text
+    result =. 'no'
+    if. cleaned -: |.cleaned do. result =. 'yes' end.
+    smoutput phrase, ' -> ',result
+  end.
+)
+main ''

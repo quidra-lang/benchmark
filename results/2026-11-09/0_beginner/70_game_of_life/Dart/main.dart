@@ -1,0 +1,40 @@
+void main() {
+  const initial = [
+    '.#......',
+    '..#.....',
+    '###.....',
+    '........',
+    '........',
+    '........',
+    '.....###',
+    '........',
+  ];
+  var board = [
+    for (final row in initial) [for (final c in row.split('')) c == '#'],
+  ];
+  for (var g = 0; g <= 4; g++) {
+    print('generation $g');
+    for (final row in board) {
+      print(row.map((v) => v ? '#' : '.').join());
+    }
+    if (g == 4) break;
+    final next = List.generate(8, (_) => List.filled(8, false));
+    for (var r = 0; r < 8; r++) {
+      for (var c = 0; c < 8; c++) {
+        var count = 0;
+        for (var dr = -1; dr <= 1; dr++) {
+          for (var dc = -1; dc <= 1; dc++) {
+            if (dr == 0 && dc == 0) continue;
+            final rr = r + dr, cc = c + dc;
+            if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && board[rr][cc]) {
+              count++;
+            }
+          }
+        }
+        next[r][c] = count == 3 || (board[r][c] && count == 2);
+      }
+    }
+    board = next;
+  }
+  print('alive: ${board.expand((row) => row).where((v) => v).length}');
+}

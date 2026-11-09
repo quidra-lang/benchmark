@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+teams.sort mutates the same ordering array in JS/TS; use a separate order returned by teams.toSorted(existingComparator) and iterate that order for standings while keeping teams. PHP usort mutates $teams; first assign it by value to a separate order and sort/iterate that variable, preserving the original array under PHP value semantics. Team records live separately in stats/records keyed by name; preserving order does not require copying those records, and sharing records is distinct from sharing the ordering container. The ordering declaration, record association, sort entry and output iteration identify all affected containers; comparator body and statistics recomputation are unnecessary because the rule remains unchanged.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

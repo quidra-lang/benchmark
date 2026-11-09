@@ -1,0 +1,5 @@
+Replace row/column/whole-matrix sum accumulators with maximum accumulators initialized from actual matrix entries (first element per row, first row per column, and matrix[0][0] overall), then replace addition with maximum updates. Preserve all 20 original entries, loop order and six-character right-aligned fields. The first row summary becomes 912. The complete final summary fields are 947,765,819,912,720,947, each width 6. Four data lines plus that final six-field line remain. Initialization from data avoids an unjustified zero baseline for general matrices.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

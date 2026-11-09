@@ -1,0 +1,484 @@
+const GLOBALS = new Set([
+  'INITIAL', 'FINAL', 'QUIT', 'STOP', 'DEFAULT', 'QUESTION', 'REPEAT',
+  'MEMSIZE', 'PERSIST', 'PRE', 'POST', 'SYNON',
+]);
+const TEXTS = new Set(['INITIAL', 'FINAL', 'DEFAULT', 'QUESTION', 'REPEAT', 'REASM']);
+const RULES = new Set(['DECOMP', 'MEMORY']);
+const ITEMS = new Set(['REASM', 'GOTO', 'NEWKEY', 'RESTATE']);
+const DIRECTIVES = new Set([...GLOBALS, 'KEY', ...RULES, ...ITEMS]);
+function isWord(text) {
+  return /^[a-z0-9](?:[a-z0-9']*[a-z0-9])?$/.test(text);
+}
+function isReference(text) {
+  return /^\([0-9]\)$/.test(text);
+}
+function isElement(text) {
+  return text === '*' || text === '#' || isWord(text)
+    || text.startsWith('@') && isWord(text.slice(1));
+}
+function validArguments(name, args) {
+  if (TEXTS.has(name)) return args.length >= 1;
+  if (name === 'QUIT' || name === 'STOP') return args.length >= 1 && args.every(isWord);
+  if (name === 'KEY') {
+    return args.length === 2 && isWord(args[0]) && /^[0-9]{1,2}$/.test(args[1]);
+  }
+  if (RULES.has(name)) return args.length >= 1 && args.every(isElement);
+}
+function readLines(path) {
+  const text = fs.readFileSync(path, 'ascii');
+  return text === '' ? [] : text.slice(0, -1).split('\n');
+}
+function loadScript(path) {
+  const script = {
+    texts: { INITIAL: [], FINAL: [], DEFAULT: [], QUESTION: [], REPEAT: [] },
+    quit: new Set(), stop: new Set(), capacity: 3, capacityLine: null,
+    persistence: new Map(), pre: new Map(), post: new Map(), groups: new Map(),
+    keywords: [], keywordByWord: new Map(), rules: [], diagnostics: [],
+  };
+  let keyword = null;
+  let rule = null;
+  const ignoring = Symbol('ignoring duplicate keyword');
+  const lines = readLines(path);
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index];
+    if (raw === '' || raw.startsWith('#')) continue;
+    const [name, ...args] = raw.split(' ');
+    const line = index + 1;
+    const text = args.join(' ');
+    if (GLOBALS.has(name) || name === 'KEY') {
+      keyword = null;
+      rule = null;
+    } else if (RULES.has(name)) {
+      if (keyword === ignoring) continue;
+      rule = null;
+    } else if (ITEMS.has(name) && keyword === ignoring) {
+      continue;
+    }
+    const report = (code, message) => script.diagnostics.push({ line, code, message, position: 0 });
+    if (!DIRECTIVES.has(name)) {
+      report('SYNTAX', `unknown directive ${name}`);
+      continue;
+    }
+    if (!validArguments(name, args)) {
+      report('SYNTAX', `bad arguments for ${name}`);
+      continue;
+    }
+    if (RULES.has(name) && keyword === null) {
+      report('ORPHAN', `${name} without KEY`);
+      continue;
+    }
+    if (name === 'REASM' && rule === null) {
+      report('ORPHAN', 'REASM without DECOMP or MEMORY');
+      continue;
+    }
+    if (['GOTO', 'NEWKEY', 'RESTATE'].includes(name) && (rule === null || rule.kind === 'memory')) {
+      report('ORPHAN', `${name} without DECOMP`);
+      continue;
+    }
+    let firstLine = null;
+    if (name === 'KEY') firstLine = script.keywordByWord.get(args[0])?.line ?? null;
+    if (name === 'SYNON') firstLine = script.groups.get(args[0])?.line ?? null;
+    if (name === 'PRE') firstLine = script.pre.get(args[0])?.line ?? null;
+    if (name === 'POST') firstLine = script.post.get(args[0])?.line ?? null;
+    if (name === 'PERSIST') firstLine = script.persistence.get(args[0]) ?? null;
+    if (name === 'MEMSIZE') firstLine = script.capacityLine;
+    if (firstLine !== null) {
+      const subject = name === 'MEMSIZE' ? name : `${name} ${args[0]}`;
+      report('DUPLICATE', `${subject} first defined at line ${firstLine}`);
+      if (name === 'KEY') keyword = ignoring;
+      continue;
+    }
+    if (Object.hasOwn(script.texts, name)) {
+      script.texts[name].push(text);
+    } else if (name === 'QUIT' || name === 'STOP') {
+      const set = name === 'QUIT' ? script.quit : script.stop;
+      for (const word of args) set.add(word);
+    } else if (name === 'MEMSIZE') {
+    } else if (name === 'KEY') {
+      keyword = { id: script.keywords.length, word: args[0], rank: Number(args[1]), line, raw,
+        memory: [], decomp: [] };
+      script.keywords.push(keyword);
+      script.keywordByWord.set(keyword.word, keyword);
+    } else if (RULES.has(name)) {
+      const kind = name === 'MEMORY' ? 'memory' : 'decomp';
+      rule = { id: script.rules.length, kind, number: keyword[kind].length + 1,
+        pattern: args, line, raw, items: [], keyword };
+      keyword[kind].push(rule);
+      script.rules.push(rule);
+    } else {
+      rule.items.push({ kind: name, number: rule.items.length + 1, line, raw, text, args });
+    }
+  }
+  return script;
+}
+function wildcard(element) {
+  return element === '*' || element === '#' || element.startsWith('@');
+}
+function match(pattern, words, groups) {
+  const failed = new Set();
+  function visit(elementIndex, wordIndex) {
+    if (elementIndex === pattern.length) return wordIndex === words.length ? [] : null;
+    const key = `${elementIndex}:${wordIndex}`;
+    if (failed.has(key)) return null;
+    const element = pattern[elementIndex];
+    if (element === '*') {
+    } else if (wordIndex < words.length) {
+      const accepts = element === '#' || element === words[wordIndex]
+        || element.startsWith('@') && groups.get(element.slice(1))?.members.has(words[wordIndex]);
+      if (accepts) {
+        const rest = visit(elementIndex + 1, wordIndex + 1);
+        if (rest !== null) return wildcard(element) ? [[words[wordIndex]], ...rest] : rest;
+      }
+    }
+    failed.add(key);
+    return null;
+  }
+  return visit(0, 0);
+}
+function buildReply(template, bindings, substitutions) {
+  let text = template.replace(/\(([0-9])\)/g, (reference, digit) => {
+    const binding = bindings[Number(digit) - 1] ?? [];
+    return reflect(binding, substitutions).join(' ');
+  });
+  text = text.split(' ').filter(word => word !== '').join(' ');
+  if (/^[a-z]/.test(text)) text = text[0].toUpperCase() + text.slice(1);
+  return text;
+}
+function wrapReply(text) {
+  const words = text.split(' ').filter(word => word !== '');
+  if (words.length === 0) return ['ELIZA:'];
+  const lines = [];
+  let line = `ELIZA: ${words[0]}`;
+  for (const word of words.slice(1)) {
+    if (line.length + 1 + word.length <= 72) {
+      line += ` ${word}`;
+    } else {
+      lines.push(line);
+      line = `       ${word}`;
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+function store(memory, session, capacity, keyword, text) {
+  const prefix = `${session.name} ${session.turns}`;
+  if (memory.queue.includes(text)) {
+    memory.log.push(`${prefix} SKIP ${keyword} ${text}`);
+    return;
+  }
+  if (memory.queue.length === capacity) {
+    memory.log.push(`${prefix} DROP ${memory.queue.shift()}`);
+  }
+  memory.queue.push(text);
+  memory.log.push(`${prefix} STORE ${keyword} ${text}`);
+  session.stored += 1;
+}
+function clear(memory, name, turn) {
+  const count = memory.queue.length;
+  if (count > 0) {
+    memory.queue.length = 0;
+    memory.log.push(`${name} ${turn} CLEAR ${count}`);
+  }
+  return count;
+}
+const SOURCES = ['keyword', 'memory', 'question', 'default', 'repeat'];
+const NO_ARGUMENT = new Set([
+  ':keys', ':why', ':history', ':memory', ':forget', ':reset', ':unused', ':stats', ':undo',
+]);
+const TEXT_ARGUMENT = new Set([':prepare', ':reflect', ':say', ':explain']);
+const ONE_ARGUMENT = new Set([':groups', ':find', ':script', ':cycles', ':coverage']);
+const KEYWORD_ARGUMENT = new Set([':script', ':cycles', ':coverage', ':test']);
+const COMMANDS = new Set([...NO_ARGUMENT, ...TEXT_ARGUMENT, ...ONE_ARGUMENT, ':trace', ':test']);
+function compareWords(first, second) {
+  return Number(first > second) - Number(first < second);
+}
+function normalize(text) {
+  const clauses = [];
+  for (const part of text.toLowerCase().split(/[,.?!;]/)) {
+    const words = (part.match(/[a-z0-9']+/g) ?? [])
+      .map(word => word.replace(/^'+|'+$/g, ''))
+      .filter(word => word.length > 0);
+    if (words.length > 0) clauses.push(words);
+  }
+  return clauses;
+}
+function sameClauses(first, second) {
+  return first !== null && first.length === second.length
+    && first.every((clause, index) => clause.length === second[index].length
+      && clause.every((word, position) => word === second[index][position]));
+}
+function sourceCounts() {
+  return Object.fromEntries(SOURCES.map(source => [source, 0]));
+}
+function increment(table, name) {
+  table.set(name, (table.get(name) ?? 0) + 1);
+}
+function countLine(record) {
+  return `turns=${record.turns} ` + SOURCES.map(source => `${source}=${record.sources[source]}`).join(' ');
+}
+function leaders(table) {
+  const entries = [...table].filter(([, count]) => count > 0);
+  entries.sort((first, second) => second[1] - first[1] || compareWords(first[0], second[0]));
+  return entries.slice(0, 5).map(([word, count]) => `${word} ${count}`).join(', ') || 'none';
+}
+class Chatbot {
+  constructor(script) {
+    this.script = script;
+    this.transcript = [];
+    this.state = {
+      rules: script.rules.map(rule => ({ next: 0, hits: 0, uses: rule.items.map(() => 0) })),
+      keywords: script.keywords.map(() => ({ uses: 0, replies: 0 })),
+      cycles: { DEFAULT: 0, QUESTION: 0, REPEAT: 0 },
+      memory: { queue: [], log: [] },
+      session: null,
+      summary: { sessions: 0, turns: 0, sources: sourceCounts() },
+    };
+  }
+  preSubstitute(clauses) {
+    return clauses.map(clause => clause.flatMap(word => this.script.pre.get(word)?.replacement ?? [word]));
+  }
+  isQuit(clauses) {
+    const words = clauses.flat();
+    return words.length === 1 && this.script.quit.has(words[0]);
+  }
+  resetCycles() {
+    for (const rule of this.state.rules) rule.next = 0;
+    for (const name of Object.keys(this.state.cycles)) this.state.cycles[name] = 0;
+  }
+  takeItem(rule) {
+    const position = this.state.rules[rule.id];
+    const item = rule.items[position.next];
+    position.uses[position.next] += 1;
+    position.next = (position.next + 1) % rule.items.length;
+    return item;
+  }
+  selectClause(clauses) {
+    for (let index = 0; index < clauses.length; index += 1) {
+      const words = clauses[index];
+      const positions = new Map();
+      words.forEach((word, position) => {
+        if (this.script.keywordByWord.has(word) && !positions.has(word)) positions.set(word, position);
+      });
+      if (positions.size === 0) continue;
+      const keywords = [...positions.keys()].map(word => this.script.keywordByWord.get(word));
+      keywords.sort((first, second) => second.rank - first.rank
+        || positions.get(first.word) - positions.get(second.word));
+      return { number: index + 1, words, keywords };
+    }
+    return null;
+  }
+  applyMemoryRules(keyword, words, trace) {
+    for (const rule of keyword.memory) {
+      const bindings = match(rule.pattern, words, this.script.groups);
+      if (bindings === null) continue;
+      trace.push(`MEMORY ${keyword.word} ${rule.number}`);
+      this.state.rules[rule.id].hits += 1;
+      if (rule.items.length > 0) {
+        const item = this.takeItem(rule);
+        const text = buildReply(item.text, bindings, this.script.post);
+        memory.store(this.state.memory, this.state.session, this.script.capacity, keyword.word, text);
+      }
+      return;
+    }
+  }
+  keywordReply(clauses, trace) {
+    const selected = this.selectClause(clauses);
+    if (selected === null) {
+      trace.push('CLAUSE none');
+      return null;
+    }
+    const { words, keywords } = selected;
+    trace.push(`CLAUSE ${selected.number} ${words.join(' ')}`);
+    trace.push(`KEYS ${keywords.map(keyword => keyword.word).join(' ')}`);
+    this.applyMemoryRules(keywords[0], words, trace);
+    const entered = new Set();
+    for (const initial of keywords) {
+      if (entered.has(initial.word)) continue;
+      trace.push(`ENTER ${initial.word}`);
+      let keyword = initial;
+      let currentWords = words;
+      while (true) {
+        entered.add(keyword.word);
+        this.state.keywords[keyword.id].uses += 1;
+        let chosen = null;
+        let bindings = null;
+        for (const rule of keyword.decomp) {
+          bindings = match(rule.pattern, currentWords, this.script.groups);
+          if (bindings !== null) {
+            chosen = rule;
+            break;
+          }
+        }
+        if (chosen === null) {
+          trace.push(`NOMATCH ${keyword.word}`);
+          break;
+        }
+        this.state.rules[chosen.id].hits += 1;
+        if (chosen.items.length === 0) {
+          trace.push(`DECOMP ${keyword.word} ${chosen.number} 0`);
+          break;
+        }
+        const item = this.takeItem(chosen);
+        trace.push(`DECOMP ${keyword.word} ${chosen.number} ${item.number}`);
+        if (item.kind === 'REASM') {
+          const reply = buildReply(item.text, bindings, this.script.post);
+          this.state.keywords[keyword.id].replies += 1;
+          increment(this.state.session.topics, keyword.word);
+          return reply;
+        }
+      }
+    }
+    return null;
+  }
+  decide(text, clauses = normalize(text)) {
+    const trace = [];
+    const session = this.state.session;
+    let reply;
+    let source;
+    if (this.script.texts.REPEAT.length > 0 && clauses.length > 0 && sameClauses(session.previous, clauses)) {
+      trace.push('REPEAT');
+      reply = this.takeText('REPEAT');
+      source = 'repeat';
+    } else {
+      reply = this.keywordReply(this.preSubstitute(clauses), trace);
+      if (reply !== null) {
+        source = 'keyword';
+      } else if (this.state.memory.queue.length > 0) {
+        reply = memory.recall(this.state.memory, session);
+        source = 'memory';
+      } else if (text.endsWith('?') && this.script.texts.QUESTION.length > 0) {
+        reply = this.takeText('QUESTION');
+        source = 'question';
+      } else {
+        reply = this.takeText('DEFAULT');
+        source = 'default';
+      }
+    }
+    trace.push(`REPLY ${source}`);
+    session.previous = clauses;
+    session.sources[source] += 1;
+    if (source === 'question' || source === 'default') session.unrecognized.push(session.turns);
+    return { reply, trace };
+  }
+  startSession(name) {
+    if (this.state.summary.sessions > 0) this.transcript.push('');
+    if (!this.script.persistence.has('cycles')) this.resetCycles();
+    if (!this.script.persistence.has('memory')) memory.clear(this.state.memory, name, 0);
+    this.state.session = {
+      name, turns: 0, sources: sourceCounts(), previous: null, history: [], lastTrace: null,
+      traceDisplay: false, topics: new Map(), words: new Map(), stored: 0, recalled: 0,
+      unrecognized: [], undo: null,
+    };
+    this.transcript.push(`SESSION ${name}`);
+    const initial = this.script.texts.INITIAL;
+    this.transcript.push(...wrapReply(initial[this.state.summary.sessions % initial.length]));
+  }
+  finishSession() {
+    const session = this.state.session;
+    this.transcript.push(`NOTES ${session.name}`);
+    this.transcript.push(`  ${countLine(session)}`);
+    this.transcript.push(`  topics: ${leaders(session.topics)}`);
+    this.transcript.push(`  words: ${leaders(session.words)}`);
+    this.transcript.push(`  memory: stored=${session.stored} recalled=${session.recalled} pending=${this.state.memory.queue.length}`);
+    this.transcript.push(`  unrecognized: ${session.unrecognized.join(' ') || 'none'}`);
+    const summary = this.state.summary;
+    summary.sessions += 1;
+    summary.turns += session.turns;
+    for (const source of SOURCES) summary.sources[source] += session.sources[source];
+  }
+  utterance(text) {
+    this.transcript.push(`YOU: ${text}`);
+    const clauses = normalize(text);
+    if (this.isQuit(clauses)) {
+      const finals = this.script.texts.FINAL;
+      this.transcript.push(...wrapReply(finals[this.state.summary.sessions % finals.length]));
+      this.finishSession();
+      return;
+    }
+    const snapshot = structuredClone(this.state);
+    snapshot.session.undo = null;
+    const session = this.state.session;
+    session.undo = snapshot;
+    session.turns += 1;
+    for (const clause of clauses) {
+      for (const word of clause) {
+        if (!this.script.stop.has(word)) increment(session.words, word);
+      }
+    }
+    session.history.push(`${session.turns}: ${text}`);
+    const result = this.decide(text, clauses);
+    this.transcript.push(...wrapReply(result.reply));
+    session.lastTrace = result.trace;
+    if (session.traceDisplay) this.transcript.push(...result.trace.map(line => `  ${line}`));
+  }
+  preview(text, explain) {
+    const clauses = normalize(text);
+    if (this.isQuit(clauses)) return ['would quit'];
+    const saved = structuredClone(this.state);
+    try {
+      const result = this.decide(text, clauses);
+      return explain ? result.trace : [result.reply];
+    } finally {
+      this.state = saved;
+    }
+  }
+  command(line) {
+    const space = line.indexOf(' ');
+    const name = space < 0 ? line : line.slice(0, space);
+    const argument = space < 0 ? '' : line.slice(space + 1);
+    const args = argument === '' ? [] : argument.split(' ');
+    if (!COMMANDS.has(name)) return [`unknown command ${name}`];
+    if (NO_ARGUMENT.has(name) && args.length > 0
+        || TEXT_ARGUMENT.has(name) && argument === ''
+        || ONE_ARGUMENT.has(name) && args.length !== 1
+        || name === ':trace' && (args.length !== 1 || !['on', 'off'].includes(args[0]))
+        || name === ':test' && args.length < 2) return ['bad arguments'];
+    const keyword = this.script.keywordByWord.get(args[0]);
+    if (KEYWORD_ARGUMENT.has(name) && keyword === undefined) return [`unknown keyword ${args[0]}`];
+    const session = this.state.session;
+    if (name === ':say' || name === ':explain') return this.preview(argument, name === ':explain');
+    if (session.undo === null) return ['nothing to undo'];
+    this.state = session.undo;
+    return [`undone turn ${this.state.session.turns + 1}`];
+  }
+  run(lines) {
+    for (const line of lines) {
+      if (line.startsWith('SESSION ')) {
+        this.startSession(line.slice(8));
+      } else if (line.startsWith(':')) {
+        this.transcript.push(line);
+        const output = this.command(line);
+        this.transcript.push(...output.map(text => `  ${text}`));
+      } else {
+        this.utterance(line);
+      }
+    }
+    const summary = this.state.summary;
+    this.transcript.push('', `SUMMARY sessions=${summary.sessions} ${countLine(summary)}`);
+  }
+  keywordStatistics() {
+    const keywords = this.script.keywords.slice();
+    keywords.sort((first, second) => this.state.keywords[second.id].uses - this.state.keywords[first.id].uses
+      || compareWords(first.word, second.word));
+    const lines = ['keyword,rank,uses,replies,decomposition_hits'];
+    for (const keyword of keywords) {
+      const statistics = this.state.keywords[keyword.id];
+      const hits = keyword.decomp.map(rule => this.state.rules[rule.id].hits).join('/') || '-';
+      lines.push(`${keyword.word},${keyword.rank},${statistics.uses},${statistics.replies},${hits}`);
+    }
+    return lines;
+  }
+}
+function writeLines(name, lines) {
+  fs.writeFileSync(`output/${name}`, lines.length > 0 ? `${lines.join('\n')}\n` : '', 'ascii');
+}
+function main() {
+  const script = loadScript('input/script.txt');
+  fs.mkdirSync('output', { recursive: true });
+  const chatbot = new Chatbot(script);
+  chatbot.run(readLines('input/dialogue.txt'));
+  writeLines('transcript.txt', chatbot.transcript);
+  writeLines('keyword_stats.csv', chatbot.keywordStatistics());
+  writeLines('memory_log.txt', chatbot.state.memory.log);
+}
+if (require.main === module) main();

@@ -1,0 +1,220 @@
+enum Value {
+    case string(String), list([String]), hash([String: String]), set(Set<String>), zset([String: Int])
+    var emptyCollection: Bool {
+        switch self {
+        case .string:
+            return false
+        }
+struct Record { var value: Value
+    var expiry: Int?
+}
+typealias Database = [String: Record]
+func number(_ word: String, message: String = notInteger) throws -> Int {
+    if word == "0" {
+        return 0
+    }
+    let bytes = Array(word.utf8)
+    guard !bytes.isEmpty else {
+        try fail(message)
+    }
+    let start = bytes[0] == 45 ? 1 : 0, count = bytes.count - start
+    guard (1...9).contains(count), (49...57).contains(bytes[start]) else {
+        try fail(message)
+    }
+    var result = 0
+    for byte in bytes[start...] {
+        guard (48...57).contains(byte) else {
+            try fail(message)
+        }
+        result = result * 10 + Int(byte - 48)
+    }
+    return start == 1 ? -result : result
+func quote(_ value: String) -> String {
+    var output = "\""
+    for character in value {
+        if character == "\"" || character == "\\" {
+            output += "\\"
+        }
+        output.append(character)
+    }
+    return output + "\""
+}
+func integer(_ value: Int) -> Reply {
+    ["(integer) \(value)"]
+}
+func stringReply(_ value: String?) -> Reply {
+    [value.map(quote) ?? "(nil)"]
+func splitArguments(_ line: String) -> [String]? {
+    let bytes = Array(line.utf8)
+    var position = 0, arguments: [String] = []
+    while position < bytes.count {
+        if bytes[position] == 32 {
+            position += 1
+            continue
+        }
+        if bytes[position] != 34 {
+            let start = position
+            while position < bytes.count && bytes[position] != 32 {
+                position += 1
+            }
+            arguments.append(String(decoding: bytes[start..<position], as: UTF8.self))
+            continue
+        }
+    }
+    return arguments
+let commands: [String: CommandSpec] = {
+    var result: [String: CommandSpec] = [:]
+    func add(_ group: Group, _ names: String, _ minimum: Int, _ maximum: Int?, parity: Int? = nil) {
+        for name in names.split(separator: " ") {
+            result[String(name)] = CommandSpec(group: group, minimum: minimum, maximum: maximum, parity: parity)
+        }
+    }
+    add(.text, "SET", 2, nil)
+    add(.text, "GET INCR DECR STRLEN", 1, 1)
+    add(.keys, "TYPE KEYS TTL PERSIST TICK", 1, 1)
+    add(.control, "BEGIN COMMIT ROLLBACK", 0, 0)
+    add(.control, "SNAPSHOT RESTORE", 1, 1)
+    return result
+}()
+struct Store {
+    private var database: Database = [:]
+    private var time = 0
+    private var transactions: [Database] = []
+    private var snapshots: [String: Database] = [:]
+
+    private func text(_ key: String) throws -> String {
+        guard let value = database[key]?.value else {
+            return ""
+        }
+        guard case .string(let content) = value else {
+            try fail(wrongType)
+        }
+        return content
+    private mutating func replace(_ key: String, _ value: Value, expiry: Int? = nil) {
+        if value.emptyCollection {
+            database.removeValue(forKey: key)
+        } else {
+            database[key] = Record(value: value, expiry: expiry)
+        }
+    private mutating func purge() -> Int {
+        let expired = database.keys.filter { database[$0]!.expiry.map { $0 <= time } ?? false }
+        for key in expired {
+            database.removeValue(forKey: key)
+        }
+        return expired.count
+    }
+    private mutating func textCommand(_ command: String, _ args: [String]) throws -> Reply {
+        let key = args[0]
+        if command == "SET" {
+            var options = Set<String>(), secondsWord: String?
+            var index = 2
+            while index < args.count {
+                let option = args[index].uppercased()
+                guard ["NX", "XX", "EX", "KEEPTTL", "GET"].contains(option),
+                      options.insert(option).inserted
+                else {
+                    try fail(syntax)
+                }
+                if option == "EX" {
+                    index += 1
+                    guard index < args.count else {
+                        try fail(syntax)
+                    }
+                    secondsWord = args[index]
+                }
+                index += 1
+            }
+            if (options.contains("NX") && options.contains("XX")) ||
+                (options.contains("EX") && options.contains("KEEPTTL"))
+            {
+                try fail(syntax)
+            }
+            var expiry: Int?
+            if let secondsWord {
+                let seconds = try number(secondsWord)
+                guard seconds > 0 else {
+                    try fail("ERR invalid expire time in 'set' command")
+                }
+                expiry = time + seconds
+            }
+            let exists = database[key] != nil
+            let changed = !(options.contains("NX") && exists) && !(options.contains("XX") && !exists)
+            if changed {
+                replace(key, .string(args[1]), expiry: expiry)
+            }
+            return changed ? ["OK"] : stringReply(nil)
+        }
+        var value = try text(key)
+        if command == "GET" {
+            return stringReply(database[key] == nil ? nil : value)
+        }
+    private mutating func keyCommand(_ command: String, _ args: [String]) throws -> Reply {
+        if command == "TICK" {
+            let seconds = try number(args[0])
+            guard seconds > 0 else {
+                try fail(positive)
+            }
+            time += seconds
+            return integer(purge())
+        }
+    private mutating func controlCommand(_ command: String, _ args: [String]) throws -> Reply {
+        if command == "BEGIN" {
+            transactions.append(database)
+            return ["OK"]
+        }
+        if command == "COMMIT" || command == "ROLLBACK" {
+            guard let saved = transactions.popLast() else {
+                try fail("ERR no transaction")
+            }
+            if command == "ROLLBACK" {
+                database = saved
+                _ = purge()
+            }
+            return ["OK"]
+        }
+        if command == "SNAPSHOT" {
+            snapshots[args[0]] = database
+            return ["OK"]
+        }
+        guard let saved = snapshots[args[0]] else {
+            try fail("ERR no such snapshot")
+        }
+        database = saved
+        _ = purge()
+        return ["OK"]
+    mutating func execute(_ line: String) throws -> Reply {
+        guard let parsed = splitArguments(line), let original = parsed.first else {
+            return ["Invalid argument(s)"]
+        }
+        let command = original.uppercased(), args = Array(parsed.dropFirst())
+        guard let specification = commands[command] else {
+            try fail("ERR unknown command '\(original)'")
+        }
+        if args.count < specification.minimum || (specification.maximum.map { args.count > $0 } ?? false)
+            || (specification.parity.map { args.count % 2 != $0 } ?? false)
+        {
+            try fail("ERR wrong number of arguments for '\(command.lowercased())' command")
+        }
+        switch specification.group {
+        case .text:
+            return try textCommand(command, args)
+        case .keys:
+            return try keyCommand(command, args)
+        case .control:
+            return try controlCommand(command, args)
+        }
+if let first = readLine(), let count = Int(first) {
+    var store = Store()
+    for _ in 0..<count {
+        guard let line = readLine() else {
+            break
+        }
+        do {
+            for output in try store.execute(line) {
+                print(output)
+            }
+        } catch let problem as CommandError {
+        } catch {
+        }
+    }
+}

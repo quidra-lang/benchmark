@@ -1,0 +1,525 @@
+module BondDates
+  EPOCH = Date.new(2000, 1, 1)
+
+  def self.leap?(year)
+    (year % 4).zero? && (!(year % 100).zero? || (year % 400).zero?)
+  end
+
+  def self.month_days(year, month)
+    [31, leap?(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+  end
+
+  def self.number(year, month, day)
+    (Date.new(year, month, day) - EPOCH).to_i
+  end
+
+  def self.parse(text)
+    match = /\A([0-9]{4})-([0-9]{2})-([0-9]{2})\z/.match(text)
+    return nil unless match
+
+    year, month, day = match.captures.map(&:to_i)
+    return nil unless year.between?(2001, 2099) && month.between?(1, 12)
+    return nil unless day.between?(1, month_days(year, month))
+
+    number(year, month, day)
+  end
+
+  def self.parts(day)
+    date = EPOCH + day
+    [date.year, date.month, date.day]
+  end
+
+  def self.text(day)
+    format('%04d-%02d-%02d', *parts(day))
+  end
+
+  def self.month_end?(day)
+    year, month, date = parts(day)
+    date == month_days(year, month)
+  end
+
+  class Calendar
+    def initialize(holidays)
+      @holidays = holidays.to_set
+    end
+
+    def business?(day)
+      ((day + 6) % 7).between?(1, 5) && !@holidays.include?(day)
+    end
+
+    def shift(day, count)
+      step = count.negative? ? -1 : 1
+      remaining = count.abs
+      while remaining.positive?
+        day += step
+        remaining -= 1 if business?(day)
+      end
+      day
+    end
+
+    def adjust(day, convention)
+      return day if convention == 'UNADJUSTED'
+
+      direction = convention == 'PRECEDING' ? -1 : 1
+      adjusted = day
+      adjusted += direction until business?(adjusted)
+      if convention == 'MODIFIED_FOLLOWING' && BondDates.parts(adjusted)[1] != BondDates.parts(day)[1]
+        adjusted = day
+        adjusted -= 1 until business?(adjusted)
+      end
+      adjusted
+    end
+  end
+end
+module DayCount
+  CONVENTIONS = %w[30/360 30E/360 ACT/360 ACT/365F ACT/ACT].freeze
+
+  def self.fraction(first, last, convention)
+    year1, month1, day1 = BondDates.parts(first)
+    year2, month2, day2 = BondDates.parts(last)
+    if convention == '30/360'
+      february1 = month1 == 2 && BondDates.month_end?(first)
+      february2 = month2 == 2 && BondDates.month_end?(last)
+      day2 = 30 if february1 && february2
+      day1 = 30 if february1
+      day2 = 30 if day2 == 31 && day1 >= 30
+      day1 = 30 if day1 == 31
+    else
+      day1 = 30 if day1 == 31
+      day2 = 30 if day2 == 31
+    end
+    [360 * (year2 - year1) + 30 * (month2 - month1) + day2 - day1, 360]
+  end
+end
+module Bisection
+  def self.solve(lower, upper, target)
+    80.times do
+      middle = (lower + upper) / 2.0
+      if yield(middle) > target
+        lower = middle
+      else
+        upper = middle
+      end
+    end
+    (lower + upper) / 2.0
+  end
+end
+
+class YieldPricing
+  def initialize(cashflows, fraction, frequency, outstanding)
+    @cashflows = cashflows
+    @fraction = fraction
+    @frequency = frequency.to_f
+    @outstanding = outstanding.to_f
+  end
+
+  def values(rate)
+    first = 1.0 + @fraction * rate / @frequency
+    factor = 1.0 + rate / @frequency
+    power = 1.0
+    @cashflows.map do |amount|
+      value = amount.to_f / (first * power)
+      power *= factor
+      value
+    end
+  end
+
+  def dirty(rate)
+    values(rate).reduce(0.0, :+) * 100.0 / @outstanding
+  end
+
+  def yield_to(target)
+    Bisection.solve(0.0, 1.0, target) { |rate| dirty(rate) }
+  end
+
+  def analytics(target)
+    rate = yield_to(target)
+    present_values = values(rate)
+    total = present_values.reduce(0.0, :+)
+    weighted = 0.0
+    convex = 0.0
+    present_values.each_with_index do |value, index|
+      time = (index.to_f + @fraction) / @frequency
+      weighted += time * value
+      convex += time * (time + 1.0 / @frequency) * value
+    end
+    factor = 1.0 + rate / @frequency
+    macaulay = weighted / total
+    { ytm: rate, macaulay: macaulay, modified: macaulay / factor,
+      convexity: convex / (total * factor * factor),
+      dv01: (dirty(rate - 0.0001) - dirty(rate + 0.0001)) / 2.0 }
+  end
+end
+module CouponSchedule
+  FREQUENCIES = [1, 2, 4, 12].freeze
+
+  def self.build(issue, maturity, frequency, eom: false, long: false)
+    year, month, day = BondDates.parts(maturity)
+    end_of_month = eom && BondDates.month_end?(maturity)
+    step = 12 / frequency
+    dates = []
+    index = 0
+    loop do
+      period_year, period_month = (year * 12 + month - 1 - step * index).divmod(12)
+      period_month += 1
+      last_day = BondDates.month_days(period_year, period_month)
+      period_day = end_of_month ? last_day : [day, last_day].min
+      current = BondDates.number(period_year, period_month, period_day)
+      if current <= issue
+        dates.pop if long && current != issue && index >= 2
+        break
+      end
+      dates << current
+      index += 1
+    end
+    [issue] + dates.reverse
+  end
+end
+  def initialize(days, rates)
+    @days = days
+    @rates = rates
+  end
+  def zero(day)
+    return @rates.first if day <= @days.first
+    return @rates.last if day >= @days.last
+
+    upper = @days.index { |pillar| pillar >= day }
+    return @rates[upper] if day == @days[upper]
+
+    weight = (day - @days[upper - 1]).to_f / (@days[upper] - @days[upper - 1]).to_f
+    @rates[upper - 1] + (@rates[upper] - @rates[upper - 1]) * weight
+  end
+  def discount(day, spread = 0.0)
+    rate = zero(day) + spread
+    years, remainder = day.divmod(365)
+    power = 1.0
+    years.times { power *= 1.0 + rate }
+    1.0 / (power * (1.0 + rate * remainder.to_f / 365.0))
+  end
+  def present_value(cashflows, spread = 0.0)
+    cashflows.reduce(0.0) { |total, (day, amount)| total + amount.to_f * discount(day, spread) }
+  end
+  def zspread(cashflows, value)
+    Bisection.solve(-0.5, 0.5, value.to_f) { |spread| present_value(cashflows, spread) }
+  end
+  def self.bootstrap(pillars, settlement)
+    days = []
+    rates = []
+    pillars.each do |pillar|
+      schedule = CouponSchedule.build(settlement, pillar[:maturity], pillar[:frequency])
+      cashflows = schedule.each_cons(2).map do |first, last|
+        numerator, denominator = DayCount.fraction(first, last, '30/360')
+        amount = pillar[:coupon].to_f * numerator.to_f / (10_000.0 * denominator.to_f)
+        amount += 1.0 if last == pillar[:maturity]
+        [last - settlement, amount]
+      end
+      pillar_days = days + [pillar[:maturity] - settlement]
+      rate = Bisection.solve(0.0, 1.0, 1.0) do |candidate|
+        ZeroCurve.new(pillar_days, rates + [candidate]).present_value(cashflows)
+      end
+      days = pillar_days
+      rates << rate
+    end
+    ZeroCurve.new(days, rates)
+  end
+require_relative 'curve'
+
+class PortfolioAnalysis
+  TYPES = %w[FIXED ZERO AMORT FRN].freeze
+  BUSINESS_RULES = %w[FOLLOWING MODIFIED_FOLLOWING PRECEDING UNADJUSTED].freeze
+  BUCKETS = ['0-1Y', '1-3Y', '3-5Y', '5-10Y', '10Y+'].freeze
+
+  def initialize
+    @errors = []
+    @scenarios = []
+    @limits = []
+  end
+  def round_ratio(numerator, denominator)
+    (2 * numerator + denominator) / (2 * denominator)
+  end
+  def price(text)
+    text.delete('.').to_i
+  end
+  def decimal(value, digits)
+    factor = { 2 => 100, 4 => 10_000, 6 => 1_000_000 }.fetch(digits)
+    rounded = (value.abs * factor.to_f + 0.5).floor
+    sign = value.negative? && rounded.positive? ? '-' : ''
+    whole, fraction = rounded.divmod(factor)
+    "#{sign}#{whole}.#{fraction.to_s.rjust(digits, '0')}"
+  end
+  def percent(value)
+    decimal(value * 100.0, 4)
+  end
+  def rows(file)
+    File.readlines("input/#{file}", chomp: true).drop(1).each_with_index.map do |line, index|
+      [index + 2, line.split(',')]
+    end
+  end
+  def error(file, line, key, message)
+    @errors << "#{file}:#{line}: #{key}: #{message}"
+  end
+  def read_parameters
+    @parameter_lines = File.readlines('input/params.txt', chomp: true).map { |line| line.split(' ') }
+    @valuation = BondDates.parse(@parameter_lines.find { |words| words.first == 'valuation_date' }[1])
+    settlement_days = @parameter_lines.find { |words| words.first == 'settlement_days' }[1].to_i
+    holidays = File.readlines('input/calendar.txt', chomp: true).map { |text| BondDates.parse(text) }
+    @calendar = BondDates::Calendar.new(holidays)
+    @settlement = @calendar.shift(@valuation, settlement_days)
+    @fixings = rows('fixings.csv').map { |_, fields| [BondDates.parse(fields[0]), fields[1].to_i] }
+    @limits = @parameter_lines.select { |words| words.first == 'limit' }.map { |words| words.drop(1) }
+  end
+  def validate_pillars
+    seen = Set.new
+    @pillars = []
+    rows('curve_quotes.csv').each do |line, fields|
+      text, coupon, frequency = fields
+      maturity = BondDates.parse(text)
+      duplicate = seen.include?(text)
+      seen.add(text)
+      message = if duplicate
+                  'duplicate pillar'
+                elsif maturity.nil?
+                  'invalid date'
+                elsif maturity <= @settlement
+                  'pillar not after settlement'
+                elsif !CouponSchedule::FREQUENCIES.include?(frequency.to_i)
+                  'invalid frequency'
+                end
+      if message
+        error('curve_quotes.csv', line, text, message)
+      else
+        @pillars << { maturity: maturity, coupon: coupon.to_i, frequency: frequency.to_i }
+      end
+    end
+    @pillars.sort_by! { |pillar| pillar[:maturity] }
+    @curve = ZeroCurve.bootstrap(@pillars, @settlement)
+  end
+  def parse_options(type, text)
+    allowed = %w[EOM LONG] + { 'FIXED' => ['CALL'], 'ZERO' => [], 'AMORT' => ['SINK'],
+                              'FRN' => %w[LAG CAP FLOOR] }.fetch(type)
+    values = {}
+    sinks = []
+    calls = []
+    (text == '-' ? [] : text.split(';')).each do |item|
+      key, _, value = item.partition('=')
+      return nil unless allowed.include?(key)
+      return nil if values.key?(key) && !%w[SINK CALL].include?(key)
+
+      values[key] = value
+      if key == 'SINK'
+        date, _, redemption = value.partition(':')
+        sinks << [BondDates.parse(date), redemption.to_i]
+      elsif key == 'CALL'
+        date, _, call_price = value.partition(':')
+        calls << [BondDates.parse(date), price(call_price)]
+      end
+    end
+    lag = values['LAG']&.to_i
+    cap = values['CAP']&.to_i
+    floor = values['FLOOR']&.to_i
+    if type == 'FRN'
+      return nil if lag.nil? || !lag.between?(1, 5) || (!cap.nil? && cap > 1200)
+      return nil if !floor.nil? && floor > (cap || 1200)
+    end
+    { eom: values.key?('EOM'), long: values.key?('LONG'), lag: lag, cap: cap, floor: floor,
+      sinks: sinks, calls: calls }
+  end
+  def valid_redemptions?(entries, interior)
+    previous = nil
+    entries.all? do |date, _|
+      valid = !date.nil? && interior.include?(date) && (previous.nil? || date > previous)
+      previous = date
+      valid
+    end
+  end
+  def cashflows(bond)
+    opening = bond[:face]
+    sinks = bond[:options][:sinks].to_h
+    periods = []
+    bond[:dates].each_cons(2).with_index(1) do |(first, last), index|
+      numerator, denominator = DayCount.fraction(first, last, bond[:daycount])
+      rate = bond[:coupon]
+      if bond[:type] == 'FRN'
+        fixing_date = @calendar.shift(@calendar.adjust(first, bond[:bdc]), -bond[:options][:lag])
+        fixing = index_rate(fixing_date)
+        return nil if fixing.nil?
+
+        rate += fixing
+        rate = [rate, bond[:options][:floor]].max unless bond[:options][:floor].nil?
+        rate = [rate, bond[:options][:cap]].min unless bond[:options][:cap].nil?
+      end
+      principal = last == bond[:maturity] ? opening : sinks.fetch(last, 0)
+      coupon = round_ratio(opening * rate * numerator, 10_000 * denominator)
+      periods << { number: index, start: first, end: last, payment: @calendar.adjust(last, bond[:bdc]),
+                   numerator: numerator, denominator: denominator, rate: rate, opening: opening,
+                   coupon: coupon, principal: principal, amount: coupon + principal }
+      opening -= principal
+    end
+    periods
+  end
+  def validate_bond(fields)
+    id, type, issue_text, maturity_text, coupon, frequency, daycount, bdc, face, text = fields
+    return [nil, 'unknown type'] unless TYPES.include?(type)
+
+    issue = BondDates.parse(issue_text)
+    maturity = BondDates.parse(maturity_text)
+    return [nil, 'invalid date'] if issue.nil? || maturity.nil?
+    return [nil, 'maturity not after issue'] if maturity <= issue
+    return [nil, 'invalid frequency'] unless CouponSchedule::FREQUENCIES.include?(frequency.to_i)
+    return [nil, 'unknown day count'] unless DayCount::CONVENTIONS.include?(daycount)
+    return [nil, 'unknown business day rule'] unless BUSINESS_RULES.include?(bdc)
+
+    face = face.to_i
+    coupon = coupon.to_i
+    return [nil, 'invalid face'] unless (face % 100_000).zero? && face <= 10_000_000
+    return [nil, 'invalid coupon'] if coupon > 1200 || (type == 'ZERO' && !coupon.zero?)
+
+    options = parse_options(type, text)
+    return [nil, 'invalid option'] if options.nil?
+
+    dates = CouponSchedule.build(issue, maturity, frequency.to_i, eom: options[:eom], long: options[:long])
+    interior = dates[1...-1].to_set
+    sinking_total = options[:sinks].sum { |_, value| value }
+    if !valid_redemptions?(options[:sinks], interior) || options[:sinks].any? { |_, value| value.zero? } ||
+       (type == 'AMORT' && (sinking_total.zero? || sinking_total >= face))
+      return [nil, 'invalid sinking fund']
+    end
+    if !valid_redemptions?(options[:calls], interior) || options[:calls].any? { |_, value| !value.between?(100_000, 110_000) }
+      return [nil, 'invalid call schedule']
+    end
+    bond = { id: id, type: type, issue: issue, maturity: maturity, coupon: coupon,
+             frequency: frequency.to_i, daycount: daycount, bdc: bdc, face: face, options: options, dates: dates }
+    bond[:periods] = cashflows(bond)
+    bond[:periods].nil? ? [nil, 'missing fixing'] : [bond, nil]
+  end
+  def validate_bonds
+    @bonds = {}
+    seen = Set.new
+    rows('bonds.csv').each do |line, fields|
+      duplicate = seen.include?(fields.first)
+      seen.add(fields.first)
+      bond, message = duplicate ? [nil, 'duplicate id'] : validate_bond(fields)
+      if message
+        error('bonds.csv', line, fields.first, message)
+      else
+        @bonds[bond[:id]] = bond
+      end
+    end
+  end
+  def settlement_values(bond, clean_price)
+    current = bond[:periods].index { |period| period[:end] > @settlement }
+    period = bond[:periods][current]
+    outstanding = period[:opening]
+    numerator, denominator = DayCount.fraction(period[:start], @settlement, bond[:daycount])
+    accrued = period[:rate].to_f * numerator.to_f / (100.0 * denominator.to_f)
+    accrued_cents = round_ratio(outstanding * period[:rate] * numerator, 10_000 * denominator)
+    clean_cents = round_ratio(outstanding * clean_price, 100_000)
+    remaining = bond[:periods].drop(current)
+    flows = remaining.select { |flow| flow[:amount].positive? }
+    numerator, denominator = DayCount.fraction(@settlement, period[:end], bond[:daycount])
+    fraction = bond[:frequency].to_f * numerator.to_f / denominator.to_f
+    { bond: bond, clean_price: clean_price, outstanding: outstanding, accrued: accrued,
+      accrued_cents: accrued_cents, clean_cents: clean_cents, value: clean_cents + accrued_cents,
+      target: clean_price.to_f / 1000.0 + accrued, fraction: fraction, remaining: remaining,
+      flows: flows, pairs: flows.map { |flow| [flow[:payment] - @settlement, flow[:amount]] },
+      model: YieldPricing.new(remaining.map { |flow| flow[:amount] }, fraction, bond[:frequency], outstanding) }
+  end
+  def bond_analytics(asset)
+    bond = asset[:bond]
+    metrics = asset[:model].analytics(asset[:target])
+    metrics[:ytw] = metrics[:ytm]
+    metrics[:workout] = bond[:maturity]
+    bond[:options][:calls].each do |date, call_price|
+      next unless date > @settlement
+
+      last = asset[:remaining].index { |period| period[:end] == date }
+      periods = asset[:remaining].take(last + 1)
+      amounts = periods.map { |period| period[:coupon] }
+      amounts[-1] += round_ratio(periods.last[:opening] * call_price, 100_000)
+      model = YieldPricing.new(amounts, asset[:fraction], bond[:frequency], asset[:outstanding])
+      call_yield = model.yield_to(asset[:target])
+      if call_yield < metrics[:ytw]
+        metrics[:ytw] = call_yield
+        metrics[:workout] = date
+      end
+    end
+    life = asset[:flows].reduce(0.0) do |total, flow|
+      total + flow[:principal].to_f * (flow[:payment] - @settlement).to_f
+    end
+    metrics[:wal] = life / (365.0 * asset[:outstanding].to_f)
+    metrics[:next_payment] = asset[:flows].first[:payment]
+    metrics[:curve_clean] = @curve.present_value(asset[:pairs]) * 100.0 / asset[:outstanding].to_f - asset[:accrued]
+    metrics[:zspread] = @curve.zspread(asset[:pairs], asset[:value])
+    asset[:metrics] = metrics
+  end
+  def validate_prices
+    @priced = {}
+    seen = Set.new
+    rows('prices.csv').each do |line, (id, clean_price)|
+      duplicate = seen.include?(id)
+      seen.add(id)
+      bond = @bonds[id]
+      message = if bond.nil?
+                  'unknown bond'
+                elsif duplicate
+                  'duplicate price'
+                elsif !(bond[:issue] <= @settlement && @settlement < bond[:maturity])
+                  'not outstanding'
+                end
+      if message.nil?
+        asset = settlement_values(bond, price(clean_price))
+        unless asset[:model].dirty(0.0) > asset[:target] && asset[:target] > asset[:model].dirty(1.0)
+          message = 'yield out of range'
+        end
+      end
+      if message
+        error('prices.csv', line, id, message)
+      else
+        bond_analytics(asset)
+        @priced[id] = asset
+      end
+    end
+  end
+  def cashflow_lines
+    lines = ['bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal']
+    @bonds.sort.each do |id, bond|
+      bond[:periods].each do |period|
+        next if period[:amount].zero?
+
+        lines << [id, period[:number], BondDates.text(period[:start]), BondDates.text(period[:end]),
+                  BondDates.text(period[:payment]), decimal(period[:numerator].to_f / period[:denominator].to_f, 6),
+                  period[:rate], period[:opening], period[:coupon], period[:principal]].join(',')
+      end
+    end
+    lines
+  end
+  def analytic_lines
+    lines = ['bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread']
+    @priced.sort.each do |id, asset|
+      metrics = asset[:metrics]
+      lines << [id, decimal(asset[:clean_price].to_f / 1000.0, 6), decimal(asset[:accrued], 6), decimal(asset[:target], 6),
+                percent(metrics[:ytm]), percent(metrics[:ytw]), BondDates.text(metrics[:workout]), BondDates.text(metrics[:next_payment]),
+                *%i[wal macaulay modified convexity].map { |key| decimal(metrics[key], 4) }, decimal(metrics[:dv01], 6),
+                decimal(metrics[:curve_clean], 6), percent(metrics[:zspread])].join(',')
+    end
+    lines
+  end
+  def run
+    read_parameters
+    validate_pillars
+    validate_scenarios
+    validate_bonds
+    validate_prices
+    validate_holdings
+    portfolios = @positions.values.group_by { |position| position[:portfolio] }.sort.map do |name, positions|
+      portfolio(name, positions.sort_by { |position| position[:id] })
+    end
+    files = { 'errors.txt' => @errors, 'cashflows.csv' => cashflow_lines, 'analytics.csv' => analytic_lines,
+              'curve.txt' => curve_lines, 'portfolio.txt' => portfolios.flat_map { |entry| portfolio_lines(entry) },
+              'scenarios.csv' => scenario_lines(portfolios), 'compliance.txt' => portfolios.flat_map { |entry| compliance(entry) } }
+    Dir.mkdir('output') unless Dir.exist?('output')
+    files.each { |name, lines| File.binwrite("output/#{name}", lines.empty? ? '' : lines.join("\n") + "\n") }
+  end
+end
+
+PortfolioAnalysis.new.run

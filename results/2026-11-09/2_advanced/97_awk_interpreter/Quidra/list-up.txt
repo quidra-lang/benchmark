@@ -1,0 +1,757 @@
+class Position(int line, int column)
+    string text()
+        return "{line}:{column}"
+
+class Token(string kind, string text, string value, Position position)
+class Result(Token[] tokens, Position | none problem)
+
+bool letter(string character)
+    return (character.codepoints()[0] >= 65 and character.codepoints()[0] <= 90) or (character.codepoints()[0] >= 97 and character.codepoints()[0] <= 122)
+
+bool digit(string character)
+    return character.codepoints()[0] >= 48 and character.codepoints()[0] <= 57
+
+bool has(const string[] items, string sought)
+    for item := items[]
+        if item == sought
+            return true
+    return false
+
+Result lex(string source)
+    Position[] positions := []
+    line_number := 1
+    column := 1
+    for: index < int(#source)
+        positions = positions.append(Position(line_number, column))
+        if source[index] == NL
+            line_number += 1
+            column = 1
+        else
+            column += 1
+    positions = positions.append(Position(line_number, 1))
+    keywords := ["BEGIN", "END", "function", "if", "else", "while", "for", "do", "break", "continue", "next", "exit", "return", "delete", "in", "getline", "print", "printf"]
+    builtins := ["length", "substr", "index", "split", "sprintf", "toupper", "tolower", "close", "int"]
+    symbols := ["+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=", "!=", "++", "--", "&&", "||", ">>"]
+    Token[] tokens := []
+    cursor := 0
+    while cursor < int(#source)
+        character := source[cursor]
+        if character == " "
+            cursor += 1
+            continue
+        start := cursor
+        kind := "symbol"
+        value := ""
+        if character == NL
+            cursor += 1
+            kind = "newline"
+        elif digit(character)
+            while cursor < int(#source) and digit(source[cursor])
+                cursor += 1
+            kind = "number"
+        elif letter(character) or character == "_"
+            while cursor < int(#source) and (letter(source[cursor]) or digit(source[cursor]) or source[cursor] == "_")
+                cursor += 1
+            word := source[start:<cursor]
+            kind = if has(keywords, word) then "keyword" elif has(builtins, word) then "builtin" elif cursor < int(#source) and source[cursor] == "(" then "function" else "name"
+        elif character == DQ
+            cursor += 1
+            closed := false
+            while cursor < int(#source)
+                if source[cursor] == NL
+                    return Result([], positions[start])
+                if source[cursor] == DQ
+                    cursor += 1
+                    closed = true
+                    break
+                if source[cursor] == "\"
+                else
+                    value += source[cursor]
+                    cursor += 1
+            if not closed
+                return Result([], positions[start])
+            kind = "string"
+        elif cursor + 1 < int(#source) and has(symbols, source[cursor:<cursor + 2])
+            cursor += 2
+        elif "+-*/%^!><?:=()[]{{}},;$".contains(character)
+            cursor += 1
+        else
+            return Result([], positions[cursor])
+        tokens = tokens.append(Token(kind, source[start:<cursor], value, positions[start]))
+    return Result(tokens.append(Token("end", "", "", positions[int(#source)])), none)
+import lexer = "./lexer.qui"
+
+class Expr(string kind, lexer.Position position, int scope, text := "", int[] children := [], amount := 0, flag := false, name_position := lexer.Position(0, 0))
+    bool lvalue()
+        return kind == "name" or kind == "index" or kind == "field"
+
+class Stmt(string kind, lexer.Position position, int scope, int[] expressions := [], int[] children := [], name := "", array_name := "", name_position := lexer.Position(0, 0), array_position := lexer.Position(0, 0), formatted := false, redirect := "", destination := -1, redirect_position := lexer.Position(0, 0))
+class Parameter(string name, lexer.Position position)
+class Function(string name, lexer.Position position, Parameter[] parameters, int body)
+class Rule(string kind, lexer.Position position, start := -1, finish := -1, action := -1)
+class Program(Expr[] expressions := [], Stmt[] statements := [], Rule[] rules := [], Function[] functions := [], lexer.Position | none problem := none)
+class Parser(lexer.Token[] tokens, program := Program(), cursor := 0, scope := -1, special := false, loops := 0, failed := false)
+
+lexer.Token peek(const Parser parser)
+    return parser.tokens[parser.cursor]
+
+string text(const Parser parser)
+    return peek(parser).text
+
+void fail(Parser &parser, const lexer.Position position)
+    if not parser.failed
+        parser.failed = true
+        parser.program.problem = position
+
+lexer.Token take(Parser &parser)
+    token := peek(parser)
+    if not parser.failed and token.kind != "end"
+        parser.cursor += 1
+    return token
+
+lexer.Token expect(Parser &parser, string spelling)
+    if text(parser) != spelling or peek(parser).kind == "end"
+        fail(&parser, peek(parser).position)
+    return take(&parser)
+
+lexer.Token read_name(Parser &parser)
+    if peek(parser).kind != "name"
+        fail(&parser, peek(parser).position)
+    return take(&parser)
+
+void newlines(Parser &parser)
+    while not parser.failed and peek(parser).kind == "newline"
+        ignored := take(&parser)
+
+void terminator(Parser &parser)
+    if text(parser) == ";" or peek(parser).kind == "newline"
+        ignored := take(&parser)
+    elif text(parser) != "}}"
+        fail(&parser, peek(parser).position)
+
+int add_expr(Parser &parser, Expr node)
+    parser.program.expressions = parser.program.expressions.append(node)
+    return int(#parser.program.expressions) - 1
+
+int add_stmt(Parser &parser, Stmt node)
+    parser.program.statements = parser.program.statements.append(node)
+    return int(#parser.program.statements) - 1
+
+int[] expression_list(Parser &parser, bool suppress)
+    result := [parse_expression(&parser, suppress)]
+    while not parser.failed and text(parser) == ","
+        ignored := take(&parser)
+        newlines(&parser)
+        result = result.append(parse_expression(&parser, suppress))
+    return result
+
+int parse_lvalue(Parser &parser, bool suppress)
+    if peek(parser).kind != "name" and text(parser) != "$"
+        fail(&parser, peek(parser).position)
+    return parse_atom(&parser, suppress)
+
+int parse_atom(Parser &parser, bool suppress)
+    token := peek(parser)
+    if parser.failed
+        return -1
+    if token.kind == "number" or token.kind == "string"
+        ignored := take(&parser)
+        return add_expr(&parser, Expr(token.kind, token.position, parser.scope, token.value, amount = if token.kind == "number" then int(token.text) else 0))
+    if token.kind == "name"
+        ignored := take(&parser)
+        if text(parser) == "["
+        return add_expr(&parser, Expr("name", token.position, parser.scope, token.text))
+    if token.text == "$"
+        ignored := take(&parser)
+        child := if text(parser) == "++" or text(parser) == "--" then parse_prefix(&parser, suppress) else parse_atom(&parser, suppress)
+        return add_expr(&parser, Expr("field", token.position, parser.scope, children = [child]))
+int parse_postfix(Parser &parser, bool suppress)
+    if text(parser) == "++" or text(parser) == "--"
+        return parse_prefix(&parser, suppress)
+    child := parse_atom(&parser, suppress)
+    if not parser.failed and parser.program.expressions[child].lvalue() and (text(parser) == "++" or text(parser) == "--")
+    return child
+int parse_unary(Parser &parser, bool suppress)
+    if parser.failed
+        return -1
+    if lexer.has(["!", "-", "+"], text(parser))
+    child := parse_postfix(&parser, suppress)
+    if not parser.failed and text(parser) == "^"
+    return child
+
+int parse_binary(Parser &parser, int minimum, bool suppress)
+    left := parse_unary(&parser, suppress)
+    while not parser.failed
+        spelling := text(parser)
+        explicit := if spelling == "||" then 1 elif spelling == "&&" then 2 elif spelling == "in" then 3 elif lexer.has(["<", "<=", "==", "!=", ">="], spelling) or (spelling == ">" and not suppress) then 4 elif spelling == "+" or spelling == "-" then 6 elif lexer.has(["*", "/", "%"], spelling) then 7 else 0
+        concat := explicit == 0 and (lexer.has(["number", "string", "name", "function", "builtin"], peek(parser).kind) or lexer.has(["$", "(", "++", "--"], spelling))
+        priority := if concat then 5 else explicit
+        if priority == 0 or priority < minimum
+            break
+    return left
+
+int parse_conditional(Parser &parser, bool suppress)
+    condition := parse_binary(&parser, 1, suppress)
+    if not parser.failed and text(parser) == "?"
+    return condition
+
+int parse_expression(Parser &parser, bool suppress)
+    left := parse_conditional(&parser, suppress)
+    if not parser.failed and parser.program.expressions[left].lvalue() and lexer.has(["=", "+=", "-=", "*=", "/=", "%=", "^="], text(parser))
+        token := take(&parser)
+        right := parse_expression(&parser, suppress)
+        return add_expr(&parser, Expr("assignment", token.position, parser.scope, token.text, [left, right]))
+    return left
+
+int parse_block(Parser &parser)
+    opening := expect(&parser, "{{")
+    int[] children := []
+    while not parser.failed and text(parser) != "}}"
+        if peek(parser).kind == "newline" or text(parser) == ";"
+            ignored := take(&parser)
+        else
+            children = children.append(parse_statement(&parser))
+    ignored := expect(&parser, "}}")
+    return add_stmt(&parser, Stmt("block", opening.position, parser.scope, children = children))
+int parse_statement(Parser &parser)
+    token := peek(parser)
+    if parser.failed
+        return -1
+    if token.text == "{{"
+        return parse_block(&parser)
+    kind := token.text
+    if not lexer.has([";", "if", "while", "do", "for", "print", "printf", "delete", "next", "break", "continue", "exit", "return"], kind)
+        expression_index := parse_expression(&parser)
+        terminator(&parser)
+        return add_stmt(&parser, Stmt("expression", token.position, parser.scope, expressions = [expression_index]))
+    ignored := take(&parser)
+    result := Stmt(kind, token.position, parser.scope)
+    if kind == ";"
+        result.kind = "empty"
+        return add_stmt(&parser, result)
+    elif kind == "print" or kind == "printf"
+        result.kind = "output"
+        result.formatted = kind == "printf"
+        empty := lexer.has([";", NL, "}}", ">", ">>"], text(parser))
+        parenthesized := false
+        if text(parser) == "("
+        if empty and result.formatted
+            fail(&parser, peek(parser).position)
+        if not empty
+            if parenthesized
+                ignored = take(&parser)
+                result.expressions = expression_list(&parser, false)
+                ignored = expect(&parser, ")")
+            else
+                result.expressions = expression_list(&parser, true)
+    terminator(&parser)
+    return add_stmt(&parser, result)
+
+Program parse(const lexer.Token[] tokens)
+    parser := Parser(tokens)
+    while not parser.failed and peek(parser).kind != "end"
+        if text(parser) == ";" or peek(parser).kind == "newline"
+            ignored := take(&parser)
+            continue
+        first := peek(parser)
+        if first.text == "function"
+        elif first.text == "BEGIN" or first.text == "END"
+            ignored := take(&parser)
+            parser.special = true
+            action := parse_block(&parser)
+            parser.special = false
+            parser.program.rules = parser.program.rules.append(Rule(first.text, first.position, action = action))
+        elif first.text == "{{"
+            action := parse_block(&parser)
+            parser.program.rules = parser.program.rules.append(Rule("all", first.position, action = action))
+    return parser.program
+class Value(kind := "uninitialized", text := "", amount := 0)
+    int number()
+        return if kind == "string" then text_number(text) else amount
+
+    string string_value()
+        return if kind == "number" then "{amount}" else text
+    string display()
+        if kind == "number"
+            return "{amount}"
+        if kind == "uninitialized"
+            return "(uninitialized)"
+        return quote(text) + (if kind == "numeric" then " (strnum)" else "")
+
+class Fields(record := Value("string"), Value[] values := [])
+bool whitespace(string character)
+    return character == " " or character == HT or character == NL
+Value input_value(string text)
+    start := 0
+    finish := int(#text)
+    while start < finish and whitespace(text[start])
+        start += 1
+    while finish > start and whitespace(text[finish - 1])
+        finish -= 1
+    if start < finish and (text[start] == "+" or text[start] == "-")
+        start += 1
+    numeric := start < finish
+    for: start <= index < finish
+        numeric = numeric and lexer.digit(text[index])
+    return if numeric then Value("numeric", text, text_number(text)) else Value("string", text)
+
+string quote(string text)
+    string result := DQ
+    octal := "01234567"
+    for: index < int(#text)
+        character := text[index]
+        int code := character.codepoints()[0]
+        if character == DQ or character == "\"
+            result += "\" + character
+        elif character == NL
+            result += "\n"
+        elif character == HT
+            result += "\t"
+        elif 32 <= code <= 126
+            result += character
+        else
+            result += "\" + octal[code / 64] + octal[(code / 8) % 8] + octal[code % 8]
+    return result + DQ
+
+string[] split_text(string text, string separator)
+    string[] pieces := []
+    if separator == " "
+    if separator == ""
+        for: index < int(#text)
+            pieces = pieces.append(text[index])
+        return pieces
+    return if text == "" then [] else text.split(separator)
+
+void set_record(Fields &fields, string text, string separator)
+    fields.record = input_value(text)
+    fields.values = []
+    for piece := split_text(text, separator)[]
+        fields.values = fields.values.append(input_value(piece))
+
+Value get_field(const Fields fields, int index)
+    if index == 0
+        return fields.record
+    return if index <= int(#fields.values) then fields.values[index - 1] else Value()
+
+void rebuild(Fields &fields, string separator)
+    string[] pieces := []
+    for value := fields.values[]
+        pieces = pieces.append(value.string_value())
+    fields.record = input_value(pieces.join(separator))
+
+void assign_field(Fields &fields, int index, const Value value, string fs, string ofs)
+    if index == 0
+        set_record(&fields, value.string_value(), fs)
+        return
+    while int(#fields.values) < index
+        fields.values = fields.values.append(Value("string"))
+    fields.values[index - 1] = value
+    rebuild(&fields, ofs)
+
+void change_nf(Fields &fields, int size, string ofs)
+    if size < int(#fields.values)
+        fields.values = fields.values[0:<size]
+    while int(#fields.values) < size
+        fields.values = fields.values.append(Value("string"))
+    rebuild(&fields, ofs)
+class Assignment(string name, string value)
+class Operand(string kind, string name, value := "", file_index := -1)
+class FileCount(string name, records := 0)
+class Arguments(Assignment[] options := [], Operand[] operands := [], FileCount[] files := [])
+class Output(string name, text := "", writes := 0, open := false)
+class Input(string name, string[] lines := [], position := 0, reads := 0, opened := false, open := false, exists := false)
+class State(stdout := "", writes := 0, Output[] outputs := [], Input[] inputs := [])
+class Line(int status, text := "")
+
+bool valid_file(string text)
+    if text == "" or text.starts_with(".")
+        return false
+    for: index < int(#text)
+        character := text[index]
+        if not lexer.letter(character) and not lexer.digit(character) and not "._-".contains(character)
+            return false
+    return true
+
+string[] lines_of(string text)
+    if text == ""
+        return []
+    lines := text.split(NL)
+    return lines[0:<int(#lines) - 1]
+
+string[] | none read_data(string name)
+    if not valid_file(name)
+        return none
+    bool exists := file.exists("input/{name}")
+    if not exists
+        return none
+    bool directory := file.is_directory("input/{name}")
+    if directory
+        return none
+    string text := string.from_utf8(file.read_bin("input/{name}"))
+    return lines_of(text)
+
+Assignment | none assignment(string text)
+    for: index < int(#text)
+        if text[index] == "="
+            return Assignment(text[0:<index], text[index + 1:<int(#text)])
+    return none
+
+bool variable(string text)
+    if text == "" or (not lexer.letter(text[0]) and text[0] != "_")
+        return false
+    for: index < int(#text)
+        if not lexer.letter(text[index]) and not lexer.digit(text[index]) and text[index] != "_"
+            return false
+    return true
+
+Arguments arguments(string text)
+    result := Arguments()
+    for line := lines_of(text)[]
+        if line.starts_with("-F ")
+            result.options = result.options.append(Assignment("FS", line[3:<int(#line)]))
+        elif line.starts_with("-v ")
+            match assignment(line[3:<int(#line)])
+                Assignment found
+                    result.options = result.options.append(found)
+                none
+                    continue
+        else
+            assigned := false
+            match assignment(line)
+                Assignment found
+                    if variable(found.name)
+                        result.operands = result.operands.append(Operand("assignment", found.name, found.value))
+                        assigned = true
+                none
+                    assigned = false
+            if not assigned
+                result.operands = result.operands.append(Operand("file", line, file_index = int(#result.files)))
+                result.files = result.files.append(FileCount(line))
+    return result
+
+void output(State &state, string | none name, bool append, string text)
+    target := ""
+    match name
+        string found
+            target = found
+        none
+            state.stdout += text
+            state.writes += 1
+            return
+void save(const State state)
+    bool exists := file.exists("output")
+    if not exists
+        file.mkdir("output")
+    writer1 := file.write("output/stdout.txt")
+    .writer1(state.stdout)
+    for entry := state.outputs[]
+        writer2 := file.write("output/{entry.name}")
+        .writer2(entry.text)
+class StaticError(lexer.Position position, int priority, string message)
+class NameUse(string key, string name, lexer.Position position)
+class Link(string first, string second)
+class Preparation(globals := ["FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"], string[] arrays := [], NameUse[] uses := [], functions := map<string, int>(), lines := map<int, int>(), StaticError | none problem := none)
+class Binding(value := values.Value(), array_index := -1)
+class Location(string kind, name := "", frame := -1, array_index := -1, key := "", field := 0)
+class Context(parser.Program program, Preparation preparation, streams.Arguments arguments, fields := values.Fields(), io := streams.State(), globals := map<string, Binding>(), map<string, Binding>[] frames := [], map<string, values.Value>[] arrays := [], operand := 0, current_file := -1, string[] current_lines := [], current_position := 0, phase := "BEGIN", status := 0, flow := "", returned := values.Value(), builtins.RuntimeError | none problem := none, int[] rule_counts := [], bool[] ranges := [], int[] calls := [], int[] active := [], int[] depths := [])
+
+string[] add_name(string[] names, string name)
+    return if lexer.has(names, name) then names else names.append(name)
+
+string scoped_key(const parser.Program program, int scope, string name)
+    if scope >= 0
+        for parameter := program.functions[scope].parameters[]
+            if parameter.name == name
+                return "{scope}:{name}"
+    return "global:{name}"
+
+void use_name(Preparation &preparation, const parser.Program program, int scope, string name, const lexer.Position position, bool array_name)
+    key := scoped_key(program, scope, name)
+    if key.starts_with("global:")
+        preparation.globals = add_name(preparation.globals, name)
+    if array_name
+        preparation.arrays = add_name(preparation.arrays, key)
+    preparation.uses = preparation.uses.append(NameUse(key, name, position))
+
+Preparation prepare(const parser.Program program)
+    result := Preparation()
+    for: index < int(#program.functions)
+    for node := program.expressions[]
+        if node.kind == "name" or node.kind == "index"
+            use_name(&result, program, node.scope, node.text, node.position, node.kind == "index")
+    for node := program.statements[]
+        if node.kind != "block" and node.kind != "empty"
+            .result.lines.set(node.position.line, 0)
+    for use := result.uses[]
+        if result.functions.has(use.name)
+            static_error(&result, StaticError(use.position, 2, "function {use.name} used as variable"))
+    Link[] links := []
+    return result
+int frame_for(const Context context, string name)
+    index := int(#context.frames) - 1
+    return if index >= 0 and context.frames[index].has(name) then index else -1
+
+Binding binding(const Context context, int frame, string name)
+    cells := if frame < 0 then context.globals else context.frames[frame]
+    match cells.get(name)
+        Binding found
+            return found
+        none
+            return Binding()
+
+values.Value variable_value(const Context context, int frame, string name)
+    if frame < 0 and name == "NF"
+        return values.Value("number", amount = int(#context.fields.values))
+    return binding(context, frame, name).value
+
+values.Value global_value(const Context context, string name)
+    return variable_value(context, -1, name)
+void put_global(Context &context, string name, values.Value value)
+    .context.globals.set(name, Binding(value))
+    context.preparation.globals = add_name(context.preparation.globals, name)
+
+void runtime_error(Context &context, const lexer.Position position, string message)
+    if context.flow == ""
+        context.problem = builtins.RuntimeError(position, message)
+        context.flow = "error"
+Location locate(Context &context, int index)
+    parser.Expr node := context.program.expressions[index]
+    if node.kind == "name"
+        return Location("variable", node.text, frame_for(context, node.text))
+    if node.kind == "index"
+    value := evaluate(&context, node.children[0])
+    field_index := value.number()
+    if context.flow == "" and field_index < 0
+        runtime_error(&context, node.position, "negative field index")
+    return Location("field", field = field_index)
+
+values.Value read_location(Context &context, const Location location)
+    if context.flow != ""
+        return values.Value()
+    if location.kind == "variable"
+        return variable_value(context, location.frame, location.name)
+    if location.kind == "field"
+        return values.get_field(context.fields, location.field)
+values.Value store(Context &context, const Location location, const values.Value value, const lexer.Position position)
+    if context.flow != ""
+        return values.Value()
+    if location.kind == "field"
+        fs := global_value(context, "FS").string_value()
+        ofs := global_value(context, "OFS").string_value()
+        values.assign_field(&context.fields, location.field, value, fs, ofs)
+    elif location.kind == "element"
+    elif location.frame < 0 and location.name == "NF"
+        count := value.number()
+        if count < 0
+            runtime_error(&context, position, "negative NF")
+            return values.Value()
+        ofs := global_value(context, "OFS").string_value()
+        values.change_nf(&context.fields, count, ofs)
+    else
+        put_global(&context, location.name, value)
+    return read_location(&context, location)
+string | none next_record(Context &context)
+    if context.phase == "END" or context.flow != ""
+        return none
+    while true
+        if context.current_file >= 0 and context.current_position < int(#context.current_lines)
+            line := context.current_lines[context.current_position]
+            context.current_position += 1
+            context.arguments.files[context.current_file].records += 1
+            nr := global_value(context, "NR").number() + 1
+            fnr := global_value(context, "FNR").number() + 1
+            put_global(&context, "NR", values.Value("number", amount = nr))
+            put_global(&context, "FNR", values.Value("number", amount = fnr))
+            return line
+        if context.operand == int(#context.arguments.operands)
+            return none
+        streams.Operand operand := context.arguments.operands[context.operand]
+        context.operand += 1
+        if operand.kind == "assignment"
+            put_global(&context, operand.name, values.input_value(operand.value))
+        else
+            put_global(&context, "FILENAME", values.Value("string", operand.name))
+            put_global(&context, "FNR", values.Value("number"))
+            context.current_file = operand.file_index
+            context.current_position = 0
+            match streams.read_data(operand.name)
+                string[] lines
+                    context.current_lines = lines
+                none
+                    context.current_lines = []
+values.Value evaluate(Context &context, int index)
+    if context.flow != "" or index < 0
+        return values.Value()
+    parser.Expr node := context.program.expressions[index]
+    if node.kind == "number"
+        return values.Value("number", amount = node.amount)
+    if node.kind == "string"
+        return values.Value("string", node.text)
+    if node.kind == "name" or node.kind == "index" or node.kind == "field"
+        location := locate(&context, index)
+        return read_location(&context, location)
+    if node.kind == "parentheses"
+        return evaluate(&context, node.children[0])
+    if node.kind == "assignment"
+        location := locate(&context, node.children[0])
+        right := evaluate(&context, node.children[1])
+        value := right
+        if node.text != "="
+            left := read_location(&context, location)
+            value = arithmetic(&context, node.text[0], left.number(), right.number(), node.position)
+        return store(&context, location, value, node.position)
+void output_statement(Context &context, const parser.Stmt node)
+    values.Value[] arguments := []
+    for index := node.expressions[]
+        arguments = arguments.append(evaluate(&context, index))
+        if context.flow != ""
+            return
+    text := ""
+    if node.formatted
+    else
+        if #arguments == 0
+            arguments = [context.fields.record]
+        string[] pieces := []
+        for argument := arguments[]
+            pieces = pieces.append(argument.string_value())
+        text = pieces.join(global_value(context, "OFS").string_value()) + global_value(context, "ORS").string_value()
+    string | none name := none
+    if node.destination >= 0
+    streams.output(&context.io, name, node.redirect == ">>", text)
+void execute_statement(Context &context, int index)
+    if context.flow != "" or index < 0
+        return
+    parser.Stmt node := context.program.statements[index]
+    if node.kind != "block" and node.kind != "empty"
+        count := 0
+        match context.preparation.lines.get(node.position.line)
+            int found
+                count = found
+            none
+                count = 0
+        .context.preparation.lines.set(node.position.line, count + 1)
+    if node.kind == "block"
+        for child := node.children[]
+            execute_statement(&context, child)
+            if context.flow != ""
+                break
+    elif node.kind == "expression"
+        ignored := evaluate(&context, node.expressions[0])
+    elif node.kind == "output"
+        output_statement(&context, node)
+bool test_rule(Context &context, const parser.Rule rule, int index)
+    if rule.kind == "all"
+        return true
+void execute_program(Context &context)
+    for option := context.arguments.options[]
+        put_global(&context, option.name, values.input_value(option.value))
+    for: index < int(#context.program.rules)
+        parser.Rule rule := context.program.rules[index]
+        if rule.kind == "BEGIN"
+            context.rule_counts[index] += 1
+            execute_statement(&context, rule.action)
+            if context.flow != ""
+                break
+    if context.flow == "error"
+        return
+    exiting := context.flow == "exit"
+    context.flow = ""
+    context.phase = "rules"
+    read_input := false
+    for rule := context.program.rules[]
+        read_input = read_input or rule.kind != "BEGIN"
+    if not exiting and read_input
+        while true
+            string | none next_line := next_record(&context)
+            record := ""
+            obtained := false
+            match next_line
+                string line
+                    record = line
+                    obtained = true
+                none
+                    obtained = false
+            if not obtained
+                break
+            fs := global_value(context, "FS").string_value()
+            values.set_record(&context.fields, record, fs)
+            for: index < int(#context.program.rules)
+                parser.Rule rule := context.program.rules[index]
+                if rule.kind == "BEGIN" or rule.kind == "END"
+                    continue
+                matched := test_rule(&context, rule, index)
+                if context.flow == "" and matched
+                    context.rule_counts[index] += 1
+                    if rule.action >= 0
+                        execute_statement(&context, rule.action)
+Context initialize(const parser.Program program, const Preparation preparation, const streams.Arguments arguments)
+    context := Context(program, preparation, arguments)
+    for name := preparation.globals[]
+        cell := Binding()
+        if lexer.has(preparation.arrays, "global:{name}")
+            cell.array_index = new_array(&context)
+        .context.globals.set(name, cell)
+    bin separator_bits := bin("00011100")
+    string separator := string.from_utf8(separator_bits)
+    put_global(&context, "FS", values.Value("string", " "))
+    put_global(&context, "OFS", values.Value("string", " "))
+    put_global(&context, "ORS", values.Value("string", NL))
+    put_global(&context, "SUBSEP", values.Value("string", separator))
+    put_global(&context, "NR", values.Value("number"))
+    put_global(&context, "FNR", values.Value("number"))
+    put_global(&context, "FILENAME", values.Value("string"))
+    context.rule_counts = array(#program.rules, fill = 0)
+    context.ranges = array(#program.rules, fill = false)
+    context.calls = array(#program.functions, fill = 0)
+    context.active = array(#program.functions, fill = 0)
+    context.depths = array(#program.functions, fill = 0)
+    return context
+void save_stats(const string[] lines)
+    bool exists := file.exists("output")
+    if not exists
+        file.mkdir("output")
+    writer1 := file.write("output/stats.txt")
+    .writer1(lines.join(NL) + NL)
+void report(const Context context)
+    streams.save(context.io)
+    status := "status: exit {context.status}"
+    match context.problem
+        builtins.RuntimeError problem
+            status = "status: runtime error at {problem.position.text()}: {problem.message}"
+        none
+            status = status
+    lines := [status, "[inputs]"]
+    for input_file := context.arguments.files[]
+        lines = lines.append("{input_file.name} records={input_file.records}")
+    lines = lines.append("[rules]")
+    for: index < int(#context.program.rules)
+        parser.Rule rule := context.program.rules[index]
+        lines = lines.append("{rule.position.text()} {rule.kind} count={context.rule_counts[index]}")
+    lines = lines.concat(["[outputs]", "stdout.txt writes={context.io.writes} bytes={#context.io.stdout}"])
+    lines = lines.append("[lines]")
+    line_numbers := context.preparation.lines.keys()
+    for line_number := line_numbers.sorted()[]
+        match context.preparation.lines.get(line_number)
+            int count
+                lines = lines.append("{line_number} count={count}")
+            none
+                continue
+    lines = lines.append("[globals]")
+    for name := context.preparation.globals.sorted()[]
+        cell := binding(context, -1, name)
+        display := if cell.array_index >= 0 then "array ({context.arrays[cell.array_index].size()})" else global_value(context, name).display()
+        lines = lines.append("{name} = {display}")
+    save_stats(lines)
+
+void run_program()
+    string source := string.from_utf8(file.read_bin("input/program.awk"))
+    tokens := lexer.lex(source)
+    program := parser.parse(tokens.tokens)
+    preparation := prepare(program)
+    string arguments_text := string.from_utf8(file.read_bin("input/args.txt"))
+    context := initialize(program, preparation, streams.arguments(arguments_text))
+    execute_program(&context)
+    report(context)
+
+if main
+    run_program()

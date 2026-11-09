@@ -1,0 +1,210 @@
+private val categories = listOf(
+    "ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+    "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE"
+private val output = System.out.bufferedWriter()
+private enum class JokerRule { FORCED, FREE, OFF }
+private data class Rules(val rolls: Int = 3, val joker: JokerRule = JokerRule.FORCED)
+private class CommandError(message: String) : RuntimeException(message)
+private fun fail(message: String): Nothing = throw CommandError(message)
+private fun emit(line: String) { output.write(line); output.write("\n") }
+
+private fun positive(word: String, maximum: Long): Long {
+    if (word[0] !in '1'..'9' || word.any { it !in '0'..'9' }) fail("bad value $word")
+    val value = word.toLong()
+    if (value > maximum) fail("bad value $word")
+    return value
+private fun validName(word: String) {
+    if (word.length > 8 || word.any { it !in 'A'..'Z' }) fail("bad name $word")
+private fun pattern(word: String): Int {
+    if (word.length != 5 || word.any { it != '0' && it != '1' }) fail("bad pattern $word")
+    return word.fold(0) { mask, c -> 2 * mask + (c - '0') }
+private fun held(mask: Int, die: Int) = mask and (1 shl (4 - die)) != 0
+private fun patternText(mask: Int) = mask.toString(2).padStart(5, '0')
+private fun faceText(faces: IntArray, mask: Int) = faces.indices.filter { held(mask, it) }
+    .joinToString(" ") { faces[it].toString() }.ifEmpty { "-" }
+
+private fun faceCounts(faces: IntArray): IntArray {
+    val counts = IntArray(6)
+    for (face in faces) counts[face - 1]++
+    return counts
+private fun normalScore(category: Int, counts: IntArray): Int {
+    if (category < 6) return (category + 1) * counts[category]
+    val sum = counts.indices.sumOf { (it + 1) * counts[it] }
+    val maximum = counts.max()
+    val bits = counts.indices.filter { counts[it] > 0 }.fold(0) { mask, i -> mask or (1 shl i) }
+    return when (category) {
+        6 -> if (maximum >= 3) sum else 0
+        7 -> if (maximum >= 4) sum else 0
+        8 -> if (2 in counts && 3 in counts) 25 else 0
+        9 -> if (bits and 15 == 15 || bits and 30 == 30 || bits and 60 == 60) 30 else 0
+        10 -> if (bits == 31 || bits == 62) 40 else 0
+        11 -> if (maximum == 5) 50 else 0
+        else -> sum
+private class Player(val name: String) {
+    var strategy = Strategy.KIND
+    val scores = IntArray(13) { -1 }
+    var yahtzeeBonus = 0
+    fun upper() = (0 until 6).sumOf { scores[it].coerceAtLeast(0) }
+    fun upperBonus() = if (upper() >= 63) 35 else 0
+    fun total() = scores.sumOf { it.coerceAtLeast(0) } + upperBonus() + yahtzeeBonus
+    fun round() = scores.count { it >= 0 } + 1
+private data class Candidates(val points: IntArray, val allowed: Int, val best: Int, val yahtzeeFace: Int, val joker: Boolean)
+private fun evaluate(player: Player, counts: IntArray, rule: JokerRule): Candidates {
+    val face = counts.indexOfFirst { it == 5 }
+    var allowed = categories.indices.filter { player.scores[it] < 0 }.fold(0) { mask, c -> mask or (1 shl c) }
+    val joker = rule != JokerRule.OFF && face >= 0 && player.scores[11] >= 0
+    if (joker && rule == JokerRule.FORCED) {
+    val points = IntArray(13) { -1 }
+    var best = -1
+    for (c in categories.indices) {
+        if (player.scores[c] >= 0) continue
+        points[c] = when {
+            allowed and (1 shl c) == 0 -> 0
+            joker && c in 8..10 -> when (c) { 8 -> 25; 9 -> 30; else -> 40 }
+            else -> normalScore(c, counts)
+        }
+        if (best < 0 || points[c] > points[best]) best = c
+    }
+    return Candidates(points, allowed, best, face, joker)
+private data class Turn(val seat: Int = 0, val rolls: Int = 0, val faces: IntArray = IntArray(5), val hold: Int = 0)
+private data class ScoreEntry(val before: Turn, val category: Int, val points: Int, val bonus: Int, val joker: Boolean)
+private data class RedoEntry(val after: Turn?, val entry: ScoreEntry)
+
+private class Game(seed: Long, names: List<String>, val rules: Rules, val verbose: Boolean) {
+    val players = names.map(::Player)
+    var randomState = seed
+    val faceCounts = LongArray(6)
+    val loaded = ArrayDeque<Int>()
+    val entries = mutableListOf<ScoreEntry>()
+    val redo = ArrayDeque<RedoEntry>()
+    var turn: Turn? = Turn()
+
+    fun checkTurn(): Turn = turn ?: fail("game over")
+
+    fun rolled(): Turn {
+        val current = checkTurn()
+        if (current.rolls == 0) fail("not rolled")
+        return current
+    }
+
+    fun rollsLeft(): Turn {
+        val current = rolled()
+        if (current.rolls == rules.rolls) fail("no rolls left")
+        return current
+    fun roll() {
+        val before = checkTurn()
+        if (before.rolls == rules.rolls) fail("no rolls left")
+        if (before.hold == 31) fail("all dice held")
+        redo.clear()
+        val faces = before.faces.copyOf()
+        for (i in faces.indices) {
+            if (before.rolls > 0 && held(before.hold, i)) continue
+            faces[i] = loaded.removeFirstOrNull() ?: run {
+                randomState = 48271 * randomState % 2147483647
+                (randomState % 6 + 1).toInt()
+            }
+            faceCounts[faces[i] - 1]++
+        }
+        val current = before.copy(rolls = before.rolls + 1, faces = faces)
+        turn = current
+        if (verbose) emit("${players[current.seat].name} roll ${current.rolls}: ${faceText(faces, 31)}")
+    }
+
+    fun hold(mask: Int) {
+        val before = rollsLeft()
+        redo.clear()
+        turn = before.copy(hold = mask)
+        if (verbose) emit("${players[before.seat].name} holds ${patternText(mask)}: ${faceText(before.faces, mask)}")
+    fun score(category: Int, preview: Boolean = false) {
+        val before = rolled()
+        val player = players[before.seat]
+        if (player.scores[category] >= 0) fail("${categories[category]} already used")
+        val candidates = evaluate(player, faceCounts(before.faces), rules.joker)
+        if (candidates.allowed and (1 shl category) == 0) {
+            val required = if (player.scores[candidates.yahtzeeFace] < 0) categories[candidates.yahtzeeFace] else "lower box"
+            fail("joker requires $required")
+        }
+        val points = candidates.points[category]
+        val bonus = if (candidates.yahtzeeFace >= 0 && player.scores[11] == 50) 100 else 0
+        val upper = player.upper()
+        val gainedUpper = if (category < 6 && upper < 63 && upper + points >= 63) 35 else 0
+        if (verbose) emit(buildString {
+            append("${player.name} ${if (preview) "would score" else "scores"} $points in ${categories[category]}")
+            if (candidates.joker) append(" joker")
+            if (bonus != 0) append(" ybonus 100")
+            if (gainedUpper != 0) append(" ubonus 35")
+            append(" total ${player.total() + points + bonus + gainedUpper}")
+        })
+        if (preview) return
+        redo.clear()
+        entries.add(ScoreEntry(before, category, points, bonus, candidates.joker))
+        player.scores[category] = points
+        player.yahtzeeBonus += bonus
+        val next = if (entries.size == 13 * players.size) null else Turn(seat = (before.seat + 1) % players.size)
+        turn = next
+        if (verbose) {
+            if (next == null) emit("game over")
+            else emit("turn ${players[next.seat].round()} ${players[next.seat].name}")
+    fun undo() {
+        if (entries.isEmpty()) fail("nothing to undo")
+        val entry = entries.removeAt(entries.lastIndex)
+        redo.addLast(RedoEntry(turn, entry))
+        val player = players[entry.before.seat]
+        player.scores[entry.category] = -1
+        player.yahtzeeBonus -= entry.bonus
+        turn = entry.before
+        emit("undo ${player.name} ${categories[entry.category]} ${entry.points}")
+    }
+
+    fun redo() {
+        val saved = redo.removeLastOrNull() ?: fail("nothing to redo")
+        val entry = saved.entry
+        val player = players[entry.before.seat]
+        player.scores[entry.category] = entry.points
+        player.yahtzeeBonus += entry.bonus
+        entries.add(entry)
+        turn = saved.after
+        emit("redo ${player.name} ${categories[entry.category]} ${entry.points}")
+private class Table {
+    var game: Game? = null
+    var rules = Rules()
+    fun requireGame(): Game = game ?: fail("no game")
+    fun execute(words: List<String>) {
+        when (words[0]) {
+            "GAME" -> {
+                val seed = positive(words[1], 2147483646)
+                val names = words.drop(2)
+                names.forEach(::validName)
+                if (names.size > 6) fail("too many players")
+                if (game != null) fail("game in progress")
+                for ((i, name) in names.withIndex()) if ((0 until i).any { names[it] == name }) fail("duplicate name $name")
+                game = Game(seed, names, rules, true)
+                emit("game seed $seed players ${names.joinToString(" ")}")
+                emit("turn 1 ${names.first()}")
+            "LOAD", "KEEP" -> {
+                val values = words.drop(1).map { positive(it, 6).toInt() }
+                val current = requireGame()
+                if (words[0] == "KEEP") current.keep(values)
+                else { current.loaded.addAll(values); emit("loaded ${current.loaded.size}") }
+            "ROLL" -> requireGame().roll()
+            "HOLD", "ODDS" -> {
+                val mask = pattern(words[1])
+                if (words[0] == "HOLD") requireGame().hold(mask) else requireGame().odds(mask)
+            }
+            "SCORE", "WHATIF" -> {
+                val category = categories.indexOf(words[1])
+                if (category < 0) fail("bad category ${words[1]}")
+                requireGame().score(category, words[0] == "WHATIF")
+            }
+            "UNDO" -> requireGame().undo()
+            "REDO" -> requireGame().redo()
+            else -> fail("unknown command ${words[0]}")
+fun main() {
+    val input = System.`in`.bufferedReader()
+    val count = input.readLine().toInt()
+    val table = Table()
+    repeat(count) {
+        try { table.execute(input.readLine().split(' ')) }
+        catch (error: CommandError) { emit("error: ${error.message}") }
+    }
+    output.flush()

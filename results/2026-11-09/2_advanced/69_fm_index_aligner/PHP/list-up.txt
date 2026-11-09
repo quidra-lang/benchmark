@@ -1,0 +1,628 @@
+function readSequences(): object
+{
+    $references = [];
+    foreach (file('input/reference.fasta', FILE_IGNORE_NEW_LINES) as $line) {
+        if ($line[0] === '>') {
+            $name = explode(' ', substr($line, 1))[0];
+            $references[] = (object) ['name' => $name, 'sequence' => '', 'masked' => 0];
+        } else {
+            $reference = $references[count($references) - 1];
+            $reference->masked += preg_match_all('/[acgt]/', $line);
+            $reference->sequence .= strtoupper($line);
+        }
+    }
+    $records = file('input/reads.fastq', FILE_IGNORE_NEW_LINES);
+    $reads = [];
+    for ($i = 0; $i < count($records); $i += 4) {
+        $qualities = [];
+        for ($j = 0; $j < strlen($records[$i + 3]); $j++) {
+            $qualities[] = ord($records[$i + 3][$j]) - 33;
+        }
+        $reads[] = (object) ['name' => substr($records[$i], 1), 'sequence' => $records[$i + 1],
+            'quality' => $records[$i + 3], 'qualities' => $qualities];
+    }
+    $params = [];
+    foreach (file('input/params.txt', FILE_IGNORE_NEW_LINES) as $line) {
+        $parts = explode(' ', $line);
+        $key = array_shift($parts);
+        $values = array_map('intval', $parts);
+        $params[$key] = $key === 'SCORES' || $key === 'VARIANTS' ? $values : $values[0];
+    }
+    return (object) ['references' => $references, 'reads' => $reads, 'params' => $params];
+}
+function reverseComplement(string $sequence): string
+{
+    return strtr(strrev($sequence), 'ACGTN', 'TGCAN');
+}
+    public string $text;
+    public array $sa;
+    public int $interval;
+    public string $bwt = '';
+    public array $checkpoints = [];
+    public array $counts;
+    public array $C;
+    public array $samples = [];
+
+    public function __construct(string $text, array $sa, int $interval, ?int $sampleInterval = null)
+    {
+        $this->text = $text;
+        $this->sa = $sa;
+        $this->interval = $interval;
+        $length = strlen($text);
+        foreach ($sa as $position) {
+            $this->bwt .= $text[$position > 0 ? $position - 1 : $length - 1];
+        }
+        $counts = array_fill(0, 6, 0);
+        for ($i = 0; $i <= $length; $i++) {
+            if ($i % $interval === 0) {
+                $this->checkpoints[] = $counts;
+            }
+            if ($i < $length) {
+                $counts[strpos(SYMBOLS, $this->bwt[$i])]++;
+            }
+        }
+        $this->counts = $counts;
+        $this->C = array_fill(0, 6, 0);
+        for ($i = 1; $i < 6; $i++) {
+            $this->C[$i] = $this->C[$i - 1] + $counts[$i - 1];
+        }
+        if ($sampleInterval !== null) {
+            foreach ($sa as $row => $position) {
+                if ($position % $sampleInterval === 0) {
+                    $this->samples[$row] = $position;
+                }
+            }
+        }
+    }
+
+    public function occ(string $symbol, int $position): int
+    {
+        $checkpoint = intdiv($position, $this->interval);
+        $index = strpos(SYMBOLS, $symbol);
+        $count = $this->checkpoints[$checkpoint][$index];
+        for ($i = $checkpoint * $this->interval; $i < $position; $i++) {
+            if ($this->bwt[$i] === $symbol) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    public function lf(int $row): int
+    {
+        $symbol = $this->bwt[$row];
+        return $this->C[strpos(SYMBOLS, $symbol)] + $this->occ($symbol, $row);
+    }
+
+    public function extend(int $lo, int $hi, string $base): array
+    {
+        if ($base === 'N') {
+            return [0, 0];
+        }
+        $start = $this->C[strpos(SYMBOLS, $base)];
+        return [$start + $this->occ($base, $lo), $start + $this->occ($base, $hi)];
+    }
+
+    public function backward(string $sequence): array
+    {
+        $lo = 0;
+        $hi = strlen($this->text);
+        for ($i = strlen($sequence) - 1; $i >= 0; $i--) {
+            [$lo, $hi] = $this->extend($lo, $hi, $sequence[$i]);
+            if ($lo >= $hi) {
+                break;
+            }
+        }
+        return [$lo, $hi];
+    }
+
+    public function locate(int $row): object
+    {
+        $steps = 0;
+        while (!isset($this->samples[$row])) {
+            $row = $this->lf($row);
+            $steps++;
+        }
+        return (object) ['position' => $this->samples[$row] + $steps, 'steps' => $steps];
+    }
+function lowerBound(string $sequence, FMIndex $reverse): array
+{
+    $D = [];
+    $z = 0;
+    $lo = 0;
+    $hi = strlen($reverse->text);
+    for ($i = 0; $i < strlen($sequence); $i++) {
+        [$lo, $hi] = $reverse->extend($lo, $hi, $sequence[$i]);
+        if ($lo >= $hi) {
+            $z++;
+            $lo = 0;
+            $hi = strlen($reverse->text);
+        }
+        $D[] = $z;
+    }
+    return $D;
+}
+function backtrack(string $sequence, int $maximum, FMIndex $forward, FMIndex $reverse): object
+{
+    $D = lowerBound($sequence, $reverse);
+    $stack = [[strlen($sequence) - 1, $maximum, 0, strlen($forward->text)]];
+    $leaves = [];
+    $nodes = 0;
+    $hits = 0;
+    while ($stack) {
+        [$i, $z, $lo, $hi] = array_pop($stack);
+        $nodes++;
+        if ($z < ($i < 0 ? 0 : $D[$i])) {
+            continue;
+        }
+        if ($i === -1) {
+            $leaves[] = (object) ['lo' => $lo, 'hi' => $hi, 'mismatches' => $maximum - $z];
+            $hits += $hi - $lo;
+            continue;
+        }
+        foreach (str_split('TGCA') as $base) {
+            [$nextLo, $nextHi] = $forward->extend($lo, $hi, $base);
+            if ($nextLo >= $nextHi) {
+                continue;
+            }
+            if ($base === $sequence[$i]) {
+                $stack[] = [$i - 1, $z, $nextLo, $nextHi];
+            } elseif ($z >= 1) {
+                $stack[] = [$i - 1, $z - 1, $nextLo, $nextHi];
+            }
+        }
+    }
+    return (object) ['nodes' => $nodes, 'leaves' => $leaves, 'hits' => $hits];
+}
+function positionOrder(object $a, object $b): int
+{
+    return ($a->r <=> $b->r) ?: ($a->pos <=> $b->pos) ?: ($a->strand <=> $b->strand);
+}
+function textPosition(array $references, int $position): ?object
+{
+    foreach ($references as $r => $reference) {
+        if ($position >= $reference->offset && $position < $reference->offset + strlen($reference->sequence)) {
+            return (object) ['r' => $r, 'pos' => $position - $reference->offset];
+        }
+    }
+    return null;
+}
+function mapRead(object $read, array $references, array $params, FMIndex $forward, FMIndex $reverse,
+    object $searchStats, object $seedStats): object
+{
+    $length = strlen($read->sequence);
+    while ($length > 0 && $read->qualities[$length - 1] < $params['TRIM_QUALITY']) {
+        $length--;
+    }
+    $read->length = $length;
+    $read->trimmed = strlen($read->sequence) - $length;
+    if ($length < $params['MIN_READ_LENGTH']) {
+        return (object) ['reason' => 'SHORT'];
+    }
+    $core = substr($read->sequence, 0, $length);
+    $oriented = [$core, reverseComplement($core)];
+    $exactForward = $forward->backward($oriented[0]);
+    $exactReverse = $forward->backward($oriented[1]);
+    $maximum = $exactForward[0] < $exactForward[1] || $exactReverse[0] < $exactReverse[1] ? 1 : $params['MAX_MISMATCHES'];
+    $hits = [];
+    for ($strand = 0; $strand < 2; $strand++) {
+        $searched = backtrack($oriented[$strand], $maximum, $forward, $reverse);
+        $searchStats->calls++;
+        $searchStats->nodes += $searched->nodes;
+        $searchStats->leaves += count($searched->leaves);
+        $searchStats->positions += $searched->hits;
+        foreach ($searched->leaves as $leaf) {
+            for ($row = $leaf->lo; $row < $leaf->hi; $row++) {
+                $location = textPosition($references, $forward->locate($row)->position);
+                $hits[] = (object) ['r' => $location->r, 'pos' => $location->pos, 'strand' => $strand,
+                    'mm' => $leaf->mismatches, 'ops' => str_repeat('M', $length)];
+            }
+        }
+    }
+    if ($hits) {
+        usort($hits, fn($a, $b) => ($a->mm <=> $b->mm) ?: positionOrder($a, $b));
+        $best = $hits[0]->mm;
+        $x0 = 0;
+        $x1 = 0;
+        $alignments = [];
+        foreach ($hits as $hit) {
+            if ($hit->mm === $best) {
+                $x0++;
+            } elseif ($hit->mm === $best + 1) {
+                $x1++;
+            }
+            if ($hit->mm <= $best + 1) {
+                $alignments[] = $hit;
+            }
+        }
+        $mapq = $x0 >= 2 ? 0 : ($x1 === 0 ? 60 - 12 * $best : max(30 - 12 * $best - 3 * $x1, 1));
+        return (object) ['alignments' => $alignments, 'x0' => $x0, 'x1' => $x1, 'mapq' => $mapq,
+            'score' => ($length - $best) * $params['SCORES'][0] - $best * $params['SCORES'][1],
+            'method' => $best === 0 ? 'EXACT' : 'MISMATCH'];
+    }
+}
+function describeAlignment(object $read, object $alignment, array $references): void
+{
+    $core = substr($read->sequence, 0, $read->length);
+    $sequence = $alignment->strand === 0 ? $core : reverseComplement($core);
+    $reference = $references[$alignment->r]->sequence;
+    $runs = [];
+    for ($p = 0; $p < strlen($alignment->ops); $p++) {
+        $operation = $alignment->ops[$p];
+        $last = count($runs) - 1;
+        if ($last >= 0 && $runs[$last]->operation === $operation) {
+            $runs[$last]->length++;
+        } else {
+            $runs[] = (object) ['operation' => $operation, 'length' => 1];
+        }
+    }
+    $pairs = [];
+    $md = '';
+    $i = 0;
+    $j = $alignment->pos;
+    $matches = 0;
+    $nm = 0;
+    foreach ($runs as $run) {
+        if ($run->operation === 'I') {
+            $i += $run->length;
+            $nm += $run->length;
+            continue;
+        }
+        if ($run->operation === 'D') {
+            $md .= $matches . '^' . substr($reference, $j, $run->length);
+            $matches = 0;
+            $j += $run->length;
+            $nm += $run->length;
+            continue;
+        }
+        for ($k = 0; $k < $run->length; $k++) {
+            $cycle = $alignment->strand === 0 ? $i + 1 : $read->length - $i;
+            $match = $sequence[$i] === $reference[$j];
+            $pairs[] = (object) ['refPos' => $j, 'base' => $sequence[$i], 'reference' => $reference[$j],
+                'cycle' => $cycle, 'quality' => $read->qualities[$cycle - 1], 'match' => $match];
+            if ($match) {
+                $matches++;
+            } else {
+                $md .= $matches . $reference[$j];
+                $matches = 0;
+                $nm++;
+            }
+            $i++;
+            $j++;
+        }
+    }
+    $md .= $matches;
+    $cigar = '';
+    foreach ($runs as $run) {
+        $cigar .= $run->length . $run->operation;
+    }
+    if ($read->trimmed > 0) {
+        $soft = $read->trimmed . 'S';
+        $cigar = $alignment->strand === 0 ? $cigar . $soft : $soft . $cigar;
+    }
+    $alignment->runs = $runs;
+    $alignment->pairs = $pairs;
+    $alignment->cigar = $cigar;
+    $alignment->md = $md;
+    $alignment->nm = $nm;
+}
+function tallyCoverage(array $reads, array $results, array $references, array $params): array
+{
+    $coverage = [];
+    foreach ($references as $reference) {
+        $length = strlen($reference->sequence);
+        $coverage[] = (object) ['depth' => array_fill(0, $length, 0), 'starts' => array_fill(0, $length, 0),
+            'pileup' => array_fill(0, $length, array_fill(0, 8, 0))];
+    }
+    foreach ($reads as $index => $read) {
+        $result = $results[$index];
+        if (isset($result->reason)) {
+            continue;
+        }
+        $primary = $result->alignments[0];
+        $target = $coverage[$primary->r];
+        if ($result->mapq === 0) {
+            $target->starts[$primary->pos]++;
+        }
+        if ($result->mapq < $params['COVERAGE_MIN_MAPQ']) {
+            continue;
+        }
+        foreach ($primary->pairs as $pair) {
+            $target->depth[$pair->refPos]++;
+            if ($pair->base !== 'N' && $pair->quality >= $params['VARIANTS'][1]) {
+                $target->pileup[$pair->refPos][4 * $primary->strand + strpos(BASES, $pair->base)]++;
+            }
+        }
+    }
+    return $coverage;
+}
+function coverageReport(array $references, array $coverage, array $params): array
+{
+    $lines = ['window ' . $params['COVERAGE_WINDOW'] . ' min_mapq ' . $params['COVERAGE_MIN_MAPQ']];
+    foreach ($references as $r => $reference) {
+        $depth = $coverage[$r]->depth;
+        $starts = $coverage[$r]->starts;
+        $length = strlen($reference->sequence);
+        $sum = 0;
+        $maximum = 0;
+        $covered = 0;
+        foreach ($depth as $value) {
+            $sum += $value;
+            $maximum = max($maximum, $value);
+            if ($value > 0) {
+                $covered++;
+            }
+        }
+        $histogram = array_fill(0, $maximum + 1, 0);
+        foreach ($depth as $value) {
+            $histogram[$value]++;
+        }
+        $histogramText = [];
+        foreach ($histogram as $value => $count) {
+            $histogramText[] = $value . ':' . $count;
+        }
+        $lines[] = 'reference ' . $reference->name . ' length ' . $length . ' covered ' . $covered
+            . ' breadth ' . ratio($covered, $length) . ' mean_depth ' . ratio($sum, $length) . ' max_depth ' . $maximum;
+        $lines[] = 'depth_histogram ' . implode(' ', $histogramText);
+        for ($first = 0; $first < $length; $first += $params['COVERAGE_WINDOW']) {
+            $end = min($first + $params['COVERAGE_WINDOW'], $length);
+            $width = $end - $first;
+            $windowSum = 0;
+            $windowMaximum = 0;
+            $zero = 0;
+            $mapq0 = 0;
+            for ($j = $first; $j < $end; $j++) {
+                $windowSum += $depth[$j];
+                $windowMaximum = max($windowMaximum, $depth[$j]);
+                if ($depth[$j] === 0) {
+                    $zero++;
+                }
+                $mapq0 += $starts[$j];
+            }
+            $lines[] = $reference->name . ' ' . ($first + 1) . ' ' . $end . ' gc '
+                . ratio(gcCount(substr($reference->sequence, $first, $width)), $width) . ' sum ' . $windowSum
+                . ' mean ' . ratio($windowSum, $width) . ' max ' . $windowMaximum . ' zero ' . $zero . ' mapq0 ' . $mapq0
+                . ' |' . str_repeat('#', intdiv(10 * $windowSum, $width));
+        }
+    }
+    return $lines;
+}
+function summaryReport(array $reads, array $results, array $references, object $searchStats, object $seedStats): array
+{
+    $count = ['trimmed' => 0, 'trimmedBases' => 0, 'SHORT' => 0, 'NOHIT' => 0, 'mapped' => 0, 'unique' => 0, 'multi' => 0,
+        'EXACT' => 0, 'MISMATCH' => 0, 'SEED' => 0, 'forward' => 0, 'reverse' => 0, 'nReads' => 0, 'nBases' => 0, 'nMapped' => 0];
+    $refStats = array_fill(0, count($references), ['mapped' => 0, 'unique' => 0, 'forward' => 0, 'reverse' => 0]);
+    $bins = [];
+    $targets = [];
+    $mapqHistogram = [];
+    $nmHistogram = [];
+    $substitutions = array_fill(0, 4, array_fill(0, 5, 0));
+    $maxLength = 0;
+    foreach ($reads as $read) {
+        $maxLength = max($maxLength, strlen($read->sequence));
+    }
+    $cycles = array_fill(0, $maxLength, ['aligned' => 0, 'mismatches' => 0]);
+    $qualityBins = array_fill(0, 5, ['aligned' => 0, 'mismatches' => 0]);
+    $error = ['aligned' => 0, 'mismatches' => 0, 'matchedQuality' => 0, 'mismatchedQuality' => 0];
+    $cigar = ['M' => 0, 'I' => 0, 'D' => 0, 'S' => 0];
+    $indels = ['I' => ['events' => 0, 'bases' => 0], 'D' => ['events' => 0, 'bases' => 0]];
+    foreach ($reads as $index => $read) {
+        $result = $results[$index];
+        $lo = 10 * intdiv($read->length, 10);
+        if (!isset($bins[$lo])) {
+            $bins[$lo] = ['reads' => 0, 'mapped' => 0, 'unique' => 0];
+        }
+        $bins[$lo]['reads']++;
+        if ($read->trimmed > 0) {
+            $count['trimmed']++;
+        }
+        $count['trimmedBases'] += $read->trimmed;
+        $nBases = substr_count($read->sequence, 'N');
+        if ($nBases > 0) {
+            $count['nReads']++;
+            $count['nBases'] += $nBases;
+            if (!isset($result->reason)) {
+                $count['nMapped']++;
+            }
+        }
+        if (isset($result->reason)) {
+            $count[$result->reason]++;
+            continue;
+        }
+        $count['mapped']++;
+        $count[$result->method]++;
+        $bins[$lo]['mapped']++;
+        $primary = $result->alignments[0];
+        $strand = $primary->strand === 0 ? 'forward' : 'reverse';
+        $unique = $result->x0 === 1;
+        $count[$strand]++;
+        $refStats[$primary->r][$strand]++;
+        $refStats[$primary->r]['mapped']++;
+        if ($unique) {
+            $count['unique']++;
+            $refStats[$primary->r]['unique']++;
+            $bins[$lo]['unique']++;
+        } else {
+            $count['multi']++;
+            $sequenceNumbers = [];
+            foreach (array_slice($result->alignments, 0, $result->x0) as $alignment) {
+                $sequenceNumbers[$alignment->r] = true;
+            }
+            ksort($sequenceNumbers, SORT_NUMERIC);
+            $names = [];
+            foreach (array_keys($sequenceNumbers) as $r) {
+                $names[] = $references[$r]->name;
+            }
+            $key = '#' . implode('+', $names);
+            $targets[$key] = ($targets[$key] ?? 0) + 1;
+        }
+        $mapqHistogram[$result->mapq] = ($mapqHistogram[$result->mapq] ?? 0) + 1;
+        $nmHistogram[$primary->nm] = ($nmHistogram[$primary->nm] ?? 0) + 1;
+        foreach ($primary->runs as $run) {
+            $cigar[$run->operation] += $run->length;
+            if ($unique && $run->operation !== 'M') {
+                $indels[$run->operation]['events']++;
+                $indels[$run->operation]['bases'] += $run->length;
+            }
+        }
+        $cigar['S'] += $read->trimmed;
+        if (!$unique) {
+            continue;
+        }
+        foreach ($primary->pairs as $pair) {
+            $cycle = $pair->cycle - 1;
+            $qualityBin = min(4, intdiv($pair->quality, 10));
+            $error['aligned']++;
+            $cycles[$cycle]['aligned']++;
+            $qualityBins[$qualityBin]['aligned']++;
+            $substitutions[strpos(BASES, $pair->reference)][strpos('ACGTN', $pair->base)]++;
+            if ($pair->match) {
+                $error['matchedQuality'] += $pair->quality;
+            } else {
+                $error['mismatches']++;
+                $cycles[$cycle]['mismatches']++;
+                $qualityBins[$qualityBin]['mismatches']++;
+                $error['mismatchedQuality'] += $pair->quality;
+            }
+        }
+    }
+    $unmapped = $count['SHORT'] + $count['NOHIT'];
+    $lines = ['reads total ' . count($reads) . ' trimmed ' . $count['trimmed'] . ' trimmed_bases ' . $count['trimmedBases'] . ' short ' . $count['SHORT'],
+        'mapped ' . $count['mapped'] . ' rate ' . ratio($count['mapped'], count($reads)) . ' unique ' . $count['unique']
+            . ' multi ' . $count['multi'] . ' unmapped ' . $unmapped,
+        'unmapped short ' . $count['SHORT'] . ' nohit ' . $count['NOHIT'],
+        'method exact ' . $count['EXACT'] . ' mismatch ' . $count['MISMATCH'] . ' seed ' . $count['SEED'],
+        'strand forward ' . $count['forward'] . ' reverse ' . $count['reverse']];
+    foreach ($references as $r => $reference) {
+        $stats = $refStats[$r];
+        $lines[] = 'reference ' . $reference->name . ' mapped ' . $stats['mapped'] . ' unique ' . $stats['unique']
+            . ' forward ' . $stats['forward'] . ' reverse ' . $stats['reverse'];
+    }
+    $lines[] = 'length_bins';
+    $minBin = min(array_keys($bins));
+    $maxBin = max(array_keys($bins));
+    for ($lo = $minBin; $lo <= $maxBin; $lo += 10) {
+        $bin = $bins[$lo] ?? ['reads' => 0, 'mapped' => 0, 'unique' => 0];
+        $lines[] = $lo . '-' . ($lo + 9) . ' reads ' . $bin['reads'] . ' mapped ' . $bin['mapped'] . ' unique ' . $bin['unique'];
+    }
+    $lines[] = 'n_reads ' . $count['nReads'] . ' n_bases ' . $count['nBases'] . ' mapped ' . $count['nMapped'];
+    $lines[] = 'multi_targets';
+    if (!$targets) {
+        $lines[] = 'none';
+    } else {
+        ksort($targets, SORT_STRING);
+        foreach ($targets as $key => $value) {
+            $lines[] = substr($key, 1) . ' ' . $value;
+        }
+    }
+    $lines[] = 'mapq_histogram';
+    krsort($mapqHistogram, SORT_NUMERIC);
+    foreach ($mapqHistogram as $mapq => $value) {
+        $lines[] = $mapq . ' ' . $value;
+    }
+    $lines[] = 'nm_histogram';
+    ksort($nmHistogram, SORT_NUMERIC);
+    foreach ($nmHistogram as $nm => $value) {
+        $lines[] = $nm . ' ' . $value;
+    }
+    $lines[] = 'error_profile aligned_bases ' . $error['aligned'] . ' mismatches ' . $error['mismatches']
+        . ' rate ' . ratio($error['mismatches'], $error['aligned']);
+    $lines[] = 'substitutions';
+    $lines[] = 'ref A C G T N';
+    for ($base = 0; $base < 4; $base++) {
+        $lines[] = BASES[$base] . ' ' . implode(' ', $substitutions[$base]);
+    }
+    $lines[] = 'mismatch_by_cycle';
+    foreach ($cycles as $i => $cycle) {
+        $lines[] = 'cycle ' . ($i + 1) . ' aligned ' . $cycle['aligned'] . ' mismatches ' . $cycle['mismatches']
+            . ' rate ' . ratio($cycle['mismatches'], $cycle['aligned']);
+    }
+    $matched = $error['aligned'] - $error['mismatches'];
+    $lines[] = 'quality matched ' . $matched . ' mean ' . ratio($error['matchedQuality'], $matched)
+        . ' mismatched ' . $error['mismatches'] . ' mean ' . ratio($error['mismatchedQuality'], $error['mismatches']);
+    $lines[] = 'quality_bins';
+    $ranges = ['0-9', '10-19', '20-29', '30-39', '40-'];
+    foreach ($qualityBins as $i => $bin) {
+        $lines[] = $ranges[$i] . ' aligned ' . $bin['aligned'] . ' mismatches ' . $bin['mismatches']
+            . ' rate ' . ratio($bin['mismatches'], $bin['aligned']);
+    }
+    $lines[] = 'cigar M ' . $cigar['M'] . ' I ' . $cigar['I'] . ' D ' . $cigar['D'] . ' S ' . $cigar['S'];
+    $lines[] = 'indels insertions ' . $indels['I']['events'] . ' ' . $indels['I']['bases']
+        . ' deletions ' . $indels['D']['events'] . ' ' . $indels['D']['bases'];
+    $lines[] = 'search dfs_calls ' . $searchStats->calls . ' dfs_nodes ' . $searchStats->nodes . ' dfs_leaves '
+        . $searchStats->leaves . ' dfs_positions ' . $searchStats->positions;
+    $lines[] = 'seeds reads ' . $seedStats->reads . ' seeds ' . $seedStats->seeds . ' with_n ' . $seedStats->withN
+        . ' repetitive ' . $seedStats->repetitive . ' without_hit ' . $seedStats->withoutHit . ' candidates '
+        . $seedStats->candidates . ' passing ' . $seedStats->passing;
+    return $lines;
+}
+function main(): void
+{
+    $input = readSequences();
+    $references = $input->references;
+    $reads = $input->reads;
+    $params = $input->params;
+    $offset = 0;
+    $sequences = [];
+    foreach ($references as $reference) {
+        $reference->offset = $offset;
+        $offset += strlen($reference->sequence) + 1;
+        $sequences[] = $reference->sequence;
+    }
+    $text = implode('#', $sequences) . '$';
+    $reverseText = strrev(substr($text, 0, -1)) . '$';
+    $forwardBuild = buildSuffixArray($text);
+    $reverseBuild = buildSuffixArray($reverseText);
+    $forward = new FMIndex($text, $forwardBuild->sa, $params['OCC_INTERVAL'], $params['SA_SAMPLE_INTERVAL']);
+    $reverse = new FMIndex($reverseText, $reverseBuild->sa, $params['OCC_INTERVAL']);
+    $indexLines = indexStatistics($references, $params, $forwardBuild, $reverseBuild, $forward, $reverse);
+    $searchStats = (object) ['calls' => 0, 'nodes' => 0, 'leaves' => 0, 'positions' => 0];
+    $seedStats = (object) ['reads' => 0, 'seeds' => 0, 'withN' => 0, 'repetitive' => 0,
+        'withoutHit' => 0, 'candidates' => 0, 'passing' => 0];
+    $results = [];
+    foreach ($reads as $read) {
+        $results[] = mapRead($read, $references, $params, $forward, $reverse, $searchStats, $seedStats);
+    }
+    foreach ($results as $i => $result) {
+        if (!isset($result->reason)) {
+            foreach ($result->alignments as $alignment) {
+                describeAlignment($reads[$i], $alignment, $references);
+            }
+        }
+    }
+    $coverage = tallyCoverage($reads, $results, $references, $params);
+    $sam = samHeader($references);
+    foreach ($reads as $i => $read) {
+        $sam[] = samRecord($read, $results[$i], $references, $params['MAX_ALT_HITS']);
+    }
+    if (!is_dir('output')) {
+        mkdir('output', 0777, true);
+    }
+    writeLines('output/alignments.sam', $sam);
+    writeLines('output/coverage.txt', coverageReport($references, $coverage, $params));
+    writeLines('output/variants.txt', variantReport($references, $coverage, $params));
+    writeLines('output/index_stats.txt', $indexLines);
+    writeLines('output/summary.txt', summaryReport($reads, $results, $references, $searchStats, $seedStats));
+}
+function samRecord(object $read, object $result, array $references, int $maximumAlternatives): string
+{
+    if (isset($result->reason)) {
+        return implode("\t", [$read->name, 4, '*', 0, 0, '*', '*', 0, 0, $read->sequence, $read->quality, 'YM:Z:' . $result->reason]);
+    }
+    $primary = $result->alignments[0];
+    $reverse = $primary->strand === 1;
+    $fields = [$read->name, $reverse ? 16 : 0, $references[$primary->r]->name, $primary->pos + 1, $result->mapq,
+        $primary->cigar, '*', 0, 0, $reverse ? reverseComplement($read->sequence) : $read->sequence,
+        $reverse ? strrev($read->quality) : $read->quality, 'NM:i:' . $primary->nm, 'MD:Z:' . $primary->md,
+        'AS:i:' . $result->score, 'X0:i:' . $result->x0, 'X1:i:' . $result->x1, 'YM:Z:' . $result->method];
+    $alternatives = array_slice($result->alignments, 1);
+    if ($alternatives && count($alternatives) <= $maximumAlternatives) {
+        $tag = '';
+        foreach ($alternatives as $alignment) {
+            $tag .= $references[$alignment->r]->name . ',' . ($alignment->strand === 0 ? '+' : '-') . ($alignment->pos + 1)
+                . ',' . $alignment->cigar . ',' . $alignment->nm . ';';
+        }
+        $fields[] = 'XA:Z:' . $tag;
+    }
+    return implode("\t", $fields);
+}

@@ -1,0 +1,5 @@
+An empty substituted first polygon is represented by sizes[0]=0 in this fixed-storage implementation. Initial twice=0 and perimeter=0 survive because i<sizes[k] is false immediately. The last-to-first modulo/access and all vertex reads are inside that skipped loop, so no earlier access fails and no explicit rejection occurs. Formatting defaults therefore yield `polygon 1: area=0.0 perimeter=0.000`. Initialization, loop guard/access location and formatting suffice; the skipped accumulation body need not be read.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

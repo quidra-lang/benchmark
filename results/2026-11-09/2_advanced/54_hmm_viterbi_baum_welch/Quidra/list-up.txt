@@ -1,0 +1,257 @@
+real64[] normalize(real64[] source)
+    real64 total := 0.0
+    for value := source[]
+        total += value
+    return [for value := source[] then value / total]
+
+class Model(string name, string[] states, string[] symbols, string missing, real64[][] probabilities)
+
+string[][] tokens(string name)
+    string content := string.from_utf8(file.read_bin("input/" + name))
+    rows := content.split(NL)
+    return [for row := rows[0:<int(#rows) - 1][] then row.split(" ")]
+
+real64 number(string text)
+    result := real64(text)
+    return result
+
+(Model, string[][], string[][], string[][]) read_inputs()
+    rows := tokens("model.txt")
+    states := rows[0][1:<int(#rows[0])]
+    symbols := rows[1][1:<int(#rows[1])]
+    real64[][] probabilities := []
+    probabilities = probabilities.append(normalize([for text := rows[3][1:<int(#rows[3])][] then number(text)]))
+    for: 4 <= j < int(#rows)
+        probabilities = probabilities.append(normalize([for text := rows[j][2:<int(#rows[j])][] then number(text)]))
+    return (Model("INITIAL", states, symbols, rows[2][1], probabilities), tokens("sequences.txt"), tokens("labeled.txt"), tokens("params.txt"))
+int maximum(real64[] values)
+    best := 0
+    for: 1 <= j < int(#values)
+        if values[j] > values[best]
+            best = j
+    return best
+
+real64[] emission_factors(real64[][] model, int observation, bool logarithms)
+    count := int(#model[0])
+    real64[] result := []
+    for: state < count
+        value := if observation < 0 then 1.0 else model[count + state + 1][observation]
+        if logarithms
+            value = math.log(value)
+        result = result.append(value)
+    return result
+
+class ForwardBackward(real64[][] forward, real64[][] backward, real64[] scales, real64[][] emissions, real64[][] posterior, real64 loglik)
+
+ForwardBackward scaled_forward(real64[][] model, int[] observations)
+    count := int(#model[0])
+    real64[][] forward := []
+    real64[] scales := []
+    real64[][] emissions := []
+    real64 loglik := 0.0
+    for: t < int(#observations)
+        factors := emission_factors(model, observations[t], false)
+        real64[] row := []
+        real64 scale := 0.0
+        for: j < count
+            real64 value := 0.0
+            if t == 0
+                value = model[0][j] * factors[j]
+            else
+                real64 total := 0.0
+                for: i < count
+                    total += forward[t - 1][i] * model[i + 1][j]
+                value = total * factors[j]
+            row = row.append(value)
+            scale += value
+        for &value := &row[]
+            value /= scale
+        forward = forward.append(row)
+        scales = scales.append(scale)
+        emissions = emissions.append(factors)
+        logarithm := math.log(scale)
+        loglik += logarithm
+    return ForwardBackward(forward, [], scales, emissions, [], loglik)
+
+ForwardBackward forward_backward(real64[][] model, int[] observations)
+    result := scaled_forward(model, observations)
+    count := int(#model[0])
+    length := int(#observations)
+    result.backward = [for t := (0:<int(length))[] then [for i := (0:<int(count))[] then 0.0]]
+    result.backward[length - 1] = [for i := (0:<int(count))[] then 1.0]
+    position := length - 2
+    while position >= 0
+        for: i < count
+            real64 total := 0.0
+            for: j < count
+                total += model[i + 1][j] * result.emissions[position + 1][j] * result.backward[position + 1][j]
+            result.backward[position][i] = total / result.scales[position + 1]
+        position -= 1
+    result.posterior = [for t := (0:<int(length))[] then [for i := (0:<int(count))[] then result.forward[t][i] * result.backward[t][i]]]
+    return result
+(int[], real64) viterbi(real64[][] model, int[] observations)
+    count := int(#model[0])
+    real64[][] transitions := []
+    for: i < count
+        transitions = transitions.append([for value := model[i + 1][] then math.log(value)])
+    factors := emission_factors(model, observations[0], true)
+    real64[] scores := []
+    for: j < count
+        logarithm := math.log(model[0][j])
+        scores = scores.append(logarithm + factors[j])
+    predecessors := [[for j := (0:<int(count))[] then 0]]
+    for: 1 <= t < int(#observations)
+        factors = emission_factors(model, observations[t], true)
+        real64[] next_scores := []
+        int[] previous_states := []
+        for: j < count
+            candidates := [for i := (0:<int(count))[] then scores[i] + transitions[i][j]]
+            previous := maximum(candidates)
+            previous_states = previous_states.append(previous)
+            next_scores = next_scores.append(candidates[previous] + factors[j])
+        scores = next_scores
+        predecessors = predecessors.append(previous_states)
+    length := int(#observations)
+    path := [for t := (0:<int(length))[] then 0]
+    path[length - 1] = maximum(scores)
+    logprob := scores[path[length - 1]]
+    position := length - 1
+    while position > 0
+        path[position - 1] = predecessors[position][path[position]]
+        position -= 1
+    return (path, logprob)
+
+class Decoding(int[] viterbi_path, real64 logprob, int[] posterior_path, real64[] confidence, ForwardBackward fb)
+
+Decoding decode(real64[][] model, int[] observations)
+    fb := forward_backward(model, observations)
+    path, logprob := viterbi(model, observations)
+    int[] posterior_path := []
+    real64[] confidence := []
+    for row := fb.posterior[]
+        chosen := maximum(row)
+        posterior_path = posterior_path.append(chosen)
+        confidence = confidence.append(row[chosen])
+    return Decoding(path, logprob, posterior_path, confidence, fb)
+int[][] matrix(int count)
+    return [for i := (0:<int(count))[] then [for j := (0:<int(count))[] then 0]]
+
+void accumulate(int[][] &counts, int[] truth, int[] prediction)
+    for: t < int(#truth)
+        counts[truth[t]][prediction[t]] += 1
+
+int correct(int[] truth, int[] prediction)
+    total := 0
+    for: t < int(#truth)
+        if truth[t] == prediction[t]
+            total += 1
+    return total
+int index_of(string[] values, string target)
+    for: j < int(#values)
+        if values[j] == target
+            return j
+    return -1
+string uppercase(string text)
+    const alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    result := ""
+    for: j < int(#text)
+        int code := text[j].codepoints()[0]
+        result += if 97 <= code <= 122 then alphabet[code - 97] else text[j]
+    return result
+int[] encode(string text, string[] alphabet, missing := "")
+    return [for t := (0:<int(#text))[] then (if text[t] == missing then -1 else index_of(alphabet, text[t]))]
+string path_text(int[] path, string[] alphabet)
+    return [for state := path[] then alphabet[state]].join("")
+class Analysis(model_io.Model initial, string[][] sequence_rows, string[][] labeled_rows, local string[][] parameter_rows)
+    settings := Settings(parameter_rows, initial.states, initial.symbols)
+    Record[] sequences := []
+    Record[] train_records := []
+    Record[] test_records := []
+    string[] rejections := []
+    models := [initial]
+        seen = []
+        for: j < int(#labeled_rows) step 2
+            name := labeled_rows[j][0]
+            role := labeled_rows[j][1]
+            text := uppercase(labeled_rows[j][2])
+            labels := labeled_rows[j + 1][0]
+            reason := rejection(name, text, labels, true, &seen, initial, settings)
+            if reason != ""
+                rejections = rejections.append("REJECT labeled.txt line {j + 1} {name} {reason}")
+                continue
+            record := Record(name, encode(text, initial.symbols, initial.missing), encode(labels, initial.states))
+            if role == "TRAIN"
+                train_records = train_records.append(record)
+            else
+                test_records = test_records.append(record)
+    void .evaluate()
+        for model := models[]
+            results := [for record := test_records[] then inference.decode(model.probabilities, record.observations)]
+            int[] totals := []
+            for: decoder < 2
+                name := if decoder == 0 then "VITERBI" else "POSTERIOR"
+                matrix := evaluation.matrix(int(#model.states))
+                regions := [0, 0, 0, 0]
+                boundaries := regions
+                calibration := [for bucket := (0:<10)[] then [0, 0]]
+                string[] record_lines := []
+                total_correct := 0
+                for: j < int(#test_records)
+                    record := test_records[j]
+                    result := results[j]
+                    path := if decoder == 0 then result.viterbi_path else result.posterior_path
+                    correct := evaluation.correct(record.path, path)
+                    total_correct += correct
+                    evaluation.accumulate(&matrix, record.path, path)
+                    truth := [for state_run := evaluation.runs(record.path)[] if state_run[0] == settings.segment_state then [state_run[1], state_run[2]]]
+                    rc := evaluation.region_counts(segments(path, settings), truth)
+                    bc := evaluation.boundary_counts(path, record.path, settings.boundary_tolerance)
+                    for: k < 4
+                        regions[k] += rc[k]
+                        boundaries[k] += bc[k]
+                    if decoder == 1
+                        for: t < int(#path)
+                            raw := math.floor(10.0 * result.confidence[t])
+                            bucket := int(raw)
+                            if bucket > 9
+                                bucket = 9
+                            calibration[bucket][0] += 1
+                            if path[t] == record.path[t]
+                                calibration[bucket][1] += 1
+                    record_lines = record_lines.append("RECORD {record.name} length {#path} correct {correct}")
+                block := ["EVALUATION {model.name} {name}"]
+                block = block.concat(evaluation.matrix_lines(model.states, matrix)).concat(evaluation.metric_lines(model.states, matrix))
+                block = block.append("REGIONS {model.states[settings.segment_state]} predicted {regions[0]} true {regions[1]} precision " + evaluation.fraction(regions[2], regions[0]) + " recall " + evaluation.fraction(regions[3], regions[1]))
+                block = block.append("BOUNDARIES predicted {boundaries[0]} true {boundaries[1]} precision " + evaluation.fraction(boundaries[2], boundaries[0]) + " recall " + evaluation.fraction(boundaries[3], boundaries[1]))
+                if decoder == 1
+                    for: bucket < 10
+                        row := calibration[bucket]
+                        if row[0] == 0
+                            continue
+                        range := if bucket == 9 then "0.9-1.0" else "0.{bucket}-0.{bucket + 1}"
+                        block = block.append("CALIBRATION {range} positions {row[0]} correct {row[1]} accuracy " + evaluation.fraction(row[1], row[0]))
+                evaluation_blocks = evaluation_blocks.append(block.concat(record_lines))
+                totals = totals.append(total_correct)
+            scores = scores.append(totals)
+            decoded = decoded.append([for record := sequences[] then inference.decode(model.probabilities, record.observations)])
+    void annotate()
+        model := models[1]
+        generator := sampler.Generator(settings.posterior_seed)
+        string[] decoding_lines := []
+        segment_lines := ["sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island"]
+        for: j < int(#sequences)
+            record := sequences[j]
+            result := decoded[1][j]
+            decoding_lines = decoding_lines.concat(["SEQUENCE {record.name} length {#record.observations} loglik " + model_io.decimal(result.fb.loglik) + " viterbi " + model_io.decimal(result.logprob) + " differences {differences} uncertain {uncertain} expected_segments " + model_io.decimal(real64(sample_segments) / real64(settings.posterior_samples)), "VITERBI " + path_text(result.viterbi_path, model.states), "POSTERIOR " + path_text(result.posterior_path, model.states), "CONFIDENT " + confident, "IMPUTED " + imputed])
+        model_io.write_lines("decodings.txt", decoding_lines)
+    void .run()
+        .validate()
+        .train_unsupervised()
+        .train_supervised()
+        .evaluate()
+        annotate()
+        model_io.write_lines("evaluation.txt", join_blocks(evaluation_blocks))
+void run()
+    initial, sequence_rows, labeled_rows, parameter_rows := model_io.read_inputs()
+    analysis := Analysis(initial, sequence_rows, labeled_rows, parameter_rows)
+    .analysis.run()

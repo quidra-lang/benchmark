@@ -1,0 +1,699 @@
+export type BusinessRule = 'FOLLOWING' | 'MODIFIED_FOLLOWING' | 'PRECEDING' | 'UNADJUSTED';
+export const isLeap = (year: number): boolean =>
+  year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+export function daysInMonth(year: number, month: number): number {
+  return [31, isLeap(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+export function dayNumber(year: number, month: number, day: number): number {
+  let result = day - 1;
+  for (let y = 2000; y < year; y++) result += isLeap(y) ? 366 : 365;
+  for (let y = year; y < 2000; y++) result -= isLeap(y) ? 366 : 365;
+  for (let m = 1; m < month; m++) result += daysInMonth(year, m);
+  return result;
+}
+export function dateParts(day: number): [number, number, number] {
+  let year = 2000;
+  let month = 1;
+  while (day < 0) day += isLeap(--year) ? 366 : 365;
+  while (day >= (isLeap(year) ? 366 : 365)) day -= isLeap(year++) ? 366 : 365;
+  while (day >= daysInMonth(year, month)) day -= daysInMonth(year, month++);
+  return [year, month, day + 1];
+}
+export function parseDate(text: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (
+    year < 2001 ||
+    year > 2099 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month)
+  ) {
+    return null;
+  }
+  return dayNumber(year, month, day);
+}
+export function formatDate(day: number): string {
+  const [y, m, d] = dateParts(day);
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+export class Calendar {
+  private readonly holidays: Set<number>;
+  constructor(holidays: number[]) {
+    this.holidays = new Set(holidays);
+  }
+  business(day: number): boolean {
+    return (((day + 5) % 7) + 7) % 7 < 5 && !this.holidays.has(day);
+  }
+  shift(day: number, count: number): number {
+    const step = count < 0 ? -1 : 1;
+    let remaining = Math.abs(count);
+    while (remaining > 0) {
+      day += step;
+      if (this.business(day)) remaining--;
+    }
+    return day;
+  }
+  adjust(day: number, rule: BusinessRule): number {
+    if (rule === 'UNADJUSTED') return day;
+    let result = day;
+    const step = rule === 'PRECEDING' ? -1 : 1;
+    while (!this.business(result)) result += step;
+    return rule === 'MODIFIED_FOLLOWING' && dateParts(result)[1] !== dateParts(day)[1]
+      ? this.adjust(day, 'PRECEDING')
+      : result;
+  }
+}
+export type DayCount = '30/360' | '30E/360' | 'ACT/360' | 'ACT/365F' | 'ACT/ACT';
+export function yearFraction(first: number, last: number, convention: DayCount): [number, number] {
+  let [y1, m1, d1] = dateParts(first);
+  let [y2, m2, d2] = dateParts(last);
+  if (convention === '30/360' || convention === '30E/360') {
+    if (convention === '30/360') {
+      const feb1 = m1 === 2 && d1 === daysInMonth(y1, m1);
+      const feb2 = m2 === 2 && d2 === daysInMonth(y2, m2);
+      if (feb1 && feb2) d2 = 30;
+      if (feb1) d1 = 30;
+      if (d2 === 31 && d1 >= 30) d2 = 30;
+      if (d1 === 31) d1 = 30;
+    } else {
+      if (d1 === 31) d1 = 30;
+      if (d2 === 31) d2 = 30;
+    }
+    return [360 * (y2 - y1) + 30 * (m2 - m1) + d2 - d1, 360];
+  }
+}
+export interface YieldAnalytics {
+  ytm: number;
+  macaulay: number;
+  modified: number;
+  convexity: number;
+  dv01: number;
+}
+export function bisect(
+  value: (x: number) => number,
+  lower: number,
+  upper: number,
+  target: number,
+): number {
+  for (let step = 0; step < 80; step++) {
+    const middle = (lower + upper) / 2;
+    if (value(middle) > target) lower = middle;
+    else upper = middle;
+  }
+  return (lower + upper) / 2;
+}
+function presentByYield(
+  flows: number[],
+  frequency: number,
+  fraction: number,
+  yieldValue: number,
+): number[] {
+  const first = 1 + (fraction * yieldValue) / frequency;
+  const growth = 1 + yieldValue / frequency;
+  let power = 1;
+  return flows.map((amount) => {
+    const value = amount / (first * power);
+    power *= growth;
+    return value;
+  });
+}
+export function dirty(
+  flows: number[],
+  frequency: number,
+  fraction: number,
+  outstanding: number,
+  yieldValue: number,
+): number {
+  let total = 0;
+  for (const value of presentByYield(flows, frequency, fraction, yieldValue)) total += value;
+  return (total * 100) / outstanding;
+}
+export function yieldAnalytics(
+  flows: number[],
+  frequency: number,
+  fraction: number,
+  outstanding: number,
+  target: number,
+): YieldAnalytics {
+  const value = (y: number) => dirty(flows, frequency, fraction, outstanding, y);
+  const ytm = bisect(value, 0, 1, target);
+  const present = presentByYield(flows, frequency, fraction, ytm);
+  let total = 0;
+  let weighted = 0;
+  let second = 0;
+  for (let k = 0; k < present.length; k++) {
+    const time = (k + fraction) / frequency;
+    total += present[k];
+    weighted += time * present[k];
+    second += time * (time + 1 / frequency) * present[k];
+  }
+  const growth = 1 + ytm / frequency;
+  const macaulay = weighted / total;
+  return {
+    ytm,
+    macaulay,
+    modified: macaulay / growth,
+    convexity: second / (total * growth * growth),
+    dv01: (value(ytm - 0.0001) - value(ytm + 0.0001)) / 2,
+  };
+}
+export type Frequency = 1 | 2 | 4 | 12;
+export function couponSchedule(
+  issue: number,
+  maturity: number,
+  frequency: Frequency,
+  endOfMonth = false,
+  longStub = false,
+): number[] {
+  const [year, month, day] = dateParts(maturity);
+  const eom = endOfMonth && day === daysInMonth(year, month);
+  const dates: number[] = [];
+  for (let k = 0; ; k++) {
+    const index = year * 12 + month - 1 - (12 / frequency) * k;
+    const y = Math.floor(index / 12);
+    const m = (index % 12) + 1;
+    const last = daysInMonth(y, m);
+    const current = dayNumber(y, m, eom ? last : Math.min(day, last));
+    if (current <= issue) {
+      if (longStub && current !== issue && k >= 2) dates.pop();
+      break;
+    }
+    dates.push(current);
+  }
+  return [issue, ...dates.reverse()];
+}
+export interface Pillar {
+  maturity: number;
+  coupon: number;
+  frequency: Frequency;
+}
+export interface CurveFlow {
+  days: number;
+  amount: number;
+}
+export class Curve {
+  readonly days: number[];
+  readonly rates: number[];
+  constructor(days: number[], rates: number[]) {
+    this.days = days;
+    this.rates = rates;
+  }
+  rate(day: number): number {
+    if (day <= this.days[0]) return this.rates[0];
+    const last = this.days.length - 1;
+    if (day >= this.days[last]) return this.rates[last];
+    for (let j = 1; j <= last; j++) {
+      if (day === this.days[j]) return this.rates[j];
+      if (day < this.days[j]) {
+        return (
+          this.rates[j - 1] +
+          (this.rates[j] - this.rates[j - 1]) *
+            ((day - this.days[j - 1]) / (this.days[j] - this.days[j - 1]))
+        );
+      }
+    }
+    return this.rates[last];
+  }
+  discount(day: number, spread = 0): number {
+    const rate = this.rate(day) + spread;
+    const years = Math.floor(day / 365);
+    const remainder = day % 365;
+    let power = 1;
+    for (let y = 0; y < years; y++) power *= 1 + rate;
+    return 1 / (power * (1 + (rate * remainder) / 365));
+  }
+  present(flows: CurveFlow[], spread = 0): number {
+    let total = 0;
+    for (const flow of flows) total += flow.amount * this.discount(flow.days, spread);
+    return total;
+  }
+  zspread(flows: CurveFlow[], target: number): number {
+    return bisect((s) => this.present(flows, s), -0.5, 0.5, target);
+  }
+export function bootstrap(pillars: Pillar[], settlement: number): Curve {
+  const days: number[] = [];
+  const rates: number[] = [];
+  for (const pillar of pillars) {
+    const schedule = couponSchedule(settlement, pillar.maturity, pillar.frequency);
+    const flows: CurveFlow[] = [];
+    for (let i = 1; i < schedule.length; i++) {
+      const [n, m] = yearFraction(schedule[i - 1], schedule[i], '30/360');
+      let amount = (pillar.coupon * n) / (10000 * m);
+      if (i === schedule.length - 1) amount += 1;
+      flows.push({ days: schedule[i] - settlement, amount });
+    }
+    days.push(pillar.maturity - settlement);
+    rates.push(bisect((rate) => new Curve(days, [...rates, rate]).present(flows), 0, 1, 1));
+  }
+  return new Curve(days, rates);
+}
+const BUCKETS = ['0-1Y', '1-3Y', '3-5Y', '5-10Y', '10Y+'];
+const isType = (text: string): text is BondType =>
+  text === 'FIXED' || text === 'ZERO' || text === 'AMORT' || text === 'FRN';
+const isFrequency = (n: number): n is Frequency => n === 1 || n === 2 || n === 4 || n === 12;
+const isDayCount = (s: string): s is DayCount =>
+  ['30/360', '30E/360', 'ACT/360', 'ACT/365F', 'ACT/ACT'].includes(s);
+const isRule = (s: string): s is BusinessRule =>
+  ['FOLLOWING', 'MODIFIED_FOLLOWING', 'PRECEDING', 'UNADJUSTED'].includes(s);
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const roundRatio = (a: number, b: number) => Math.floor((2 * a + b) / (2 * b));
+const thousandths = (s: string) => Number(s.replace('.', ''));
+const readLines = (name: string) => readFileSync(`input/${name}`, 'ascii').split('\n').slice(0, -1);
+const readCsv = (name: string) =>
+  readLines(name)
+    .slice(1)
+    .map((text, i) => ({ fields: text.split(','), line: i + 2 }));
+function sum(values: number[]): number {
+  let total = 0;
+  for (const n of values) total += n;
+  return total;
+}
+function decimal(value: number, digits: number): string {
+  let scale = 1;
+  for (let i = 0; i < digits; i++) scale *= 10;
+  const rounded = Math.floor(Math.abs(value) * scale + 0.5);
+  return (
+    (value < 0 && rounded !== 0 ? '-' : '') +
+    Math.floor(rounded / scale) +
+    '.' +
+    String(rounded % scale).padStart(digits, '0')
+  );
+}
+function knownDate(text: string): number {
+  const date = parseDate(text);
+  if (date === null) throw new Error('Expected a valid input date');
+  return date;
+}
+function readParameters(): Parameters {
+  const result: Parameters = { valuation: 0, settlementDays: 0, scenarios: [], limits: [] };
+  for (const [i, line] of readLines('params.txt').entries()) {
+    const [kind, ...words] = line.split(' ');
+    if (kind === 'valuation_date') result.valuation = knownDate(words[0]);
+    else if (kind === 'settlement_days') result.settlementDays = Number(words[0]);
+    else if (kind === 'scenario') {
+      result.scenarios.push({ name: words[0], shifts: words.slice(1).map(Number), line: i + 1 });
+    } else result.limits.push({ kind: words[0], args: words.slice(1) });
+  }
+  return result;
+}
+function validatePillars(settlement: number, report: Report): Pillar[] {
+  const seen = new Set<string>();
+  const pillars: Pillar[] = [];
+  for (const {
+    fields: [text, couponText, frequencyText],
+    line,
+  } of readCsv('curve_quotes.csv')) {
+    const duplicate = seen.has(text);
+    const maturity = parseDate(text);
+    const frequency = Number(frequencyText);
+    seen.add(text);
+    if (duplicate) report('curve_quotes.csv', line, text, 'duplicate pillar');
+    else if (maturity === null) report('curve_quotes.csv', line, text, 'invalid date');
+    else if (maturity <= settlement) {
+      report('curve_quotes.csv', line, text, 'pillar not after settlement');
+    } else if (!isFrequency(frequency)) report('curve_quotes.csv', line, text, 'invalid frequency');
+    else pillars.push({ maturity, frequency, coupon: Number(couponText) });
+  }
+  return pillars.sort((a, b) => a.maturity - b.maturity);
+}
+interface RawOptions {
+  eom: boolean;
+  long: boolean;
+  lag: number | null;
+  cap: number | null;
+  floor: number | null;
+  sinks: { date: string; amount: number }[];
+  calls: { date: string; price: number }[];
+}
+function readOptions(text: string, type: BondType): RawOptions | null {
+  const allowed = new Set([
+    'EOM',
+    'LONG',
+    ...(type === 'FIXED'
+      ? ['CALL']
+      : type === 'AMORT'
+        ? ['SINK']
+        : type === 'FRN'
+          ? ['LAG', 'CAP', 'FLOOR']
+          : []),
+  ]);
+  const values = new Map<string, string>();
+  const sinks: RawOptions['sinks'] = [];
+  const calls: RawOptions['calls'] = [];
+  if (text !== '-') {
+    for (const item of text.split(';')) {
+      const equals = item.indexOf('=');
+      const key = equals < 0 ? item : item.slice(0, equals);
+      const value = equals < 0 ? '' : item.slice(equals + 1);
+      if (!allowed.has(key) || (key !== 'SINK' && key !== 'CALL' && values.has(key))) return null;
+      values.set(key, value);
+      if (key === 'SINK') {
+        const [date, cents] = value.split(':');
+        sinks.push({ date, amount: Number(cents) });
+      }
+      if (key === 'CALL') {
+        const [date, price] = value.split(':');
+        calls.push({ date, price: thousandths(price) });
+      }
+    }
+  }
+  const lag = values.has('LAG') ? Number(values.get('LAG')) : null;
+  const cap = values.has('CAP') ? Number(values.get('CAP')) : null;
+  const floor = values.has('FLOOR') ? Number(values.get('FLOOR')) : null;
+  if (
+    type === 'FRN' &&
+    (lag === null ||
+      lag < 1 ||
+      lag > 5 ||
+      (cap !== null && cap > 1200) ||
+      (floor !== null && floor > (cap ?? 1200)))
+  ) {
+    return null;
+  }
+  return { eom: values.has('EOM'), long: values.has('LONG'), lag, cap, floor, sinks, calls };
+}
+function buildCashflows(
+  bond: Omit<Bond, 'cashflows'>,
+  calendar: Calendar,
+  fixings: Fixing[],
+): Flow[] | null {
+  const flows: Flow[] = [];
+  const sinks = new Map(bond.options.sinks.map((s) => [s.day, s.amount]));
+  let opening = bond.face;
+  for (let period = 1; period < bond.schedule.length; period++) {
+    const start = bond.schedule[period - 1];
+    const end = bond.schedule[period];
+    const [numerator, denominator] = yearFraction(start, end, bond.daycount);
+    const payment = calendar.adjust(end, bond.convention);
+    let rate = bond.coupon;
+    if (bond.type === 'FRN') {
+      const lag = bond.options.lag;
+      if (lag === null) throw new Error('FRN must have a fixing lag');
+      const fixing = indexRate(
+        fixings,
+        calendar.shift(calendar.adjust(start, bond.convention), -lag),
+      );
+      if (fixing === null) return null;
+      rate += fixing;
+      if (bond.options.floor !== null) rate = Math.max(rate, bond.options.floor);
+      if (bond.options.cap !== null) rate = Math.min(rate, bond.options.cap);
+    }
+    const principal = period === bond.schedule.length - 1 ? opening : (sinks.get(end) ?? 0);
+    const coupon = roundRatio(opening * rate * numerator, 10000 * denominator);
+    flows.push({
+      period,
+      start,
+      end,
+      payment,
+      numerator,
+      denominator,
+      rate,
+      opening,
+      coupon,
+      principal,
+      cash: coupon + principal,
+    });
+    opening -= principal;
+  }
+  return flows;
+}
+function validateBond(
+  fields: string[],
+  calendar: Calendar,
+  fixings: Fixing[],
+): { bond: Bond } | { error: string } {
+  const [
+    id,
+    type,
+    issueText,
+    maturityText,
+    couponText,
+    frequencyText,
+    daycount,
+    convention,
+    faceText,
+    optionText,
+  ] = fields;
+  if (!isType(type)) return { error: 'unknown type' };
+  const issue = parseDate(issueText);
+  const maturity = parseDate(maturityText);
+  if (issue === null || maturity === null) return { error: 'invalid date' };
+  if (maturity <= issue) return { error: 'maturity not after issue' };
+  const frequency = Number(frequencyText);
+  const coupon = Number(couponText);
+  const face = Number(faceText);
+  if (!isFrequency(frequency)) return { error: 'invalid frequency' };
+  if (!isDayCount(daycount)) return { error: 'unknown day count' };
+  if (!isRule(convention)) return { error: 'unknown business day rule' };
+  if (face % 100000 !== 0 || face > 10000000) return { error: 'invalid face' };
+  if (coupon > 1200 || (type === 'ZERO' && coupon !== 0)) return { error: 'invalid coupon' };
+  const raw = readOptions(optionText, type);
+  if (raw === null) return { error: 'invalid option' };
+  const schedule = couponSchedule(issue, maturity, frequency, raw.eom, raw.long);
+  const internal = new Set(schedule.slice(1, -1));
+  const sinks: Sink[] = [];
+  const calls: Call[] = [];
+  let previous = -1;
+  let total = 0;
+  for (const sink of raw.sinks) {
+    const day = parseDate(sink.date);
+    if (day === null || !internal.has(day) || day <= previous || sink.amount === 0) {
+      return { error: 'invalid sinking fund' };
+    }
+    sinks.push({ day, amount: sink.amount });
+    previous = day;
+    total += sink.amount;
+  }
+  if (type === 'AMORT' && (total === 0 || total >= face)) return { error: 'invalid sinking fund' };
+  previous = -1;
+  for (const call of raw.calls) {
+    const day = parseDate(call.date);
+    if (
+      day === null ||
+      !internal.has(day) ||
+      day <= previous ||
+      call.price < 100000 ||
+      call.price > 110000
+    ) {
+      return { error: 'invalid call schedule' };
+    }
+    calls.push({ day, price: call.price });
+    previous = day;
+  }
+  const options: Options = { ...raw, sinks, calls };
+  const base = {
+    id,
+    type,
+    issue,
+    maturity,
+    frequency,
+    coupon,
+    face,
+    daycount,
+    convention,
+    options,
+    schedule,
+  };
+  const cashflows = buildCashflows(base, calendar, fixings);
+  return cashflows === null ? { error: 'missing fixing' } : { bond: { ...base, cashflows } };
+}
+function validateBonds(calendar: Calendar, fixings: Fixing[], report: Report): Map<string, Bond> {
+  const seen = new Set<string>();
+  const bonds = new Map<string, Bond>();
+  for (const row of readCsv('bonds.csv')) {
+    const id = row.fields[0];
+    const duplicate = seen.has(id);
+    seen.add(id);
+    const result = duplicate
+      ? { error: 'duplicate id' }
+      : validateBond(row.fields, calendar, fixings);
+    if ('error' in result) report('bonds.csv', row.line, id, result.error);
+    else bonds.set(id, result.bond);
+  }
+  return bonds;
+}
+function settlementValues(bond: Bond, price: number, settlement: number): SettlementValues {
+  const remaining = bond.cashflows.slice(bond.cashflows.findIndex((f) => f.end > settlement));
+  const current = remaining[0];
+  const [n, m] = yearFraction(current.start, settlement, bond.daycount);
+  const accrued = (current.rate * n) / (100 * m);
+  const accruedAmount = roundRatio(current.opening * current.rate * n, 10000 * m);
+  const cleanAmount = roundRatio(current.opening * price, 100000);
+  const [nextN, nextM] = yearFraction(settlement, current.end, bond.daycount);
+  const flows = remaining
+    .filter((f) => f.cash >= 1)
+    .map((f) => ({ ...f, days: f.payment - settlement }));
+  return {
+    remaining,
+    flows,
+    price,
+    accrued,
+    cleanAmount,
+    marketValue: cleanAmount + accruedAmount,
+    outstanding: current.opening,
+    target: price / 1000 + accrued,
+    fraction: (bond.frequency * nextN) / nextM,
+    amounts: remaining.map((f) => f.cash),
+    curveFlows: flows.map((f) => ({ days: f.days, amount: f.cash })),
+  };
+}
+function completeAnalytics(
+  bond: Bond,
+  values: SettlementValues,
+  settlement: number,
+  curve: Curve,
+): PricedBond {
+  const analytics = yieldAnalytics(
+    values.amounts,
+    bond.frequency,
+    values.fraction,
+    values.outstanding,
+    values.target,
+  );
+  let ytw = analytics.ytm;
+  let workout = bond.maturity;
+  for (const call of bond.options.calls) {
+    if (call.day <= settlement) continue;
+    const last = values.remaining.findIndex((f) => f.end === call.day);
+    const called = values.remaining.slice(0, last + 1).map((f) => f.coupon);
+    called[called.length - 1] += roundRatio(values.remaining[last].opening * call.price, 100000);
+    const y = bisect(
+      (y) => dirty(called, bond.frequency, values.fraction, values.outstanding, y),
+      0,
+      1,
+      values.target,
+    );
+    if (y < ytw) {
+      ytw = y;
+      workout = call.day;
+    }
+  }
+  return {
+    ...bond,
+    ...values,
+    ...analytics,
+    ytw,
+    workout,
+    wal: sum(values.flows.map((f) => f.principal * f.days)) / (365 * values.outstanding),
+    nextPayment: values.flows[0].payment,
+    curveClean: (curve.present(values.curveFlows) * 100) / values.outstanding - values.accrued,
+    zspread: curve.zspread(values.curveFlows, values.marketValue),
+  };
+}
+function validatePrices(
+  bonds: Map<string, Bond>,
+  settlement: number,
+  curve: Curve,
+  report: Report,
+): Map<string, PricedBond> {
+  const seen = new Set<string>();
+  const priced = new Map<string, PricedBond>();
+  for (const {
+    fields: [id, text],
+    line,
+  } of readCsv('prices.csv')) {
+    const duplicate = seen.has(id);
+    const bond = bonds.get(id);
+    seen.add(id);
+    if (!bond) report('prices.csv', line, id, 'unknown bond');
+    else if (duplicate) report('prices.csv', line, id, 'duplicate price');
+    else if (!(bond.issue <= settlement && settlement < bond.maturity)) {
+      report('prices.csv', line, id, 'not outstanding');
+    } else {
+      const values = settlementValues(bond, thousandths(text), settlement);
+      const value = (y: number) =>
+        dirty(values.amounts, bond.frequency, values.fraction, values.outstanding, y);
+      if (!(value(0) > values.target && values.target > value(1))) {
+        report('prices.csv', line, id, 'yield out of range');
+      } else priced.set(id, completeAnalytics(bond, values, settlement, curve));
+    }
+  }
+  return priced;
+}
+function cashflowLines(bonds: Map<string, Bond>): string[] {
+  const lines = ['bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal'];
+  for (const b of [...bonds.values()].sort((a, b) => compare(a.id, b.id))) {
+    for (const f of b.cashflows) {
+      if (f.cash >= 1) {
+        lines.push(
+          [
+            b.id,
+            f.period,
+            formatDate(f.start),
+            formatDate(f.end),
+            formatDate(f.payment),
+            decimal(f.numerator / f.denominator, 6),
+            f.rate,
+            f.opening,
+            f.coupon,
+            f.principal,
+          ].join(','),
+        );
+      }
+    }
+  }
+  return lines;
+}
+function analyticsLines(priced: Map<string, PricedBond>): string[] {
+  const lines = [
+    'bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread',
+  ];
+  for (const b of [...priced.values()].sort((a, b) => compare(a.id, b.id))) {
+    lines.push(
+      [
+        b.id,
+        decimal(b.price / 1000, 6),
+        decimal(b.accrued, 6),
+        decimal(b.target, 6),
+        percent(b.ytm),
+        percent(b.ytw),
+        formatDate(b.workout),
+        formatDate(b.nextPayment),
+        decimal(b.wal, 4),
+        decimal(b.macaulay, 4),
+        decimal(b.modified, 4),
+        decimal(b.convexity, 4),
+        decimal(b.dv01, 6),
+        decimal(b.curveClean, 6),
+        percent(b.zspread),
+      ].join(','),
+    );
+  }
+  return lines;
+}
+function main(): void {
+  const params = readParameters();
+  const calendar = new Calendar(readLines('calendar.txt').map(knownDate));
+  const fixings = readCsv('fixings.csv').map((r) => ({
+    date: knownDate(r.fields[0]),
+    rate: Number(r.fields[1]),
+  }));
+  const settlement = calendar.shift(params.valuation, params.settlementDays);
+  const errors: string[] = [];
+  const report: Report = (file, line, key, message) => {
+    errors.push(`${file}:${line}: ${key}: ${message}`);
+  };
+  const pillars = validatePillars(settlement, report);
+  const scenarios = validateScenarios(params, pillars.length, report);
+  const bonds = validateBonds(calendar, fixings, report);
+  const curve = bootstrap(pillars, settlement);
+  const priced = validatePrices(bonds, settlement, curve, report);
+    ['errors.txt', errors],
+    ['cashflows.csv', cashflowLines(bonds)],
+    ['analytics.csv', analyticsLines(priced)],
+    ['curve.txt', curveLines(params, settlement, pillars, curve)],
+    ['portfolio.txt', portfolios.flatMap(portfolioLines)],
+    ['scenarios.csv', scenarioLines(portfolios)],
+    ['compliance.txt', portfolios.flatMap((p) => complianceLines(p, params.limits))],
+  ]);
+  mkdirSync('output', { recursive: true });
+  for (const [name, lines] of files) {
+    writeFileSync(`output/${name}`, lines.length ? lines.join('\n') + '\n' : '', 'ascii');
+  }
+}
+main();

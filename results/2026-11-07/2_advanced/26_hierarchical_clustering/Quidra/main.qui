@@ -1,0 +1,742 @@
+import math
+import data = "./dataset.qui"
+import metric = "./distances.qui"
+import agg = "./agglomerative.qui"
+import drawing = "./dendrogram.qui"
+import validation = "./validation.qui"
+
+string real_text(real64 | none value)
+    match value
+        real64
+            formatted := "{value:.4}"
+            return if formatted == "-0.0000" then "0.0000" else formatted
+        none
+            return "-"
+
+string reals(real64[] values)
+    return [for value := values[] then real_text(value)].join(" ")
+
+string integers(int[] values)
+    return [for value := values[] then "{value}"].join(" ")
+
+real64 rounded_key(real64 value)
+    rounded := real64(real_text(value))
+    return rounded
+
+real64 | error required_real(real64 | none value)
+    match value
+        real64
+            return value
+        none
+            return error("missing clustering metric")
+
+string ari_text(validation.Fraction fraction)
+    return "{fraction.numerator}/{fraction.denominator} {real_text(fraction.value())}"
+
+real64[] pair_values(real64[][] matrix)
+    real64[] values := []
+    for: first < int(#matrix)
+        for: first + 1 <= second < int(#matrix)
+            values = values.append(matrix[first][second])
+    return values
+
+int histogram_bin(real64 value, real64 maximum)
+    position := math.floor(10.0 * value / maximum)
+    return math.min(9, position)
+
+real64[] centroid(real64[][] vectors)
+    return [for feature := (0:<int(#vectors[0]))[] then [for vector := vectors[] then vector[feature]].sum() / real64(#vectors)]
+
+int[][] cluster_members(int[] partition, int groups)
+    int[] empty := []
+    int[][] members := array(nat(groups), fill = empty)
+    for: position < int(#partition)
+        members[partition[position] - 1] = members[partition[position] - 1].append(position)
+    return members
+
+int majority_class(int[] row)
+    best := 0
+    for: 1 <= category < int(#row)
+        if row[category] > row[best]
+            best = category
+    return best
+
+string[] join_parts(string[][] parts)
+    string[] lines := []
+    for part := parts[]
+        if #lines > 0
+            lines = lines.append("")
+        lines = lines.concat(part)
+    return lines
+
+class Minstd(int state)
+    int .draw()
+        state = 48271 * state % 2147483647
+        return state
+
+class Tree(agg.Merge[] merges, int count)
+    real64[] heights := [for merge := merges[] then merge.height]
+    int[][] children := drawing.ordered_children(merges, count)
+    int[] order := drawing.leaf_order(children, count)
+    int[][] members := [for leaf := (0:<count)[] then [leaf]]
+    depths := array(nat(count), fill = 0)
+    real64[] subtree_heights := []
+    for merge := merges[]
+        members = members.append(members[merge.a].concat(members[merge.b]))
+        depths = depths.append(1 + math.max(depths[merge.a], depths[merge.b]))
+        first_height := if merge.a < count then 0.0 else subtree_heights[merge.a - count]
+        second_height := if merge.b < count then 0.0 else subtree_heights[merge.b - count]
+        subtree_heights = subtree_heights.append(math.max(merge.height, math.max(first_height, second_height)))
+
+    real64 height_of(int node)
+        return if node < count then 0.0 else heights[node - count]
+
+    int[] partition(bool[] selected)
+        owner := 0:<count
+        for: step < int(#selected)
+            if selected[step]
+                for leaf := members[count + step][]
+                    owner[leaf] = count + step
+        numbers := array(nat(2 * count - 1), fill = 0)
+        groups := 0
+        for leaf := order[]
+            if numbers[owner[leaf]] == 0
+                groups += 1
+                numbers[owner[leaf]] = groups
+        return [for node := owner[] then numbers[node]]
+
+    int[] cut_height(real64 height)
+        return partition([for value := subtree_heights[] then value <= height])
+
+    int[] cut_into(int groups)
+        return partition([for step := (0:<int(#merges))[] then step < count - groups])
+
+    real64[][] cophenetic()
+        real64[][] matrix := array(nat(count), fill = array(nat(count), fill = 0.0))
+        for merge := merges[]
+            for first := members[merge.a][]
+                for second := members[merge.b][]
+                    matrix[first][second] = merge.height
+                    matrix[second][first] = merge.height
+        return matrix
+
+    real64[] joining_heights()
+        real64[] values := array(nat(count), fill = 0.0)
+        for merge := merges[]
+            for child := [merge.a, merge.b][]
+                if child < count
+                    values[child] = merge.height
+        return values
+
+    real64[] height_sequence(int step, int depth)
+        if depth == 0
+            return []
+        merge := merges[step]
+        sequence := [merge.height]
+        for child := [merge.a, merge.b][]
+            if child >= count
+                sequence = sequence.concat(height_sequence(child - count, depth - 1))
+        return sequence
+
+    string newick(int node, string[] idents)
+        if node < count
+            return idents[node]
+        string[] branches := []
+        for child := children[node - count][]
+            branches = branches.append(newick(child, idents) + ":" + real_text(height_of(node) - height_of(child)))
+        return "(" + branches.join(",") + ")"
+
+class Evaluation(int[] partition, int[] sizes, real64 | none silhouette, real64 | none dunn, real64 wss, real64 | none ch, validation.Fraction ari)
+    string text()
+        return "sizes {integers(sizes)} silhouette {real_text(silhouette)} dunn {real_text(dunn)} wss {real_text(wss)} ch {real_text(ch)} ari {ari_text(ari)}"
+
+class LinkageResult(string method, Tree tree, real64[] cophenetic, real64 correlation, Evaluation[] height_cuts, Evaluation[] count_cuts, int[] label_partition)
+
+class Study(local data.Observations observations, data.Settings settings)
+    string[] names := observations.names
+    count := int(#observations.rows)
+    string[] idents := [for row := observations.rows[] then row.ident]
+    string[] labels := [for row := observations.rows[] then row.label]
+    string[] classes := []
+    int[] targets := []
+    real64[][] raw := [for row := observations.rows[] then row.values]
+    local statistics := metric.Statistics(raw)
+    real64[] means := statistics.means
+    real64[] deviations := statistics.deviations
+    real64[][] vectors := if settings.standardize == "yes" then metric.standardize(raw, means, deviations) else raw
+    real64[][] delta := metric.distance_matrix(vectors, settings.distance)
+    distance_pairs := pair_values(delta)
+    real64 distance_max := distance_pairs.max()
+    int[] neighbors := []
+    LinkageResult[] results := []
+    chosen := 0
+    position := 0
+    kappa := 0
+    int[] selected := []
+    int[][] members := []
+    real64[] silhouettes := []
+    int[][] table := []
+    int[] majority := []
+    for label := labels.sorted()[]
+        if #classes == 0 or classes[-1] != label
+            classes = classes.append(label)
+    for label := labels[]
+        for: category < int(#classes)
+            if classes[category] == label
+                targets = targets.append(category)
+                break
+    for: observation < count
+        neighbors = neighbors.append(nearest_neighbor(observation))
+    for method := settings.linkages[]
+        results = results.append(analyse(method))
+    for: result < int(#results)
+        for: candidate < int(#settings.cut_counts)
+            if results[result].count_cuts[candidate].ari.greater(results[chosen].count_cuts[position].ari)
+                chosen = result
+                position = candidate
+    kappa = settings.cut_counts[position]
+    selected = results[chosen].count_cuts[position].partition
+    members = cluster_members(selected, kappa)
+    silhouettes = validation.silhouette_values(selected, kappa, delta)
+    table = class_table(selected)
+    majority = [for row := table[] then majority_class(row)]
+
+    int nearest_neighbor(int observation)
+        best := -1
+        for: other < count
+            if other != observation and (best < 0 or delta[observation][other] < delta[observation][best])
+                best = other
+        return best
+
+    int[][] class_table(int[] partition)
+        return validation.contingency(partition - 1, targets, partition.max(), int(#classes))
+
+    validation.Fraction label_ari(int[] partition)
+        return validation.adjusted_rand(class_table(partition))
+
+    int match_count(int[] partition)
+        return [for row := class_table(partition)[] then row.max()].sum()
+
+    validation.Fraction partition_ari(int[] first, int[] second)
+        return validation.adjusted_rand(validation.contingency(first - 1, second - 1, first.max(), second.max()))
+
+    real64 | none mean_silhouette(int[] partition, real64[][] distances)
+        groups := partition.max()
+        return if groups < 2 then none else validation.silhouette_values(partition, groups, distances).sum() / real64(#partition)
+
+    real64[][] centroids(int[] partition)
+        groups := cluster_members(partition, partition.max())
+        return [for group := groups[] then centroid([for observation := group[] then vectors[observation]])]
+
+    real64 within_sum(int[] partition)
+        real64[][] centers := centroids(partition)
+        return [for observation := (0:<count)[] then metric.squared(vectors[observation], centers[partition[observation] - 1])].sum()
+
+    Evaluation evaluate(int[] partition)
+        groups := partition.max()
+        group_list := cluster_members(partition, groups)
+        sizes := [for group := group_list[] then int(#group)]
+        real64 wss := within_sum(partition)
+        real64 diameter := 0.0
+        real64 gap_between := inf
+        for: first < count
+            for: first + 1 <= second < count
+                if partition[first] == partition[second]
+                    diameter = math.max(diameter, delta[first][second])
+                else
+                    gap_between = math.min(gap_between, delta[first][second])
+        real64 | none ch := none
+        if 2 <= groups < count
+            overall := centroid(vectors)
+            real64[][] centers := centroids(partition)
+            bss := [for group := (0:<groups)[] then real64(sizes[group]) * metric.squared(centers[group], overall)].sum()
+            ch = bss / real64(groups - 1) / (wss / real64(count - groups))
+        real64 | none dunn := if groups >= 2 and diameter > 0.0 then gap_between / diameter else none
+        return Evaluation(partition, sizes, mean_silhouette(partition, delta), dunn, wss, ch, label_ari(partition))
+
+    LinkageResult analyse(string method)
+        tree := Tree(agg.agglomerate(delta, method), count)
+        cophenetic := pair_values(tree.cophenetic())
+        Evaluation[] height_cuts := [for height := settings.cut_heights[] then evaluate(tree.cut_height(height))]
+        Evaluation[] count_cuts := [for clusters := settings.cut_counts[] then evaluate(tree.cut_into(clusters))]
+        return LinkageResult(method, tree, cophenetic, validation.correlation(distance_pairs, cophenetic), height_cuts, count_cuts, tree.cut_into(int(#classes)))
+
+    string[] linkage_table()
+        lines := ["method,step,a,b,height,size"]
+        for result := results[]
+            for: step < int(#result.tree.merges)
+                merge := result.tree.merges[step]
+                lines = lines.append("{result.method},{step + 1},{merge.a},{merge.b},{real_text(merge.height)},{merge.size}")
+        return lines
+
+    string[] clusters_table()
+        header := ["id", "label"]
+        for result := results[]
+            for: cut < int(#settings.cut_heights)
+                header = header.append("{result.method}_h{cut + 1}")
+            for clusters := settings.cut_counts[]
+                header = header.append("{result.method}_k{clusters}")
+        lines := [header.join(",")]
+        for: observation < count
+            fields := [idents[observation], labels[observation]]
+            for result := results[]
+                for cut := result.height_cuts.concat(result.count_cuts)[]
+                    fields = fields.append("{cut.partition[observation]}")
+            lines = lines.append(fields.join(","))
+        return lines
+
+    string[] dendrogram_report()
+        string[][] blocks := []
+        for result := results[]
+            tree := result.tree
+            maximum := tree.heights.max()
+            cuts := [for height := settings.cut_heights[] then drawing.column(height, maximum, settings.width)]
+            lines := ["dendrogram {result.method} height_max {real_text(maximum)} width {settings.width}"]
+            lines = lines.concat(drawing.dendrogram_rows(tree.merges, tree.children, tree.order, idents, labels, maximum, cuts, settings.width))
+            for: cut < int(#cuts)
+                column_text := if cuts[cut] <= settings.width then "{cuts[cut]}" else "-"
+                lines = lines.append("cut {real_text(settings.cut_heights[cut])} column {column_text}")
+            blocks = blocks.append(lines)
+        return join_parts(blocks)
+
+    string[] trees_report()
+        return [for result := results[] then "{result.method} {result.tree.newick(2 * count - 2, idents)};"]
+
+    string pair_text(int first, int second)
+        return "{real_text(delta[first][second])} {idents[first]} {idents[second]}"
+
+    string[] data_part()
+        lines := ["data n {count} features {#names} classes {#classes} distance {settings.distance} standardize {settings.standardize}"]
+        for: feature < int(#names)
+            lines = lines.append("feature {names[feature]} mean {real_text(means[feature])} sd {real_text(deviations[feature])}")
+        smallest := [0, 1]
+        largest := [0, 1]
+        for: first < count
+            for: first + 1 <= second < count
+                if delta[first][second] < delta[smallest[0]][smallest[1]]
+                    smallest = [first, second]
+                if delta[first][second] > delta[largest[0]][largest[1]]
+                    largest = [first, second]
+        nearest_mean := [for observation := (0:<count)[] then delta[observation][neighbors[observation]]].sum() / real64(count)
+        reciprocal := [for observation := (0:<count)[] if observation < neighbors[observation] and neighbors[neighbors[observation]] == observation then 1].sum()
+        lines = lines.append("distances pairs {#distance_pairs} min {pair_text(smallest[0], smallest[1])} max {pair_text(largest[0], largest[1])} mean {real_text(distance_pairs.sum() / real64(#distance_pairs))}")
+        lines = lines.append("nearest_neighbors mean {real_text(nearest_mean)} reciprocal_pairs {reciprocal}")
+        return lines.append("labels {evaluate(targets + 1).text()}")
+
+    string[] correlation_part()
+        columns := [for feature := (0:<int(#names))[] then [for row := raw[] then row[feature]]]
+        lines := ["correlation " + names.join(" ")]
+        for: feature < int(#names)
+            lines = lines.append(names[feature] + " " + reals([for column := columns[] then validation.correlation(columns[feature], column)]))
+        return lines
+
+    string[] histogram_part()
+        counts := array(10, fill = 0)
+        for value := distance_pairs[]
+            counts[histogram_bin(value, distance_max)] += 1
+        highest := counts.max()
+        lines := ["histogram"]
+        for: bin_number < 10
+            frequency := counts[bin_number]
+            length := frequency * 50 / highest
+            string bar := if length > 0 then " " + "#" * nat(length) else ""
+            lines = lines.append("{real_text(real64(bin_number) * distance_max / 10.0)} {real_text(real64(bin_number + 1) * distance_max / 10.0)} {frequency}{bar}")
+        return lines
+
+    string[] linkage_part(LinkageResult result)
+        tree := result.tree
+        path := [for row := (0:<count - 1)[] then delta[tree.order[row]][tree.order[row + 1]]].sum()
+        inversions := [for step := (1:<count - 1)[] if tree.heights[step] < tree.heights[step - 1] then step]
+        lines := ["linkage {result.method}", "cophenetic {real_text(result.correlation)} leaf_path {real_text(path)}", "heights min {real_text(tree.heights.min())} max {real_text(tree.heights.max())} inversions {#inversions}"]
+        for step := inversions[]
+            lines = lines.append("inversion step {step + 1} height {real_text(tree.heights[step])} previous {real_text(tree.heights[step - 1])}")
+        ordered := tree.subtree_heights.sorted()
+        gaps := [for clusters := (2:settings.gap_max_k)[] then ordered[count - clusters] - ordered[count - clusters - 1]]
+        suggested := 2
+        for: 3 <= clusters <= settings.gap_max_k
+            if rounded_key(gaps[clusters - 2]) > rounded_key(gaps[suggested - 2])
+                suggested = clusters
+        lines = lines.concat(["gaps " + reals(gaps), "suggested_k {suggested}"])
+        joining := tree.joining_heights()
+        late := 0:<count
+        for: 1 <= index < count
+            value := late[index]
+            cursor := index
+            while cursor > 0 and joining[value] > joining[late[cursor - 1]]
+                late[cursor] = late[cursor - 1]
+                cursor -= 1
+            late[cursor] = value
+        lines = lines.append("late_joiners " + [for observation := late[0:<settings.list_size][] then "{idents[observation]}:{real_text(joining[observation])}"].join(" "))
+        kinds := [0, 0, 0]
+        for merge := tree.merges[]
+            leaves := (if merge.a < count then 1 else 0) + (if merge.b < count then 1 else 0)
+            kinds[2 - leaves] += 1
+        int matches := match_count(result.label_partition)
+        lines = lines.append("merges leaf_leaf {kinds[0]} leaf_cluster {kinds[1]} cluster_cluster {kinds[2]} depth {tree.depths[2 * count - 2]}")
+        lines = lines.append("label_cut k {#classes} purity {matches}/{count} {real_text(real64(matches) / real64(count))}")
+        lines = lines.append("inconsistency depth {settings.inconsistency_depth}")
+        for: count - settings.inconsistency_count - 1 <= step < count - 1
+            sequence := tree.height_sequence(step, settings.inconsistency_depth)
+            average := sequence.sum() / real64(#sequence)
+            real64 deviation := 0.0
+            real64 coefficient := 0.0
+            if #sequence >= 2
+                deviation = math.sqrt(((sequence - average) * (sequence - average)).sum() / real64(int(#sequence) - 1))
+                coefficient = (tree.heights[step] - average) / deviation
+            lines = lines.append("step {step + 1} height {real_text(tree.heights[step])} mean {real_text(average)} sd {real_text(deviation)} count {#sequence} coefficient {real_text(coefficient)}")
+        for: cut < int(#settings.cut_heights)
+            lines = lines.append("cut height {real_text(settings.cut_heights[cut])} clusters {#result.height_cuts[cut].sizes} {result.height_cuts[cut].text()}")
+        for: cut < int(#settings.cut_counts)
+            lines = lines.append("cut k {settings.cut_counts[cut]} {result.count_cuts[cut].text()}")
+        return lines
+
+    string[] mst_part(LinkageResult single)
+        agg.Edge[] edges := agg.minimum_spanning_tree(delta)
+        weights := [for edge := edges[] then edge.weight]
+        total := weights.sum()
+        weights = weights.sorted()
+        heights_match := true
+        bool[][] linked := array(nat(count), fill = array(nat(count), fill = false))
+        for: index < int(#edges)
+            if math.abs(weights[index] - single.tree.heights[index]) > 0.000000001
+                heights_match = false
+            linked[edges[index].parent][edges[index].child] = true
+            linked[edges[index].child][edges[index].parent] = true
+        nearest := [for observation := (0:<count)[] if linked[observation][neighbors[observation]] then 1].sum()
+        height_result := if heights_match then "match" else "mismatch"
+        lines := ["mst total {real_text(total)} heights {height_result} nn_edges {nearest}/{count}"]
+        numbers := 0:<int(#edges)
+        for: 1 <= index < int(#numbers)
+            value := numbers[index]
+            cursor := index
+            while cursor > 0 and edges[value].weight < edges[numbers[cursor - 1]].weight
+                numbers[cursor] = numbers[cursor - 1]
+                cursor -= 1
+            numbers[cursor] = value
+        for: cut < int(#settings.cut_counts)
+            clusters := settings.cut_counts[cut]
+            component := 0:<count
+            for: step < count - clusters
+                edge := edges[numbers[step]]
+                old := component[edge.child]
+                replacement := component[edge.parent]
+                for: observation < count
+                    if component[observation] == old
+                        component[observation] = replacement
+            partition := single.count_cuts[cut].partition
+            agrees := true
+            for: first < count
+                for: first + 1 <= second < count
+                    if (component[first] == component[second]) != (partition[first] == partition[second])
+                        agrees = false
+            result := if agrees then "match" else "mismatch"
+            lines = lines.append("mst partition k {clusters} {result}")
+        return lines
+
+    string[] compare_part()
+        method := settings.compare_linkage
+        label_count := int(#classes)
+        lines := ["compare linkage {method} k {label_count}"]
+        for kind := metric.types()[]
+            distances := metric.distance_matrix(vectors, kind)
+            tree := Tree(agg.agglomerate(distances, method), count)
+            partition := tree.cut_into(label_count)
+            coefficient := validation.correlation(pair_values(distances), pair_values(tree.cophenetic()))
+            lines = lines.append("metric {kind} cophenetic {real_text(coefficient)} silhouette {real_text(mean_silhouette(partition, distances))} ari {ari_text(label_ari(partition))}")
+        return lines
+
+    string[] cophenetic_part()
+        lines := ["cophenetic_matrix", "linkage " + settings.linkages.join(" ")]
+        for first := results[]
+            values := [for second := results[] then validation.correlation(first.cophenetic, second.cophenetic)]
+            lines = lines.append(first.method + " " + reals(values))
+        return lines
+
+    string[] agreement_part()
+        lines := ["agreement k {#classes}", "linkage " + settings.linkages.join(" ")]
+        for first := results[]
+            real64[] values := [for second := results[] then partition_ari(first.label_partition, second.label_partition).value()]
+            lines = lines.append(first.method + " " + reals(values))
+        return lines
+
+    string[] summary_part()
+        ranking := 0:<int(#results)
+        for: 1 <= index < int(#ranking)
+            value := ranking[index]
+            cursor := index
+            while cursor > 0 and rounded_key(results[value].correlation) > rounded_key(results[ranking[cursor - 1]].correlation)
+                ranking[cursor] = ranking[cursor - 1]
+                cursor -= 1
+            ranking[cursor] = value
+        lines := ["summary", "cophenetic_ranking " + [for result := ranking[] then results[result].method].join(" ")]
+        for: cut < int(#settings.cut_counts)
+            best := 0
+            for: 1 <= result < int(#results)
+                if results[result].count_cuts[cut].ari.greater(results[best].count_cuts[cut].ari)
+                    best = result
+            lines = lines.append("best_ari k {settings.cut_counts[cut]} {results[best].method} {ari_text(results[best].count_cuts[cut].ari)}")
+        for result := results[]
+            best := 0
+            for: 1 <= cut < int(#settings.cut_counts)
+                candidate := required_real(result.count_cuts[cut].silhouette)
+                incumbent := required_real(result.count_cuts[best].silhouette)
+                if rounded_key(candidate) > rounded_key(incumbent)
+                    best = cut
+            lines = lines.append("best_silhouette {result.method} k {settings.cut_counts[best]} {real_text(result.count_cuts[best].silhouette)}")
+        return lines.append("selected {results[chosen].method} k {kappa}")
+
+    string[] validation_report()
+        string[][] parts := [data_part(), correlation_part(), histogram_part()]
+        for result := results[]
+            parts = parts.append(linkage_part(result))
+        for result := results[]
+            if result.method == "single"
+                parts = parts.append(mst_part(result))
+        return join_parts(parts.concat([compare_part(), cophenetic_part(), agreement_part(), summary_part()]))
+
+    real64 separation(int[] first, int[] second)
+        real64 best := inf
+        for observation := first[]
+            for other := second[]
+                best = math.min(best, delta[observation][other])
+        return best
+
+    string[] cluster_lines(int cluster)
+        group := members[cluster]
+        size := int(#group)
+        category := majority[cluster]
+        majority_count := table[cluster][category]
+        silhouette := [for observation := group[] then silhouettes[observation]].sum() / real64(size)
+        original_means := [for feature := (0:<int(#names))[] then [for observation := group[] then raw[observation][feature]].sum() / real64(size)]
+        medoid := -1
+        real64 medoid_sum := 0.0
+        int[] widest := []
+        for: index < size
+            observation := group[index]
+            total := [for other := group[] then delta[observation][other]].sum()
+            if medoid < 0 or total < medoid_sum
+                medoid = observation
+                medoid_sum = total
+            for other := group[index + 1:][]
+                if #widest == 0 or delta[observation][other] > delta[widest[0]][widest[1]]
+                    widest = [observation, other]
+        nearest := -1
+        real64 nearest_separation := 0.0
+        for: other < kappa
+            if other == cluster
+                continue
+            real64 value := separation(group, members[other])
+            if nearest < 0 or value < nearest_separation
+                nearest = other
+                nearest_separation = value
+        string diameter := if #widest == 0 then "0.0000 - -" else pair_text(widest[0], widest[1])
+        return ["cluster {cluster + 1} size {size} silhouette {real_text(silhouette)} majority {classes[category]} purity {majority_count}/{size} {real_text(real64(majority_count) / real64(size))}", "  mean " + reals(original_means), "  medoid {idents[medoid]} diameter {diameter} nearest {nearest + 1} separation {real_text(nearest_separation)}"]
+
+    string[] selection_part()
+        cut := results[chosen].count_cuts[position]
+        lines := ["selected linkage {results[chosen].method} k {kappa} ari {ari_text(cut.ari)} silhouette {real_text(cut.silhouette)}"]
+        for: cluster < kappa
+            lines = lines.concat(cluster_lines(cluster))
+        return lines
+
+    string[] centroid_part()
+        real64[][] centers := centroids(selected)
+        lines := ["centroid_distances"]
+        for: cluster < kappa
+            real64[] values := [for center := centers[] then math.sqrt(metric.squared(centers[cluster], center))]
+            lines = lines.append("{cluster + 1} " + reals(values))
+        return lines
+
+    string[] profile_part()
+        width := [for name := names[] then #name].max()
+        lines := ["profile_bars"]
+        for: cluster < kappa
+            group := members[cluster]
+            lines = lines.append("cluster {cluster + 1}")
+            for: feature < int(#names)
+                zeta := [for observation := group[] then (raw[observation][feature] - means[feature]) / deviations[feature]].sum() / real64(#group)
+                length := math.floor(math.abs(zeta) * 4.0)
+                length = math.min(10, length)
+                string bar := "#" * nat(length)
+                string left := if zeta < 0.0 then " " * nat(10 - length) + bar else " " * 10
+                string right := if zeta < 0.0 then " " * 10 else bar + " " * nat(10 - length)
+                string feature_name := names[feature] + " " * (width - #names[feature])
+                lines = lines.append("{feature_name} {left}|{right} {real_text(zeta)}")
+        return lines
+
+    string[] contingency_part()
+        lines := ["contingency", "cluster " + classes.join(" ") + " total"]
+        for: cluster < kappa
+            lines = lines.append("{cluster + 1} {integers(table[cluster])} {table[cluster].sum()}")
+        totals := [for category := (0:<int(#classes))[] then [for row := table[] then row[category]].sum()]
+        int matches := match_count(selected)
+        return lines.concat(["total {integers(totals)} {count}", "purity {matches}/{count} {real_text(real64(matches) / real64(count))}"])
+
+    string[] misplaced_part()
+        lines := ["misplaced"]
+        misplaced := 0
+        for: observation < count
+            category := majority[selected[observation] - 1]
+            if targets[observation] != category
+                misplaced += 1
+                lines = lines.append("{idents[observation]} label {labels[observation]} cluster {selected[observation]} majority {classes[category]}")
+        return lines.append("count {misplaced}")
+
+    string[] weakest_part()
+        ordered := 0:<count
+        for: 1 <= index < count
+            value := ordered[index]
+            cursor := index
+            while cursor > 0 and silhouettes[value] < silhouettes[ordered[cursor - 1]]
+                ordered[cursor] = ordered[cursor - 1]
+                cursor -= 1
+            ordered[cursor] = value
+        lines := ["weakest"]
+        for observation := ordered[0:<settings.list_size][]
+            lines = lines.append("{idents[observation]} label {labels[observation]} cluster {selected[observation]} silhouette {real_text(silhouettes[observation])}")
+        return lines
+
+    string[] feature_part()
+        real64[] ratios := []
+        for: feature < int(#names)
+            values := [for vector := vectors[] then vector[feature]]
+            overall := values.sum() / real64(count)
+            cluster_means := [for group := members[] then [for observation := group[] then values[observation]].sum() / real64(#group)]
+            between := [for cluster := (0:<kappa)[] then real64(#members[cluster]) * (cluster_means[cluster] - overall) * (cluster_means[cluster] - overall)].sum()
+            within := [for observation := (0:<count)[] then (values[observation] - cluster_means[selected[observation] - 1]) * (values[observation] - cluster_means[selected[observation] - 1])].sum()
+            ratios = ratios.append(between / real64(kappa - 1) / (within / real64(count - kappa)))
+        ranking := 0:<int(#names)
+        for: 1 <= index < int(#ranking)
+            value := ranking[index]
+            cursor := index
+            while cursor > 0 and rounded_key(ratios[value]) > rounded_key(ratios[ranking[cursor - 1]])
+                ranking[cursor] = ranking[cursor - 1]
+                cursor -= 1
+            ranking[cursor] = value
+        lines := ["features"]
+        for: rank < int(#ranking)
+            feature := ranking[rank]
+            lines = lines.append("{rank + 1} {names[feature]} f_ratio {real_text(ratios[feature])}")
+        return lines
+
+    string class_counts(Tree tree, int node)
+        counts := array(#classes, fill = 0)
+        for observation := tree.members[node][]
+            counts[targets[observation]] += 1
+        return [for frequency := counts[] then "{frequency}"].join("/")
+
+    string[] top_merges_part()
+        tree := results[chosen].tree
+        lines := ["top_merges"]
+        for: count - settings.inconsistency_count - 1 <= step < count - 1
+            merge := tree.merges[step]
+            lines = lines.append("step {step + 1} height {real_text(merge.height)} a {merge.a} {#tree.members[merge.a]} {class_counts(tree, merge.a)} b {merge.b} {#tree.members[merge.b]} {class_counts(tree, merge.b)}")
+        return lines
+
+    string[] drop_feature_part()
+        lines := ["drop_feature"]
+        for: feature < int(#names)
+            real64[][] reduced := [for vector := vectors[] then vector[0:<feature].concat(vector[feature + 1:])]
+            tree := Tree(agg.agglomerate(metric.distance_matrix(reduced, settings.distance), results[chosen].method), count)
+            partition := tree.cut_into(kappa)
+            lines = lines.append("{names[feature]} ari_selected {ari_text(partition_ari(partition, selected))} ari_labels {ari_text(label_ari(partition))}")
+        return lines
+
+    string[] refinement_part()
+        limit := settings.refine_iterations
+        iterations := limit
+        real64[][] centers := centroids(selected)
+        previous := selected
+        for: 1 <= iteration <= limit
+            int[] assignment := []
+            for vector := vectors[]
+                best := 0
+                best_value := metric.squared(vector, centers[0])
+                for: 1 <= cluster < kappa
+                    value := metric.squared(vector, centers[cluster])
+                    if value < best_value
+                        best = cluster
+                        best_value = value
+                assignment = assignment.append(best + 1)
+            if assignment == previous
+                iterations = iteration
+                break
+            groups := cluster_members(assignment, kappa)
+            for: cluster < kappa
+                if #groups[cluster] > 0
+                    centers[cluster] = centroid([for observation := groups[cluster][] then vectors[observation]])
+            previous = assignment
+        changed := [for observation := (0:<count)[] if selected[observation] != previous[observation] then 1].sum()
+        sizes := [for group := cluster_members(previous, kappa)[] then int(#group)]
+        return ["refinement max_iterations {limit}", "iterations {iterations} changed {changed} wss {real_text(within_sum(selected))} -> {real_text(within_sum(previous))}", "sizes {integers(sizes)} silhouette {real_text(mean_silhouette(previous, delta))}", "ari_selected {ari_text(partition_ari(previous, selected))} ari_labels {ari_text(label_ari(previous))}"]
+
+    real64[] jaccard(int[] sample_partition, int[] restricted)
+        counts := validation.contingency(restricted - 1, sample_partition - 1, kappa, sample_partition.max())
+        columns := [for cluster := (0:<int(#counts[0]))[] then [for row := counts[] then row[cluster]].sum()]
+        real64[] values := []
+        for row := counts[]
+            size := row.sum()
+            best := validation.Fraction(0, 1)
+            if size > 0
+                for: cluster < int(#row)
+                    candidate := validation.Fraction(row[cluster], size + columns[cluster] - row[cluster])
+                    if candidate.greater(best)
+                        best = candidate
+            values = values.append(best.value())
+        return values
+
+    string[] stability_part()
+        size := count * settings.percent / 100
+        generator := Minstd(settings.seed)
+        real64[] aris := []
+        real64[][] jaccards := []
+        lines := ["stability replicates {settings.replicates} percent {settings.percent} seed {settings.seed}"]
+        for: 1 <= replicate <= settings.replicates
+            order := 0:<count
+            for: step < size
+                draw := .generator.draw()
+                other := step + draw % (count - step)
+                saved := order[step]
+                order[step] = order[other]
+                order[other] = saved
+            sample := order[0:<size].sorted()
+            distances := [for first := sample[] then [for second := sample[] then delta[first][second]]]
+            tree := Tree(agg.agglomerate(distances, results[chosen].method), size)
+            partition := tree.cut_into(kappa)
+            restricted := [for observation := sample[] then selected[observation]]
+            validation.Fraction agreement := partition_ari(partition, restricted)
+            real64[] similarities := jaccard(partition, restricted)
+            aris = aris.append(agreement.value())
+            jaccards = jaccards.append(similarities)
+            lines = lines.append("replicate {replicate} size {size} ari {ari_text(agreement)} jaccard {reals(similarities)}")
+        average_jaccards := [for cluster := (0:<kappa)[] then [for row := jaccards[] then row[cluster]].sum() / real64(settings.replicates)]
+        return lines.concat(["mean_ari {real_text(aris.sum() / real64(settings.replicates))}", "mean_jaccard " + reals(average_jaccards)])
+
+    string[] distance_map_part()
+        order := results[chosen].tree.order
+        string frame := "+" + "-" * nat(count) + "+"
+        shades := "@%#*+=-:. "
+        lines := ["distance_map {results[chosen].method}", frame]
+        for first := order[]
+            row := [for second := order[] then shades[histogram_bin(delta[first][second], distance_max)]].join("")
+            lines = lines.append("|" + row + "|")
+        return lines.append(frame)
+
+    string[] profiles_report()
+        return join_parts([selection_part(), centroid_part(), profile_part(), contingency_part(), misplaced_part(), weakest_part(), feature_part(), top_merges_part(), drop_feature_part(), refinement_part(), stability_part(), distance_map_part()])
+
+void run_study()
+    observations := data.read_observations("input/data.csv")
+    study := Study(observations, data.read_settings("input/params.txt"))
+    bool directory_exists := file.is_directory("output")
+    if not directory_exists
+        file.mkdir("output")
+    data.write_lines("output/linkage.csv", study.linkage_table())
+    data.write_lines("output/clusters.csv", study.clusters_table())
+    data.write_lines("output/dendrogram.txt", study.dendrogram_report())
+    data.write_lines("output/trees.txt", study.trees_report())
+    data.write_lines("output/validation.txt", study.validation_report())
+    data.write_lines("output/profiles.txt", study.profiles_report())
+
+if main
+    run_study()

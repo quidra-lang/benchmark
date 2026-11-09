@@ -1,0 +1,9 @@
+The current question asks: Suppose quantity is accidentally retained as the CSV string "10" for the first notebook row. In the local row-processing block, identify where and how to establish its exact integer value before sales multiplication and product-quantity accumulation. Explain whether the current conversions already prevent the problem, which nearby fields stay textual and how the sales amount and quantity take different aggregation paths. Distinguish runtime conversion from a declared type guarantee.
+
+Answer and source evidence: Convert quantity field3 from decimal text to exact integer before multiplication and product accumulation; current Atoi/parse::<i32>()/Int conversion already does so. Price field4 is also converted; date, region and product remain strings. The named amount=quantity*price enters total/region/day sales, while quantity alone enters product unit counts. Parsing is a runtime operation; the resulting Go int/Rust i32/Swift Int value then has a static integer type, not a static proof that all CSV strings parse.
+
+Selection: `main.go` lines 19, 20, 21, 22, 23, 24, 25, 26. The split, two conversions, multiplication and distinct aggregation sites establish the whole local contract; CSV data/ranking output are not required.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

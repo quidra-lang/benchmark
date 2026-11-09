@@ -1,0 +1,342 @@
+import sys
+VERB_WORDS = {
+    "use": ("use", "apply"),
+    "score": ("score",),
+VERBS = {word: verb for verb, words in VERB_WORDS.items() for word in words}
+ARTICLES = ("the", "a", "an")
+BARE_VERBS = ("look", "inventory", "wait", "score", "save", "restore", "verbose", "brief")
+ACTIONS = (
+    "go", "take", "drop", "put", "open", "close",
+    "unlock", "lock", "use", "light", "extinguish", "wait",
+PREPOSITIONS = {
+    "use": ("on", "with"),
+SPLIT_REQUIRED = ("put", "use")
+CONDITIONS = ("IF", "UNLESS")
+UNCLEAR = "I don't understand that."
+UNSEEN = "You can't see any such thing."
+PLAYER = ("player", "")
+NOWHERE = ("nowhere", "")
+def on_floor(room):
+    return "floor", room
+def command_words(line):
+    return [word for word in line.lower().split() if word not in ARTICLES]
+class CommandFailed(Exception):
+    def __init__(self, message=None):
+        super().__init__(message)
+        self.message = message
+class Command:
+    def __init__(self, verb, first=None, second=None, direction=None):
+        self.verb = verb
+        self.first = first
+        self.second = second
+        self.direction = direction
+def split_phrases(verb, words):
+    for index, word in enumerate(words):
+        if word in PREPOSITIONS[verb]:
+            first, second = words[:index], words[index + 1:]
+            if not first or not second:
+                raise CommandFailed(UNCLEAR)
+            return first, second
+    if verb in SPLIT_REQUIRED:
+        raise CommandFailed(UNCLEAR)
+def parse_command(words, game_over):
+    verb = VERBS.get(words[0])
+    if verb is None:
+        raise CommandFailed(f"I don't know the verb \"{words[0]}\".")
+    rest = words[1:]
+    if game_over and verb != "restore":
+        raise CommandFailed("The game is over.")
+    if verb in BARE_VERBS:
+        if rest:
+            raise CommandFailed(UNCLEAR)
+        return Command(verb)
+    if verb in PREPOSITIONS:
+        first, second = split_phrases(verb, rest)
+        return Command(verb, first, second)
+    return Command(verb, rest)
+class Room:
+    def __init__(self, name, dark):
+        self.name = name
+        self.dark = dark
+class Item:
+    def __init__(self, item_id, weight):
+        self.id = item_id
+        self.name = ""
+        self.words = []
+        self.nouns = [item_id]
+        self.points = None
+        self.light = False
+        self.capacity = None
+    def is_container(self):
+        return self.capacity is not None
+    def is_treasure(self):
+        return self.points is not None
+    def matches(self, phrase):
+        if phrase[-1] not in self.nouns:
+            return False
+        return all(word in self.words for word in phrase[:-1])
+class Rule:
+    def __init__(self, condition, flag, effect, arguments):
+        self.condition = condition
+        self.flag = flag
+        self.effect = effect
+        self.arguments = arguments
+    def applies(self, flags):
+        if self.condition == "IF":
+            return self.flag in flags
+        if self.condition == "UNLESS":
+            return self.flag not in flags
+        return True
+def parse_rule(words):
+    condition = None
+    flag = None
+    if words[0] in CONDITIONS:
+        condition, flag = words[0], words[1]
+        words = words[2:]
+    effect = words[0]
+    if effect == "MESSAGE":
+        return Rule(condition, flag, effect, [" ".join(words[1:])])
+    return Rule(condition, flag, effect, words[1:])
+class State:
+    def __init__(self):
+        self.room = None
+        self.places = {}
+        self.containers = {}
+        self.lit = {}
+        self.fuel = {}
+        self.flags = set()
+        self.bonus = 0
+        self.moves = 0
+        self.darkness = 0
+        self.status = "none"
+class World:
+    def __init__(self):
+        self.rooms = {}
+        self.items = {}
+        self.uses = {}
+        self.trophy = None
+        self.start = None
+        self.initial = State()
+        self.order = []
+        self.treasures = []
+        self.vocabulary = set()
+        self.handlers = {
+            "ROOM": self.define_room,
+            "ITEM": self.define_item,
+            "RULE": self.define_use_rule,
+            "TROPHY": self.define_trophy,
+            "START": self.define_start,
+    def define(self, line):
+        words = line.split(" ")
+        self.handlers[words[0]](words)
+    def define_room(self, words):
+        dark = words[2] == "DARK"
+        name = " ".join(words[3:] if dark else words[2:])
+        self.rooms[words[1]] = Room(name, dark)
+    def define_item(self, words):
+        state = self.initial
+        item = Item(words[1], int(words[3]))
+        self.items[item.id] = item
+        if words[2] == "PLAYER":
+            state.places[item.id] = PLAYER
+        elif words[2] == "NOWHERE":
+            state.places[item.id] = NOWHERE
+        else:
+            state.places[item.id] = on_floor(words[2])
+        position = 4
+        if words[position] == "TREASURE":
+            item.points = int(words[position + 1])
+            position += 2
+        if words[position] == "LIGHT":
+            item.light = True
+            state.lit[item.id] = False
+            state.fuel[item.id] = int(words[position + 1])
+            position += 2
+        item.words = words[position:]
+        item.name = " ".join(item.words)
+    def define_use_rule(self, words):
+        self.uses.setdefault((words[1], words[2]), []).append(parse_rule(words[3:]))
+    def define_trophy(self, words):
+        self.trophy = words[1]
+    def define_start(self, words):
+        self.start = words[1]
+    def finish(self):
+        self.order = [self.items[item_id] for item_id in sorted(self.items)]
+        self.treasures = [item for item in self.order if item.is_treasure()]
+        for item in self.order:
+            self.vocabulary.update(item.nouns)
+            self.vocabulary.update(item.words)
+        self.initial.room = self.start
+class Game:
+    def __init__(self, world):
+        self.world = world
+        self.state = world.initial
+        self.it = None
+        self.baseline = False
+        self.output = []
+        self.handlers = {
+            "use": self.use,
+            "score": self.show_score,
+    def emit(self, line):
+        self.output.append(line)
+    def place_of(self, item):
+        return self.state.places[item.id]
+    def is_open(self, item):
+        return item.is_container() and self.state.containers[item.id] == "open"
+    def is_burning(self, item):
+        return item.light and self.state.lit[item.id]
+    def reach(self, item):
+        place = self.place_of(item)
+        while place[0] == "inside":
+            container = self.world.items[place[1]]
+            if not self.is_open(container):
+                return None
+            place = self.place_of(container)
+        return place
+    def root(self, item):
+        place = self.place_of(item)
+        while place[0] == "inside":
+            place = self.state.places[place[1]]
+        return place
+    def is_carried(self, item):
+        return self.reach(item) == PLAYER
+    def is_nearby(self, item):
+        return self.reach(item) in (PLAYER, on_floor(self.state.room))
+    def is_lit(self):
+        if not self.world.rooms[self.state.room].dark:
+            return True
+        return any(self.is_burning(item) and self.is_nearby(item) for item in self.world.order)
+    def visible_items(self):
+        if self.is_lit():
+            return [item for item in self.world.order if self.is_nearby(item)]
+        return [item for item in self.world.order if self.is_carried(item)]
+    def is_stored(self, item):
+        return self.root(item) == on_floor(self.world.trophy)
+    def stored_treasures(self):
+        return [item for item in self.world.treasures if self.is_stored(item)]
+    def treasure_points(self):
+        return sum(item.points for item in self.stored_treasures())
+    def total_score(self):
+        return self.treasure_points() + self.state.bonus
+    def resolve(self, phrase):
+        visible = self.visible_items()
+        for word in phrase:
+            if word not in self.world.vocabulary:
+                raise CommandFailed(f"I don't know the word \"{word}\".")
+        matches = [item for item in visible if item.matches(phrase)]
+        if not matches:
+            raise CommandFailed(UNSEEN)
+        if len(matches) > 1:
+            names = ", ".join(item.name for item in matches)
+            raise CommandFailed(f"Which do you mean: {names}?")
+        self.it = matches[0]
+        return self.it
+    def require_carried(self, item):
+        if not self.is_carried(item):
+            raise CommandFailed(f"You aren't carrying the {item.name}.")
+    def run_rules(self, rules):
+        executed = 0
+        messages = 0
+        for rule in rules:
+            if not rule.applies(self.state.flags):
+                continue
+            executed += 1
+            if rule.effect == "MESSAGE":
+                messages += 1
+            self.apply_effect(rule)
+        return executed, messages
+    def apply_effect(self, rule):
+        state = self.state
+        values = rule.arguments
+        if rule.effect == "MESSAGE":
+            self.emit(values[0])
+        elif rule.effect == "ADD":
+            state.places[values[0]] = on_floor(values[1])
+    def use(self, command):
+        item = self.resolve(command.first)
+        other = self.resolve(command.second)
+        self.require_carried(item)
+        rules = self.world.uses.get((item.id, other.id), [])
+        executed, messages = self.run_rules(rules)
+        if executed == 0:
+            raise CommandFailed("Nothing happens.")
+        if messages == 0:
+            self.emit("Done.")
+    def show_score(self, command):
+        treasure = self.treasure_points()
+        bonus = self.state.bonus
+        self.emit(
+            f"You have scored {treasure + bonus} points (treasure {treasure}, "
+            f"bonus {bonus}) in {self.state.moves} moves."
+        stored = len(self.stored_treasures())
+        self.emit(f"Treasures stored: {stored} of {len(self.world.treasures)}.")
+    def burn_fuel(self):
+        state = self.state
+        nearby = [item for item in self.world.order if self.is_nearby(item)]
+        for item in self.world.order:
+            if not self.is_burning(item):
+                continue
+            state.fuel[item.id] -= 1
+            if state.fuel[item.id] == 0:
+                state.lit[item.id] = False
+                if item in nearby:
+                    self.emit(f"The {item.name} goes out.")
+    def pass_turn(self):
+        state = self.state
+        state.moves += 1
+        self.burn_fuel()
+        lit = self.is_lit()
+        if self.baseline and not lit:
+            self.emit("It is now pitch dark.")
+        elif not self.baseline and lit:
+            self.describe(True)
+        if lit:
+            state.darkness = 0
+        else:
+            state.darkness += 1
+            if state.darkness == 2:
+                self.emit("You hear something moving in the dark.")
+            elif state.darkness == 3:
+                state.status = "dead"
+        treasures = self.world.treasures
+        if state.status == "none" and treasures and len(self.stored_treasures()) == len(treasures):
+            state.status = "won"
+        if state.status == "dead":
+            self.emit("*** You have died ***")
+        elif state.status == "won":
+            self.emit("*** You have won ***")
+        if state.status != "none":
+            self.emit(f"You scored {self.total_score()} points in {state.moves} moves.")
+    def perform(self, command):
+        self.baseline = self.is_lit()
+        self.handlers[command.verb](command)
+        if command.verb in ACTIONS:
+            self.pass_turn()
+    def run(self, words):
+        try:
+            self.perform(parse_command(words, self.state.status != "none"))
+        except CommandFailed as failure:
+            if failure.message is not None:
+                self.emit(failure.message)
+    def execute(self, line):
+        self.emit("> " + line)
+        words = command_words(line)
+        self.previous = words
+        self.run(words)
+    def finish(self):
+        self.emit(f"Final score: {self.total_score()} points in {self.state.moves} moves.")
+def main():
+    lines = sys.stdin.read().splitlines()
+    begin = lines.index("BEGIN")
+    world = World()
+    for line in lines[:begin]:
+        world.define(line)
+    world.finish()
+    game = Game(world)
+    for line in lines[begin + 1:]:
+        if line == "QUIT":
+            break
+        game.execute(line)
+    game.finish()
+    sys.stdout.write("\n".join(game.output) + "\n")
+    main()

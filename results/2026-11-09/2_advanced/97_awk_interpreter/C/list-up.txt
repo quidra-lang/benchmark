@@ -1,0 +1,971 @@
+typedef struct { int line,column; } Position;
+typedef struct { char *data; size_t length,capacity; } Buffer;
+typedef struct Text { size_t refs; char data[]; } Text;
+typedef struct { int kind; long long number; Text *text; } Value;
+void *mem_new(size_t n) {
+    void *p=calloc(n?n:1,1);
+    if(!p)exit(EXIT_FAILURE);
+    return p;
+}
+void *mem_resize(void *p,size_t n) {
+    void *q=realloc(p,n?n:1);
+    if(!q)exit(EXIT_FAILURE);
+    return q;
+}
+char *str_copy(const char *s) {
+    char *p=mem_new(strlen(s)+1);
+    strcpy(p,s);
+    return p;
+}
+void buffer_add(Buffer *b,const char *s,size_t n) {
+    if(b->length+n+1>b->capacity) {
+        b->capacity=(b->length+n+1)*2;
+        b->data=mem_resize(b->data,b->capacity);
+    }
+    memcpy(b->data+b->length,s,n);
+    b->length+=n;
+    b->data[b->length]=0;
+}
+void buffer_text(Buffer *b,const char *s) {
+    buffer_add(b,s,strlen(s));
+}
+char *read_line(FILE *f) {
+    Buffer b= {
+        0
+    };
+    int c;
+    while((c=fgetc(f))!=EOF&&c!='\n') {
+        char x=(char)c;
+        buffer_add(&b,&x,1);
+    }
+    if(c==EOF&&!b.length) {
+        free(b.data);
+        return NULL;
+    }
+    return b.data?b.data:str_copy("");
+}
+static int member(const char *s,const char *list) {
+    char *copy=str_copy(list),*p=strtok(copy," ");
+    int yes=0;
+    while(p) {
+        if(!strcmp(p,s))yes=1;
+        p=strtok(NULL," ");
+    }
+    free(copy);
+    return yes;
+}
+Tokens lex(const char *s) {
+    Tokens result= {
+        0
+    };
+    int i=0,line=1,col=1;
+    while(s[i]) {
+        char c=s[i];
+        if(c==' ') {
+            ++i;
+            ++col;
+            continue;
+        }
+        Token t= {
+            .pos= {
+                line,col
+            }
+        };
+        int start=i;
+        if(c=='\n') {
+            t.kind=T_NL;
+            t.text=str_copy("\n");
+            ++i;
+            ++line;
+            col=1;
+        }
+        else if(isdigit((unsigned char)c)) {
+            while(isdigit((unsigned char)s[i])) {
+                ++i;
+                ++col;
+            }
+            t.kind=T_NUMBER;
+        }
+        else if(isalpha((unsigned char)c)||c=='_') {
+            while(isalnum((unsigned char)s[i])||s[i]=='_') {
+                ++i;
+                ++col;
+            }
+            t.kind=T_NAME;
+        }
+        else if(c=='"') {
+            Buffer b= {
+                0
+            };
+            ++i;
+            ++col;
+            int closed=0;
+            while(s[i]&&s[i]!='\n') {
+                if(s[i]=='"') {
+                    ++i;
+                    ++col;
+                    closed=1;
+                    break;
+                }
+                char v=s[i++];
+                ++col;
+                if(v=='\\') {
+                }
+                buffer_add(&b,&v,1);
+            }
+            if(!result.failed&&!closed) {
+                result.failed=1;
+                result.error=t.pos;
+            }
+            t.kind=T_STRING;
+            t.text=b.data?b.data:str_copy("");
+        }
+        else {
+            static const char *symbols[]= {
+                "+=","-=","*=","/=","%=","^=","==","<=",">=","!=","++","--","&&","||",">>",NULL
+            };
+            int length=0;
+            for(int k=0;symbols[k];++k)if(!strncmp(s+i,symbols[k],2))length=2;
+            if(!length&&strchr("+-*/%^!><?:=()[]{},;$",c))length=1;
+            if(!length) {
+            i+=length;
+            col+=length;
+            t.kind=T_SYMBOL;
+        }
+        if(!t.text) {
+            t.text=mem_new((size_t)(i-start)+1);
+            memcpy(t.text,s+start,(size_t)(i-start));
+        }
+        if(t.kind==T_NUMBER)t.number=strtoll(t.text,NULL,10);
+        if(t.kind==T_NAME) {
+            if(member(t.text,"BEGIN END function if else while for do break continue next exit return delete in getline print printf"))t.kind=T_KEYWORD;
+            else if(member(t.text,"length substr index split sprintf toupper tolower close int"))t.kind=T_BUILTIN;
+            else if(s[i]=='(')t.kind=T_FUNCTION;
+        }
+        result.tokens=mem_resize(result.tokens,(size_t)(result.count+1)*sizeof *result.tokens);
+        result.tokens[result.count++]=t;
+    }
+    Token eof= {
+        .kind=T_EOF,.text=str_copy(""),.pos= {
+            line,1
+        }
+    };
+    result.tokens=mem_resize(result.tokens,(size_t)(result.count+1)*sizeof *result.tokens);
+    result.tokens[result.count++]=eof;
+    return result;
+}
+static Token *peek(Parser *p) {
+    return &p->tokens.tokens[p->at];
+}
+static int is(Parser *p,const char *s) {
+    return !strcmp(peek(p)->text,s);
+}
+static void fail(Parser *p,Token t) {
+    p->result.failed=1;
+    p->result.error=t.pos;
+    longjmp(p->failure,1);
+}
+static Token take(Parser *p) {
+    return p->tokens.tokens[p->at++];
+}
+static int accept(Parser *p,const char *s) {
+    if(is(p,s)) {
+        ++p->at;
+        return 1;
+    }
+    return 0;
+}
+static Token expect(Parser *p,const char *s) {
+    if(!is(p,s))fail(p,*peek(p));
+    return take(p);
+}
+static void newlines(Parser *p) {
+    while(peek(p)->kind==T_NL)++p->at;
+}
+static Token name(Parser *p) {
+    if(peek(p)->kind!=T_NAME)fail(p,*peek(p));
+    return take(p);
+}
+static Expr *expression(Parser *p);
+static Statement *statement(Parser *p);
+static Expr *expr(int kind,Token t) {
+    Expr *e=mem_new(sizeof *e);
+    e->kind=kind;
+    e->token=t;
+    return e;
+}
+static void argument(Expr *e,Expr *a) {
+    e->args=mem_resize(e->args,(size_t)(e->count+1)*sizeof *e->args);
+    e->args[e->count++]=a;
+}
+static void expression_list(Parser *p,Expr *e) {
+    argument(e,expression(p));
+    while(accept(p,",")) {
+        newlines(p);
+        argument(e,expression(p));
+    }
+}
+static int lvalue(Expr *e) {
+    return e->kind==E_VAR||e->kind==E_ARRAY||e->kind==E_FIELD;
+}
+static Expr *atom(Parser *p) {
+    Token t=take(p);
+    Expr *e;
+    if(t.kind==T_NUMBER)return expr(E_NUMBER,t);
+    if(t.kind==T_STRING)return expr(E_STRING,t);
+    if(t.kind==T_NAME) {
+        e=expr(E_VAR,t);
+        if(accept(p,"[")) {
+        }
+        return e;
+    }
+    if(!strcmp(t.text,"$")) {
+        e=expr(E_FIELD,t);
+        if(is(p,"++")||is(p,"--"))e->a=prefix_increment(p);
+        else e->a=atom(p);
+        return e;
+    }
+static Expr *postfix(Parser *p) {
+    if(is(p,"++")||is(p,"--"))return prefix_increment(p);
+    Expr *e=atom(p);
+    if(lvalue(e)&&(is(p,"++")||is(p,"--"))) {
+    }
+    return e;
+}
+static Expr *unary(Parser *p) {
+    if(is(p,"!")||is(p,"-")||is(p,"+")) {
+    }
+    Expr *e=postfix(p);
+    if(is(p,"^")) {
+    }
+    return e;
+}
+static Expr *multiply(Parser *p) {
+    Expr *e=unary(p);
+    while(is(p,"*")||is(p,"/")||is(p,"%")) {
+    }
+    return e;
+}
+static Expr *add(Parser *p) {
+    Expr *e=multiply(p);
+    while(is(p,"+")||is(p,"-")) {
+    }
+    return e;
+}
+static int concat_start(Parser *p) {
+    int k=peek(p)->kind;
+    return k==T_NUMBER||k==T_STRING||k==T_NAME||k==T_FUNCTION||k==T_BUILTIN||is(p,"$")||is(p,"(")||is(p,"++")||is(p,"--");
+}
+static Expr *concat(Parser *p) {
+    Expr *e=add(p);
+    while(concat_start(p)) {
+    }
+    return e;
+}
+static Expr *comparison(Parser *p) {
+    Expr *e=concat(p);
+    while(is(p,"<")||is(p,"<=")||is(p,"==")||is(p,"!=")||is(p,">=")||(is(p,">")&&!(p->output&&!p->depth))) {
+    }
+    return e;
+}
+static Expr *in_expr(Parser *p) {
+    Expr *e=comparison(p);
+    while(accept(p,"in")) {
+    }
+    return e;
+}
+static Expr *and_expr(Parser *p) {
+    Expr *e=in_expr(p);
+    while(is(p,"&&")) {
+    }
+    return e;
+}
+static Expr *or_expr(Parser *p) {
+    Expr *e=and_expr(p);
+    while(is(p,"||")) {
+    }
+    return e;
+}
+static Expr *conditional(Parser *p) {
+    Expr *e=or_expr(p);
+    if(is(p,"?")) {
+    }
+    return e;
+}
+static Expr *expression(Parser *p) {
+    Expr *e=conditional(p);
+    if(lvalue(e)&&(is(p,"=")||is(p,"+=")||is(p,"-=")||is(p,"*=")||is(p,"/=")||is(p,"%=")||is(p,"^="))) {
+        Token t=take(p);
+        Expr *x=expr(E_ASSIGN,t);
+        x->op=t.text;
+        x->a=e;
+        x->b=expression(p);
+        e=x;
+    }
+    return e;
+}
+static Statement *stmt(int kind,Token t) {
+    Statement *s=mem_new(sizeof *s);
+    s->kind=kind;
+    s->token=t;
+    return s;
+}
+static void terminator(Parser *p) {
+    if(is(p,";")||peek(p)->kind==T_NL)take(p);
+    else if(!is(p,"}"))fail(p,*peek(p));
+}
+static Statement *block(Parser *p) {
+    Statement *s=stmt(S_BLOCK,expect(p,"{"));
+    while(!is(p,"}")) {
+        if(peek(p)->kind==T_EOF)fail(p,*peek(p));
+        if(peek(p)->kind==T_NL||accept(p,";")) {
+            if(peek(p)->kind==T_NL)take(p);
+            continue;
+        }
+        Statement *child=statement(p);
+        s->children=mem_resize(s->children,(size_t)(s->count+1)*sizeof *s->children);
+        s->children[s->count++]=child;
+    }
+    expect(p,"}");
+    return s;
+}
+static int end_simple(Parser *p) {
+    return is(p,";")||peek(p)->kind==T_NL||is(p,"}")||peek(p)->kind==T_EOF;
+}
+static Statement *statement(Parser *p) {
+    Token t=*peek(p);
+    Statement *s;
+    if(is(p,"{"))return block(p);
+    if(accept(p,";"))return stmt(S_EMPTY,t);
+    if(accept(p,"if")) {
+    else {
+        take(p);
+        if(!strcmp(t.text,"print")||!strcmp(t.text,"printf")) {
+            s=stmt(!strcmp(t.text,"print")?S_PRINT:S_PRINTF,t);
+            int enclosed=0;
+            if(is(p,"(")) {
+            Expr list= {
+                0
+            };
+            if(enclosed) {
+                take(p);
+                ++p->depth;
+                expression_list(p,&list);
+                expect(p,")");
+                --p->depth;
+            }
+            else if(!end_simple(p)&&!is(p,">")&&!is(p,">>")) {
+                p->output=1;
+                expression_list(p,&list);
+                p->output=0;
+            }
+            if(s->kind==S_PRINTF&&!list.count)fail(p,*peek(p));
+            s->args=list.args;
+            s->nargs=list.count;
+        else {
+            --p->at;
+            s=stmt(S_EXPR,t);
+            s->a=expression(p);
+        }
+        terminator(p);
+    }
+    p->result.statement_lines[t.pos.line]=1;
+    return s;
+}
+Syntax parse(Tokens tokens,int lines) {
+    Parser *p=mem_new(sizeof *p);
+    p->tokens=tokens;
+    p->result.lines=lines;
+    p->result.statement_lines=mem_new((size_t)lines+2);
+    if(setjmp(p->failure))return p->result;
+    while(peek(p)->kind!=T_EOF) {
+        if(peek(p)->kind==T_NL||accept(p,";")) {
+            if(peek(p)->kind==T_NL)take(p);
+            continue;
+        }
+        Token t=*peek(p);
+        if(accept(p,"function")) {
+        else {
+            Rule *r=mem_new(sizeof *r);
+            r->token=t;
+            if(accept(p,"BEGIN")) {
+                r->kind=1;
+                p->phase=1;
+                r->action=block(p);
+                p->phase=0;
+            }
+            else if(is(p,"{")) {
+                r->kind=0;
+                r->action=block(p);
+            }
+            p->result.rules=mem_resize(p->result.rules,(size_t)(p->result.nr+1)*sizeof *p->result.rules);
+            p->result.rules[p->result.nr++]=r;
+        }
+    }
+    return p->result;
+}
+static Text *text_new(const char *s) {
+    Text *t=mem_new(sizeof *t+strlen(s)+1);
+    t->refs=1;
+    strcpy(t->data,s);
+    return t;
+}
+Value number(long long n) {
+    return (Value) {
+        .kind=1,.number=n
+    };
+}
+Value string(const char *s) {
+    return (Value) {
+        .kind=2,.text=text_new(s)
+    };
+}
+Value value_copy(Value v) {
+    if(v.text)++v.text->refs;
+    return v;
+}
+void value_free(Value v) {
+    if(v.text&&!--v.text->refs)free(v.text);
+}
+static int whitespace(int c) {
+    return c==' '||c=='\t'||c=='\n';
+}
+Value input_value(const char *s) {
+    Value v=string(s);
+    const char *p=s;
+    while(whitespace(*p))++p;
+    if(*p=='+'||*p=='-')++p;
+    const char *start=p;
+    while(isdigit((unsigned char)*p))++p;
+    int digits=p>start;
+    while(whitespace(*p))++p;
+    if(digits&&!*p) {
+        v.kind=3;
+        v.number=parse_number(s);
+    }
+    return v;
+}
+long long numeric(Value v) {
+    return v.kind==0?0:v.kind==1||v.kind==3?v.number:parse_number(v.text->data);
+}
+char *textual(Value v) {
+    if(v.kind==0)return str_copy("");
+    if(v.text)return str_copy(v.text->data);
+    char text[40];
+    sprintf(text,"%lld",v.number);
+    return str_copy(text);
+}
+void value_write(FILE *f,Value v) {
+    if(!v.kind) {
+        fputs("(uninitialized)",f);
+        return;
+    }
+    if(v.kind==1) {
+        fprintf(f,"%lld",v.number);
+        return;
+    }
+    fputc('"',f);
+    for(const unsigned char *s=(const unsigned char*)v.text->data;*s;++s) {
+        if(*s=='"'||*s=='\\') {
+            fputc('\\',f);
+            fputc(*s,f);
+        }
+        else if(*s=='\n')fputs("\\n",f);
+        else if(*s=='\t')fputs("\\t",f);
+        else if(*s<32||*s>126)fprintf(f,"\\%03o",*s);
+        else fputc(*s,f);
+    }
+    fputc('"',f);
+    if(v.kind==3)fputs(" (strnum)",f);
+}
+static void piece(char ***items,int *count,const char *s,size_t n) {
+    *items=mem_resize(*items,(size_t)(*count+1)*sizeof **items);
+    char *p=mem_new(n+1);
+    memcpy(p,s,n);
+    (*items)[(*count)++]=p;
+}
+char **split_string(const char *s,const char *sep,int *count) {
+    char **items=NULL;
+    *count=0;
+    if(!strcmp(sep," ")) {
+    else if(*s) {
+        const char *start=s,*found;
+        size_t length=strlen(sep);
+        while((found=strstr(start,sep))) {
+            piece(&items,count,start,(size_t)(found-start));
+            start=found+length;
+        }
+        piece(&items,count,start,strlen(start));
+    }
+    return items;
+}
+static char *special(Runtime *r,const char *name) {
+    return textual(global_symbol(r,name)->global.value);
+}
+void set_record(Runtime *r,const char *s) {
+    value_free(r->record);
+    r->record=input_value(s);
+    for(int i=0;i<r->nf;++i)value_free(r->fields[i]);
+    free(r->fields);
+    char *sep=special(r,"FS");
+    int count;
+    char **pieces=split_string(s,sep,&count);
+    free(sep);
+    r->fields=mem_new((size_t)count*sizeof *r->fields);
+    r->nf=count;
+    for(int i=0;i<count;++i) {
+        r->fields[i]=input_value(pieces[i]);
+        free(pieces[i]);
+    }
+    free(pieces);
+}
+void rebuild_record(Runtime *r) {
+    char *sep=special(r,"OFS");
+    Buffer b= {
+        0
+    };
+    for(int i=0;i<r->nf;++i) {
+        if(i)buffer_text(&b,sep);
+        char *text=textual(r->fields[i]);
+        buffer_text(&b,text);
+        free(text);
+    }
+    value_free(r->record);
+    r->record=input_value(b.data?b.data:"");
+    free(b.data);
+    free(sep);
+}
+void set_nf(Runtime *r,long long n,Position p) {
+    if(n<0) {
+        runtime_error(r,p,"negative NF");
+        return;
+    }
+    for(int i=(int)n;i<r->nf;++i)value_free(r->fields[i]);
+    r->fields=mem_resize(r->fields,(size_t)n*sizeof *r->fields);
+    for(int i=r->nf;i<n;++i)r->fields[i]=string("");
+    r->nf=(int)n;
+    rebuild_record(r);
+}
+Value field_value(Runtime *r,long long index,Position p) {
+    if(index<0) {
+        runtime_error(r,p,"negative field index");
+        return (Value) {
+            0
+        };
+    }
+    if(!index)return value_copy(r->record);
+    return index<=r->nf?value_copy(r->fields[index-1]):(Value) {
+        0
+    };
+}
+void store_field(Runtime *r,long long index,Value v,Position p) {
+    if(index<0) {
+        runtime_error(r,p,"negative field index");
+        return;
+    }
+    if(!index) {
+        char *s=textual(v);
+        set_record(r,s);
+        free(s);
+        return;
+    }
+    if(index>r->nf) {
+        int old=r->nf;
+        r->fields=mem_resize(r->fields,(size_t)index*sizeof *r->fields);
+        for(int i=old;i<index;++i)r->fields[i]=string("");
+        r->nf=(int)index;
+    }
+    value_free(r->fields[index-1]);
+    r->fields[index-1]=value_copy(v);
+    rebuild_record(r);
+}
+Streams read_args(void) {
+    Streams s= {
+        .current=-1
+    };
+    FILE *f=fopen("input/args.txt","r");
+    if(!f)exit(EXIT_FAILURE);
+    char *line;
+    while((line=read_line(f))) {
+        Operand a= {
+            0
+        };
+        char *text=line;
+        if(!strncmp(text,"-F ",3)) {
+            a.option=a.assignment=1;
+            a.name=str_copy("FS");
+            a.value=str_copy(text+3);
+        }
+        else {
+            if(!strncmp(text,"-v ",3)) {
+                a.option=1;
+                text+=3;
+            }
+            char *equal=strchr(text,'=');
+            if(equal) {
+                *equal=0;
+                if(a.option||valid_name(text)) {
+                    a.assignment=1;
+                    a.name=str_copy(text);
+                    a.value=str_copy(equal+1);
+                }
+                else *equal='=';
+            }
+            if(!a.assignment)a.name=str_copy(text);
+        }
+        s.args=mem_resize(s.args,(size_t)(s.count+1)*sizeof *s.args);
+        s.args[s.count++]=a;
+        free(line);
+    }
+    fclose(f);
+    return s;
+}
+void output_string(Streams *s,const char *name,int append,const char *text) {
+    if(!name) {
+        buffer_text(&s->standard,text);
+        ++s->writes;
+        return;
+    }
+void write_streams(Streams *s) {
+    FILE *f=fopen("output/stdout.txt","w");
+    if(!f)exit(EXIT_FAILURE);
+    if(s->standard.length)fwrite(s->standard.data,1,s->standard.length,f);
+    fclose(f);
+}
+Symbol *global_symbol(Runtime *r,const char *name) {
+    for(int i=0;i<r->ng;++i)if(!strcmp(r->globals[i]->name,name))return r->globals[i];
+    Symbol *s=mem_new(sizeof *s);
+    s->name=str_copy(name);
+    s->parameter=-1;
+    r->globals=mem_resize(r->globals,(size_t)(r->ng+1)*sizeof *r->globals);
+    r->globals[r->ng++]=s;
+    return s;
+}
+Variable *variable(Runtime *r,Symbol *s) {
+    return s->parameter<0?&s->global:&r->frame->locals[s->parameter];
+}
+static Function *find_function(Runtime *r,const char *name) {
+    for(int i=0;i<r->syntax.nf;++i)if(!strcmp(r->syntax.functions[i]->token.text,name))return r->syntax.functions[i];
+    return NULL;
+}
+static Symbol *resolve(Runtime *r,Function *f,const char *name) {
+    if(f)for(int i=0;i<f->np;++i)if(!strcmp(f->params[i].text,name))return f->symbols[i];
+    return global_symbol(r,name);
+}
+static void check_variable(Runtime *r,Function *f,Token t,Symbol **symbol,int array,StaticError *error) {
+    *symbol=resolve(r,f,t.text);
+    if(array)(*symbol)->array=1;
+    if(find_function(r,t.text))static_error(error,t,2,"function %s used as variable",t.text);
+}
+static void bind_expr(Runtime *r,Function *f,Expr *e,StaticError *error) {
+    if(!e)return;
+    if(e->kind==E_VAR||e->kind==E_ARRAY||e->kind==E_IN)check_variable(r,f,e->token,&e->symbol,e->kind!=E_VAR,error);
+    bind_expr(r,f,e->a,error);
+    bind_expr(r,f,e->b,error);
+    bind_expr(r,f,e->c,error);
+    for(int i=0;i<e->count;++i)bind_expr(r,f,e->args[i],error);
+    if(e->kind==E_BUILTIN&&!strcmp(e->token.text,"split"))e->args[1]->symbol->array=1;
+}
+static void bind_statement(Runtime *r,Function *f,Statement *s,StaticError *error) {
+    if(!s)return;
+    bind_expr(r,f,s->a,error);
+    bind_expr(r,f,s->b,error);
+    bind_expr(r,f,s->c,error);
+    bind_expr(r,f,s->redirect,error);
+    for(int i=0;i<s->nargs;++i)bind_expr(r,f,s->args[i],error);
+    if(s->kind==S_DELETE)s->a->symbol->array=1;
+    if(s->kind==S_FORIN)check_variable(r,f,s->second,&s->array,1,error);
+    bind_statement(r,f,s->body,error);
+    bind_statement(r,f,s->otherwise,error);
+    for(int i=0;i<s->count;++i)bind_statement(r,f,s->children[i],error);
+}
+static StaticError static_checks(Runtime *r) {
+    StaticError error= {
+        0
+    };
+    for(int i=0;i<r->syntax.nr;++i) {
+        Rule *rule=r->syntax.rules[i];
+        bind_expr(r,NULL,rule->start,&error);
+        bind_expr(r,NULL,rule->end,&error);
+        bind_statement(r,NULL,rule->action,&error);
+    }
+    if(error.message)return error;
+    return error;
+static void global_store(Runtime *r,const char *name,Value value) {
+    Variable *v=&global_symbol(r,name)->global;
+    value_free(v->value);
+    v->value=value_copy(value);
+}
+static Value symbol_value(Runtime *r,Symbol *s) {
+    if(s->parameter<0&&!strcmp(s->name,"NF"))return number(r->nf);
+    return value_copy(variable(r,s)->value);
+}
+typedef struct {
+    Symbol *symbol;
+    char *key;
+    long long field;
+    int kind;
+    Position position;
+}
+Location;
+static Location location(Runtime *r,Expr *e) {
+    Location l= {
+        .kind=e->kind,.symbol=e->symbol,.position=e->token.pos
+    };
+    if(e->kind==E_ARRAY)l.key=subscript(r,e->args,e->count);
+    else if(e->kind==E_FIELD) {
+        Value v=evaluate(r,e->a);
+        l.field=numeric(v);
+        value_free(v);
+        if(l.field<0)runtime_error(r,e->token.pos,"negative field index");
+    }
+    return l;
+}
+static Value load(Runtime *r,Location l) {
+    if(l.kind==E_FIELD)return field_value(r,l.field,l.position);
+    if(l.kind==E_ARRAY)return value_copy(array_element(variable(r,l.symbol)->array,l.key,1)->value);
+    return symbol_value(r,l.symbol);
+}
+static void store(Runtime *r,Location l,Value v,Position pos) {
+    if(r->message||r->flow)return;
+    if(l.kind==E_FIELD)store_field(r,l.field,v,l.position);
+    else if(l.kind==E_VAR&&l.symbol->parameter<0&&!strcmp(l.symbol->name,"NF"))set_nf(r,numeric(v),pos);
+    else {
+        Value *target=l.kind==E_ARRAY?&array_element(variable(r,l.symbol)->array,l.key,1)->value:&variable(r,l.symbol)->value;
+        value_free(*target);
+        *target=value_copy(v);
+    }
+}
+static char *main_record(Runtime *r) {
+    Streams *s=&r->streams;
+    if(r->phase==2)return NULL;
+    for(;;) {
+        if(s->main_file) {
+            char *line=read_line(s->main_file);
+            if(line) {
+                ++s->args[s->current].records;
+                Value nr=number(numeric(global_symbol(r,"NR")->global.value)+1),fnr=number(numeric(global_symbol(r,"FNR")->global.value)+1);
+                global_store(r,"NR",nr);
+                global_store(r,"FNR",fnr);
+                return line;
+            }
+            fclose(s->main_file);
+            s->main_file=NULL;
+        }
+        if(s->next>=s->count)return NULL;
+        int i=s->next++;
+        Operand *operand=&s->args[i];
+        if(operand->option)continue;
+        if(operand->assignment) {
+            Value v=input_value(operand->value);
+            global_store(r,operand->name,v);
+            value_free(v);
+        }
+        else {
+            char *path=mem_new(strlen(operand->name)+7);
+            sprintf(path,"input/%s",operand->name);
+            s->main_file=fopen(path,"r");
+            free(path);
+            if(!s->main_file)exit(EXIT_FAILURE);
+            s->current=i;
+            Value v=string(operand->name);
+            global_store(r,"FILENAME",v);
+            value_free(v);
+            global_store(r,"FNR",number(0));
+        }
+    }
+}
+Value evaluate(Runtime *r,Expr *e) {
+    if(!e||r->message||r->flow)return (Value) {
+        0
+    };
+    switch(e->kind) {
+        case E_NUMBER:return number(e->token.number);
+        case E_STRING:return string(e->token.text);
+        case E_GROUP:return evaluate(r,e->a);
+        case E_VAR:return symbol_value(r,e->symbol);
+        case E_ARRAY:case E_FIELD: {
+            Location l=location(r,e);
+            Value v=(r->message||r->flow)?(Value) {
+                0
+            }
+            :load(r,l);
+            free(l.key);
+            return v;
+        }
+        case E_ASSIGN: {
+            Location l=location(r,e->a);
+            Value b=evaluate(r,e->b),value=value_copy(b);
+            store(r,l,value,e->token.pos);
+            value_free(value);
+            value_free(b);
+            Value result=(r->message||r->flow)?(Value) {
+                0
+            }
+            :load(r,l);
+            free(l.key);
+            return result;
+        }
+static void discard(Runtime *r,Expr *e) {
+    Value v=evaluate(r,e);
+    value_free(v);
+}
+static int loop_flow(Runtime *r) {
+static void print_statement(Runtime *r,Statement *s) {
+    int n=s->nargs?s->nargs:1;
+    Value *values=mem_new((size_t)n*sizeof *values);
+    if(s->nargs)for(int i=0;i<n;++i)values[i]=evaluate(r,s->args[i]);
+    else values[0]=value_copy(r->record);
+    char *text=NULL;
+    if(!r->message&&!r->flow) {
+        else {
+            Buffer b= {
+                0
+            };
+            Value ofs=symbol_value(r,global_symbol(r,"OFS")),ors=symbol_value(r,global_symbol(r,"ORS"));
+            char *sep=textual(ofs),*end=textual(ors);
+            value_free(ofs);
+            value_free(ors);
+            for(int i=0;i<n;++i) {
+                if(i)buffer_text(&b,sep);
+                char *v=textual(values[i]);
+                buffer_text(&b,v);
+                free(v);
+            }
+            buffer_text(&b,end);
+            text=b.data?b.data:str_copy("");
+            free(sep);
+            free(end);
+        }
+    char *destination=NULL;
+    if(s->redirect&&!r->message&&!r->flow) {
+    }
+    if(!r->message&&!r->flow)output_string(&r->streams,destination,s->append,text);
+    free(text);
+    free(destination);
+}
+void execute(Runtime *r,Statement *s) {
+    if(!s||r->message||r->flow)return;
+    if(s->kind!=S_BLOCK&&s->kind!=S_EMPTY)++r->line_counts[s->token.pos.line];
+    switch(s->kind) {
+        case S_EMPTY:break;
+        case S_BLOCK:for(int i=0;i<s->count&&!r->flow&&!r->message;++i)execute(r,s->children[i]);
+        break;
+        case S_EXPR:discard(r,s->a);
+        break;
+        case S_PRINT:case S_PRINTF:print_statement(r,s);
+        break;
+static void initialize(Runtime *r) {
+    const char *names[]= {
+        "FILENAME","FNR","FS","NF","NR","OFS","ORS","SUBSEP"
+    };
+    for(int i=0;i<8;++i)global_symbol(r,names[i]);
+    Value v=string(" ");
+    global_store(r,"FS",v);
+    global_store(r,"OFS",v);
+    value_free(v);
+    v=string("\n");
+    global_store(r,"ORS",v);
+    value_free(v);
+    v=string("\034");
+    global_store(r,"SUBSEP",v);
+    value_free(v);
+    v=string("");
+    global_store(r,"FILENAME",v);
+    value_free(v);
+    global_store(r,"NR",number(0));
+    global_store(r,"FNR",number(0));
+    r->record=string("");
+    r->line_counts=mem_new(((size_t)r->syntax.lines+2)*sizeof *r->line_counts);
+    for(int i=0;i<r->streams.count;++i)if(r->streams.args[i].option) {
+        Operand *a=&r->streams.args[i];
+        Value value=input_value(a->value);
+        global_store(r,a->name,value);
+        value_free(value);
+    }
+}
+static void run(Runtime *r) {
+    r->phase=1;
+    for(int i=0;i<r->syntax.nr&&!r->message&&!r->flow;++i)if(r->syntax.rules[i]->kind==1) {
+        ++r->syntax.rules[i]->count;
+        execute(r,r->syntax.rules[i]->action);
+    }
+    int process=0;
+    for(int i=0;i<r->syntax.nr;++i)if(r->syntax.rules[i]->kind!=1)process=1;
+    r->phase=0;
+    while(process&&!r->message&&!r->flow) {
+        char *line=main_record(r);
+        if(!line)break;
+        set_record(r,line);
+        free(line);
+        for(int i=0;i<r->syntax.nr&&!r->message&&!r->flow;++i) {
+            Rule *rule=r->syntax.rules[i];
+            if(rule->kind==1||rule->kind==2)continue;
+            int match=1;
+            if(match&&!r->message&&!r->flow) {
+                ++rule->count;
+                if(rule->action)execute(r,rule->action);
+                else {
+            }
+        }
+        if(r->flow==FLOW_NEXT)r->flow=FLOW_NORMAL;
+    }
+static void statistics(FILE *f,Runtime *r) {
+    if(r->message)fprintf(f,"status: runtime error at %d:%d: %s\n",r->error.line,r->error.column,r->message);
+    else fprintf(f,"status: exit %lld\n",r->status);
+    fputs("[inputs]\n",f);
+    for(int i=0;i<r->streams.count;++i) {
+        Operand *a=&r->streams.args[i];
+        if(!a->assignment)fprintf(f,"%s records=%lld\n",a->name,a->records);
+    }
+    fputs("[rules]\n",f);
+    const char *kinds[]= {
+        "all","BEGIN","END","pattern","range"
+    };
+    for(int i=0;i<r->syntax.nr;++i) {
+        Rule *rule=r->syntax.rules[i];
+        fprintf(f,"%d:%d %s count=%lld\n",rule->token.pos.line,rule->token.pos.column,kinds[rule->kind],rule->count);
+    }
+    fprintf(f,"[outputs]\nstdout.txt writes=%lld bytes=%zu\n",r->streams.writes,r->streams.standard.length);
+    fputs("[lines]\n",f);
+    for(int i=1;i<=r->syntax.lines;++i)if(r->syntax.statement_lines[i])fprintf(f,"%d count=%lld\n",i,r->line_counts[i]);
+    fputs("[globals]\n",f);
+    qsort(r->globals,(size_t)r->ng,sizeof *r->globals,symbol_order);
+    for(int i=0;i<r->ng;++i) {
+        Symbol *s=r->globals[i];
+        fprintf(f,"%s = ",s->name);
+        if(s->array)fprintf(f,"array (%d)",s->global.array->count);
+        else if(!strcmp(s->name,"NF"))value_write(f,number(r->nf));
+        else value_write(f,s->global.value);
+        fputc('\n',f);
+    }
+}
+int main(void) {
+    FILE *source=fopen("input/program.awk","r");
+    if(!source)return EXIT_FAILURE;
+    Buffer text= {
+        0
+    };
+    char chunk[4096];
+    size_t n;
+    while((n=fread(chunk,1,sizeof chunk,source)))buffer_add(&text,chunk,n);
+    fclose(source);
+    int lines=0;
+    for(size_t i=0;i<text.length;++i)lines+=text.data[i]=='\n';
+    Tokens tokens=lex(text.data?text.data:"");
+    Runtime r= {
+        0
+    };
+    FILE *stats=fopen("output/stats.txt","w"),*standard=fopen("output/stdout.txt","w");
+    if(!stats||!standard)return EXIT_FAILURE;
+    fclose(standard);
+    r.syntax=parse(tokens,lines);
+    StaticError error=static_checks(&r);
+    r.streams=read_args();
+    initialize(&r);
+    run(&r);
+    write_streams(&r.streams);
+    statistics(stats,&r);
+    fclose(stats);
+    return 0;
+}

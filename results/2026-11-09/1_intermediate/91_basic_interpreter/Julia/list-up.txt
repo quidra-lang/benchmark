@@ -1,0 +1,372 @@
+const SIGNATURES = Dict(
+    "ABS"=>["I"], "SGN"=>["I"], "INT"=>["I"], "SQR"=>["I"], "RND"=>["I"],
+)
+const OPERATORS = [
+    Set(["OR"]), Set(["AND"]), Set{String}(),
+    Set(["=", "<>", "<", ">", "<=", ">="]),
+    Set(["+", "-"]), Set(["*", "/", "MOD"]),
+    Set{String}(), Set(["^"])
+]
+
+fault(message) = throw(BasicFault(message))
+syntax() = throw(SyntaxFault())
+name_type(name::String) = endswith(name, "\$") ? "S" : "I"
+mutable struct Expr
+    kind::Symbol
+    typ::String
+    value::Any
+    args::Vector{Expr}
+end
+
+expr(kind, typ, value, args=Expr[]) = Expr(kind, typ, value, args)
+
+mutable struct Stmt
+    kind::String
+    line::Int
+    next::Union{Nothing, Stmt}
+    expr::Union{Nothing, Expr}
+    target::Union{Nothing, Expr}
+    targets::Vector{Expr}
+    expressions::Vector{Expr}
+    values::Vector{Any}
+    numbers::Vector{Int}
+    name::String
+    mode::String
+    clauses::Vector{Any}
+    items::Vector{Any}
+end
+
+Stmt(kind::String) = Stmt(
+    kind, 0, nothing, nothing, nothing, Expr[], Expr[], Any[], Int[],
+    "", "", Any[], Any[]
+)
+function tokenize(text::String)
+    bytes = Vector{UInt8}(codeunits(text))
+    tokens = Any[]
+    p = 1
+    while p <= length(bytes)
+        ch = Char(bytes[p])
+        if ch == ' '
+            p += 1
+        elseif ch == '"'
+            q = findnext(==('"'), Char.(bytes), p + 1)
+            q === nothing && syntax()
+            value = String(bytes[p+1:q-1])
+            push!(tokens, (;kind="S",text=String(bytes[p:q]),value))
+            p = q + 1
+        elseif '0' <= ch <= '9'
+            start = p
+            while p <= length(bytes) && '0' <= Char(bytes[p]) <= '9'
+                p += 1
+            end
+            word = String(bytes[start:p-1])
+            number = tryparse(Int, word)
+            (number === nothing || number > 32767) && syntax()
+            push!(tokens, (;kind="I",text=word,value=number))
+        elseif 'A' <= ch <= 'Z'
+            start = p
+            while p <= length(bytes) && (
+                'A' <= Char(bytes[p]) <= 'Z' || '0' <= Char(bytes[p]) <= '9'
+            )
+                p += 1
+            end
+            if p <= length(bytes) && Char(bytes[p]) == '$'
+                p += 1
+            end
+            word = String(bytes[start:p-1])
+            push!(tokens, (;kind="W",text=word,value=word))
+        else
+            ch in "+-*/^=<>() ,;:" || syntax()
+            word = string(ch)
+            if p < length(bytes)
+                pair = String(bytes[p:p+1])
+                if pair in ("<>", "<=", ">=")
+                    word = pair
+                end
+            end
+            push!(tokens, (;kind="P",text=word,value=word))
+            p += ncodeunits(word)
+        end
+    end
+    push!(tokens, (;kind="E",text="",value=""))
+    tokens
+end
+
+mutable struct Parser
+    tokens::Vector{Any}
+    pos::Int
+end
+
+Parser(tokens::Vector{Any}) = Parser(tokens, 1)
+current(p::Parser) = p.tokens[p.pos]
+at(p::Parser, word::String) = current(p).kind in ("P", "W") && current(p).text == word
+
+function take!(p::Parser, word::String)
+    at(p, word) || return false
+    p.pos += 1
+    true
+end
+
+function expect!(p::Parser, word::String)
+    take!(p,word) || syntax()
+end
+function integer!(p::Parser)
+    result = expression!(p)
+    result.typ == "I" || syntax()
+    result
+end
+
+function integer_at!(p::Parser, level)
+    result = expression!(p, level)
+    result.typ == "I" || syntax()
+    result
+end
+function primary!(p::Parser)
+    token = current(p)
+    if token.kind in ("I", "S")
+        p.pos += 1
+        return expr(:constant, token.kind, token.value)
+    end
+    if take!(p, "(")
+        result = expression!(p)
+        expect!(p, ")")
+        return result
+    end
+    if token.kind == "W" && haskey(SIGNATURES, token.text)
+        p.pos += 1
+        expect!(p, "(")
+        args = Expr[expression!(p)]
+        while take!(p, ",")
+            push!(args, expression!(p))
+        end
+        expect!(p, ")")
+        join(e.typ for e in args) in SIGNATURES[token.text] || syntax()
+        return expr(:call, name_type(token.text), token.text, args)
+    end
+    syntax()
+end
+
+function expression!(p::Parser, level::Int=0)
+    if level == 2 && take!(p, "NOT")
+        return expr(:unary, "I", "NOT", Expr[integer_at!(p, 2)])
+    end
+    if level == 6 && take!(p, "-")
+        return expr(:unary, "I", "-", Expr[integer_at!(p, 6)])
+    end
+    level == 8 && return primary!(p)
+    left = expression!(p, level + 1)
+    while current(p).text in OPERATORS[level + 1]
+        op = current(p).text
+        p.pos += 1
+        right = expression!(p, level == 7 ? 6 : level + 1)
+        if left.typ != right.typ || (left.typ == "S" && level != 3 && op != "+")
+            syntax()
+        end
+        left = expr(:binary, level == 3 ? "I" : left.typ, op, Expr[left,right])
+        level == 7 && break
+    end
+    left
+end
+function listing!(p::Parser, in_clause::Bool=false)
+    statements = Stmt[statement!(p,in_clause)]
+    while take!(p, ":")
+        push!(statements, statement!(p,in_clause))
+    end
+    statements
+end
+
+function statement!(p::Parser, in_clause::Bool)
+    word = current(p).text
+    if in_clause && word in ("IF","FOR","NEXT","WHILE","WEND","DATA")
+        syntax()
+    end
+    s = Stmt(word)
+    if take!(p, "PRINT")
+        expression_last = false
+        while current(p).kind != "E" && !at(p, ":") && !at(p, "ELSE")
+            if take!(p, ";")
+                push!(s.items, (;kind=";",node=nothing))
+                expression_last = false
+            elseif take!(p, ",")
+                push!(s.items, (;kind=",",node=nothing))
+                expression_last = false
+            else
+                kind = at(p, "TAB") ? "TAB" : at(p, "SPC") ? "SPC" : "value"
+                kind == "value" && expression_last && syntax()
+                if kind == "value"
+                    e = expression!(p)
+                push!(s.items, (;kind,node=e))
+                expression_last = kind == "value"
+            end
+        end
+        return s
+    end
+function parse_program(p::Parser)
+    result = listing!(p)
+    current(p).kind == "E" || syntax()
+    result
+end
+mutable struct Machine
+    inputs::Vector{String}
+    variables::Dict{String,Any}
+    arrays::Dict{String,BasicArray}
+    stack::Vector{Any}
+    entries::Dict{Int,Stmt}
+    sequence::Vector{Stmt}
+    data::Vector{Any}
+    data_position::Int
+    input_position::Int
+    random::Int
+    handler::Int
+    handling::Bool
+    remembered::Union{Nothing,Stmt}
+    err::Int
+    erl::Int
+    buffer::String
+    output::Vector{String}
+end
+
+Machine(inputs::Vector{String}) = Machine(
+    inputs, Dict{String,Any}(), Dict{String,BasicArray}(), Any[],
+    Dict{Int,Stmt}(), Stmt[], Any[], 1, 1, 1, 0, false,
+    nothing, 0, 0, "", String[]
+)
+
+function end_line!(m::Machine)
+    push!(m.output,rstrip(m.buffer,' '))
+    m.buffer = ""
+end
+
+function message!(m::Machine, text::String)
+    !isempty(m.buffer) && end_line!(m)
+    push!(m.output,text)
+end
+
+function checked(value)
+    (-32768 <= value <= 32767) || fault("OVERFLOW")
+    Int(value)
+end
+function evaluate(m::Machine,e::Expr)
+    op = e.value
+    e.kind == :constant && return op
+    if e.kind == :unary
+        a = evaluate(m,e.args[1])
+        return op == "NOT" ? ~a : checked(-a)
+    end
+    args = [evaluate(m,arg) for arg in e.args]
+    e.kind == :call && return call_function(m,op,args)
+    a,b = args
+    elseif op == "/" || op == "MOD"
+        b == 0 && fault("DIVISION BY ZERO")
+        return op == "/" ? checked(div(a,b)) : rem(a,b)
+    elseif op == "AND"
+        return a & b
+    elseif op == "OR"
+        return a | b
+    end
+    fault("ILLEGAL FUNCTION CALL")
+end
+
+function call_function(m::Machine,name,args)
+    a = args[1]
+    b = length(args)>1 ? args[2] : nothing
+    c = length(args)>2 ? args[3] : nothing
+    elseif name == "RND"
+        a < 1 && fault("ILLEGAL FUNCTION CALL")
+        m.random = mod(48271*m.random,2147483647)
+        return mod(m.random,a)+1
+function execute!(m::Machine,s::Stmt)
+    following = s.next
+    elseif s.kind == "PRINT"
+        for item in s.items
+            if item.kind == ","
+                m.buffer *= repeat(" ",10-mod(ncodeunits(m.buffer),10))
+            elseif item.kind != ";"
+                value = evaluate(m,item.node)
+                if item.kind == "value"
+                    m.buffer *= string(value)
+            end
+        end
+        if isempty(s.items) || !(s.items[end].kind in (";",","))
+            end_line!(m)
+        end
+    following
+function connect!(body::Vector{Stmt},after,number::Int)
+    following = after
+    for s in Iterators.reverse(body)
+        s.line = number
+        s.next = following
+        following = s
+    end
+end
+
+function finish!(m::Machine)
+    !isempty(m.buffer) && end_line!(m)
+    push!(m.output,"READY")
+    m.output
+end
+
+function run!(m::Machine,source::Dict{Int,String})
+    parsed = Any[]
+    for number in sort(collect(keys(source)))
+        try
+            body = parse_program(Parser(tokenize(source[number])))
+            push!(parsed,(;number,body))
+        catch e
+            e isa SyntaxFault || rethrow()
+            message!(m,"ERROR IN LINE "*string(number)*": SYNTAX ERROR")
+            return finish!(m)
+        end
+    end
+    after = nothing
+    for entry in Iterators.reverse(parsed)
+        connect!(entry.body,after,entry.number)
+        m.entries[entry.number] = first(entry.body)
+        after = first(entry.body)
+    end
+    position = after
+    while position!==nothing
+        s = position
+        try
+            position = execute!(m,s)
+        catch e
+            e isa BasicFault || rethrow()
+            if m.handler!=0 && !m.handling
+            else
+                message!(m,"ERROR IN LINE "*string(s.line)*": "*e.message)
+                position = nothing
+            end
+        end
+    end
+    finish!(m)
+end
+function main()
+    lines = String.(split(replace(read(stdin,String),"\r\n"=>"\n"),'\n';keepempty=true))
+    cursor = 2
+    output = String[]
+    for _ in 1:parse(Int,lines[1])
+        source = Dict{Int,String}()
+        while lines[cursor]!="RUN"
+            match_result = match(r"^([0-9]+)(?: +(.*))?$",lines[cursor])
+            cursor += 1
+            number = parse(Int,match_result.captures[1])
+            body = match_result.captures[2]
+            if body===nothing
+                delete!(source,number)
+            else
+                source[number] = body
+            end
+        end
+        cursor += 1
+        inputs = String[]
+        while lines[cursor]!="END"
+            push!(inputs,lines[cursor])
+            cursor += 1
+        end
+        cursor += 1
+        append!(output,run!(Machine(inputs),source))
+    end
+    println(join(output,"\n"))
+end
+
+main()

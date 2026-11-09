@@ -1,0 +1,303 @@
+using Integer = std::int64_t;
+using Dice = std::array<int, 5>;
+using Holds = std::array<bool, 5>;
+using Counts = std::array<int, 6>;
+enum Category {
+    Ones, Twos, Threes, Fours, Fives, Sixes, ThreeKind, FourKind,
+    FullHouse, Small, Large, Yahtzee, Chance, CategoryCount
+enum class Joker { Forced, Free, Off };
+const std::array<std::string, CategoryCount> categoryNames = {
+    "ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+    "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE"
+struct CommandError : std::runtime_error { using std::runtime_error::runtime_error; };
+Integer integerWord(const std::string& word, Integer minimum, Integer maximum) {
+    std::size_t first = word[0] == '-' ? 1 : 0;
+    if (first == word.size() || word == "-0" ||
+        (word.size() - first > 1 && word[first] == '0')) {
+        throw CommandError("bad value " + word);
+    }
+    Integer value = 0;
+    for (std::size_t i = first; i < word.size(); ++i) {
+        if (word[i] < '0' || word[i] > '9') throw CommandError("bad value " + word);
+        value = value * 10 + word[i] - '0';
+    }
+    if (first != 0) value = -value;
+    if (value < minimum || value > maximum) throw CommandError("bad value " + word);
+    return value;
+}
+void playerName(const std::string& word) {
+    if (word.size() > 8 || !std::all_of(word.begin(), word.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) {
+        throw CommandError("bad name " + word);
+    }
+}
+Holds holdPattern(const std::string& word) {
+    if (word.size() != 5 || !std::all_of(word.begin(), word.end(), [](char c) { return c == '0' || c == '1'; })) {
+        throw CommandError("bad pattern " + word);
+    }
+    Holds holds{};
+    for (int i = 0; i < 5; ++i) holds[i] = word[i] == '1';
+    return holds;
+}
+Category categoryWord(const std::string& word) {
+    for (int i = 0; i < CategoryCount; ++i) if (categoryNames[i] == word) return static_cast<Category>(i);
+    throw CommandError("bad category " + word);
+std::string patternText(const Holds& holds) {
+    std::string text;
+    for (bool held : holds) text += held ? '1' : '0';
+    return text;
+}
+std::string facesText(const Dice& dice, const Holds& selected = {true, true, true, true, true}) {
+    std::string text;
+    for (int i = 0; i < 5; ++i) {
+        if (!selected[i]) continue;
+        if (!text.empty()) text += ' ';
+        text += std::to_string(dice[i]);
+    }
+    return text.empty() ? "-" : text;
+}
+Counts faceCounts(const Dice& dice, const Holds& selected = {true, true, true, true, true}) {
+    Counts counts{};
+    for (int i = 0; i < 5; ++i) if (selected[i]) ++counts[dice[i] - 1];
+    return counts;
+bool isYahtzee(const Counts& counts) { return *std::max_element(counts.begin(), counts.end()) == 5; }
+int normalScore(Category category, const Counts& counts) {
+    if (category <= Sixes) return (category + 1) * counts[category];
+struct Rules { int rolls = 3; Joker joker = Joker::Forced; };
+struct Player {
+    std::string name;
+    Strategy strategy = Strategy::Kind;
+    std::array<std::optional<int>, CategoryCount> boxes{};
+    int yahtzeeBonus = 0;
+    int upper() const {
+        int sum = 0;
+        for (int i = Ones; i <= Sixes; ++i) sum += boxes[i].value_or(0);
+        return sum;
+    }
+    int upperBonus() const { return upper() >= 63 ? 35 : 0; }
+    int total() const {
+        int sum = upperBonus() + yahtzeeBonus;
+        for (const std::optional<int>& box : boxes) sum += box.value_or(0);
+        return sum;
+    }
+    int round() const {
+        return 1 + static_cast<int>(std::count_if(boxes.begin(), boxes.end(), [](const std::optional<int>& box) { return box.has_value(); }));
+    }
+};
+struct Candidates {
+    std::array<bool, CategoryCount> allowed{};
+    std::array<int, CategoryCount> points{};
+    Category best = Ones;
+    bool joker = false;
+    std::string requirement;
+};
+Candidates candidates(const Player& player, const Counts& counts, Joker rule) {
+    Candidates result;
+    for (int i = 0; i < CategoryCount; ++i) result.allowed[i] = !player.boxes[i].has_value();
+    result.joker = rule != Joker::Off && isYahtzee(counts) && player.boxes[Yahtzee].has_value();
+    if (result.joker && rule == Joker::Forced) {
+    int bestScore = -1;
+    for (int i = 0; i < CategoryCount; ++i) {
+        if (!result.allowed[i]) continue;
+        Category category = static_cast<Category>(i);
+        int points = normalScore(category, counts);
+        if (result.joker) {
+        result.points[i] = points;
+        if (points > bestScore) { bestScore = points; result.best = category; }
+    }
+    return result;
+struct Turn {
+    int player = 0;
+    int rolls = 0;
+    Dice dice{};
+    Holds holds{};
+};
+struct ScoreEntry {
+    Turn turn;
+    Category category;
+    int points;
+    int yahtzeeBonus;
+    bool joker;
+};
+struct RedoEntry { std::optional<Turn> resume; ScoreEntry score; };
+class Game {
+    std::vector<std::string>* output;
+    void emit(const std::string& line) { if (output != nullptr) output->push_back(line); }
+    int rollDie() {
+        int face;
+        if (!loaded.empty()) { face = loaded.front(); loaded.pop_front(); }
+        else { state = 48271 * state % 2147483647; face = static_cast<int>(state % 6) + 1; }
+        ++faceTotals[face - 1];
+        return face;
+    }
+public:
+    Rules rules;
+    Integer state;
+    std::vector<Player> players;
+    std::deque<int> loaded;
+    std::array<Integer, 6> faceTotals{};
+    std::optional<Turn> turn = Turn{};
+    std::vector<ScoreEntry> entries;
+    std::vector<RedoEntry> redo;
+    Game(Integer seed, const std::vector<std::string>& names, Rules gameRules, std::vector<std::string>* lines = nullptr)
+        : output(lines), rules(gameRules), state(seed) {
+        for (const std::string& name : names) players.push_back(Player{name});
+    }
+    void turnCheck() const { if (!turn.has_value()) throw CommandError("game over"); }
+    void rolledCheck() const {
+        turnCheck();
+        if (turn->rolls == 0) throw CommandError("not rolled");
+    }
+    void rollsLeftCheck() const {
+        rolledCheck();
+        if (turn->rolls == rules.rolls) throw CommandError("no rolls left");
+    std::string nextTurnText() const {
+        if (!turn.has_value()) return "game over";
+        const Player& player = players[turn->player];
+        return "turn " + std::to_string(player.round()) + " " + player.name;
+    }
+    void roll() {
+        redo.clear();
+        for (int i = 0; i < 5; ++i) if (turn->rolls == 0 || !turn->holds[i]) turn->dice[i] = rollDie();
+        ++turn->rolls;
+        emit(players[turn->player].name + " roll " + std::to_string(turn->rolls) + ": " + facesText(turn->dice));
+    }
+    void hold(const Holds& holds) {
+        redo.clear();
+        turn->holds = holds;
+        emit(players[turn->player].name + " holds " + patternText(holds) + ": " + facesText(turn->dice, holds));
+    }
+    ScoreEntry scoreDetails(Category category) const {
+        const Player& player = players[turn->player];
+        Counts counts = faceCounts(turn->dice);
+        Candidates scores = candidates(player, counts, rules.joker);
+        int bonus = isYahtzee(counts) && player.boxes[Yahtzee] == 50 ? 100 : 0;
+        return {*turn, category, scores.points[category], bonus, scores.joker};
+    }
+    ScoreEntry checkedScore(Category category) const {
+        rolledCheck();
+        const Player& player = players[turn->player];
+        if (player.boxes[category].has_value()) throw CommandError(categoryNames[category] + " already used");
+        Candidates scores = candidates(player, faceCounts(turn->dice), rules.joker);
+        if (!scores.allowed[category]) throw CommandError("joker requires " + scores.requirement);
+        return scoreDetails(category);
+    }
+    std::string scoreText(const ScoreEntry& entry, bool hypothetical) const {
+        const Player& player = players[entry.turn.player];
+        int upperAfter = player.upper() + (entry.category <= Sixes ? entry.points : 0);
+        int addedUpper = upperAfter >= 63 && player.upperBonus() == 0 ? 35 : 0;
+        std::string line = player.name + (hypothetical ? " would score " : " scores ") + std::to_string(entry.points) + " in " + categoryNames[entry.category];
+        if (entry.joker) line += " joker";
+        if (entry.yahtzeeBonus != 0) line += " ybonus 100";
+        if (addedUpper != 0) line += " ubonus 35";
+        return line + " total " + std::to_string(player.total() + entry.points + entry.yahtzeeBonus + addedUpper);
+    }
+    void score(Category category) {
+        ScoreEntry entry = scoreDetails(category);
+        std::string line = scoreText(entry, false);
+        Player& player = players[entry.turn.player];
+        player.boxes[category] = entry.points;
+        player.yahtzeeBonus += entry.yahtzeeBonus;
+        entries.push_back(entry);
+        redo.clear();
+        if (entries.size() == 13 * players.size()) turn.reset();
+        else turn = Turn{(entry.turn.player + 1) % static_cast<int>(players.size())};
+        emit(line);
+        emit(nextTurnText());
+    void undoScore() {
+        if (entries.empty()) throw CommandError("nothing to undo");
+        ScoreEntry entry = entries.back();
+        entries.pop_back();
+        players[entry.turn.player].boxes[entry.category].reset();
+        players[entry.turn.player].yahtzeeBonus -= entry.yahtzeeBonus;
+        redo.push_back({turn, entry});
+        turn = entry.turn;
+        emit("undo " + players[entry.turn.player].name + " " + categoryNames[entry.category] + " " + std::to_string(entry.points));
+    }
+    void redoScore() {
+        if (redo.empty()) throw CommandError("nothing to redo");
+        RedoEntry saved = redo.back();
+        redo.pop_back();
+        const ScoreEntry& entry = saved.score;
+        players[entry.turn.player].boxes[entry.category] = entry.points;
+        players[entry.turn.player].yahtzeeBonus += entry.yahtzeeBonus;
+        entries.push_back(entry);
+        turn = saved.resume;
+        emit("redo " + players[entry.turn.player].name + " " + categoryNames[entry.category] + " " + std::to_string(entry.points));
+class Program {
+    Rules rules;
+    std::unique_ptr<Game> game;
+    std::vector<std::string> output;
+    template<class... Values> void emit(const Values&... values) {
+        std::ostringstream line;
+        bool first = true;
+        ((line << (first ? "" : " ") << values, first = false), ...);
+        output.push_back(line.str());
+    }
+    Game& requireGame() {
+        if (game == nullptr) throw CommandError("no game");
+        return *game;
+    void execute(const std::vector<std::string>& words) {
+        const std::string& command = words[0];
+        if (command == "RULE") {
+        } else if (command == "GAME") {
+            Integer seed = integerWord(words[1], 1, 2147483646);
+            std::vector<std::string> names(words.begin() + 2, words.end());
+            for (const std::string& name : names) playerName(name);
+            if (names.size() > 6) throw CommandError("too many players");
+            if (game != nullptr) throw CommandError("game in progress");
+            std::set<std::string> seen;
+            for (const std::string& name : names) if (!seen.insert(name).second) throw CommandError("duplicate name " + name);
+            game = std::make_unique<Game>(seed, names, rules, &output);
+            std::string line = "game seed " + std::to_string(seed) + " players";
+            for (const std::string& name : names) line += " " + name;
+            emit(line);
+            emit(game->nextTurnText());
+        } else if (command == "LOAD" || command == "KEEP") {
+            std::vector<int> faces;
+            for (std::size_t i = 1; i < words.size(); ++i) faces.push_back(static_cast<int>(integerWord(words[i], 1, 6)));
+            Game& table = requireGame();
+            if (command == "LOAD") {
+                table.loaded.insert(table.loaded.end(), faces.begin(), faces.end());
+                emit("loaded", table.loaded.size());
+        } else if (command == "ROLL") {
+            Game& table = requireGame();
+            table.turnCheck();
+            if (table.turn->rolls == rules.rolls) throw CommandError("no rolls left");
+            if (std::all_of(table.turn->holds.begin(), table.turn->holds.end(), [](bool held) { return held; })) throw CommandError("all dice held");
+            table.roll();
+        } else if (command == "HOLD" || command == "ODDS") {
+            Holds holds = holdPattern(words[1]);
+            Game& table = requireGame();
+            table.rollsLeftCheck();
+            if (command == "HOLD") table.hold(holds);
+            else odds(table, holds);
+        } else if (command == "SCORE" || command == "WHATIF") {
+            Category category = categoryWord(words[1]);
+            Game& table = requireGame();
+            ScoreEntry entry = table.checkedScore(category);
+            if (command == "SCORE") table.score(category);
+            else emit(table.scoreText(entry, true));
+        } else if (command == "UNDO") {
+            requireGame().undoScore();
+        } else if (command == "REDO") {
+            requireGame().redoScore();
+public:
+    void process(const std::string& line) {
+        std::istringstream input(line);
+        std::vector<std::string> words;
+        for (std::string word; input >> word;) words.push_back(word);
+        try { execute(words); }
+        catch (const CommandError& error) { emit("error:", error.what()); }
+    }
+    void print() const { for (const std::string& line : output) std::cout << line << '\n'; }
+};
+int main() {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+    int count;
+    std::cin >> count;
+    std::string line;
+    std::getline(std::cin, line);
+    Program program;
+    for (int i = 0; i < count; ++i) { std::getline(std::cin, line); program.process(line); }
+    program.print();

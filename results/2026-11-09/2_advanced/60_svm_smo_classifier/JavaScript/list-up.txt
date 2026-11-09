@@ -1,0 +1,173 @@
+function lines(path) {
+  return fs.readFileSync(path, 'ascii').split('\n').slice(0, -1);
+}
+
+function examples(path, multiclass = false) {
+  return lines(path).slice(1).map(line => {
+    const fields = line.split(',');
+    const row = { id: fields[0], point: [Number(fields[1]), Number(fields[2])] };
+    if (multiclass) {
+      row.class = Number(fields[3]);
+      row.role = fields[4];
+    } else row.label = Number(fields[3]);
+    return row;
+  });
+}
+function read() {
+  const params = { kernels: [] };
+  for (const line of lines('input/params.txt')) {
+    const [key, ...values] = line.split(' ');
+    const nums = values.map(Number);
+    switch (key) {
+      case 'C_GRID': params.cs = nums; break;
+      case 'KERNEL': {
+        const kernel = { name: values[0], kind: values[1], index: params.kernels.length };
+        if (kernel.kind === 'poly') {
+          kernel.degree = nums[2]; kernel.gamma = nums[3]; kernel.coef0 = nums[4];
+        } else if (kernel.kind === 'rbf') kernel.gamma = nums[2];
+        params.kernels.push(kernel);
+        break;
+      }
+      case 'TOLERANCE': params.tau = nums[0]; break;
+      case 'EPS': params.eps = nums[0]; break;
+      case 'MAX_PASSES': params.maxPasses = nums[0]; break;
+      case 'FOLDS': params.folds = nums[0]; break;
+    }
+  }
+  return { train: examples('input/train.csv'), test: examples('input/test.csv'),
+    multiTrain: multi.filter(row => row.role === 'train'),
+    multiTest: multi.filter(row => row.role === 'test'), params };
+}
+function value(kernel, a, b) {
+  if (kernel.kind === 'linear') return a[0] * b[0] + a[1] * b[1];
+  if (kernel.kind === 'poly') {
+    const s = kernel.gamma * (a[0] * b[0] + a[1] * b[1]) + kernel.coef0;
+    let result = 1;
+    for (let i = 0; i < kernel.degree; i++) result *= s;
+    return result;
+  }
+  const e1 = a[0] - b[0], e2 = a[1] - b[1];
+  return Math.exp(-kernel.gamma * (e1 * e1 + e2 * e2));
+}
+
+function matrix(kernel, points) {
+  return points.map(a => points.map(b => value(kernel, a, b)));
+}
+
+function subset(matrix, indices) {
+  return indices.map(i => indices.map(j => matrix[i][j]));
+}
+function sign(value) { return value > 0 ? 1 : -1; }
+function folds(count, k) {
+  return Array.from({ length: k }, (_, fold) => {
+    const train = [], test = [];
+    for (let i = 0; i < count; i++) (i % k === fold ? test : train).push(i);
+    return { train, test };
+  });
+}
+function train(points, labels, Q, C, kernel, params) {
+  return new Trainer(points, labels, Q, C, kernel, params).run();
+}
+
+function decision(model, point) {
+  let sum = 0;
+  for (let j = 0; j < model.alpha.length; j++) if (model.alpha[j] > 0) {
+    sum += model.alpha[j] * model.labels[j] * value(model.kernel, model.points[j], point);
+  }
+  return sum - model.b;
+}
+function support(model) {
+  let total = 0, bound = 0, free = 0;
+  for (const a of model.alpha) if (a > 0) {
+    total++;
+    if (a === model.C) bound++; else free++;
+  }
+  return { total, bound, free };
+}
+function measure(model, test) {
+  const result = objective(model);
+  const values = result.sums.map(s => s - model.b);
+  const testValues = test.map(row => smo.decision(model, row.point));
+  return { model, ...result, values, testValues, sv: support(model),
+    trainCorrect: binary(model.labels, values).correct,
+    testStats: binary(test.map(row => row.label), testValues) };
+}
+
+function crossValidate(train, params, matrices) {
+  const partition = folds(train.length, params.folds), combinations = [], best = [];
+  for (const kernel of params.kernels) {
+    let winner = null;
+    for (const C of params.cs) {
+      const result = { kernel, C, correct: 0, support: 0, passes: 0, steps: 0,
+        values: Array(train.length).fill(0), folds: [] };
+      for (const fold of partition) {
+        const model = smo.train(fold.train.map(i => train[i].point), fold.train.map(i => train[i].label),
+          kernels.subset(matrices[kernel.index], fold.train), C, kernel, params);
+        let correct = 0;
+        for (const i of fold.test) {
+          result.values[i] = smo.decision(model, train[i].point);
+          if (sign(result.values[i]) === train[i].label) correct++;
+        }
+        const sv = support(model), passes = model.full + model.nonbound;
+        result.folds.push({ train: fold.train.length, test: fold.test.length, correct,
+          support: sv.total, passes, steps: model.steps, converged: model.converged });
+        result.correct += correct; result.support += sv.total;
+        result.passes += passes; result.steps += model.steps;
+      }
+      combinations.push(result);
+      if (winner === null || result.correct > winner.correct) winner = result;
+    }
+    best.push(winner);
+  }
+  const ranking = combinations.slice().sort((a, b) => b.correct - a.correct || a.C - b.C || a.kernel.index - b.kernel.index);
+  return { combinations, best, ranking, selected: ranking[0] };
+}
+
+function crossValidationLines(cv, n, params) {
+  const lines = [`cross_validation folds ${params.folds} examples ${n}`];
+  for (const best of cv.best) lines.push(`best ${best.kernel.name} C ${fixed(best.C, 4)} correct ${best.correct}/${n} accuracy ${ratio(best.correct, n)}`);
+  lines.push(`selected ${cv.selected.kernel.name} C ${fixed(cv.selected.C, 4)}`, 'ranking');
+  cv.ranking.forEach((entry, i) => lines.push(`${i + 1} ${entry.kernel.name} C ${fixed(entry.C, 4)} correct ${entry.correct}/${n}`));
+  lines.push(`cv_detail ${cv.selected.kernel.name} C ${fixed(cv.selected.C, 4)}`);
+  cv.selected.folds.forEach((fold, i) => {
+    lines.push(`fold ${i + 1} train ${fold.train} test ${fold.test} correct ${fold.correct} support_vectors ${fold.support} ${runInfo(fold)}`);
+  });
+  return lines;
+}
+function finalModelLines(result, train, test, params) {
+  const { model, q, dual, values, testValues, sv, trainCorrect, testStats } = result;
+  const n = train.length, m = test.length;
+  const lines = [`model ${model.kernel.name}`, `kernel ${kernels.description(model.kernel)}`,
+    `C ${fixed(model.C, 4)}`, `alignment ${fixed(sy / (n * Math.sqrt(sg)), 6)}`,
+function calibrate(selectedCV, selected, train, test, params) {
+  const values = selectedCV.values, n = train.length, m = test.length;
+  const probabilities = selected.testValues.map(value => probability(value, A, B));
+function main() {
+  const { train, test, multiTrain, multiTest, params } = dataset.read();
+  const points = train.map(row => row.point), labels = train.map(row => row.label);
+  const matrices = params.kernels.map(kernel => kernels.matrix(kernel, points));
+  const cv = crossValidate(train, params, matrices);
+  const finals = params.kernels.map(kernel => measure(smo.train(points, labels, matrices[kernel.index],
+    cv.best[kernel.index].C, kernel, params), test));
+  const selected = finals[cv.selected.kernel.index];
+  const blocks = [crossValidationLines(cv, train.length, params)];
+  for (const result of finals) blocks.push(finalModelLines(result, train, test, params));
+  for (const block of selectedAnalyses(selected, train, test, params)) blocks.push(block);
+  const calibration = calibrate(cv.selected, selected, train, test, params);
+  blocks.push(calibration.lines);
+  const modelLines = [];
+  for (const block of blocks) {
+    if (modelLines.length) modelLines.push('');
+    for (const line of block) modelLines.push(line);
+  }
+  write('output/model.txt', modelLines);
+  const grid = [['kernel', 'C', ...Array.from({ length: params.folds }, (_, i) => `fold${i + 1}`),
+    'correct', 'accuracy', 'support_vectors', 'passes', 'steps'].join(',')];
+  for (const entry of cv.combinations) grid.push([entry.kernel.name, fixed(entry.C, 4),
+    ...entry.folds.map(fold => fold.correct), entry.correct, ratio(entry.correct, train.length),
+    entry.support, entry.passes, entry.steps].join(','));
+  write('output/cv_grid.csv', grid);
+  const predictions = [['id', 'label', ...params.kernels.map(kernel => kernel.name), 'pegasos', 'predicted', 'probability'].join(',')];
+  test.forEach((row, i) => predictions.push([row.id, row.label, ...finals.map(result => fixed(result.testValues[i], 4)),
+    fixed(peg.values[i], 4), sign(selected.testValues[i]), fixed(calibration.probabilities[i], 4)].join(',')));
+  write('output/predictions.csv', predictions);

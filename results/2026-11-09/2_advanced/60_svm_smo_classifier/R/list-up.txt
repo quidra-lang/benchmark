@@ -1,0 +1,298 @@
+read_binary <- function(name) lapply(strsplit(readLines(file.path("input",name))[-1L],",",fixed=TRUE),function(words)
+  list(id=words[1L],point=as.numeric(words[2:3]),label=as.integer(words[4L])))
+read_inputs <- function() {
+  training <- read_binary("train.csv")
+  testing <- read_binary("test.csv")
+  settings <- list(kernels=list())
+  for (line in readLines(file.path("input","params.txt"))) {
+    words <- strsplit(line," ",fixed=TRUE)[[1L]]
+    key <- tolower(words[1L])
+    values <- words[-1L]
+    if (key == "kernel") {
+      kind <- values[2L]
+      kernel <- list(name=values[1L],kind=kind,degree=if (kind == "poly") as.integer(values[3L]) else 0L,
+        gamma=if (kind == "poly") as.numeric(values[4L]) else if (kind == "rbf") as.numeric(values[3L]) else 0,coef0=if (kind == "poly") as.numeric(values[5L]) else 0)
+      settings$kernels[[length(settings$kernels)+1L]] <- kernel
+    } else if (key %in% c(
+        "max_passes",
+        "folds",
+        "newton_iterations"
+    )) settings[[key]] <- as.integer(values[1L]) else if (key %in% c("learning_curve","plot_size"))
+      settings[[key]] <- as.integer(values) else if (key == "multiclass") settings[[key]] <- list(
+          values[1L],
+          as.numeric(values[2L])
+      ) else if (key == "pegasos")
+      settings[[key]] <- list(
+          as.numeric(values[1L]),
+          as.integer(values[2L]),
+          as.integer(values[3L])
+      ) else if (key %in% c("c_grid","plot_x","plot_y"))
+      settings[[key]] <- as.numeric(values) else settings[[key]] <- as.numeric(values[1L])
+  }
+  list(
+      training=training,
+      testing=testing,
+      multi_training=multi_training,
+      multi_testing=multi_testing,
+      settings=settings
+  )
+}
+kernel_value <- function(kernel,first,second) {
+  if (kernel$kind == "rbf") {
+    e1 <- first[1L]-second[1L]
+    e2 <- first[2L]-second[2L]
+    return(exp(-kernel$gamma*(e1*e1+e2*e2)))
+  }
+  product <- first[1L]*second[1L]+first[2L]*second[2L]
+  if (kernel$kind == "linear") return(product)
+  factor <- kernel$gamma*product+kernel$coef0
+  value <- 1
+  for (unused in seq_len(kernel$degree)) value <- value*factor
+  value
+}
+kernel_matrix <- function(kernel,points) {
+  matrix <- matrix(0,length(points),length(points))
+  for (i in seq_along(points)) for (j in seq_along(points)) matrix[i,j] <- kernel_value(
+      kernel,
+      points[[i]],
+      points[[j]]
+  )
+  matrix
+}
+submatrix <- function(matrix,indices) matrix[indices,indices,drop=FALSE]
+svm_sign <- function(value) ifelse(value > 0,1L,-1L)
+folds <- function(size,count) lapply(
+    seq_len(count)-1L,
+    function(f) list(
+        train=which((seq_len(size)-1L) %% count != f),
+        test=which((seq_len(size)-1L) %% count == f)
+    )
+)
+correct_count <- function(labels,values) sum(svm_sign(values) == labels)
+passes <- function(model) model$full_passes+model$nonbound_passes
+train_model <- function(points,labels,kernel,matrix,C,settings) {
+  model <- new.env(parent=emptyenv())
+  model$points <- points
+  model$labels <- labels
+  model$kernel <- kernel
+  model$matrix <- matrix
+  model$C <- C
+  model$tolerance <- settings$tolerance
+  model$eps <- settings$eps
+  model$max_passes <- settings$max_passes
+  model$alpha <- numeric(length(points))
+  model
+}
+decision <- function(model,point) {
+  total <- 0
+  for (i in seq_along(model$alpha)) if (model$alpha[i] > 0) total <- total+model$alpha[i]*model$labels[i]*kernel_value(
+      model$kernel,
+      model$points[[i]],
+      point
+  )
+  total-model$b
+}
+support_counts <- function(model) {
+  total <- sum(model$alpha > 0)
+  bound <- sum(model$alpha > 0 & model$alpha == model$C)
+  c(total,bound,total-bound)
+}
+rank_results <- function(results) results[order(
+    -vapply(results,function(result) result$correct,integer(1)),
+    vapply(results,function(result) result$C,numeric(1)),
+    vapply(results,function(result) result$kernel_index,integer(1))
+)]
+cross_validate <- function(training,settings) {
+  points <- lapply(training,function(example) example$point)
+  labels <- vapply(training,function(example) example$label,integer(1))
+  partitions <- folds(length(training),settings$folds)
+  matrices <- combinations <- best <- list()
+  for (ki in seq_along(settings$kernels)) {
+    kernel <- settings$kernels[[ki]]
+    matrix <- kernel_matrix(kernel,points)
+    matrices[[ki]] <- matrix
+    candidates <- list()
+    for (C in settings$c_grid) {
+      values <- numeric(length(training))
+      fold_results <- list()
+      correct <- support <- pass_count <- steps <- 0L
+      for (partition in partitions) {
+        fitting <- partition$train
+        testing <- partition$test
+        model <- train_model(points[fitting],labels[fitting],kernel,submatrix(matrix,fitting),C,settings)
+        fold_correct <- 0L
+        for (i in testing) {
+          values[i] <- decision(model,points[[i]])
+          fold_correct <- fold_correct+as.integer(svm_sign(values[i]) == labels[i])
+        }
+        sv <- support_counts(model)[1L]
+        fold_results[[length(fold_results)+1L]] <- list(
+            train=length(fitting),
+            test=length(testing),
+            correct=fold_correct,
+            support=sv,
+            model=model
+        )
+        correct <- correct+fold_correct
+        support <- support+sv
+        pass_count <- pass_count+passes(model)
+        steps <- steps+model$steps
+      }
+      result <- list(
+          kernel=kernel,
+          kernel_index=ki,
+          C=C,
+          values=values,
+          folds=fold_results,
+          correct=correct,
+          support=support,
+          passes=pass_count,
+          steps=steps
+      )
+      candidates[[length(candidates)+1L]] <- result
+      combinations[[length(combinations)+1L]] <- result
+    }
+    best[[ki]] <- rank_results(candidates)[[1L]]
+  }
+  list(
+      matrices=matrices,
+      combinations=combinations,
+      best=best,
+      selected=rank_results(best)[[1L]],
+      ranking=rank_results(combinations)
+  )
+}
+cross_validation_lines <- function(n,k,best,selected,ranking) {
+  lines <- paste("cross_validation folds",k,"examples",n)
+  for (result in best) lines <- c(
+      lines,
+      paste(
+          "best",
+          result$kernel$name,
+          "C",
+          fixed_text(result$C),
+          "correct",
+          paste0(result$correct,"/",n),
+          "accuracy",
+          ratio(result$correct,n)
+      )
+  )
+  lines <- c(lines,paste("selected",selected$kernel$name,"C",fixed_text(selected$C)),"ranking")
+  for (rank in seq_along(ranking)) {
+    result <- ranking[[rank]]
+    lines <- c(
+        lines,
+        paste(rank,result$kernel$name,"C",fixed_text(result$C),"correct",paste0(result$correct,"/",n))
+    )
+  }
+  lines <- c(lines,paste("cv_detail",selected$kernel$name,"C",fixed_text(selected$C)))
+  for (f in seq_along(selected$folds)) {
+    result <- selected$folds[[f]]
+    lines <- c(
+        lines,
+        paste(
+            "fold",
+            f,
+            "train",
+            result$train,
+            "test",
+            result$test,
+            "correct",
+            result$correct,
+            "support_vectors",
+            result$support,
+            run_info(result$model)
+        )
+    )
+  }
+  lines
+}
+evaluate_final <- function(model,training,testing,tolerance) {
+  n <- length(training)
+  m <- length(testing)
+  train_values <- training_decisions(model)
+  test_values <- vapply(testing,function(example) decision(model,example$point),numeric(1))
+  lines <- c(paste("model",model$kernel$name),paste("kernel",kernel_description(model$kernel)),paste("C",fixed_text(model$C)),paste("alignment",fixed_text(alignment,6L)),
+  list(model=model,train_values=train_values,test_values=test_values,weights=c(w1,w2),lines=lines)
+}
+calibrate <- function(training,testing,selected,test_values,iterations) {
+  values <- selected$values
+  probabilities <- vapply(test_values,function(value) probability(value,A,B),numeric(1))
+cv_grid_lines <- function(combinations,k,n) {
+  header <- c("kernel","C",paste0("fold",seq_len(k)),"correct","accuracy","support_vectors","passes","steps")
+  lines <- paste(header,collapse=",")
+  for (result in combinations) {
+    row <- c(
+        result$kernel$name,
+        fixed_text(result$C),
+        vapply(result$folds,function(fold) fold$correct,integer(1)),
+        result$correct,
+        ratio(result$correct,n),
+        result$support,
+        result$passes,
+        result$steps
+    )
+    lines <- c(lines,paste(row,collapse=","))
+  }
+  lines
+}
+prediction_lines <- function(testing,results,selected,pegasos_values,probabilities) {
+  header <- c(
+      "id",
+      "label",
+      vapply(results,function(result) result$model$kernel$name,character(1)),
+      "pegasos",
+      "predicted",
+      "probability"
+  )
+  lines <- paste(header,collapse=",")
+  selected_values <- results[[selected$kernel_index]]$test_values
+  for (i in seq_along(testing)) {
+    e <- testing[[i]]
+    row <- c(
+        e$id,
+        e$label,
+        vapply(results,function(result) fixed_text(result$test_values[i]),character(1)),
+        fixed_text(pegasos_values[i]),
+        svm_sign(selected_values[i]),
+        fixed_text(probabilities[i])
+    )
+    lines <- c(lines,paste(row,collapse=","))
+  }
+  lines
+}
+main <- function() {
+  inputs <- read_inputs()
+  training <- inputs$training
+  testing <- inputs$testing
+  settings <- inputs$settings
+  cv <- cross_validate(training,settings)
+  points <- lapply(training,function(e) e$point)
+  labels <- vapply(training,function(e) e$label,integer(1))
+  results <- lapply(seq_along(cv$best),function(i) {
+    result <- cv$best[[i]]
+    model <- train_model(points,labels,result$kernel,cv$matrices[[i]],result$C,settings)
+    evaluate_final(model,training,testing,settings$tolerance)
+  })
+  selected <- cv$selected
+  chosen <- results[[selected$kernel_index]]
+  matrix <- cv$matrices[[selected$kernel_index]]
+  sections <- c(list(cross_validation_lines(length(training),settings$folds,cv$best,selected,cv$ranking)),lapply(results,function(result) result$lines),
+    list(
+        training_log(chosen$model),
+        additional_training_lines(training,testing,selected,matrix,settings),
+        additional_training_lines(training,testing,selected,matrix,settings,TRUE)
+    ))
+  calibration <- calibrate(training,testing,selected,chosen$test_values,settings$newton_iterations)
+  sections[[length(sections)+1L]] <- calibration$lines
+  model_lines <- character()
+  for (section in sections) {
+    if (length(model_lines)) model_lines <- c(model_lines,"")
+    model_lines <- c(model_lines,section)
+  }
+  write_lines("model.txt",model_lines)
+  write_lines("cv_grid.csv",cv_grid_lines(cv$combinations,settings$folds,length(training)))
+  write_lines(
+      "predictions.csv",
+      prediction_lines(testing,results,selected,pegasos_result$values,calibration$probabilities)
+  )

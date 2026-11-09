@@ -1,0 +1,233 @@
+record Item(String id, int lead, String rule, long first, long second, long safety, long onHand, long material, long labor, String description) {
+    String lotLabel() { return rule.equals("LFL") ? rule : rule.equals("MIN") ? "MIN " + first + "/" + second : rule + " " + first; }
+}
+final class Items {
+    static Map<String, Item> read(java.util.List<String> errors) throws IOException {
+        Map<String, Item> items = new TreeMap<>(); Set<String> rules = Set.of("LFL", "FOQ", "POQ", "MIN");
+        for (Main.Row row : Main.rows("items.csv")) {
+            String[] f = row.fields(); long[] lot = Arrays.stream(f[3].split("/")).mapToLong(Long::parseLong).toArray(); String error = "";
+            boolean fits = f[2].equals("LFL") ? lot.length == 1 && lot[0] == 0 : f[2].equals("MIN") ? lot.length == 2 && lot[0] >= 1 && lot[1] >= 1 : lot.length == 1 && lot[0] >= 1;
+            if (items.containsKey(f[0])) error = "duplicate item " + f[0];
+            else if (!rules.contains(f[2])) error = "unknown lot rule " + f[2];
+            else if (!fits) error = "bad lot parameter " + f[3] + " for " + f[2];
+            if (!error.isEmpty()) Main.error(errors, "items.csv", row.line(), error);
+            else items.put(f[0], new Item(f[0], Integer.parseInt(f[1]), f[2], lot[0], lot.length == 2 ? lot[1] : 0, Long.parseLong(f[4]), Long.parseLong(f[5]), Long.parseLong(f[6]), Long.parseLong(f[7]), f[8]));
+        }
+        return items;
+    }
+record Edge(String parent, String child, long quantity, long scrap) { long need(long units) { return (units * quantity * (100 + scrap) + 99) / 100; } }
+final class Bom {
+    final Map<String, List<Edge>> children = new TreeMap<>(), parents = new TreeMap<>();
+    boolean manufactured(String item) { return !children.get(item).isEmpty(); }
+    int lowLevel(String item, Map<String, Integer> codes) {
+        if (codes.containsKey(item)) return codes.get(item); int code = 0;
+        for (Edge edge : parents.get(item)) code = Math.max(code, lowLevel(edge.parent(), codes) + 1); codes.put(item, code); return code;
+    }
+    static Bom read(Map<String, Item> items, List<String> errors) throws IOException {
+        Bom bom = new Bom(); for (String id : items.keySet()) { bom.children.put(id, new ArrayList<>()); bom.parents.put(id, new ArrayList<>()); }
+        for (Main.Row row : Main.rows("bom.csv")) {
+            String[] f = row.fields(); Edge edge = new Edge(f[0], f[1], Long.parseLong(f[2]), Long.parseLong(f[3])); String error = "";
+            if (!items.containsKey(edge.parent())) error = "unknown item " + edge.parent();
+            else if (!items.containsKey(edge.child())) error = "unknown item " + edge.child();
+            else if (edge.quantity() < 1) error = "bad quantity " + edge.quantity();
+            else if (edge.scrap() > 50) error = "bad scrap " + edge.scrap();
+            else if (edge.parent().equals(edge.child())) error = "cycle " + edge.parent() + " -> " + edge.parent();
+            else if (bom.children.get(edge.parent()).stream().anyMatch(e -> e.child().equals(edge.child()))) error = "duplicate " + edge.parent() + " -> " + edge.child();
+            else { List<String> path = bom.path(edge.child(), edge.parent(), new HashSet<>()); if (path != null) error = "cycle " + edge.parent() + " -> " + String.join(" -> ", path); }
+            if (!error.isEmpty()) { Main.error(errors, "bom.csv", row.line(), error); continue; }
+            bom.children.get(edge.parent()).add(edge); bom.children.get(edge.parent()).sort(Comparator.comparing(Edge::child)); bom.parents.get(edge.child()).add(edge); bom.parents.get(edge.child()).sort(Comparator.comparing(Edge::parent));
+        }
+        return bom;
+    }
+record Center(String id, long minutes, long efficiency, long available, String description) {}
+record Operation(String item, int number, String center, long setup, long run) { long minutes(long units) { return setup + units * run; } }
+final class Capacity {
+    static Map<String, Center> readCenters(List<String> errors) throws IOException {
+        Map<String, Center> centers = new TreeMap<>();
+        for (Main.Row row : Main.rows("workcenters.csv")) {
+            String[] f = row.fields(); long minutes = Long.parseLong(f[1]), efficiency = Long.parseLong(f[2]); String error = "";
+            if (centers.containsKey(f[0])) error = "duplicate center " + f[0]; else if (efficiency < 50 || efficiency > 150) error = "bad efficiency " + efficiency;
+            if (!error.isEmpty()) Main.error(errors, "workcenters.csv", row.line(), error); else centers.put(f[0], new Center(f[0], minutes, efficiency, minutes * efficiency / 100, f[3]));
+        }
+        return centers;
+    }
+    static Map<String, List<Operation>> readRoutings(Map<String, Item> items, Map<String, Center> centers, Bom bom, List<String> errors) throws IOException {
+        Map<String, List<Operation>> routes = new TreeMap<>();
+        for (Main.Row row : Main.rows("routings.csv")) {
+            String[] f = row.fields(); int number = Integer.parseInt(f[1]); long run = Long.parseLong(f[4]); String error = "";
+            if (!items.containsKey(f[0])) error = "unknown item " + f[0];
+            else if (!centers.containsKey(f[2])) error = "unknown center " + f[2];
+            else if (!bom.manufactured(f[0])) error = "purchased item " + f[0];
+            else if (run < 1) error = "bad run time " + run;
+            else if (routes.getOrDefault(f[0], List.of()).stream().anyMatch(o -> o.number() == number)) error = "duplicate " + f[0] + " operation " + number;
+            if (!error.isEmpty()) Main.error(errors, "routings.csv", row.line(), error);
+            else routes.computeIfAbsent(f[0], key -> new ArrayList<>()).add(new Operation(f[0], number, f[2], Long.parseLong(f[3]), run));
+        }
+        for (List<Operation> operations : routes.values()) operations.sort(Comparator.comparingInt(Operation::number)); return routes;
+    }
+    static int operationWeek(int receipt, int lead, int index, int count) { return Math.max(receipt - lead + index * lead / count, 1); }
+    static long size(Item item, int week, long projected, long[] receipts, long[] gross, int horizon) {
+        long quantity = item.safety() - projected;
+        if (item.rule().equals("LFL")) return quantity;
+    record Row(int line, String[] fields) {}
+    static List<String> read(String name) throws IOException { return Files.readAllLines(Path.of("input", name), StandardCharsets.US_ASCII); }
+    static List<Row> rows(String name) throws IOException { List<String> lines = read(name); List<Row> rows = new ArrayList<>(); for (int i = 1; i < lines.size(); i++) rows.add(new Row(i + 1, lines.get(i).split(",", -1))); return rows; }
+    static void error(List<String> errors, String file, int line, String message) { errors.add(file + " line " + line + ": " + message); }
+    private static long sum(long[] values) { long result = 0; for (long value : values) result += value; return result; }
+    private static long[] weeks(long[] values) { return Arrays.copyOfRange(values, 1, values.length); }
+    private static String join(String separator, Object... values) { StringBuilder text = new StringBuilder(); for (int i = 0; i < values.length; i++) { if (i > 0) text.append(separator); text.append(values[i]); } return text.toString(); }
+    private static String line(Object... values) { return join(" ", values); }
+    private record ScheduleRow(String item, int week, long quantity, int line) {}
+    private record Inquiry(String id, String item, long quantity, int week, int line) {}
+    private enum DemandKind { MPS, ORDER, DEPENDENT, SAFETY }
+    private record Demand(String item, DemandKind kind, int week, long quantity, String orderId, int line, String parent, int parentNumber) {
+        Demand(String item, DemandKind kind, int week, long quantity) { this(item, kind, week, quantity, "", 0, "", 0); }
+    private record PlannedOrder(String item, int number, int receipt, long quantity, int lead) {
+        int original() { return receipt - lead; }
+        int release() { return Math.max(1, original()); }
+    }
+    private static class ItemPlan {
+        final Item item;
+        final long[] receipts, gross, onHand, net, plannedReceipts, plannedReleases;
+        final List<Demand> demands = new ArrayList<>();
+        final List<PlannedOrder> orders = new ArrayList<>();
+        ItemPlan(Item item, int horizon, long[] scheduled) {
+            this.item = item; receipts = scheduled.clone(); gross = new long[horizon + 1]; onHand = new long[horizon + 1]; net = new long[horizon + 1]; plannedReceipts = new long[horizon + 1]; plannedReleases = new long[horizon + 1]; onHand[0] = item.onHand();
+        }
+        long pastDue() { long quantity = 0; for (PlannedOrder order : orders) if (order.original() < 1) quantity += order.quantity(); return quantity; }
+    }
+    private static class Plan {
+        final Map<String, ItemPlan> items = new TreeMap<>();
+        final Map<String, long[]> loads = new TreeMap<>(), overloads = new TreeMap<>();
+    }
+    private static class Promise {
+        final Inquiry inquiry;
+        int week, materialWeek;
+        String reason = "";
+        Promise(Inquiry inquiry) { this.inquiry = inquiry; }
+    }
+    private record Promised(List<Promise> promises, Plan plan) {}
+        private String scheduleError(String item, int week, long quantity) {
+            if (!items.containsKey(item)) return "unknown item " + item;
+            if (week < 1 || week > horizon) return "week " + week + " outside horizon";
+            return quantity < 1 ? "bad quantity " + quantity : "";
+        }
+        private List<ScheduleRow> readSchedule(String name, boolean unique) throws IOException {
+            List<ScheduleRow> accepted = new ArrayList<>(); Set<String> seen = new HashSet<>();
+            for (Row row : rows(name)) {
+                String[] f = row.fields(); ScheduleRow value = new ScheduleRow(f[0], Integer.parseInt(f[1]), Long.parseLong(f[2]), row.line()); String key = value.item() + ":" + value.week(), message = scheduleError(value.item(), value.week(), value.quantity());
+                if (message.isEmpty() && unique && seen.contains(key)) message = "duplicate " + value.item() + " week " + value.week();
+                if (!message.isEmpty()) error(errors, name, row.line(), message); else { accepted.add(value); seen.add(key); }
+            }
+            return accepted;
+        }
+        private List<Inquiry> readInquiries() throws IOException {
+            List<Inquiry> accepted = new ArrayList<>(); Set<String> seen = new HashSet<>();
+            for (Row row : rows("orders.csv")) {
+                String[] f = row.fields(); Inquiry value = new Inquiry(f[0], f[1], Long.parseLong(f[2]), Integer.parseInt(f[3]), row.line());
+                String message = seen.contains(value.id()) ? "duplicate order " + value.id() : scheduleError(value.item(), value.week(), value.quantity());
+                if (!message.isEmpty()) error(errors, "orders.csv", row.line(), message); else { accepted.add(value); seen.add(value.id()); }
+            }
+            return accepted;
+        }
+        Data() throws IOException {
+            for (String value : read("params.txt")) { String[] f = value.split(" "); if (f[0].equals("horizon")) horizon = Integer.parseInt(f[1]); else if (f[0].equals("peg")) pegItems.addAll(Arrays.asList(f).subList(1, f.length)); else treeQuantity = Long.parseLong(f[1]); }
+            items = Items.read(errors); bom = Bom.read(items, errors); centers = Capacity.readCenters(errors); routings = Capacity.readRoutings(items, centers, bom, errors);
+            List<ScheduleRow> schedule = readSchedule("mps.csv", true), received = readSchedule("receipts.csv", false); inquiries = readInquiries();
+            for (ScheduleRow row : schedule) mps.add(new Demand(row.item(), DemandKind.MPS, row.week(), row.quantity()));
+            for (String id : items.keySet()) { bom.lowLevel(id, codes); bom.cumulative(id, items, cumulative); planningOrder.add(id); receipts.put(id, new ArrayList<>()); scheduled.put(id, new long[horizon + 1]); }
+            planningOrder.sort(Comparator.comparingInt((String id) -> codes.get(id)).thenComparing(Comparator.naturalOrder())); received.sort(Comparator.comparingInt(ScheduleRow::week).thenComparingInt(ScheduleRow::line));
+            for (ScheduleRow row : received) { receipts.get(row.item()).add(row); scheduled.get(row.item())[row.week()] += row.quantity(); }
+            weeks = new long[horizon]; for (int i = 0; i < horizon; i++) weeks[i] = i + 1;
+        }
+    }
+    private static class Planner {
+        final Data data;
+        Planner(Data data) { this.data = data; }
+        Plan run(List<Demand> orderDemands) {
+            Plan plan = new Plan(); for (String id : data.planningOrder) plan.items.put(id, new ItemPlan(data.items.get(id), data.horizon, data.scheduled.get(id)));
+            for (Demand demand : data.mps) plan.items.get(demand.item()).demands.add(demand); for (Demand demand : orderDemands) plan.items.get(demand.item()).demands.add(demand);
+            for (String id : data.planningOrder) {
+                ItemPlan p = plan.items.get(id); Item item = p.item; for (Demand demand : p.demands) p.gross[demand.week()] += demand.quantity(); long projected = item.onHand();
+                for (int week = 1; week <= data.horizon; week++) {
+                    long available = projected + p.receipts[week] - p.gross[week]; projected = available;
+                    if (available < item.safety()) {
+                        long quantity = LotSizing.size(item, week, available, p.receipts, p.gross, data.horizon); PlannedOrder order = new PlannedOrder(id, p.orders.size() + 1, week, quantity, item.lead());
+                        p.orders.add(order); p.net[week] = item.safety() - available; p.plannedReceipts[week] = quantity; p.plannedReleases[order.release()] += quantity; projected += quantity;
+                    }
+                    p.onHand[week] = projected;
+                }
+                for (PlannedOrder order : p.orders) for (Edge edge : data.bom.children.get(id)) plan.items.get(edge.child()).demands.add(new Demand(edge.child(), DemandKind.DEPENDENT, order.release(), edge.need(order.quantity()), "", 0, id, order.number()));
+            }
+            for (String id : data.centers.keySet()) plan.loads.put(id, new long[data.horizon + 1]);
+            for (Map.Entry<String, List<Operation>> route : data.routings.entrySet()) for (PlannedOrder order : plan.items.get(route.getKey()).orders) for (int i = 0; i < route.getValue().size(); i++) {
+                Operation operation = route.getValue().get(i); int week = Capacity.operationWeek(order.receipt(), data.items.get(route.getKey()).lead(), i, route.getValue().size()); plan.loads.get(operation.center())[week] += operation.minutes(order.quantity());
+            }
+            for (Center center : data.centers.values()) { long[] over = new long[data.horizon + 1]; for (int week = 1; week <= data.horizon; week++) over[week] = Math.max(0, plan.loads.get(center.id())[week] - center.available()); plan.overloads.put(center.id(), over); }
+            return plan;
+        }
+        Promised promiseInquiries(Plan baseline) {
+            Plan current = baseline; List<Demand> promised = new ArrayList<>(); List<Promise> promises = new ArrayList<>();
+            for (Inquiry inquiry : data.inquiries) {
+                Promise promise = new Promise(inquiry);
+                for (int week = inquiry.week(); week <= data.horizon; week++) {
+                    Demand demand = new Demand(inquiry.item(), DemandKind.ORDER, week, inquiry.quantity(), inquiry.id(), inquiry.line(), "", 0); List<Demand> candidate = new ArrayList<>(promised); candidate.add(demand); Plan trial = run(candidate); String reason = "";
+                    for (String id : data.planningOrder) if (trial.items.get(id).pastDue() > current.items.get(id).pastDue()) { reason = id; break; }
+                    if (reason.isEmpty()) {
+                        if (promise.materialWeek == 0) promise.materialWeek = week;
+                        for (String id : data.centers.keySet()) { for (int w = 1; w <= data.horizon; w++) if (trial.overloads.get(id)[w] > current.overloads.get(id)[w]) { reason = id + " week " + w; break; } if (!reason.isEmpty()) break; }
+                    }
+                    if (reason.isEmpty()) { promise.week = week; promised.add(demand); current = trial; break; } if (week == inquiry.week()) promise.reason = reason;
+                }
+                promises.add(promise);
+            }
+            return new Promised(promises, current);
+        }
+        List<String> grid(Plan plan) {
+            List<String> lines = new ArrayList<>();
+            for (String id : data.planningOrder) {
+                ItemPlan p = plan.items.get(id); Item item = p.item;
+                lines.add(line("ITEM", id, "LLC", data.codes.get(id), "LT", item.lead(), "LOT", item.lotLabel(), "SS", item.safety(), "OH", item.onHand(), item.description())); lines.add(Report.table("WEEK", data.weeks, 6));
+                List<String> labels = List.of("GROSS", "RECEIPTS", "ON_HAND", "NET", "PLAN_RCPT", "PLAN_REL"); List<long[]> values = List.of(p.gross, p.receipts, p.onHand, p.net, p.plannedReceipts, p.plannedReleases);
+                for (int i = 0; i < labels.size(); i++) lines.add(Report.table(labels.get(i), weeks(values.get(i)), 6));
+                lines.add(line("TOTAL", "gross", sum(p.gross), "receipts", sum(p.receipts), "planned", sum(p.plannedReceipts), "orders", p.orders.size(), "ending", p.onHand[data.horizon]));
+            }
+            return lines;
+        }
+        List<String> capacities(Plan plan) {
+            List<String> lines = new ArrayList<>(); Map<String, Long> totals = new HashMap<>();
+            for (Center center : data.centers.values()) {
+                long[] loads = plan.loads.get(center.id()), over = plan.overloads.get(center.id()), leveled = Capacity.level(loads, center.available()), utilization = new long[data.horizon];
+                long total = sum(loads), available = center.available() * data.horizon, largest = 0; totals.put(center.id(), total); int peak = 0, overloaded = 0;
+                for (int week = 1; week <= data.horizon; week++) { utilization[week - 1] = Report.percent(loads[week], center.available()); if (loads[week] > largest) { largest = loads[week]; peak = week; } if (over[week] > 0) overloaded++; }
+                lines.add(line("CENTER", center.id(), "minutes", center.minutes(), "efficiency", center.efficiency(), "available", center.available(), center.description()));
+                lines.add(Report.table("WEEK", data.weeks, 7)); lines.add(Report.table("LOAD", weeks(loads), 7)); lines.add(Report.table("UTIL", utilization, 7)); lines.add(Report.table("OVER", weeks(over), 7)); lines.add(Report.table("LEVELED", weeks(leveled), 7));
+                lines.add(line("TOTAL", "load", total, "available", available, "utilization", Report.percent(total, available), "overloaded", overloaded, "peak", peak, "backlog", Math.max(0, leveled[1] - center.available())));
+            }
+            for (int i = 0; i < order.size(); i++) { String id = order.get(i); lines.add(line("RANK", i + 1, id, "load", totals.get(id), "utilization", Report.percent(totals.get(id), data.centers.get(id).available() * data.horizon))); } return lines;
+        }
+        List<String> promises(List<Promise> promises, Plan baseline, Plan finalPlan) {
+            List<String> lines = new ArrayList<>(); int onTime = 0, late = 0, rejected = 0;
+            for (Promise promise : promises) {
+                Inquiry inquiry = promise.inquiry; String head = line("ORDER", inquiry.id(), inquiry.item(), "quantity", inquiry.quantity(), "requested", inquiry.week()), material = promise.materialWeek == 0 ? "none" : Integer.toString(promise.materialWeek);
+                if (promise.week == 0) { rejected++; lines.add(line(head, "rejected", "material", material, "reason", promise.reason)); continue; }
+                if (promise.week == inquiry.week()) { onTime++; lines.add(line(head, "promised", promise.week)); }
+                else { late++; lines.add(line(head, "promised", promise.week, "late", promise.week - inquiry.week(), "material", material, "reason", promise.reason)); }
+                for (String id : data.planningOrder) for (Supply supply : finalPlan.items.get(id).orderSupplies) if (supply.serves(inquiry.id())) { PlannedOrder order = supply.order; lines.add("  " + line("SUPPLY", id, "order", order.number(), "receipt", order.receipt(), "release", order.release(), "quantity", order.quantity())); }
+            }
+            for (String id : data.planningOrder) {
+                ItemPlan before = baseline.items.get(id), after = finalPlan.items.get(id); int first = 0;
+                for (int week = 1; week <= data.horizon; week++) if (before.plannedReceipts[week] != after.plannedReceipts[week]) { first = week; break; }
+                if (first > 0) lines.add(line("CHANGE", id, "from", first, "planned", sum(before.plannedReceipts), "->", sum(after.plannedReceipts), "orders", before.orders.size(), "->", after.orders.size()));
+            }
+            lines.add(line("SUMMARY", "orders", promises.size(), "on_time", onTime, "late", late, "rejected", rejected)); return lines;
+        }
+        Data data = new Data(); Planner planner = new Planner(data); Plan baseline = planner.run(List.of()); Promised promised = planner.promiseInquiries(baseline); Plan finalPlan = promised.plan(); planner.peg(finalPlan); Map<String, StandardCost> costs = Costing.rollup(data.items, data.bom, data.planningOrder);
+        Report.write("mrp_grid.txt", planner.grid(finalPlan)); Report.write("pegging.txt", planner.pegging(finalPlan)); Report.write("bom_tree.txt", planner.trees()); Report.write("cost_rollup.csv", planner.costs(finalPlan, costs)); Report.write("exceptions.txt", planner.exceptions(finalPlan)); Report.write("capacity.txt", planner.capacities(finalPlan)); Report.write("promises.txt", planner.promises(promised.promises(), baseline, finalPlan)); Report.write("releases.txt", planner.releases(finalPlan)); Report.write("value_plan.csv", planner.valuePlan(finalPlan, costs));
+    static String table(String label, long[] values, int width) {
+        StringBuilder row = new StringBuilder(label).append(" ".repeat(Math.max(0, 10 - label.length())));
+        for (long value : values) { String text = Long.toString(value); row.append(" ".repeat(Math.max(0, width - text.length()))).append(text); } return row.toString();
+    }
+    static void write(String name, List<String> lines) throws IOException {
+        Files.createDirectories(Path.of("output")); StringBuilder text = new StringBuilder(); for (String line : lines) text.append(line).append('\n'); Files.writeString(Path.of("output", name), text, StandardCharsets.US_ASCII);
+    }

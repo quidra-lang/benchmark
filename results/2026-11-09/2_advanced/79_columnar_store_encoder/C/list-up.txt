@@ -1,0 +1,125 @@
+Value null_value(void) { return (Value){.null = true}; }
+Value number_value(Number value) { return (Value){.number = value, .string = ""}; }
+Value parse_value(Type kind, char *source) {
+    if (!*source)
+        return null_value();
+    if (kind == T_STRING)
+        return string_value(source);
+    if (kind == T_BOOL)
+        return number_value(!strcmp(source, "true"));
+    return number_value(kind == T_DATE ? day_number(source) : atoll(source));
+}
+char *value_text(Type kind, Value value, const char *null_text) {
+    if (value.unknown)
+        return "?";
+    if (value.null)
+        return (char *)null_text;
+    if (kind == T_STRING)
+        return value.string;
+    if (kind == T_BOOL)
+        return value.number ? "true" : "false";
+    if (kind == T_INT)
+        return format("%lld", value.number);
+    int year = 1970, month = 1;
+    Number day = value.number;
+    while (day < 0) {
+        --year;
+        day += leap(year) ? 366 : 365;
+    }
+    while (day >= (leap(year) ? 366 : 365)) {
+        day -= leap(year) ? 366 : 365;
+        ++year;
+    }
+    while (day >= month_days(year, month)) {
+        day -= month_days(year, month);
+        ++month;
+    }
+    return format("%04d-%02d-%02lld", year, month, day + 1);
+}
+        int kind = 0;
+        while (strcmp(type_names[kind], f.items[1]))
+            ++kind;
+        Columns_add(&out.columns,
+                    (Column){f.items[0], (Type)kind, !strcmp(f.items[2], "NULLABLE")});
+    }
+    lines = read_lines("input/table.csv");
+    for (size_t i = 1; i < lines.count; ++i) {
+        Names fields = split(lines.items[i], ",");
+        Row row = {0};
+        for (size_t c = 0; c < out.columns.count; ++c)
+            Values_add(&row, parse_value(out.columns.items[c].kind, fields.items[c]));
+        Table_add(&out.rows, row);
+static Bytes build_page(Column column, int kind, int method, Values values, Values dictionary) {
+    Bytes body = {0};
+    int nulls = 0;
+    Bounds bounds = {0};
+    if (kind == 1)
+        body = encode_values(column.kind, 0, values, (Values){0});
+    else {
+        Values present = {0};
+        Numbers levels = {0};
+        for (size_t i = 0; i < values.count; ++i) {
+            Value v = values.items[i];
+            Numbers_add(&levels, !v.null);
+            if (v.null)
+                ++nulls;
+            else
+                Values_add(&present, v);
+        }
+        bounds = statistics(values);
+        if (column.nullable) {
+            Bytes encoded = hybrid_encode(levels, 1);
+            write_integer(&body, (Number)encoded.count);
+            append_bytes(&body, encoded);
+        }
+        append_bytes(&body, encode_values(column.kind, method, present, dictionary));
+    }
+    Bytes out = {0};
+    Bytes_add(&out, (unsigned char)kind);
+    Bytes_add(&out, (unsigned char)method);
+    write_uleb(&out, (Number)values.count);
+    write_uleb(&out, nulls);
+    write_uleb(&out, (Number)body.count);
+    write_integer(&out, adler32(body));
+    append_bytes(&out, encode_statistics(column.kind, bounds));
+    append_bytes(&out, body);
+    return out;
+}
+static Values decode_page(const File *file, Column column, Page page, Values dictionary) {
+    Reader reader = reader_create(page_body(file, page), 0);
+    Numbers levels = {0};
+    if (column.nullable) {
+        size_t size = (size_t)read_integer(&reader, false);
+        Bytes data = read_bytes(&reader, size);
+        Reader definitions = reader_create(data, 0);
+        levels = hybrid_decode(&definitions, 1, page.count);
+    } else
+        for (int i = 0; i < page.count; ++i)
+            Numbers_add(&levels, 1);
+    int present = 0;
+    for (size_t i = 0; i < levels.count; ++i)
+        present += levels.items[i] == 1;
+    Values values = decode_values(&reader, column.kind, page.method, present, dictionary),
+           out = {0};
+    size_t index = 0;
+    for (size_t i = 0; i < levels.count; ++i)
+        Values_add(&out, levels.items[i] == 1 ? values.items[index++] : null_value());
+    return out;
+}
+                } else {
+                    Values values = decode_page(&file, column, page, dictionary);
+                    for (size_t offset = 0; offset < values.count; ++offset)
+                        rows.items[(size_t)row + offset].items[index] = values.items[offset];
+                }
+    Names recovered = {0}, names = {0};
+    for (size_t i = 0; i < file.columns.count; ++i)
+        Names_add(&names, file.columns.items[i].name);
+    Names_add(&recovered, join(names, ","));
+    for (size_t row = 0; row < rows.count; ++row) {
+        Names values = {0};
+        for (size_t c = 0; c < file.columns.count; ++c)
+            Names_add(&values,
+                      value_text(file.columns.items[c].kind, rows.items[row].items[c], ""));
+        Names_add(&recovered, join(values, ","));
+    }
+    write_lines("recovered.csv", recovered);

@@ -1,0 +1,171 @@
+    data class Round(val stump: Stumps.Stump,val polarity: Int,val error: Double,val alpha: Double,
+        val z: Double,val bound: Double,val loss: Double,val weights: DoubleArray)
+    fun discrete(rows: List<Dataset.Row>,initial: DoubleArray,maximum: Int,shrinkage: Double): Model {
+        val search=Stumps.Search(rows);
+        val weights=initial.copyOf();
+        var bound=1.0;
+        val model=Model();
+        for(t in 0 until maximum) {
+            val candidate=Stumps.discrete(search,weights);
+            val e=candidate.error;
+            if(e>=0.5) {
+                model.stop="weak";
+                break
+            };
+            val alpha=if(e<=0.0000000001)1.0 else shrinkage*(0.5*ln((1-e)/e));
+            val stump=Stumps.Stump(candidate.stump.feature,candidate.stump.thresholds,doubleArrayOf(-candidate.polarity*alpha,candidate.polarity*alpha));
+            for(i in weights.indices) {
+                val decision=if(rows[i].x[stump.feature]>stump.thresholds[0])candidate.polarity else -candidate.polarity;
+                weights[i]*=exp(if(decision==rows[i].label)-alpha else alpha);
+                z+=weights[i]
+            };
+            for(i in weights.indices)weights[i]/=z;
+            model.rounds+=Round(stump,candidate.polarity,e,alpha,z,bound,Double.NaN,before);
+            if(e<=0.0000000001) {
+                model.stop="perfect";
+                break
+            }
+        };
+        return model
+    }
+    class Search(val rows: List<Dataset.Row>) {
+        val sorted: Array<IntArray>;
+        val ends: Array<IntArray>;
+        val thresholds: Array<DoubleArray>
+        init {
+            val d=rows[0].x.size;
+            val n=rows.size;
+            sorted=Array(d) {
+                IntArray(n)
+            };
+            ends=Array(d) {
+                intArrayOf()
+            };
+            thresholds=Array(d) {
+                doubleArrayOf()
+            };
+            for(j in 0 until d) {
+                val order=(0 until n).sortedWith(compareBy<Int> {
+                    rows[it].x[j]
+                }.thenBy {
+                    it
+                });
+                val distinct=mutableListOf<Double>();
+                val starts=mutableListOf<Int>();
+                for(i in 0 until n) {
+                    sorted[j][i]=order[i];
+                    val value=rows[order[i]].x[j];
+                    if(i==0||value!=rows[order[i-1]].x[j]) {
+                        distinct+=value;
+                        starts+=i
+                    }
+                };
+                val q=distinct.size;
+                ends[j]=starts.toIntArray();
+                thresholds[j]=DoubleArray(q) {
+                    c->if(c==0)distinct[0]-1 else (distinct[c-1]+distinct[c])/2
+                }
+            }
+        }
+    }
+    fun discrete(search: Search,weights: DoubleArray): Candidate {
+        var plus=0.0;
+        var minus=0.0;
+        for(i in weights.indices)if(search.rows[i].label==1)plus+=weights[i] else minus+=weights[i];
+        val candidates=mutableListOf<Candidate>();
+        for(j in search.sorted.indices) {
+            var position=0;
+            var leftPlus=0.0;
+            var leftMinus=0.0;
+            for(c in search.thresholds[j].indices) {
+                while(position<search.ends[j][c]) {
+                    val i=search.sorted[j][position++];
+                    if(search.rows[i].label==1)leftPlus+=weights[i] else leftMinus+=weights[i]
+                };
+                val threshold=search.thresholds[j][c];
+                candidates+=Candidate(Stump(j,doubleArrayOf(threshold),doubleArrayOf(-1.0,1.0)),leftPlus+(minus-leftMinus),1);
+                candidates+=Candidate(Stump(j,doubleArrayOf(threshold),doubleArrayOf(1.0,-1.0)),leftMinus+(plus-leftPlus),-1)
+            }
+        };
+        return choose(candidates)
+    }
+    fun prediction(score: Double)=if(score>0)1 else -1
+private fun earliest(values: IntArray): Int {
+    var index=0;
+    for(i in 1 until values.size)if(values[i]<values[index])index=i;
+    return index
+}
+private fun score(model: Adaboost.Model,x: DoubleArray,limit: Int): Double {
+    var score=0.0;
+    for(t in 0 until minOf(limit,model.rounds.size))score+=model.rounds[t].stump.output(x);
+    return score
+}
+private fun scores(model: Adaboost.Model,rows: List<Dataset.Row>,limit: Int)=DoubleArray(rows.size) {
+    score(model,rows[it].x,limit)
+}
+private fun errors(rows: List<Dataset.Row>,scores: DoubleArray)=rows.indices.count {
+    Evaluation.prediction(scores[it])!=rows[it].label
+}
+private fun prefix(model: Adaboost.Model,count: Int): Adaboost.Model {
+    val result=Adaboost.Model();
+    result.rounds+=model.rounds.take(count);
+    result.stop=model.stop;
+    result.cuts=model.cuts;
+    return result
+}
+private class Curve(model: Adaboost.Model,training: List<Dataset.Row>,testing: List<Dataset.Row>,logit: Boolean) {
+    val trainErrors=IntArray(model.rounds.size);
+    val testErrors=IntArray(model.rounds.size);
+    val trainLoss=DoubleArray(model.rounds.size);
+    val testLoss=DoubleArray(model.rounds.size);
+    val margin=DoubleArray(model.rounds.size)
+    init {
+        for(t in model.rounds.indices) {
+            val a=scores(model,training,t+1);
+            val b=scores(model,testing,t+1);
+            trainErrors[t]=errors(training,a);
+            testErrors[t]=errors(testing,b);
+        }
+    }
+}
+private fun crossValidate() {
+    val count=settings.integer("FOLDS");
+    cvErrors=IntArray(maximum);
+    for(fold in 0 until count) {
+        val validation=(0 until n).count {
+            it%count==fold
+        };
+        val w=DoubleArray(n) {
+            if(it%count!=fold)1.0/(n-validation) else 0.0
+        };
+        val model=Adaboost.discrete(train,w,maximum,1.0);
+        folds+=model;
+        for(t in 1..maximum)for(i in 0 until n)if(i%count==fold&&Evaluation.prediction(score(model,train[i].x,t))!=train[i].label)cvErrors[t-1]++
+    };
+    selected=earliest(cvErrors)+1;
+    crossScores=DoubleArray(n) {
+        score(folds[it%count],train[it].x,selected)
+    }
+}
+private fun trainModels() {
+    trainScores=Array(variants.size) {
+        doubleArrayOf()
+    };
+    testScores=Array(variants.size) {
+        doubleArrayOf()
+    };
+    for(v in variants.indices) {
+        val variant=variants[v];
+        val training=Variants.train(variant,train,settings);
+        val model=if(variant=="discrete")prefix(training,selected) else training;
+        full+=training;
+        models+=model;
+        trainScores[v]=scores(model,train,maximum);
+        testScores[v]=scores(model,test,maximum);
+        curves+=Curve(training,train,test,variant=="logit")
+    for(v in variants.indices) {
+        val variant=variants[v];
+        val model=models[v];
+        rounds+=model.rounds.size;
+        output+=metrics("train",variant,model.rounds.size,train,trainScores[v],variant=="logit");
+        output+=metrics("test",variant,model.rounds.size,test,testScores[v],variant=="logit");

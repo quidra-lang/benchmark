@@ -1,0 +1,403 @@
+struct Prohibitions
+    states::Set{Tuple{Int,Int}}
+    moves::Set{NTuple{3,Int}}
+    permanent::Dict{Int,Int}
+end
+Prohibitions() = Prohibitions(Set{Tuple{Int,Int}}(), Set{NTuple{3,Int}}(), Dict{Int,Int}())
+copy_prohibitions(base) = Prohibitions(copy(base.states), copy(base.moves), copy(base.permanent))
+state_allowed(restrictions, cell, time) = !((cell, time) in restrictions.states) && time < get(
+    restrictions.permanent,
+    cell,
+    typemax(Int)
+)
+action_allowed(
+    restrictions,
+    source,
+    destination,
+    time
+) = state_allowed(
+    restrictions,
+    destination,
+    time
+) && (source == destination || !((source, destination, time) in restrictions.moves))
+arrival_allowed(
+    restrictions,
+    goal
+) = maximum((time + 1 for (cell, time) in restrictions.states if cell == goal); init=0)
+function reserve_path!(restrictions, path; start_time=0, permanent=false)
+    for (index, cell) in enumerate(path)
+        time = start_time + index - 1
+        push!(restrictions.states, (cell, time))
+        index > 1 && path[index - 1] != cell && push!(restrictions.moves, (cell, path[index - 1], time))
+    end
+    if permanent
+        restrictions.permanent[path[end]] = min(
+            get(restrictions.permanent, path[end], typemax(Int)),
+            start_time + length(path) - 1
+        )
+    end
+end
+function low_search(grid, agent, distances, start, t0, restrictions, tmax, budget; window=false)
+    budget.searches += 1
+    beginning = budget.expansions
+    arrival = arrival_allowed(restrictions, agent.goal)
+    area = length(grid.free)
+    parents = fill(-1, area * (tmax - t0 + 1))
+    root = start + 1
+    parents[root] = 0
+    heap = [(distances[start + 1], 0, 0, root)]
+    insertion = 0
+    while !isempty(heap)
+        _, negative_g, _, state = binary_pop!(heap, identity)
+        budget.expansions += 1
+        budget.expansions > budget.limit && return (
+            path=nothing,
+            expansions=budget.expansions - beginning,
+            aborted=true
+        )
+        cell, time = (state - 1) % area, t0 - negative_g
+        if (cell == agent.goal && time >= arrival) || (window && time == tmax)
+            reversed_path = Int[]
+            current = state
+            while current != 0
+                push!(reversed_path, (current - 1) % area)
+                current = parents[current]
+            end
+            return (path=reverse(reversed_path), expansions=budget.expansions - beginning, aborted=false)
+        end
+        time == tmax && continue
+        for (destination, _) in destinations(grid, cell)
+            distances[destination + 1] < 0 && continue
+            next_time = time + 1
+            next_state = destination + 1 + (next_time - t0) * area
+            (parents[next_state] != -1 || !action_allowed(
+                restrictions,
+                cell,
+                destination,
+                next_time
+            )) && continue
+            insertion += 1
+            parents[next_state] = state
+            g = next_time - t0
+            binary_push!(heap, (g + distances[destination + 1], -g, insertion, next_state), identity)
+        end
+    end
+    return (path=nothing, expansions=budget.expansions - beginning, aborted=false)
+end
+function read_grid()
+    lines = readlines("input/map.txt")
+    width, height = parse.(Int, split(lines[1], ' '))
+    rows = lines[2:end]
+    free = [rows[y + 1][x + 1] == '.' for y in 0:height - 1 for x in 0:width - 1]
+    return (; width, height, rows, free)
+end
+function read_agents(grid)
+    agents = NamedTuple[]
+    for line in readlines("input/agents.csv")[2:end]
+        id, sx, sy, gx, gy = parse.(Int, split(line, ','))
+        push!(
+            agents,
+            (id=id, start=sy * grid.width + sx, goal=gy * grid.width + gx, name=Char(Int('A') + id))
+        )
+    end
+    return agents
+end
+function read_parameters(agent_count)
+    settings = Dict{String,Any}(
+        "orders" => Vector{Int}[collect(1:agent_count)],
+        "runs" => NamedTuple[],
+        "delays" => NTuple{3,Int}[]
+    )
+    for line in readlines("input/params.txt")
+        fields = String.(split(line, ' '))
+        kind, arguments = fields[1], fields[2:end]
+        if kind in ("HORIZON", "HL_BUDGET", "LL_BUDGET")
+            settings[lowercase(kind)] = parse(Int, arguments[1])
+        elseif kind == "WINDOW"
+            settings["window"], settings["step"] = parse.(Int, arguments)
+        elseif kind == "ORDER"
+            push!(settings["orders"], parse.(Int, arguments) .+ 1)
+        elseif kind == "RUN"
+            push!(
+                settings["runs"],
+                (name=join(arguments, "-"), solver=arguments[1], cost_function=arguments[2])
+            )
+        elseif kind == "ANIMATE"
+            settings["animate"], settings["frames"] = arguments[1], parse(Int, arguments[2])
+        else
+            agent, start, duration = parse.(Int, arguments)
+            push!(settings["delays"], (agent + 1, start, duration))
+        end
+    end
+    return settings
+end
+function solve_pp!(run, grid, agents, distances, settings)
+    for (order_number, order) in enumerate(settings["orders"])
+        run.high_level += 1
+        before = run.budget.expansions
+        result = try_priority_order(grid, agents, distances, settings["horizon"], order, run.budget)
+        for attempt in result.attempts
+            prefix = "order $order_number agent $(agent_name(attempt.agent))"
+            detail = attempt.path === nothing ? "failed" : "cost $(length(attempt.path) - 1)"
+            push!(run.trace, "$prefix $detail expansions $(attempt.expansions)")
+        end
+        if result.failure == "ll_budget"
+            run.reason = "ll_budget"
+            break
+        end
+        planned = length(result.attempts) - Int(!isempty(result.failure))
+        summary = "order $order_number $(join(agent_name.(order))) planned $planned expansions $(run.budget.expansions - before)"
+        if isempty(result.failure)
+            push!(run.specific, summary * " ok")
+            run.paths, run.status = result.paths, "OK"
+            run.ending = "end OK order $order_number"
+            return
+        end
+        push!(run.specific, summary * " failed " * agent_name(result.failed_agent))
+    end
+    isempty(run.reason) && (run.reason = "orders")
+    run.ending = "end FAIL $(run.reason)"
+end
+function validate_plan(paths, agents, grid)
+    start_count = count(entry -> entry[1][1] != entry[2].start, zip(paths, agents))
+    goal_count = count(entry -> entry[1][end] != entry[2].goal, zip(paths, agents))
+    illegal = 0
+    for path in paths, index in 2:length(path)
+        !any(entry -> entry[1] == path[index], destinations(grid, path[index - 1])) && (illegal += 1)
+    end
+    collisions = plan_conflicts(paths)
+    vertex = count(conflict -> conflict.kind == "vertex", collisions)
+    edge = length(collisions) - vertex
+    follows = 0
+    for time in 1:maximum(length(path) - 1 for path in paths), a in eachindex(paths)
+        past_a, next_a = path_position(paths[a], time - 1), path_position(paths[a], time)
+        next_a == past_a && continue
+        for b in eachindex(paths)
+            a == b && continue
+            next_a == path_position(
+                paths[b],
+                time - 1
+            ) && path_position(paths[b], time) != past_a && (follows += 1)
+        end
+    end
+    return (
+        verdict=start_count + goal_count + illegal + vertex + edge == 0 ? "VALID" : "INVALID",
+        start=start_count,
+        goal=goal_count,
+        moves=illegal,
+        vertex=vertex,
+        edge=edge,
+        follows=follows,
+        conflicts=collisions
+    )
+end
+function plan_statistics(paths, agents, overview, cost_function, grid)
+    lengths = length.(paths) .- 1
+    soc, makespan = sum(lengths), maximum(lengths)
+    cost = cost_function == "SOC" ? soc : makespan
+    lower = cost_function == "SOC" ? overview.soc_lower : overview.makespan_lower
+    per_agent = [path_statistics(
+        paths[index],
+        agent.goal,
+        overview.agents[index].shortest,
+        grid
+    ) for (index, agent) in enumerate(agents)]
+    arrivals = [count(<=(time), lengths) for time in 0:makespan]
+    traffic, cell_waits = Dict{Int,Int}(), Dict{Int,Int}()
+    for path in paths
+        for cell in Set(path)
+            traffic[cell] = get(traffic, cell, 0) + 1
+        end
+        for index in 2:length(path)
+            path[index - 1] == path[index] && (cell_waits[path[index]] = get(cell_waits, path[index], 0) + 1)
+        end
+    end
+    hotspots = sort!(collect(keys(traffic)); by=cell -> (
+        -traffic[cell],
+        cell ÷ grid.width,
+        cell % grid.width
+    ))
+    resize!(hotspots, min(5, length(hotspots)))
+    return (
+        ; soc,
+        makespan,
+        cost,
+        ratio=reduced_fraction(cost, lower),
+        agents=per_agent,
+        sum_extra=sum(item.extra for item in per_agent),
+        max_extra=maximum(item.extra for item in per_agent),
+        waits=sum(item.waits for item in per_agent),
+        turns=sum(item.turns for item in per_agent),
+        arrivals,
+        traffic,
+        cell_waits,
+        hotspots
+    )
+end
+function successful_run_lines(run, agents)
+    metrics, execution = run.metrics, run.execution
+    lines = ["run $(run.name) solver $(run.solver) cost_function $(run.cost_function) result OK cost $(metrics.cost) soc $(metrics.soc) makespan $(metrics.makespan) ratio $(metrics.ratio)"]
+    append!(lines, run.specific)
+    for (agent, info) in zip(agents, metrics.agents)
+        push!(
+            lines,
+            "agent $(agent.name) cost $(info.cost) extra $(info.extra) waits $(info.waits) turns $(info.turns) arrive $(info.arrive) leave $(info.leave) moves $(info.actions)"
+        )
+    end
+    push!(lines, "arrivals " * join(metrics.arrivals, " "))
+    push!(
+        lines,
+        "hotspots " * join(
+            ("$(cell_text(cell, run.metrics.grid)):$(metrics.traffic[cell])" for cell in metrics.hotspots),
+            " "
+        )
+    )
+    if execution.deadlock >= 0
+        push!(lines, "execution deadlock time $(execution.deadlock)")
+    else
+        push!(
+            lines,
+            "execution soc $(execution.soc) makespan $(execution.makespan) blocked $(execution.blocked) finish $(join(execution.finish, " "))"
+        )
+    end
+    return lines
+end
+function validation_lines(runs, independent, agents, grid, overview)
+    baseline = (; validate_plan(independent, agents, grid)..., conflicts=overview.conflicts)
+    plans = Any[("INDEPENDENT", baseline)]
+    append!(plans, [(run.name, run.validation) for run in runs])
+    lines = String[]
+    for (name, validation) in plans
+        if validation === nothing
+            push!(lines, "plan $name verdict NONE")
+            continue
+        end
+        push!(
+            lines,
+            "plan $name verdict $(validation.verdict) start $(validation.start) goal $(validation.goal) moves $(validation.moves) vertex $(validation.vertex) edge $(validation.edge) follows $(validation.follows)"
+        )
+        for conflict in validation.conflicts
+            text = "  " * conflict_text(conflict, grid)
+            name == "INDEPENDENT" && (text *= " " * conflict.classification)
+            push!(lines, text)
+        end
+    end
+    return lines
+end
+function animation_lines(runs, grid, agents, settings)
+    selected = first(run for run in runs if run.name == settings["animate"])
+    selected.status != "OK" && return ["run $(selected.name) FAIL"]
+    frames, paths = settings["frames"], selected.paths
+    lines = ["run $(selected.name) frames $frames"]
+    for time in 0:frames - 1
+        done = count(path -> time >= length(path) - 1, paths)
+        moving = count(
+            path -> time < length(path) - 1 && time >= 1 && path_position(path, time) != path_position(
+                path,
+                time - 1
+            ),
+            paths
+        )
+        waiting = length(paths) - done - moving
+        push!(lines, "", "frame $time done $done moving $moving waiting $waiting")
+        placements = Dict(agent.goal => lowercase(agent.name) for agent in agents)
+        for (agent, path) in zip(agents, paths)
+            placements[path_position(path, time)] = agent.name
+        end
+        append!(lines, grid_picture(grid, placements))
+    end
+    for (name, counts) in (("traffic", selected.metrics.traffic), ("waits", selected.metrics.cell_waits))
+        push!(lines, "", name)
+        placements = Dict(cell => value <= 9 ? string(value)[1] : '+' for (
+            cell,
+            value
+        ) in counts if value > 0)
+        append!(lines, grid_picture(grid, placements))
+    end
+    return lines
+end
+function main()
+    grid = read_grid()
+    agents = read_agents(grid)
+    settings = read_parameters(length(agents))
+    distances = [distance_table(grid, agent.goal) for agent in agents]
+    independent = independent_plan(grid, agents, distances, settings["horizon"])
+    overview = instance_overview(grid, agents, distances, independent)
+    runs = PathRun[]
+    for definition in settings["runs"]
+        run = new_run(definition, settings)
+        if run.solver == "PP"
+            solve_pp!(run, grid, agents, distances, settings)
+        elseif run.solver in ("CBS", "ICBS")
+            solve_cbs!(run, grid, agents, distances, settings)
+        else
+            solve_whca!(run, grid, agents, distances, settings)
+        end
+        if run.status == "OK"
+            run.metrics = (
+                ; plan_statistics(run.paths, agents, overview, run.cost_function, grid)...,
+                grid=grid
+            )
+            run.validation = validate_plan(run.paths, agents, grid)
+            run.execution = delayed_execution(run.paths, settings)
+        end
+        push!(runs, run)
+    end
+    save_file("solutions.txt", solution_lines(grid, agents, overview, runs))
+    save_file("stats.csv", stats_lines(runs))
+    save_file("validation.txt", validation_lines(runs, independent, agents, grid, overview))
+    save_file("trace.txt", trace_lines(runs))
+    save_file("frames.txt", animation_lines(runs, grid, agents, settings))
+end
+path_position(path, time) = path[min(time + 1, length(path))]
+function plan_conflicts(paths)
+    horizon = maximum(length(path) - 1 for path in paths)
+    result = NamedTuple[]
+    for time in 1:horizon, a in 1:length(paths), b in a + 1:length(paths)
+        current_a, current_b = path_position(paths[a], time), path_position(paths[b], time)
+        if current_a == current_b
+            push!(result, (kind="vertex", time=time, a=a, b=b, u=current_a, v=current_a))
+        elseif current_a == path_position(paths[b], time - 1) && current_b == path_position(
+            paths[a],
+            time - 1
+        )
+            push!(
+                result,
+                (kind="edge", time=time, a=a, b=b, u=path_position(paths[a], time - 1), v=current_a)
+            )
+        end
+    end
+    return result
+end
+
+plan_cost(
+    paths,
+    cost_function
+function try_priority_order(grid, agents, distances, horizon, order, budget)
+    restrictions = Prohibitions()
+    paths = [Int[] for _ in agents]
+    attempts = NamedTuple[]
+    for agent in order
+        result = low_search(
+            grid,
+            agents[agent],
+            distances[agent],
+            agents[agent].start,
+            0,
+            restrictions,
+            horizon,
+            budget
+        )
+        result.aborted && return (paths=nothing, attempts=attempts, failure="ll_budget", failed_agent=0)
+        push!(attempts, (agent=agent, path=result.path, expansions=result.expansions))
+        result.path === nothing && return (
+            paths=nothing,
+            attempts=attempts,
+            failure="path",
+            failed_agent=agent
+        )
+        paths[agent] = result.path
+        reserve_path!(restrictions, result.path; permanent=true)
+    end
+    return (paths=paths, attempts=attempts, failure="", failed_agent=0)
+end

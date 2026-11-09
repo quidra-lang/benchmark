@@ -1,0 +1,400 @@
+coefficients <- function(terms, variables) {
+  values <- rep(list(ZERO), length(variables))
+  for (term in terms) {
+    j <- match(term$name, variables)
+    values[[j]] <- values[[j]] + term$coefficient
+  }
+  values
+}
+content_check <- function(parsed) {
+  if (!is.null(parsed$error)) return(parsed)
+  variables <- character()
+  expressions <- c(list(parsed$objective), lapply(parsed$constraints, function(row) row$terms))
+  for (terms in expressions) for (term in terms) if (!term$name %in% variables) variables <- c(variables, term$name)
+  model <- list(name = parsed$name, error = NULL, direction = parsed$direction,
+                variables = variables, constraints = parsed$constraints,
+                costs = coefficients(parsed$objective, variables),
+                matrix = lapply(parsed$constraints, function(row) coefficients(row$terms, variables)),
+                rhs = lapply(parsed$constraints, function(row) row$rhs),
+                comparisons = vapply(parsed$constraints, function(row) row$comparison, character(1L)),
+                lower = rep(list(ZERO), length(variables)), upper = rep(list(NULL), length(variables)),
+                integer = rep(FALSE, length(variables)))
+standard_form <- function(model, lower, upper) {
+  column_names <- character()
+  owners <- directions <- integer()
+  mappings <- list()
+  for (j in seq_along(model$variables)) {
+    name <- model$variables[[j]]
+    first_column <- length(column_names) + 1L
+    if (!is.null(lower[[j]])) {
+      kind <- "shift"
+      offset <- lower[[j]]
+      columns <- first_column
+      signs <- 1L
+      names <- name
+    }
+    column_names <- c(column_names, names)
+    owners <- c(owners, rep(j, length(columns)))
+    directions <- c(directions, signs)
+    mappings[[j]] <- list(kind = kind, offset = offset, columns = columns, directions = signs, upper_row = NULL)
+  }
+  offsets <- lapply(mappings, function(mapping) mapping$offset)
+  row_names <- vapply(model$constraints, function(row) row$name, character(1L))
+  matrix <- lapply(model$matrix, function(row) lapply(seq_along(owners), function(k) directions[[k]] * row[[owners[[k]]]]))
+  rhs <- Map(function(row, value) value - dot_exact(row, offsets), model$matrix, model$rhs)
+  comparisons <- model$comparisons
+  for (j in seq_along(mappings)) {
+    mapping <- mappings[[j]]
+    if (mapping$kind != "shift" || is.null(upper[[j]])) next
+  }
+  signs <- rep(1L, length(row_names))
+  for (i in seq_along(row_names)) {
+    if (rhs[[i]] < 0) {
+  }
+  slack <- initial <- rep(0L, length(row_names))
+  artificial <- integer()
+  for (i in seq_along(comparisons)) {
+    comparison <- comparisons[[i]]
+    if (comparison == "=") next
+  }
+  for (i in seq_along(comparisons)) {
+    if (comparisons[[i]] == "<=") next
+    column <- length(column_names) + 1L
+    artificial <- c(artificial, column)
+    initial[[i]] <- column
+    column_names <- c(column_names, paste0("a:", row_names[[i]]))
+    for (t in seq_along(matrix)) matrix[[t]][[length(matrix[[t]]) + 1L]] <- fraction(if (t == i) 1 else 0)
+  }
+  direction <- if (model$direction == "minimize") 1L else -1L
+  phase2 <- lapply(seq_along(owners), function(k) direction * directions[[k]] * model$costs[[owners[[k]]]])
+  phase2 <- c(phase2, rep(list(ZERO), length(column_names) - length(phase2)))
+  phase1 <- lapply(seq_along(column_names), function(k) fraction(as.integer(k %in% artificial)))
+  list(column_names = column_names, row_names = row_names, mappings = mappings,
+       matrix = matrix, rhs = rhs, signs = signs, slack = slack, artificial = artificial,
+       initial = initial, phase1 = phase1, phase2 = phase2,
+       constant = dot_exact(model$costs, offsets), direction = direction)
+}
+tableau_solution <- function(form, tableau) {
+  values <- rep(list(ZERO), length(form$column_names))
+  for (row in seq_along(tableau$basic)) values[[tableau$basic[[row]]]] <- tableau$rhs[[row]]
+  lapply(form$mappings, function(mapping) mapping$offset + qsum(Map(function(column, direction) direction * values[[column]], mapping$columns, mapping$directions)))
+}
+solve_lp <- function(model, lower, upper, number, level) {
+  form <- standard_form(model, lower, upper)
+  tableau <- new_tableau(form)
+  lines <- character()
+  emit <- function(required, text) {
+    if (level >= required) lines <<- c(lines, text)
+  }
+  display <- function(heading, costs, objective) {
+  }
+  phase2_value <- function(value) form$constant + form$direction * value
+  emit(0L, paste("SOLVE node", number, "rows", length(form$row_names), "columns", length(form$column_names), "artificials", length(form$artificial)))
+  for (line in mapping_lines(model, form, lower, upper)) emit(1L, line)
+  phase1_count <- phase2_count <- drives <- redundant <- 0L
+  infeasibility <- ZERO
+  status <- "OPTIMAL"
+  unbounded <- NULL
+  if (length(form$artificial)) {
+    emit(1L, "PHASE 1")
+    phase <- run_phase(tableau, form$phase1, seq_along(form$column_names), identity)
+    phase1_count <- phase$iterations
+    for (line in phase$lines) emit(1L, line)
+    infeasibility <- phase_value(tableau, form$phase1)
+    emit(1L, paste("PHASE 1 END objective", fraction_text(infeasibility), "iterations", phase1_count))
+    if (infeasibility > 0) {
+      status <- "INFEASIBLE"
+    } else {
+      for (row in seq_along(tableau$basic)) {
+        basic <- tableau$basic[[row]]
+        if (!basic %in% form$artificial) next
+        eligible <- which(vapply(seq_along(form$column_names), function(k) !k %in% form$artificial && tableau$values[[row]][[k]] != 0, logical(1L)))
+        if (!length(eligible)) {
+          redundant <- redundant + 1L
+          emit(1L, paste("REDUNDANT row", form$row_names[[row]]))
+        } else {
+          entering <- eligible[[1L]]
+          leaving <- form$column_names[[basic]]
+          pivot(tableau, row, entering)
+          drives <- drives + 1L
+          emit(1L, paste("DRIVE row", form$row_names[[row]], "enter", form$column_names[[entering]], "leave", leaving))
+        }
+      }
+    }
+  }
+  if (status != "INFEASIBLE") {
+    emit(1L, "PHASE 2")
+    candidates <- setdiff(seq_along(form$column_names), form$artificial)
+    phase <- run_phase(tableau, form$phase2, candidates, phase2_value)
+    phase2_count <- phase$iterations
+    for (line in phase$lines) emit(1L, line)
+    unbounded <- phase$unbounded
+    if (!is.null(unbounded)) {
+      status <- "UNBOUNDED"
+      emit(1L, paste("UNBOUNDED enter", form$column_names[[unbounded]]))
+    }
+    value <- phase2_value(phase_value(tableau, form$phase2))
+    emit(1L, paste("PHASE 2 END objective", fraction_text(value), "iterations", phase2_count))
+  }
+  objective <- if (status == "OPTIMAL") phase2_value(phase_value(tableau, form$phase2)) else NULL
+  emit(0L, paste("RESULT", status, "objective", shown(objective), "phase1", phase1_count, "phase2", phase2_count, "drives", drives, "redundant", redundant))
+  list(status = status, objective = objective, solution = tableau_solution(form, tableau),
+       form = form, tableau = tableau, unbounded = unbounded, infeasibility = infeasibility,
+       phase1 = phase1_count, phase2 = phase2_count, drives = drives, redundant = redundant,
+       pivots = phase1_count + phase2_count + drives, lines = lines)
+}
+solve_model <- function(model, level, limit) {
+  solve <- function(lower, upper, number) solve_lp(model, lower, upper, number, level)
+  if (any(model$integer)) return(branch_search(model, limit, solve))
+  result <- solve(model$lower, model$upper, 1L)
+  list(status = result$status, objective = result$objective,
+       solution = if (result$status == "OPTIMAL") result$solution else NULL,
+       solves = list(result), root = result, nodes = 1L, lines = character())
+}
+solution_lines <- function(model, result) {
+  root <- result$root
+  integer_count <- sum(model$integer)
+  lines <- c(paste("MODEL", model$name, model$direction, "variables", length(model$variables), "constraints", length(model$constraints), "integers", integer_count), statistics_line(model), paste("STATUS", result$status))
+  if (!is.null(result$solution)) lines <- c(lines, paste("OBJECTIVE", fraction_text(result$objective), "approx", approximate(result$objective)))
+  values <- if (result$status == "UNBOUNDED") root$solution else result$solution
+  if (!is.null(values)) for (j in seq_along(model$variables)) lines <- c(lines, paste("VALUE", model$variables[[j]], fraction_text(values[[j]])))
+  c(lines, paste("PIVOTS", sum(vapply(result$solves, function(lp) lp$pivots, integer(1L)))))
+}
+write_lines <- function(name, lines) {
+  connection <- file(file.path("output", name), open = "wb")
+  on.exit(close(connection))
+  writeChar(paste0(paste(lines, collapse = "\n"), "\n"), connection, eos = NULL, useBytes = TRUE)
+}
+main <- function() {
+  settings <- read_settings()
+  iterations <- solutions <- sensitivity <- tree <- character()
+  summary <- "model,status,objective,approx,relaxation,nodes,pivots"
+  statuses <- setNames(integer(5L), c("OPTIMAL", "INFEASIBLE", "UNBOUNDED", "NODE_LIMIT", "ERROR"))
+  solves <- phase1 <- phase2 <- drives <- analyzed <- integer_models <- integer_nodes <- limited_models <- 0L
+  for (parsed in read_models()) {
+    model <- content_check(parsed)
+    level <- settings$logs[[model$name]]
+    if (is.null(level)) level <- settings$level
+    limit <- settings$limits[[model$name]]
+    if (is.null(limit)) limit <- settings$limit
+    result <- solve_model(model, level, limit)
+    statuses[[result$status]] <- statuses[[result$status]] + 1L
+    iterations <- c(iterations, paste("MODEL", model$name, "level", level))
+    for (lp in result$solves) {
+      iterations <- c(iterations, lp$lines)
+      solves <- solves + 1L
+      phase1 <- phase1 + lp$phase1
+      phase2 <- phase2 + lp$phase2
+      drives <- drives + lp$drives
+    }
+    solutions <- c(solutions, solution_lines(model, result))
+    objective <- shown(result$objective)
+    approx <- if (is.null(result$objective)) "-" else approximate(result$objective)
+    relaxation <- shown(result$root$objective)
+    pivots <- sum(vapply(result$solves, function(lp) lp$pivots, integer(1L)))
+    summary <- c(summary, paste(model$name, result$status, objective, approx, relaxation, length(result$solves), pivots, sep = ","))
+  }
+  models <- sum(statuses)
+  pivots <- phase1 + phase2 + drives
+  iterations <- c(iterations, paste("TOTAL solves", solves, "phase1", phase1, "phase2", phase2, "drives", drives, "pivots", pivots))
+  solutions <- c(solutions, paste("SUMMARY models", models, "optimal", statuses[["OPTIMAL"]], "infeasible", statuses[["INFEASIBLE"]], "unbounded", statuses[["UNBOUNDED"]], "node_limit", statuses[["NODE_LIMIT"]], "error", statuses[["ERROR"]]))
+  sensitivity <- c(sensitivity, paste("SUMMARY analyzed", analyzed, "skipped", models - analyzed))
+  tree <- c(tree, paste("SUMMARY models", integer_models, "nodes", integer_nodes, "node_limit", limited_models))
+  dir.create("output", showWarnings = FALSE)
+  outputs <- list("iterations.txt" = iterations, "solutions.txt" = solutions, "sensitivity.txt" = sensitivity, "bnb_tree.txt" = tree, "summary.csv" = summary)
+  for (name in names(outputs)) write_lines(name, outputs[[name]])
+}
+  sign <- 1L
+  if (length(words) && words[[1L]] == "-") {
+    index <- 2L
+    sign <- -1L
+  }
+  while (index <= length(words)) {
+    coefficient <- read_number(words[[index]])
+    if (!is.null(coefficient)) {
+      if (index == length(words) || !lp_name(words[[index + 1L]])) return(NULL)
+      name <- words[[index + 1L]]
+      index <- index + 2L
+    } else if (lp_name(words[[index]])) {
+      coefficient <- fraction(1)
+      name <- words[[index]]
+      index <- index + 1L
+    } else {
+      return(NULL)
+    }
+    terms[[length(terms) + 1L]] <- list(name = name, coefficient = sign * coefficient)
+    if (index > length(words)) return(terms)
+    if (!words[[index]] %in% c("+", "-")) return(NULL)
+    sign <- if (words[[index]] == "+") 1L else -1L
+    index <- index + 1L
+  }
+  NULL
+}
+named_expression <- function(words) {
+  if (length(words) < 2L || !endsWith(words[[1L]], ":")) return(NULL)
+  name <- substr(words[[1L]], 1L, nchar(words[[1L]]) - 1L)
+  terms <- parse_expression(words[-1L])
+  if (lp_name(name) && !is.null(terms)) list(name = name, terms = terms) else NULL
+}
+parse_constraint <- function(words, line) {
+  size <- length(words)
+  if (size < 4L || !words[[size - 1L]] %in% c("<=", ">=", "=")) return(NULL)
+  rhs <- read_number(words[[size]], TRUE)
+  named <- named_expression(head(words, -2L))
+  if (is.null(rhs) || is.null(named)) return(NULL)
+  list(line = line, name = named$name, terms = named$terms, comparison = words[[size - 1L]], rhs = rhs)
+}
+parse_block <- function(name, body, end_line) {
+  parsed <- list(name = name, error = NULL, direction = NULL, objective = NULL,
+                 constraints = list(), bounds = list(), integers = list(), binaries = list())
+  state <- "A"
+  for (record in body) {
+    line <- record$line
+    text <- record$text
+    words <- strsplit(text, " ", fixed = TRUE)[[1L]]
+    accepted <- FALSE
+    if (state == "A" && text %in% c("maximize", "minimize")) {
+      parsed$direction <- text
+      state <- "B"
+      accepted <- TRUE
+    } else if (state == "B") {
+      named <- named_expression(words)
+      if (!is.null(named)) {
+        parsed$objective <- named$terms
+        state <- "C"
+        accepted <- TRUE
+      }
+    } else if (state == "C" && text == "subject to") {
+      state <- "D"
+      accepted <- TRUE
+    } else if (state %in% c("D", "E")) {
+      if (state == "E" && text %in% c("bounds", "integer", "binary")) {
+        state <- switch(text, bounds = "F", integer = "G", binary = "H")
+        accepted <- TRUE
+      } else {
+        item <- parse_constraint(words, line)
+        if (!is.null(item)) {
+          parsed$constraints[[length(parsed$constraints) + 1L]] <- item
+          state <- "E"
+          accepted <- TRUE
+        }
+      }
+    }
+    if (!accepted) {
+      parsed$error <- list(line = line, message = "syntax error")
+      return(parsed)
+    }
+  }
+  if (state %in% c("A", "B", "C", "D")) parsed$error <- list(line = end_line, message = "syntax error")
+  parsed
+}
+read_models <- function() {
+  records <- readLines("input/models.lp", warn = FALSE)
+  models <- body <- list()
+  name <- NULL
+  for (line in seq_along(records)) {
+    text <- records[[line]]
+    if (!nzchar(text) || startsWith(text, "#")) next
+    if (is.null(name)) {
+      name <- strsplit(text, " ", fixed = TRUE)[[1L]][[2L]]
+      body <- list()
+    } else if (text == "end") {
+      models[[length(models) + 1L]] <- parse_block(name, body, line)
+      name <- NULL
+    } else {
+      body[[length(body) + 1L]] <- list(line = line, text = text)
+    }
+  }
+  models
+}
+run_phase <- function(tableau, costs, candidates, objective) {
+  iterations <- 0L
+  lines <- character()
+  candidates <- sort(candidates)
+  repeat {
+    reduced <- reduced_costs(tableau, costs)
+    eligible <- candidates[vapply(candidates, function(column) reduced[[column]] < 0, logical(1L))]
+    if (!length(eligible)) return(list(iterations = iterations, unbounded = NULL, lines = lines))
+    column <- eligible[[1L]]
+    row <- NULL
+    ratio <- NULL
+    for (candidate in seq_along(tableau$values)) {
+      value <- tableau$values[[candidate]][[column]]
+      if (value <= 0) next
+      candidate_ratio <- tableau$rhs[[candidate]] / value
+      if (is.null(row) || candidate_ratio < ratio || (candidate_ratio == ratio && tableau$basic[[candidate]] < tableau$basic[[row]])) {
+        row <- candidate
+        ratio <- candidate_ratio
+      }
+    }
+    if (is.null(row)) return(list(iterations = iterations, unbounded = column, lines = lines))
+    leaving <- tableau$basic[[row]]
+    before <- reduced[[column]]
+    pivot(tableau, row, column)
+    iterations <- iterations + 1L
+    value <- objective(phase_value(tableau, costs))
+    lines <- c(lines, paste("PIVOT", iterations, "enter", tableau$column_names[[column]], "reduced", fraction_text(before), "leave", tableau$column_names[[leaving]], "row", tableau$row_names[[row]], "ratio", fraction_text(ratio), "objective", fraction_text(value)))
+  }
+}
+new_tableau <- function(form) {
+  list2env(list(row_names = form$row_names, column_names = form$column_names,
+               values = form$matrix, rhs = form$rhs, basic = form$initial), parent = emptyenv())
+}
+pivot <- function(tableau, row, column) {
+  divisor <- tableau$values[[row]][[column]]
+  tableau$values[[row]] <- lapply(tableau$values[[row]], function(value) value / divisor)
+  tableau$rhs[[row]] <- tableau$rhs[[row]] / divisor
+  for (other in seq_along(tableau$values)) {
+    if (other == row) next
+    factor <- tableau$values[[other]][[column]]
+    tableau$values[[other]] <- Map(function(value, pivot_value) value - factor * pivot_value, tableau$values[[other]], tableau$values[[row]])
+    tableau$rhs[[other]] <- tableau$rhs[[other]] - factor * tableau$rhs[[row]]
+  }
+  tableau$basic[[row]] <- column
+}
+reduced_costs <- function(tableau, costs) {
+  lapply(seq_along(costs), function(column) {
+    costs[[column]] - qsum(lapply(seq_along(tableau$basic), function(row) costs[[tableau$basic[[row]]]] * tableau$values[[row]][[column]]))
+  })
+}
+phase_value <- function(tableau, costs) qsum(lapply(seq_along(tableau$basic), function(row) costs[[tableau$basic[[row]]]] * tableau$rhs[[row]]))
+fraction <- function(numerator = 0, denominator = 1) {
+  if (numerator == 0) return(structure(c(0, 1), class = "fraction"))
+  if (denominator < 0) {
+    numerator <- -numerator
+    denominator <- -denominator
+  }
+  a <- abs(numerator)
+  b <- denominator
+  while (b != 0) {
+    remainder <- a %% b
+    a <- b
+    b <- remainder
+  }
+  structure(c(numerator / a, denominator / a), class = "fraction")
+}
+q_num <- function(value) unclass(value)[[1L]]
+q_den <- function(value) unclass(value)[[2L]]
+as_fraction <- function(value) if (inherits(value, "fraction")) value else fraction(value)
+Ops.fraction <- function(e1, e2) {
+  e1 <- as_fraction(e1)
+  a <- q_num(e1)
+  b <- q_den(e1)
+  if (missing(e2)) return(if (.Generic == "-") fraction(-a, b) else e1)
+  e2 <- as_fraction(e2)
+  c <- q_num(e2)
+  d <- q_den(e2)
+  switch(.Generic,
+         "+" = fraction(a * d + c * b, b * d),
+         "-" = fraction(a * d - c * b, b * d),
+         "*" = fraction(a * c, b * d),
+         "/" = fraction(a * d, b * c),
+         "==" = a * d == c * b,
+         "!=" = a * d != c * b,
+         "<" = a * d < c * b,
+         ">" = a * d > c * b,
+         "<=" = a * d <= c * b,
+         ">=" = a * d >= c * b)
+}
+ZERO <- fraction()
+qsum <- function(values) Reduce(`+`, values, init = ZERO)

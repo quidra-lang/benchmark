@@ -1,0 +1,284 @@
+static Rows read(const std::string &name) {
+    std::ifstream input("input/" + name);
+    Rows out;
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream stream(line);
+        Lines fields;
+        std::string field;
+        while (stream >> field)
+            fields.push_back(field);
+        out.push_back(std::move(fields));
+    }
+    return out;
+}
+void normalize(double *values, int count) {
+    double sum = 0;
+    for (int i = 0; i < count; ++i)
+        sum += values[i];
+    for (int i = 0; i < count; ++i)
+        values[i] /= sum;
+}
+Input load() {
+    Input out;
+    const Rows rows = read("model.txt");
+    Model &model = out.model;
+    model.name = "INITIAL";
+    for (std::size_t i = 1; i < rows[0].size(); ++i)
+        model.states += rows[0][i];
+    for (std::size_t i = 1; i < rows[1].size(); ++i)
+        model.symbols += rows[1][i];
+    model.missing = rows[2][1][0];
+    for (int i = 0; i < model.k(); ++i)
+        model.initial[i] = std::stod(rows[3][i + 1]);
+    normalize(model.initial.data(), model.k());
+    for (int i = 0; i < model.k(); ++i) {
+        for (int j = 0; j < model.k(); ++j)
+            model.transition[i][j] = std::stod(rows[4 + i][j + 2]);
+        normalize(model.transition[i].data(), model.k());
+        for (int j = 0; j < model.m(); ++j)
+            model.emission[i][j] = std::stod(rows[4 + model.k() + i][j + 2]);
+        normalize(model.emission[i].data(), model.m());
+    }
+    out.sequences = read("sequences.txt");
+    out.labeled = read("labeled.txt");
+    out.parameters = read("params.txt");
+    return out;
+}
+void save(const std::string &name, const Lines &lines) {
+    std::ofstream out("output/" + name);
+    for (const std::string &line : lines)
+        out << line << '\n';
+}
+int maximum(const double *values, int count) {
+    int chosen = 0;
+    for (int i = 1; i < count; ++i)
+        if (values[i] > values[chosen])
+            chosen = i;
+    return chosen;
+}
+double emission(const Model &model, int observation, int state) {
+    return observation < 0 ? 1 : model.emission[state][observation];
+}
+FB forward_backward(const Model &model, const Path &observation) {
+    const int length = observation.size(), k = model.k();
+    FB out;
+    out.forward.resize(length);
+    out.backward.resize(length);
+    out.posterior.resize(length);
+    out.emissions.resize(length);
+    out.scales.resize(length);
+    for (int t = 0; t < length; ++t) {
+        for (int j = 0; j < k; ++j) {
+            out.emissions[t][j] = emission(model, observation[t], j);
+            double value = model.initial[j];
+            if (t) {
+                value = 0;
+                for (int i = 0; i < k; ++i)
+                    value += out.forward[t - 1][i] * model.transition[i][j];
+            }
+            out.forward[t][j] = value * out.emissions[t][j];
+            out.scales[t] += out.forward[t][j];
+        }
+        for (int j = 0; j < k; ++j)
+            out.forward[t][j] /= out.scales[t];
+        out.loglik += std::log(out.scales[t]);
+    }
+    for (int i = 0; i < k; ++i)
+        out.backward[length - 1][i] = 1;
+    for (int t = length - 2; t >= 0; --t)
+        for (int i = 0; i < k; ++i) {
+            double sum = 0;
+            for (int j = 0; j < k; ++j)
+                sum += model.transition[i][j] * out.emissions[t + 1][j] * out.backward[t + 1][j];
+            out.backward[t][i] = sum / out.scales[t + 1];
+        }
+    for (int t = 0; t < length; ++t)
+        for (int i = 0; i < k; ++i)
+            out.posterior[t][i] = out.forward[t][i] * out.backward[t][i];
+    return out;
+}
+Viterbi viterbi(const Model &model, const Path &observation) {
+    const int k = model.k(), length = observation.size();
+    Matrix transitions{};
+    for (int i = 0; i < k; ++i)
+        for (int j = 0; j < k; ++j)
+            transitions[i][j] = std::log(model.transition[i][j]);
+    std::vector<std::array<int, 4>> predecessors(length);
+    StateValues scores{};
+    for (int j = 0; j < k; ++j)
+        scores[j] = std::log(model.initial[j]) +
+                    (observation[0] < 0 ? 0 : std::log(model.emission[j][observation[0]]));
+    for (int t = 1; t < length; ++t) {
+        StateValues next{};
+        for (int j = 0; j < k; ++j) {
+            StateValues candidates{};
+            for (int i = 0; i < k; ++i)
+                candidates[i] = scores[i] + transitions[i][j];
+            const int previous = maximum(candidates.data(), k);
+            predecessors[t][j] = previous;
+            next[j] =
+                candidates[previous] + (observation[t] < 0 ? 0 : std::log(model.emission[j][observation[t]]));
+        }
+        scores = next;
+    }
+    Viterbi out;
+    out.path.resize(length);
+    out.path.back() = maximum(scores.data(), k);
+    out.logprob = scores[out.path.back()];
+    for (int t = length - 1; t > 0; --t)
+        out.path[t - 1] = predecessors[t][out.path[t]];
+    return out;
+}
+Decoding decode(const Model &model, const Path &observation) {
+    Decoding out;
+    out.fb = forward_backward(model, observation);
+    out.viterbi = viterbi(model, observation);
+    for (const auto &probabilities : out.fb.posterior) {
+        int state = maximum(probabilities.data(), model.k());
+        out.posterior.push_back(state);
+        out.confidence.push_back(probabilities[state]);
+    }
+    return out;
+}
+void accumulate(Confusion &matrix, const Path &truth, const Path &predicted) {
+    for (int i = 0; i < int(truth.size()); ++i)
+        ++matrix[truth[i]][predicted[i]];
+}
+I correct(const Path &truth, const Path &prediction) {
+    I out = 0;
+    for (int i = 0; i < int(truth.size()); ++i)
+        out += truth[i] == prediction[i];
+    return out;
+}
+static std::string state_string(const Path &path, const std::string &alphabet) {
+    std::string out;
+    for (int state : path)
+        out += alphabet[state];
+    return out;
+}
+static Validated validate(const Input &input, const Params &p) {
+    Validated out;
+    auto observations = [&](const std::string &raw, Path &path) {
+        for (int i = 0; i < int(raw.size()); ++i) {
+            const char ch = raw[i] >= 'a' && raw[i] <= 'z' ? char(raw[i] - 'a' + 'A') : raw[i];
+            const auto symbol = input.model.symbols.find(ch);
+            if (ch == input.model.missing)
+                path.push_back(-1);
+            else if (symbol != std::string::npos)
+                path.push_back(symbol);
+            else
+                return "invalid symbol " + std::string(1, ch) + " at position " + std::to_string(i + 1);
+        }
+        return std::string{};
+    };
+    names.clear();
+    for (int i = 0; i < int(input.labeled.size()); i += 2) {
+        const Lines &fields = input.labeled[i];
+        const std::string &labels = input.labeled[i + 1][0];
+        Sequence sequence;
+        sequence.name = fields[0];
+        sequence.role = fields[1];
+        std::string reason;
+        if (!names.insert(sequence.name).second)
+            reason = "duplicate name";
+        if (reason.empty())
+            reason = observations(fields[2], sequence.observation);
+        if (reason.empty())
+            for (int t = 0; t < int(labels.size()); ++t) {
+                const auto state = input.model.states.find(labels[t]);
+                if (state == std::string::npos) {
+                    reason = "invalid label " + std::string(1, labels[t]) + " at position " +
+                             std::to_string(t + 1);
+                    break;
+                }
+                sequence.truth.push_back(state);
+            }
+        if (reason.empty() && fields[2].size() != labels.size())
+            reason =
+                "length mismatch " + std::to_string(fields[2].size()) + " " + std::to_string(labels.size());
+        if (reason.empty())
+            reason = final_checks(sequence.observation);
+        if (reason.empty())
+            (sequence.role == "TRAIN" ? out.train : out.test).push_back(std::move(sequence));
+static Evaluation evaluate(const Model &model, const std::vector<Sequence> &records, const Params &p,
+                           int decoder) {
+    Evaluation out;
+    for (const Sequence &sequence : records) {
+        const Decoding decoded = decode(model, sequence.observation);
+        const Path &prediction = decoder == 0 ? decoded.viterbi.path : decoded.posterior;
+        accumulate(out.matrix, sequence.truth, prediction);
+        const I correct_count = correct(sequence.truth, prediction);
+        out.positions += prediction.size();
+        out.correct_count += correct_count;
+        out.record_correct.push_back(correct_count);
+        add(out.regions,
+            region_counts(segments(prediction, p), true_regions(sequence.truth, p.segment_state)));
+        add(out.boundaries, boundary_counts(prediction, sequence.truth, p.boundary_tolerance));
+        if (decoder == 1)
+            for (int t = 0; t < int(prediction.size()); ++t) {
+                const int bin = std::min(9, int(std::floor(10 * decoded.confidence[t])));
+                ++out.bins[bin];
+                out.correct_bins[bin] += prediction[t] == sequence.truth[t];
+            }
+    }
+    return out;
+}
+static Lines evaluation_lines(const Model &model, const Evaluation &evaluation,
+                              const std::vector<Sequence> &records, const Params &p, int decoder) {
+    Lines out;
+    line(out, "EVALUATION ", model.name, " ", decoder == 0 ? "VITERBI" : "POSTERIOR");
+    extend(out, matrix_lines(model, evaluation.matrix));
+    extend(out, metric_lines(model, evaluation.matrix));
+    line(out, "REGIONS ", model.states[p.segment_state], " predicted ", evaluation.regions.predicted,
+         " true ", evaluation.regions.truth, " precision ",
+         fraction(evaluation.regions.matched_predicted, evaluation.regions.predicted), " recall ",
+         fraction(evaluation.regions.matched_truth, evaluation.regions.truth));
+    line(out, "BOUNDARIES predicted ", evaluation.boundaries.predicted, " true ", evaluation.boundaries.truth,
+         " precision ", fraction(evaluation.boundaries.matched_predicted, evaluation.boundaries.predicted),
+         " recall ", fraction(evaluation.boundaries.matched_truth, evaluation.boundaries.truth));
+    if (decoder == 1)
+        for (int b = 0; b < 10; ++b)
+            if (evaluation.bins[b])
+                line(out, "CALIBRATION 0.", b, "-", b == 9 ? "1.0" : "0." + std::to_string(b + 1),
+                     " positions ", evaluation.bins[b], " correct ", evaluation.correct_bins[b], " accuracy ",
+                     fraction(evaluation.correct_bins[b], evaluation.bins[b]));
+    for (int i = 0; i < int(records.size()); ++i)
+        line(out, "RECORD ", records[i].name, " length ", records[i].observation.size(), " correct ",
+             evaluation.record_correct[i]);
+    return out;
+}
+    const Input input = load();
+    const Params p = parameters(input.parameters, input.model);
+    const Validated data = validate(input, p);
+    const auto unlabeled = observations(data.unlabeled);
+    std::array<Model, 4> models;
+    models[0] = input.model;
+    models[1] = input.model;
+    std::array<std::array<Evaluation, 2>, 4> evaluations;
+    for (int model = 0; model < 4; ++model)
+        for (int decoder = 0; decoder < 2; ++decoder) {
+            evaluations[model][decoder] = evaluate(models[model], data.test, p, decoder);
+            if (!evaluation_file.empty())
+                line(evaluation_file, "");
+            extend(evaluation_file,
+                   evaluation_lines(models[model], evaluations[model][decoder], data.test, p, decoder));
+        }
+    std::array<std::vector<Decoding>, 4> cached;
+    for (int model = 0; model < 4; ++model)
+        for (const Path &observation : unlabeled)
+            cached[model].push_back(decode(models[model], observation));
+    Generator posterior_generator{p.posterior_seed};
+    const Model &bw = models[1];
+    for (int index = 0; index < int(data.unlabeled.size()); ++index) {
+        const Sequence &sequence = data.unlabeled[index];
+        const Decoding &decoded = cached[1][index];
+        line(decodings, "VITERBI ", state_string(decoded.viterbi.path, bw.states));
+        line(decodings, "POSTERIOR ", state_string(decoded.posterior, bw.states));
+    save("decodings.txt", decodings);
+    save("evaluation.txt", evaluation_file);
+struct FB {
+    std::vector<StateValues> forward, backward, posterior, emissions;
+    Values scales;
+    double loglik = 0;
+};

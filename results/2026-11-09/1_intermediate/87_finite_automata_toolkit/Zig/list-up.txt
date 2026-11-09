@@ -1,0 +1,166 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Text = []const u8;
+const Error = Allocator.Error || error{Invalid};
+var failure: Text = "";
+fn eq(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn includes(text: Text, choices: []const Text) bool {
+    for (choices) |choice| if (eq(text, choice)) return true;
+    return false;
+}
+fn bad(gpa: Allocator, comptime format: Text, args: anytype) Error {
+    failure = std.fmt.allocPrint(gpa, format, args) catch return error.OutOfMemory;
+    return error.Invalid;
+}
+const Builder = struct {
+    gpa: Allocator,
+    bytes: std.ArrayList(u8) = .empty,
+    fn add(self: *Builder, text: Text) Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
+    fn print(self: *Builder, comptime format: Text, args: anytype) Error!void {
+        try self.add(try std.fmt.allocPrint(self.gpa, format, args));
+    }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Error!void {
+        try self.print(format ++ "\n", args);
+    }
+fn series(gpa: Allocator, prefix: Text, n: usize) Error![]const Text {
+    const names = try gpa.alloc(Text, n);
+    for (names, 0..) |*name, i| name.* = try std.fmt.allocPrint(gpa, "{s}{d}", .{ prefix, i });
+    return names;
+}
+fn orderedSet(gpa: Allocator, present: []const bool) Error![]const usize {
+    var result: std.ArrayList(usize) = .empty;
+    for (present, 0..) |presentFlag, i| if (presentFlag) try result.append(gpa, i);
+    return result.items;
+}
+fn setKey(gpa: Allocator, states: []const usize) Error!Text {
+    var out: Builder = .{ .gpa = gpa };
+    for (states) |state| try out.print("{d},", .{state});
+    return out.bytes.items;
+}
+const Transition = struct { from: usize, symbol: u8, to: usize };
+const Automaton = struct {
+    gpa: Allocator,
+    nfa: bool,
+    states: []const Text,
+    alphabet: Text,
+    start: usize,
+    final: []bool,
+    transitions: std.ArrayList(Transition) = .empty,
+    fn create(gpa: Allocator, nfa: bool, states: []const Text, alphabet: Text, start: usize) Error!*Automaton {
+        const result = try gpa.create(Automaton);
+        result.* = .{ .gpa = gpa, .nfa = nfa, .states = states, .alphabet = alphabet, .start = start, .final = try gpa.alloc(bool, states.len) };
+        @memset(result.final, false);
+        return result;
+    }
+    fn add(self: *Automaton, from: usize, symbol: u8, to: usize) Error!void {
+        for (self.transitions.items) |t| if (t.from == from and t.symbol == symbol and t.to == to) return;
+        try self.transitions.append(self.gpa, .{ .from = from, .symbol = symbol, .to = to });
+    }
+    fn delta(self: *const Automaton, state: usize, c: u8) usize {
+        for (self.transitions.items) |t| if (t.from == state and t.symbol == c) return t.to;
+        unreachable;
+    }
+    fn closure(self: *const Automaton, gpa: Allocator, states: []const usize) Error![]const usize {
+        const present = try gpa.alloc(bool, self.states.len);
+        @memset(present, false);
+        var queue: std.ArrayList(usize) = .empty;
+        for (states) |state| if (!present[state]) {
+            present[state] = true;
+            try queue.append(gpa, state);
+        };
+        var i: usize = 0;
+        while (i < queue.items.len) : (i += 1) for (self.transitions.items) |t| {
+            if (t.from == queue.items[i] and t.symbol == 'e' and !present[t.to]) {
+                present[t.to] = true;
+                try queue.append(gpa, t.to);
+            }
+        };
+        return orderedSet(gpa, present);
+    }
+    fn step(self: *const Automaton, gpa: Allocator, states: []const usize, c: u8) Error![]const usize {
+        const present = try gpa.alloc(bool, self.states.len);
+        @memset(present, false);
+        for (states) |state| present[state] = true;
+        var destinationsList: std.ArrayList(usize) = .empty;
+        for (self.transitions.items) |t| if (present[t.from] and t.symbol == c) try destinationsList.append(gpa, t.to);
+        return self.closure(gpa, destinationsList.items);
+    }
+    fn accepts(self: *const Automaton, states: []const usize) bool {
+        for (states) |state| if (self.final[state]) return true;
+        return false;
+    }
+const Subsets = struct { automaton: *Automaton, sets: []const []const usize };
+fn determinize(gpa: Allocator, a: *const Automaton) Error!Subsets {
+    var sets: std.ArrayList([]const usize) = .empty;
+    try sets.append(gpa, try a.closure(gpa, &.{a.start}));
+    var indices: std.StringHashMapUnmanaged(usize) = .empty;
+    try indices.put(gpa, try setKey(gpa, sets.items[0]), 0);
+    var rows: std.ArrayList([]const usize) = .empty;
+    var i: usize = 0;
+    while (i < sets.items.len) : (i += 1) {
+        var row: std.ArrayList(usize) = .empty;
+        for (a.alphabet) |c| {
+            const next = try a.step(gpa, sets.items[i], c);
+            const key = try setKey(gpa, next);
+            const entry = try indices.getOrPut(gpa, key);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = sets.items.len;
+                try sets.append(gpa, next);
+            }
+            try row.append(gpa, entry.value_ptr.*);
+        }
+        try rows.append(gpa, row.items);
+    }
+    const result = try Automaton.create(gpa, false, try series(gpa, "D", sets.items.len), a.alphabet, 0);
+    for (sets.items, rows.items, 0..) |set, row, state| {
+        result.final[state] = a.accepts(set);
+        for (a.alphabet, row) |c, next| try result.add(state, c, next);
+    }
+    return .{ .automaton = result, .sets = sets.items };
+fn countLength(gpa: Allocator, a: *const Automaton, n: usize) Error!i64 {
+    var counts = try gpa.alloc(i64, a.states.len);
+    @memset(counts, 0);
+    counts[a.start] = 1;
+    for (0..n) |_| {
+        const next = try gpa.alloc(i64, a.states.len);
+        @memset(next, 0);
+        for (counts, 0..) |count, state| for (a.alphabet) |c| {
+            next[a.delta(state, c)] += count;
+        };
+        counts = next;
+    }
+    var total: i64 = 0;
+    for (counts, a.final) |count, accepting| if (accepting) {
+        total += count;
+    };
+    return total;
+const countTable = [_]struct { name: Text, count: usize }{
+    .{ .name = "REVERSE", .count = 2 }, .{ .name = "CONCAT", .count = 3 },  .{ .name = "STAR", .count = 2 },      .{ .name = "ENUM", .count = 2 },    .{ .name = "COUNT", .count = 2 },
+    fn lookup(self: *const Toolkit, name: Text) ?*Automaton {
+        for (self.entries.items) |entry| if (eq(entry.name, name)) return entry.automaton;
+        return null;
+    }
+    fn executeLine(self: *Toolkit, words: []const Text) Error!void {
+        const command = words[0];
+        const args = words[1..];
+        var expected: ?usize = null;
+        for (countTable) |item| if (eq(item.name, command)) {
+            expected = item.count;
+            break;
+        };
+        if (expected == null) return bad(self.scratch, "unknown command {s}", .{command});
+        if (args.len != expected.?) return bad(self.scratch, "wrong number of arguments", .{});
+        const references: usize = if (includes(command, &.{ "EQUIV", "UNION", "INTERSECT", "DIFF", "CONCAT" })) 2 else 1;
+        var autos: [2]*Automaton = undefined;
+        for (args[0..references], 0..) |name, i| autos[i] = self.lookup(name) orelse return bad(self.scratch, "unknown automaton {s}", .{name});
+        const a = autos[0];
+        if (eq(command, "COUNT")) {
+            const n = std.fmt.parseInt(usize, args[1], 10) catch unreachable;
+            const d = (try determinize(self.scratch, a)).automaton;
+            try self.out.line("{d}", .{try countLength(self.scratch, d, n)});
+            return;
+        }

@@ -1,0 +1,5 @@
+[0, 7, 999, 1000, -456789, 3141592, 9876543210].each do |n|
+  negative = n.negative?
+  digits = n.abs.to_s
+  puts (negative ? '-' : '') + digits.gsub(/\B(?=(\d{3})+(?!\d))/, ',')
+end

@@ -1,0 +1,717 @@
+func readInput() ([]Reference, []Read, map[string][]int) {
+	var references []Reference
+	for _, line := range strings.Split(strings.TrimSpace(readText("input/reference.fasta")),
+		"\n") {
+		if line[0] == '>' {
+			references = append(references, Reference{Name: strings.SplitN(line[1:], " ",
+				2)[0]})
+		} else {
+			r := &references[len(references)-1]
+			for _, c := range line {
+				if c >= 'a' && c <= 'z' {
+					r.Masked++
+				}
+			}
+			r.Sequence += strings.ToUpper(line)
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(readText("input/reads.fastq"),
+		"\n"), "\n")
+	var reads []Read
+	for i := 0; i < len(lines); i += 4 {
+		reads = append(reads, Read{lines[i][1:],
+			lines[i+1], lines[i+3]})
+	}
+	params := map[string][]int{}
+	for _, line := range strings.Split(strings.TrimSpace(readText("input/params.txt")),
+		"\n") {
+		a := strings.Fields(line)
+		for _, s := range a[1:] {
+			params[a[0]] = append(params[a[0]], integer(s))
+		}
+	}
+	return references,
+		reads, params
+}
+func reverse(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b)
+}
+func reverseComplement(s string) string {
+	b := make([]byte, len(s))
+	for i := range s {
+		c := s[len(s)-1-i]
+		switch c {
+		case 'A':
+			c = 'T'
+		case 'C':
+			c = 'G'
+		case 'G':
+			c = 'C'
+		case 'T':
+			c = 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+func buildIndex(text string, occ, sample int) FMIndex {
+	suffix := suffixArray(text)
+	n := len(text)
+	bwt := make([]byte,
+		n)
+	var counts [6]int
+	for i, p := range suffix.SA {
+		previous := (p + n - 1) % n
+		bwt[i] = text[previous]
+		counts[symbol(text[p])]++
+	}
+	f := FMIndex{Text: text,
+		BWT: string(bwt), Suffix: suffix, OccInterval: occ, Sample: map[int]int{}}
+	total := 0
+	for c, count := range counts {
+		f.C[c] = total
+		total += count
+	}
+	counts = [6]int{}
+	for i := 0; i <= n; i++ {
+		if i%occ == 0 {
+			f.Checkpoints = append(f.Checkpoints,
+				counts)
+		}
+		if i < n {
+			counts[symbol(bwt[i])]++
+			if sample > 0 && suffix.SA[i]%sample == 0 {
+				f.Sample[i] = suffix.SA[i]
+			}
+		}
+	}
+	return f
+}
+func (f FMIndex) occ(c, i int) int {
+	q := i / f.OccInterval
+	value := f.Checkpoints[q][c]
+	for j := q * f.OccInterval; j < i; j++ {
+		if symbol(f.BWT[j]) == c {
+			value++
+		}
+	}
+	return value
+}
+func (f FMIndex) lf(row int) int { c := symbol(f.BWT[row]); return f.C[c] + f.occ(c, row) }
+func (f FMIndex) extend(iv Interval, base byte) Interval {
+	if base == 'N' {
+		return Interval{}
+	}
+	c := symbol(base)
+	return Interval{f.C[c] + f.occ(c,
+		iv.Lo), f.C[c] + f.occ(c, iv.Hi)}
+}
+func (f FMIndex) locate(row int) (int, int) {
+	steps := 0
+	for {
+		if p, ok := f.Sample[row]; ok {
+			return p + steps, steps
+		}
+		row = f.lf(row)
+		steps++
+	}
+func (f FMIndex) exact(q string) Interval {
+	iv := Interval{0, len(f.Text)}
+	for i := len(q) - 1; i >= 0; i-- {
+		iv = f.extend(iv,
+			q[i])
+		if iv.Lo >= iv.Hi {
+			return Interval{}
+		}
+	}
+	return iv
+}
+func lowerBound(reverse FMIndex, w string) []int {
+	d := make([]int, len(w))
+	z := 0
+	iv := Interval{0, len(reverse.Text)}
+	for i := range w {
+		iv = reverse.extend(iv,
+			w[i])
+		if iv.Lo >= iv.Hi {
+			z++
+			iv = Interval{0, len(reverse.Text)}
+		}
+		d[i] = z
+	}
+	return d
+}
+func backtrack(forward, reverse FMIndex, w string, zmax int) SearchResult {
+	d := lowerBound(reverse, w)
+	type State struct {
+		I,
+		Z, Lo, Hi int
+	}
+	stack := []State{{len(w) - 1, zmax, 0, len(forward.Text)}}
+	var result SearchResult
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		result.Nodes++
+		bound := 0
+		if state.I >= 0 {
+			bound = d[state.I]
+		}
+		if state.Z < bound {
+			continue
+		}
+		if state.I < 0 {
+			iv := Interval{state.Lo,
+				state.Hi}
+			result.Leaves = append(result.Leaves, SearchLeaf{iv, zmax - state.Z})
+			result.Hits += state.Hi - state.Lo
+			continue
+		}
+		for _, b := range []byte("TGCA") {
+			iv := forward.extend(Interval{state.Lo, state.Hi}, b)
+			if iv.Lo >= iv.Hi {
+				continue
+			}
+			z := state.Z
+			if b != w[state.I] {
+				if z == 0 {
+					continue
+				}
+				z--
+			}
+			stack = append(stack,
+				State{state.I - 1, z, iv.Lo, iv.Hi})
+		}
+	}
+	return result
+}
+func position(refs []Reference, p int) (int, int) {
+	for r, reference := range refs {
+		if p >= reference.Offset && p < reference.Offset+len(reference.Sequence) {
+			return r,
+				p - reference.Offset
+		}
+	}
+	return -1, -1
+}
+func positionLess(a, b Alignment) bool {
+	return a.R < b.R || a.R == b.R && (a.Pos < b.Pos || a.Pos == b.Pos && a.Strand < b.Strand)
+}
+func mapRead(read Read, refs []Reference, forward, reverse FMIndex, params map[string][]int, counters *SearchCounters) Mapping {
+	length := len(read.Bases)
+	for length > 0 && int(read.Quality[length-1])-33 < params["TRIM_QUALITY"][0] {
+		length--
+	}
+	m := Mapping{Length: length,
+		Trim: len(read.Bases) - length}
+	if length < params["MIN_READ_LENGTH"][0] {
+		m.Method = "SHORT"
+		return m
+	}
+	m.Core = [2]string{read.Bases[:length],
+		reverseComplement(read.Bases[:length])}
+	zs := params["MAX_MISMATCHES"][0]
+	for _, w := range m.Core {
+		iv := forward.exact(w)
+		if iv.Lo < iv.Hi {
+			zs = 1
+			break
+		}
+	}
+	var hits []Alignment
+	for strand, w := range m.Core {
+		result := backtrack(forward, reverse, w, zs)
+		counters.Calls++
+		counters.Nodes += result.Nodes
+		counters.Leaves += len(result.Leaves)
+		counters.Hits += result.Hits
+		for _, leaf := range result.Leaves {
+			for row := leaf.Interval.Lo; row < leaf.Interval.Hi; row++ {
+				p, _ := forward.locate(row)
+				r,
+					offset := position(refs, p)
+				hits = append(hits, Alignment{R: r, Pos: offset, Strand: strand, Operations: strings.Repeat("M",
+					length), MM: leaf.Mismatches})
+			}
+		}
+	}
+	scores := params["SCORES"]
+	if len(hits) > 0 {
+		sort.Slice(hits, func(i,
+			j int) bool {
+			a, b := hits[i], hits[j]
+			return a.MM < b.MM || a.MM == b.MM && positionLess(a, b)
+		})
+		best := hits[0].MM
+		for _, hit := range hits {
+			if hit.MM == best {
+				m.X0++
+			}
+			if hit.MM == best+1 {
+				m.X1++
+			}
+			if hit.MM <= best+1 {
+				m.Alignments = append(m.Alignments,
+					hit)
+			}
+		}
+		m.Mapped = true
+		m.Method = "EXACT"
+		if best > 0 {
+			m.Method = "MISMATCH"
+		}
+		m.Score = (length-best)*scores[0] - best*scores[1]
+		if m.X0 >= 2 {
+			m.MapQ = 0
+		} else if m.X1 == 0 {
+			m.MapQ = 60 - 12*best
+		} else {
+			m.MapQ = max(30-12*best-3*m.X1,
+				1)
+		}
+		return m
+	}
+	return m
+func describe(a Alignment, core [2]string, refs []Reference, trim int) (string, int, string) {
+	var cigar,
+		md strings.Builder
+	if trim > 0 && a.Strand == 1 {
+		fmt.Fprintf(&cigar, "%dS", trim)
+	}
+	for i := 0; i < len(a.Operations); {
+		j := i + 1
+		for j < len(a.Operations) && a.Operations[j] == a.Operations[i] {
+			j++
+		}
+		fmt.Fprintf(&cigar,
+			"%d%c", j-i, a.Operations[i])
+		i = j
+	}
+	if trim > 0 && a.Strand == 0 {
+		fmt.Fprintf(&cigar, "%dS", trim)
+	}
+	w, s := core[a.Strand],
+		refs[a.R].Sequence
+	i, j, u, nm := 0, a.Pos, 0, 0
+	for k := 0; k < len(a.Operations); {
+		op := a.Operations[k]
+		switch op {
+		case 'M':
+			if w[i] == s[j] {
+				u++
+			} else {
+				fmt.Fprintf(&md,
+					"%d%c", u, s[j])
+				u = 0
+				nm++
+			}
+			i++
+			j++
+			k++
+		case 'I':
+			i++
+			nm++
+			k++
+		case 'D':
+			fmt.Fprintf(&md, "%d^", u)
+			u = 0
+			for k < len(a.Operations) && a.Operations[k] == 'D' {
+				md.WriteByte(s[j])
+				j++
+				nm++
+				k++
+			}
+		}
+	}
+	fmt.Fprintf(&md,
+		"%d", u)
+	return cigar.String(), nm, md.String()
+}
+func main() {
+	refs, reads, params := readInput()
+	var text strings.Builder
+	for i := range refs {
+		refs[i].Offset = text.Len()
+		text.WriteString(refs[i].Sequence)
+		if i+1 < len(refs) {
+			text.WriteByte('#')
+		}
+	}
+	joined := text.String()
+	forward := buildIndex(joined+"$",
+		params["OCC_INTERVAL"][0], params["SA_SAMPLE_INTERVAL"][0])
+	backward := buildIndex(reverse(joined)+"$",
+		params["OCC_INTERVAL"][0], 0)
+	var counters SearchCounters
+	mappings := make([]Mapping, len(reads))
+	var sam,
+		indexOut, coverage, variants, summary strings.Builder
+	sam.WriteString(samHeader(refs))
+	for i, read := range reads {
+		mappings[i] = mapRead(read,
+			refs, forward, backward, params, &counters)
+		line(&sam, "%s", samRecord(read, mappings[i], refs, params["MAX_ALT_HITS"][0]))
+	}
+	reportIndex(&indexOut,
+		refs, forward, backward, params)
+	depth, zeroStarts := make([][]int, len(refs)), make([][]int, len(refs))
+	pileup := make([][][2][4]int, len(refs))
+	for r, reference := range refs {
+		depth[r] = make([]int, len(reference.Sequence))
+		zeroStarts[r] = make([]int,
+			len(reference.Sequence))
+		pileup[r] = make([][2][4]int, len(reference.Sequence))
+	}
+	mapped, unique,
+		multi, trimmed, trimmedBases, short, nohit, forwardCount, reverseCount := 0, 0, 0, 0, 0, 0, 0, 0, 0
+	methods := map[string]int{}
+	referenceStats := make([][4]int,
+		len(refs))
+	lengthBins := map[int][3]int{}
+	minLength, maxLength, maxOriginal := len(reads[0].Bases),
+		0, 0
+	nReads, nBases, nMapped := 0, 0, 0
+	multiTargets := map[string]int{}
+	mapqHistogram, nmHistogram := map[int]int{},
+		map[int]int{}
+	aligned, mismatches := 0, 0
+	var substitutions [4][5]int
+	cycleAligned, cycleMismatches := make([]int,
+		101), make([]int, 101)
+	matchedQuality, mismatchQuality, matchedPairs, mismatchPairs := 0, 0, 0, 0
+	var qualityAligned,
+		qualityMismatch [5]int
+	var cigarCounts [4]int
+	insertionEvents, insertionBases, deletionEvents,
+		deletionBases := 0, 0, 0, 0
+	for ri, read := range reads {
+		m := mappings[ri]
+		minLength = min(minLength,
+			m.Length)
+		maxLength = max(maxLength, m.Length)
+		maxOriginal = max(maxOriginal, len(read.Bases))
+		if m.Trim > 0 {
+			trimmed++
+		}
+		trimmedBases += m.Trim
+		bin := m.Length / 10 * 10
+		binStats := lengthBins[bin]
+		binStats[0]++
+		containsN := strings.Contains(read.Bases,
+			"N")
+		if containsN {
+			nReads++
+			nBases += strings.Count(read.Bases, "N")
+		}
+		if !m.Mapped {
+			if m.Method == "SHORT" {
+				short++
+			} else {
+				nohit++
+			}
+			lengthBins[bin] = binStats
+			continue
+		}
+		mapped++
+		methods[m.Method]++
+		mapqHistogram[m.MapQ]++
+		binStats[1]++
+		if containsN {
+			nMapped++
+		}
+		a := m.Alignments[0]
+		referenceStats[a.R][0]++
+		if a.Strand == 0 {
+			forwardCount++
+			referenceStats[a.R][2]++
+		} else {
+			reverseCount++
+			referenceStats[a.R][3]++
+		}
+		isUnique := m.X0 == 1
+		if isUnique {
+			unique++
+			binStats[2]++
+			referenceStats[a.R][1]++
+		} else {
+			multi++
+			targets := map[int]bool{}
+			for _, other := range m.Alignments {
+				best := other.MM == a.MM
+				if m.Method == "SEED" {
+					best = other.Score == m.Score
+				}
+				if best {
+					targets[other.R] = true
+				}
+			}
+			var names []string
+			for r, reference := range refs {
+				if targets[r] {
+					names = append(names, reference.Name)
+				}
+			}
+			multiTargets[strings.Join(names,
+				"+")]++
+		}
+		lengthBins[bin] = binStats
+		_, nm, _ := describe(a, m.Core, refs, m.Trim)
+		nmHistogram[nm]++
+		cigarCounts[3] += m.Trim
+		if m.MapQ == 0 {
+			zeroStarts[a.R][a.Pos]++
+		}
+		i,
+			j := 0, a.Pos
+		w, reference := m.Core[a.Strand], refs[a.R].Sequence
+		for k := 0; k < len(a.Operations); k++ {
+			op := a.Operations[k]
+			switch op {
+			case 'M':
+				cigarCounts[0]++
+				cycle := i + 1
+				if a.Strand == 1 {
+					cycle = m.Length - i
+				}
+				quality := int(read.Quality[cycle-1]) - 33
+				match := w[i] == reference[j]
+				if m.MapQ >= params["COVERAGE_MIN_MAPQ"][0] {
+					depth[a.R][j]++
+					if w[i] != 'N' && quality >= params["VARIANTS"][1] {
+						base := strings.IndexByte("ACGT",
+							w[i])
+						pileup[a.R][j][a.Strand][base]++
+					}
+				}
+				if isUnique {
+					aligned++
+					cycleAligned[cycle]++
+					qb := min(quality/10,
+						4)
+					qualityAligned[qb]++
+					refBase, readBase := strings.IndexByte("ACGT", reference[j]), strings.IndexByte("ACGTN",
+						w[i])
+					substitutions[refBase][readBase]++
+					if match {
+						matchedPairs++
+						matchedQuality += quality
+					} else {
+						mismatches++
+						cycleMismatches[cycle]++
+						qualityMismatch[qb]++
+						mismatchPairs++
+						mismatchQuality += quality
+					}
+				}
+				i++
+				j++
+			case 'I':
+				cigarCounts[1]++
+				i++
+				if isUnique {
+					insertionBases++
+					if k == 0 || a.Operations[k-1] != 'I' {
+						insertionEvents++
+					}
+				}
+			case 'D':
+				cigarCounts[2]++
+				j++
+				if isUnique {
+					deletionBases++
+					if k == 0 || a.Operations[k-1] != 'D' {
+						deletionEvents++
+					}
+				}
+			}
+		}
+	}
+	window, mapq := params["COVERAGE_WINDOW"][0], params["COVERAGE_MIN_MAPQ"][0]
+	line(&coverage, "window %d min_mapq %d",
+		window, mapq)
+	for r, ref := range refs {
+		covered, total, maximum := 0, 0, 0
+		for _, d := range depth[r] {
+			if d > 0 {
+				covered++
+			}
+			total += d
+			maximum = max(maximum,
+				d)
+		}
+		line(&coverage, "reference %s length %d covered %d breadth %s mean_depth %s max_depth %d",
+			ref.Name, len(ref.Sequence), covered, ratio(covered, len(ref.Sequence)), ratio(total, len(ref.Sequence)),
+			maximum)
+		histogram := make([]int, maximum+1)
+		for _, d := range depth[r] {
+			histogram[d]++
+		}
+		parts := []string{"depth_histogram"}
+		for d, n := range histogram {
+			parts = append(parts, fmt.Sprintf("%d:%d", d, n))
+		}
+		line(&coverage, strings.Join(parts,
+			" "))
+		for first := 0; first < len(ref.Sequence); first += window {
+			last := min(first+window, len(ref.Sequence))
+			gc,
+				sum, maximum, zero, mapq0 := 0, 0, 0, 0, 0
+			for j := first; j < last; j++ {
+				if ref.Sequence[j] == 'G' || ref.Sequence[j] == 'C' {
+					gc++
+				}
+				d := depth[r][j]
+				sum += d
+				maximum = max(maximum,
+					d)
+				if d == 0 {
+					zero++
+				}
+				mapq0 += zeroStarts[r][j]
+			}
+			width := last - first
+			line(&coverage, "%s %d %d gc %s sum %d mean %s max %d zero %d mapq0 %d |%s",
+				ref.Name, first+1, last, ratio(gc, width), sum, ratio(sum, width), maximum, zero, mapq0, strings.Repeat("#",
+					10*sum/width))
+		}
+	}
+	line(&summary, "reads total %d trimmed %d trimmed_bases %d short %d", len(reads), trimmed, trimmedBases,
+		short)
+	line(&summary, "mapped %d rate %s unique %d multi %d unmapped %d", mapped, ratio(mapped,
+		len(reads)), unique, multi, len(reads)-mapped)
+	line(&summary, "unmapped short %d nohit %d", short,
+		nohit)
+	line(&summary, "method exact %d mismatch %d seed %d", methods["EXACT"], methods["MISMATCH"],
+		methods["SEED"])
+	line(&summary, "strand forward %d reverse %d", forwardCount, reverseCount)
+	for r, ref := range refs {
+		v := referenceStats[r]
+		line(&summary, "reference %s mapped %d unique %d forward %d reverse %d",
+			ref.Name, v[0], v[1], v[2], v[3])
+	}
+	line(&summary, "length_bins")
+	for lo := minLength / 10 * 10; lo <= maxLength; lo += 10 {
+		v := lengthBins[lo]
+		line(&summary,
+			"%d-%d reads %d mapped %d unique %d", lo, lo+9, v[0], v[1], v[2])
+	}
+	line(&summary, "n_reads %d n_bases %d mapped %d",
+		nReads, nBases, nMapped)
+	line(&summary, "multi_targets")
+	var targetNames []string
+	for name := range multiTargets {
+		targetNames = append(targetNames,
+			name)
+	}
+	sort.Strings(targetNames)
+	if len(targetNames) == 0 {
+		line(&summary, "none")
+	}
+	for _, name := range targetNames {
+		line(&summary,
+			"%s %d", name, multiTargets[name])
+	}
+	line(&summary, "mapq_histogram")
+	var mapqs []int
+	for q := range mapqHistogram {
+		mapqs = append(mapqs,
+			q)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(mapqs)))
+	for _, q := range mapqs {
+		line(&summary, "%d %d",
+			q, mapqHistogram[q])
+	}
+	line(&summary, "nm_histogram")
+	var nms []int
+	for nm := range nmHistogram {
+		nms = append(nms,
+			nm)
+	}
+	sort.Ints(nms)
+	for _, nm := range nms {
+		line(&summary, "%d %d", nm, nmHistogram[nm])
+	}
+	line(&summary,
+		"error_profile aligned_bases %d mismatches %d rate %s", aligned, mismatches, ratio(mismatches,
+			aligned))
+	line(&summary, "substitutions")
+	line(&summary, "ref A C G T N")
+	for i, c := range []byte("ACGT") {
+		v := substitutions[i]
+		line(&summary,
+			"%c %d %d %d %d %d", c, v[0], v[1], v[2], v[3], v[4])
+	}
+	line(&summary, "mismatch_by_cycle")
+	for cycle := 1; cycle <= maxOriginal; cycle++ {
+		line(&summary,
+			"cycle %d aligned %d mismatches %d rate %s", cycle, cycleAligned[cycle], cycleMismatches[cycle],
+			ratio(cycleMismatches[cycle], cycleAligned[cycle]))
+	}
+	line(&summary, "quality matched %d mean %s mismatched %d mean %s",
+		matchedPairs, ratio(matchedQuality, matchedPairs), mismatchPairs, ratio(mismatchQuality, mismatchPairs))
+	line(&summary,
+		"quality_bins")
+	ranges := []string{"0-9", "10-19", "20-29", "30-39", "40-"}
+	for i, name := range ranges {
+		line(&summary,
+			"%s aligned %d mismatches %d rate %s", name, qualityAligned[i], qualityMismatch[i], ratio(qualityMismatch[i],
+				qualityAligned[i]))
+	}
+	line(&summary, "cigar M %d I %d D %d S %d", cigarCounts[0], cigarCounts[1],
+		cigarCounts[2], cigarCounts[3])
+	line(&summary, "indels insertions %d %d deletions %d %d", insertionEvents,
+		insertionBases, deletionEvents, deletionBases)
+	line(&summary, "search dfs_calls %d dfs_nodes %d dfs_leaves %d dfs_positions %d",
+		counters.Calls, counters.Nodes, counters.Leaves, counters.Hits)
+	line(&summary, "seeds reads %d seeds %d with_n %d repetitive %d without_hit %d candidates %d passing %d",
+		counters.SeedReads, counters.Seeds, counters.WithN, counters.Repetitive, counters.WithoutHit,
+		counters.Candidates, counters.Passing)
+	must(os.MkdirAll("output", 0755))
+	for path, s := range map[string]*strings.Builder{"alignments.sam": &sam,
+		"coverage.txt": &coverage, "variants.txt": &variants, "index_stats.txt": &indexOut, "summary.txt": &summary} {
+		write("output/"+path,
+			s)
+	}
+}
+func samRecord(read Read, m Mapping, refs []Reference, maxAlternatives int) string {
+	if !m.Mapped {
+		return strings.Join([]string{read.Name,
+			"4", "*", "0", "0", "*", "*", "0", "0", read.Bases, read.Quality, "YM:Z:" + m.Method}, "\t")
+	}
+	a := m.Alignments[0]
+	cigar,
+		nm, md := describe(a, m.Core, refs, m.Trim)
+	flag := 0
+	bases, quality := read.Bases, read.Quality
+	if a.Strand == 1 {
+		flag = 16
+		bases = reverseComplement(bases)
+		quality = reverse(quality)
+	}
+	fields := []string{read.Name,
+		fmt.Sprint(flag), refs[a.R].Name, fmt.Sprint(a.Pos + 1), fmt.Sprint(m.MapQ), cigar, "*", "0", "0", bases,
+		quality, fmt.Sprintf("NM:i:%d", nm), "MD:Z:" + md, fmt.Sprintf("AS:i:%d", m.Score), fmt.Sprintf("X0:i:%d",
+			m.X0), fmt.Sprintf("X1:i:%d", m.X1), "YM:Z:" + m.Method}
+	others := len(m.Alignments) - 1
+	if others > 0 && others <= maxAlternatives {
+		var xa strings.Builder
+		xa.WriteString("XA:Z:")
+		for _, a := range m.Alignments[1:] {
+			cigar, nm, _ := describe(a, m.Core, refs, m.Trim)
+			strand := "+"
+			if a.Strand == 1 {
+				strand = "-"
+			}
+			fmt.Fprintf(&xa,
+				"%s,%s%d,%s,%d;", refs[a.R].Name, strand, a.Pos+1, cigar, nm)
+		}
+		fields = append(fields, xa.String())
+	}
+	return strings.Join(fields,
+		"\t")
+}

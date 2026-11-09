@@ -1,0 +1,655 @@
+		Drift: n("DRIFT", 0), Expiry: n("EXPIRY", 0), MaxReorg: n("MAXREORG", 0), Ban: n("BAN", 0),
+type Entry struct {
+	Transaction  *Transaction
+	Fee, Arrival int
+}
+func (n *Node) refresh() {
+	n.MainChain = chainTo(n.Tip)
+	n.Confirmed = map[string]int{}
+	for _, r := range n.MainChain {
+		for _, t := range r.Block.Transactions {
+			n.Confirmed[t.Txid] = r.Block.Height
+		}
+	}
+}
+func (n *Node) log(parts ...any)              { n.Logs = append(n.Logs, fmt.Sprint(n.Now)+" "+line(parts...)) }
+func (n *Node) height() int                   { return n.Tip.Block.Height + 1 }
+func (n *Node) reward(h int) int              { return reward(h, n.Settings.InitialReward, n.Settings.Halving) }
+func (n *Node) difficulty(parent *BlockRecord) int {
+	return requiredDifficulty(parent, n.Settings.InitialDifficulty, n.Settings.Retarget, n.Settings.Target)
+}
+func (n *Node) mature(c Coin) bool { return c.Mature(n.height(), n.Settings.Maturity) }
+func (n *Node) locked() map[Reference]bool {
+	locked := map[Reference]bool{}
+	for _, e := range n.Mempool {
+		for _, r := range e.Transaction.Inputs {
+			locked[r] = true
+		}
+	}
+	return locked
+}
+func (n *Node) priority() []*Entry {
+	entries := append([]*Entry(nil), n.Mempool...)
+	sort.Slice(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		x, y := a.Fee*b.Transaction.Size, b.Fee*a.Transaction.Size
+		if x != y {
+			return x > y
+		}
+		return a.Transaction.Txid < b.Transaction.Txid
+	})
+	return entries
+}
+func (n *Node) find(id string) *Entry {
+	for _, e := range n.Mempool {
+		if e.Transaction.Txid == id {
+			return e
+		}
+	}
+	return nil
+}
+func (n *Node) acceptance(t *Transaction) Acceptance {
+	if t.Coinbase {
+		return Acceptance{Reason: "coinbase"}
+	}
+	if _, ok := n.Confirmed[t.Txid]; ok || n.find(t.Txid) != nil {
+		return Acceptance{Reason: "duplicate"}
+	}
+	reason, fee := checkTransaction(t, n.Tip.Utxo, nil, n.height(), n.Settings.Maturity, n.Owners)
+	if reason != "" {
+		return Acceptance{Reason: reason}
+	}
+	if fee*1000 < n.Settings.MinFee*t.Size {
+		return Acceptance{Reason: "low-fee"}
+	}
+	inputs := map[Reference]bool{}
+	for _, r := range t.Inputs {
+		inputs[r] = true
+	}
+	result := Acceptance{Fee: fee}
+	total := 0
+	higher := true
+	for _, e := range n.Mempool {
+		conflict := false
+		for _, r := range e.Transaction.Inputs {
+			if inputs[r] {
+				conflict = true
+				break
+			}
+		}
+		if conflict {
+			result.Conflicts = append(result.Conflicts, e)
+			total += e.Fee
+			if fee*e.Transaction.Size <= e.Fee*t.Size {
+				higher = false
+			}
+		}
+	}
+	if len(result.Conflicts) > 0 && (fee <= total || !higher) {
+		return Acceptance{Reason: "conflict"}
+	}
+	return result
+}
+func (n *Node) recordDrop(id, reason string) {
+	n.Dropped[id] = reason
+	n.log("DROP", short(id), reason)
+}
+func (n *Node) drop(e *Entry, reason string) {
+	for i, x := range n.Mempool {
+		if x == e {
+			n.Mempool = append(n.Mempool[:i], n.Mempool[i+1:]...)
+			break
+		}
+	}
+	n.recordDrop(e.Transaction.Txid, reason)
+}
+func (n *Node) register(t *Transaction, a Acceptance, arrival int) {
+	for _, e := range a.Conflicts {
+		n.drop(e, "replaced")
+	}
+	n.Mempool = append(n.Mempool, &Entry{t, a.Fee, arrival})
+	if len(n.Mempool) > n.Settings.MaxMempool {
+		order := n.priority()
+		n.drop(order[len(order)-1], "mempool-full")
+	}
+}
+func (n *Node) switchTip(target *BlockRecord) {
+	old := n.Tip
+	fork := forkPoint(old, target)
+	d, c := old.Block.Height-fork.Block.Height, target.Block.Height-fork.Block.Height
+	if d > n.Settings.MaxReorg {
+		n.log("REFUSE", target.Block.Height, short(target.Block.Hash), "work", target.Work, "fork", fork.Block.Height, "depth", d)
+		return
+	}
+	returned := []*Transaction{}
+	for _, r := range n.MainChain[fork.Block.Height+1:] {
+		returned = append(returned, r.Block.Transactions[1:]...)
+	}
+	n.Tip = target
+	n.refresh()
+	if d == 0 {
+		n.log("TIP", target.Block.Height, short(target.Block.Hash), "work", target.Work)
+	} else {
+		n.log("REORG", target.Block.Height, short(target.Block.Hash), "work", target.Work, "fork", fork.Block.Height, "disconnected", d, "connected", c)
+		n.Reorganizations = append(n.Reorganizations, Reorganization{n.Now, fork.Block.Height, d, c, old.Block.Hash, target.Block.Hash})
+	}
+	previous := n.Mempool
+	n.Mempool = nil
+	for _, t := range returned {
+		if _, ok := n.Confirmed[t.Txid]; ok {
+			continue
+		}
+		a := n.acceptance(t)
+		if a.Reason != "" {
+			n.recordDrop(t.Txid, a.Reason)
+		} else {
+			n.log("RETURN", short(t.Txid))
+			n.register(t, a, n.Now)
+		}
+	}
+	for _, e := range previous {
+		t := e.Transaction
+		if _, ok := n.Confirmed[t.Txid]; ok {
+			continue
+		}
+		a := n.acceptance(t)
+		if a.Reason != "" {
+			n.recordDrop(t.Txid, a.Reason)
+		} else {
+			n.register(t, a, e.Arrival)
+		}
+	}
+}
+func (n *Node) process(f, texts []string) {
+	n.Now = integer(f[0])
+	for _, e := range append([]*Entry(nil), n.Mempool...) {
+		if n.Now-e.Arrival >= n.Settings.Expiry {
+			n.drop(e, "expired")
+		}
+	}
+	default:
+		p := n.Peers[f[2]]
+		if p == nil {
+			p = &Peer{Name: f[2]}
+			n.Peers[p.Name] = p
+		}
+		if p.Score >= n.Settings.Ban {
+			p.Ignored++
+			n.log("IGNORE", p.Name, f[1])
+			return
+		}
+		if f[1] == "TX" {
+			n.receiveTransaction(p, parseTransaction(f[3]))
+		} else {
+			n.receiveBlock(p, parseBlock(f, texts))
+		}
+	}
+}
+func (n *Node) receiveBlock(p *Peer, b *Block) {
+	duplicate := n.Records[b.Hash] != nil || n.Rejected[b.Hash]
+	for _, o := range n.Orphans {
+		if o.Block.Hash == b.Hash {
+			duplicate = true
+		}
+	}
+	if duplicate {
+		n.log("BLOCK", p.Name, b.Height, short(b.Hash), "rejected", "duplicate")
+		p.RejectedBlocks++
+		n.tally("block", "duplicate")
+		return
+	}
+	reason := contextFreeError(b, n.Settings.MaxBlock)
+	if reason == "" && n.Rejected[b.Previous] {
+		reason = "bad-parent"
+	}
+	if reason != "" {
+		n.rejectBlock("BLOCK", b, p, reason)
+		n.resolveOrphans(b.Hash)
+		return
+	}
+	if n.Records[b.Previous] == nil {
+		n.Orphans = append(n.Orphans, &Orphan{b, p})
+		p.Orphans++
+		n.log("BLOCK", p.Name, b.Height, short(b.Hash), "orphan", "parent", short(b.Previous))
+		if len(n.Orphans) > n.Settings.MaxOrphans {
+			evicted := n.Orphans[0]
+			n.Orphans = n.Orphans[1:]
+			n.log("EVICT", short(evicted.Block.Hash), "orphan-limit")
+		}
+		return
+	}
+	n.connectBlock("BLOCK", b, p)
+	n.resolveOrphans(b.Hash)
+}
+func (n *Node) validateBlock(b *Block, p *BlockRecord) (string, Utxo, []int) {
+	if b.Height != p.Block.Height+1 {
+		return "bad-height", nil, nil
+	}
+	if b.Difficulty != n.difficulty(p) {
+		return "bad-difficulty", nil, nil
+	}
+	if b.Timestamp <= medianTime(p) {
+		return "time-too-old", nil, nil
+	}
+	if b.Timestamp > n.Now+n.Settings.Drift {
+		return "time-too-new", nil, nil
+	}
+	u := copyUtxo(p.Utxo)
+	spent := map[Reference]bool{}
+	fees := []int{}
+	total := 0
+	for i, t := range b.Transactions[1:] {
+		reason, fee := checkTransaction(t, u, spent, b.Height, n.Settings.Maturity, n.Owners)
+		if reason != "" {
+			return fmt.Sprintf("%s tx %d", reason, i+2), nil, nil
+		}
+		for _, ref := range t.Inputs {
+			spent[ref] = true
+		}
+		applyTransaction(u, t, b.Height)
+		fees = append(fees, fee)
+		total += fee
+	}
+	cb := b.Transactions[0]
+	for _, out := range cb.Outputs {
+		if n.Owners[out.Address] == nil || out.Amount == 0 {
+			return "bad-output tx 1", nil, nil
+		}
+	}
+	if cb.OutputTotal() > n.reward(b.Height)+total {
+		return "bad-coinbase", nil, nil
+	}
+	applyTransaction(u, cb, b.Height)
+	return "", u, fees
+}
+func (n *Node) connectBlock(kind string, b *Block, p *Peer) {
+	parent := n.Records[b.Previous]
+	reason, u, fees := n.validateBlock(b, parent)
+	if reason != "" {
+		n.rejectBlock(kind, b, p, reason)
+		return
+	}
+	r := newRecord(b, parent, u, fees, p.Name)
+	n.Records[b.Hash] = r
+	p.AcceptedBlocks++
+	n.log(kind, p.Name, b.Height, short(b.Hash), "accepted", "work", r.Work)
+	if r.Work > n.Tip.Work {
+		n.switchTip(r)
+	}
+}
+func (n *Node) resolveOrphans(start string) {
+	queue := []string{start}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		children := []*Orphan{}
+		remaining := []*Orphan{}
+		for _, o := range n.Orphans {
+			if o.Block.Previous == parent {
+				children = append(children, o)
+			} else {
+				remaining = append(remaining, o)
+			}
+		}
+		n.Orphans = remaining
+		for _, o := range children {
+			if n.Rejected[parent] {
+				n.rejectBlock("UNORPHAN", o.Block, o.Peer, "bad-parent")
+			} else {
+				n.connectBlock("UNORPHAN", o.Block, o.Peer)
+			}
+			queue = append(queue, o.Block.Hash)
+		}
+	}
+}
+func category(coinbase bool, height int) string {
+	if height == 0 {
+		return "genesis"
+	}
+	if coinbase {
+		return "coinbase"
+	}
+	return "payment"
+}
+func (n *Node) chainLines() []string {
+	tip := n.Tip
+	lines := []string{line("TIP", tip.Block.Height, tip.Block.Hash, "work", tip.Work, "stored", len(n.Records), "orphans", len(n.Orphans))}
+	main := map[string]bool{}
+	for _, r := range n.MainChain {
+		b := r.Block
+		main[b.Hash] = true
+		miner := "-"
+		if b.Height > 0 {
+			miner = n.miner(r)
+		}
+		lines = append(lines, line("BLOCK", b.Height, b.Hash, "prev", short(b.Previous), "time", b.Timestamp,
+			"bits", b.Difficulty, "nonce", b.Nonce, "txs", len(b.Transactions), "size", b.Size(),
+			"fees", r.Fees, "miner", miner, "source", r.Source, "work", r.Work))
+	}
+	stale := []*BlockRecord{}
+	for hash, r := range n.Records {
+		if !main[hash] {
+			stale = append(stale, r)
+		}
+	}
+	sort.Slice(stale, func(i, j int) bool {
+		a, b := stale[i].Block, stale[j].Block
+		if a.Height != b.Height {
+			return a.Height < b.Height
+		}
+		return a.Hash < b.Hash
+	})
+	for _, r := range stale {
+		b := r.Block
+		lines = append(lines, line("STALE", b.Height, b.Hash, "prev", short(b.Previous), "source", r.Source, "work", r.Work))
+	}
+	for _, r := range n.Reorganizations {
+		lines = append(lines, line("REORG", r.Time, "fork", r.Fork, "disconnected", r.Disconnected, "connected",
+			r.Connected, "old", short(r.Old), "new", short(r.New)))
+	}
+	for i, e := range n.priority() {
+		lines = append(lines, line("MEMPOOL", i+1, e.Transaction.Txid, "fee", e.Fee, "size", e.Transaction.Size, "time", e.Arrival))
+	}
+	return lines
+}
+func (n *Node) balanceLines() []string {
+	lines := []string{"wallet,address,balance,immature,locked,incoming,utxos"}
+	locked := n.locked()
+	for _, w := range n.Wallets {
+		balance, immature, amount, incoming, count := 0, 0, 0, 0, 0
+		for r, c := range n.Tip.Utxo {
+			if c.Address == w.Address {
+				balance += c.Amount
+				count++
+				if !n.mature(c) {
+					immature += c.Amount
+				}
+				if locked[r] {
+					amount += c.Amount
+				}
+			}
+		}
+		for _, e := range n.Mempool {
+			for _, o := range e.Transaction.Outputs {
+				if o.Address == w.Address {
+					incoming += o.Amount
+				}
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s,%s,%d,%d,%d,%d,%d", w.Name, w.Address, balance, immature, amount, incoming, count))
+	}
+	return lines
+}
+func (n *Node) utxoLines() []string {
+	refs := []Reference{}
+	for r := range n.Tip.Utxo {
+		refs = append(refs, r)
+	}
+	sort.Slice(refs, func(i, j int) bool { return referenceLess(refs[i], refs[j]) })
+	locked := n.locked()
+	lines, hashes := []string{}, []string{}
+	total := 0
+	for _, r := range refs {
+		c := n.Tip.Utxo[r]
+		state := "free"
+		if !n.mature(c) {
+			state = "immature"
+		} else if locked[r] {
+			state = "locked"
+		}
+		text := line(r.String(), n.Owners[c.Address].Name, c.Amount, "height", c.Height, category(c.Coinbase, c.Height), state)
+		lines = append(lines, text)
+		hashes = append(hashes, digest(text))
+		total += c.Amount
+	}
+	return append(lines, line("TOTAL", len(refs), total), line("ROOT", merkleRoot(hashes)))
+}
+func (n *Node) historyLines() []string {
+	transactions := map[string]*Transaction{}
+	for _, r := range n.MainChain {
+		for _, t := range r.Block.Transactions {
+			transactions[t.Txid] = t
+		}
+	}
+	lines := []string{}
+	for _, w := range n.Wallets {
+		lines = append(lines, line("WALLET", w.Name, w.Address))
+		count, spentTotal, receivedTotal, balance, pending := 0, 0, 0, 0, 0
+		for _, r := range n.MainChain {
+			for _, t := range r.Block.Transactions {
+				spent, received := 0, 0
+				involved := false
+				for _, ref := range t.Inputs {
+					o := transactions[ref.Txid].Outputs[ref.Index]
+					if o.Address == w.Address {
+						spent += o.Amount
+						involved = true
+					}
+				}
+				for _, o := range t.Outputs {
+					if o.Address == w.Address {
+						received += o.Amount
+						involved = true
+					}
+				}
+				if involved {
+					count++
+					spentTotal += spent
+					receivedTotal += received
+					balance += received - spent
+					lines = append(lines, line(r.Block.Height, short(t.Txid), category(t.Coinbase, r.Block.Height),
+						"spent", spent, "received", received, "net", fmt.Sprintf("%+d", received-spent),
+						"balance", balance))
+				}
+			}
+		}
+		for _, e := range n.priority() {
+			t := e.Transaction
+			spent, received := 0, 0
+			for _, ref := range t.Inputs {
+				c := n.Tip.Utxo[ref]
+				if c.Address == w.Address {
+					spent += c.Amount
+				}
+			}
+			for _, o := range t.Outputs {
+				if o.Address == w.Address {
+					received += o.Amount
+				}
+			}
+			if spent != 0 || received != 0 {
+				pending++
+				lines = append(lines, line("pending", short(t.Txid), "spent", spent, "received", received, "net", fmt.Sprintf("%+d", received-spent)))
+			}
+		}
+		lines = append(lines, line("END", w.Name, "txs", count, "spent", spentTotal, "received", receivedTotal, "balance", balance, "pending", pending))
+	}
+	return lines
+}
+	events := readLines("input/events.txt")
+	for i := 0; i < len(events); i++ {
+		f := strings.Fields(events[i])
+		count := 0
+		if f[1] == "BLOCK" {
+			count = integer(f[9])
+		}
+		n.process(f, events[i+1:i+1+count])
+		i += count
+	}
+	writeLines("log.txt", n.Logs)
+	writeLines("chain.txt", n.chainLines())
+	writeLines("balances.csv", n.balanceLines())
+	writeLines("utxo.txt", n.utxoLines())
+	writeLines("history.txt", n.historyLines())
+type BlockRecord struct {
+	Block           *Block
+	Parent          *BlockRecord
+	Utxo            Utxo
+	TransactionFees []int
+	Fees, Work      int
+	Source          string
+}
+func newRecord(b *Block, p *BlockRecord, u Utxo, fees []int, source string) *BlockRecord {
+	r := &BlockRecord{Block: b, Parent: p, Utxo: u, TransactionFees: fees, Source: source, Work: 1}
+	for _, f := range fees {
+		r.Fees += f
+	}
+	if p != nil {
+		r.Work = p.Work + (1 << uint(4*b.Difficulty))
+	}
+	return r
+}
+func ancestor(r *BlockRecord, height int) *BlockRecord {
+	for r.Block.Height > height {
+		r = r.Parent
+	}
+	return r
+}
+func chainTo(r *BlockRecord) []*BlockRecord {
+	records := []*BlockRecord{}
+	for ; r != nil; r = r.Parent {
+		records = append(records, r)
+	}
+	for i, j := 0, len(records)-1; i < j; i, j = i+1, j-1 {
+		records[i], records[j] = records[j], records[i]
+	}
+	return records
+}
+func forkPoint(a, b *BlockRecord) *BlockRecord {
+	h := min(a.Block.Height, b.Block.Height)
+	a, b = ancestor(a, h), ancestor(b, h)
+	for a != b {
+		a, b = a.Parent, b.Parent
+	}
+	return a
+}
+type Block struct {
+	Height                       int
+	Previous, Merkle             string
+	Timestamp, Difficulty, Nonce int
+	Transactions                 []*Transaction
+	Hash                         string
+}
+func newBlock(height int, previous, root string, timestamp, difficulty, nonce int, txs []*Transaction) *Block {
+	return &Block{height, previous, root, timestamp, difficulty, nonce, txs, digest(headerText(height, previous, root, timestamp, difficulty, nonce))}
+}
+func headerText(h int, p, m string, t, d, n int) string {
+	return fmt.Sprintf("%d|%s|%s|%d|%d|%d", h, p, m, t, d, n)
+}
+func (b *Block) Size() int {
+	total := 0
+	for _, t := range b.Transactions[1:] {
+		total += t.Size
+	}
+	return total
+}
+func (b *Block) Txids() []string {
+	ids := []string{}
+	for _, t := range b.Transactions {
+		ids = append(ids, t.Txid)
+	}
+	return ids
+}
+func parseBlock(fields, texts []string) *Block {
+	txs := []*Transaction{}
+	for _, text := range texts {
+		txs = append(txs, parseTransaction(text))
+	}
+	return newBlock(integer(fields[3]), fields[4], fields[5], integer(fields[6]), integer(fields[7]), integer(fields[8]), txs)
+}
+func contextFreeError(b *Block, maxSize int) string {
+	if !strings.HasPrefix(b.Hash, strings.Repeat("0", b.Difficulty)) {
+		return "bad-pow"
+	}
+	if merkleRoot(b.Txids()) != b.Merkle {
+		return "bad-merkle"
+	}
+	if !b.Transactions[0].Coinbase || b.Transactions[0].Height != b.Height {
+		return "bad-structure"
+	}
+	for _, t := range b.Transactions[1:] {
+		if t.Coinbase {
+			return "bad-structure"
+		}
+	}
+	if b.Size() > maxSize {
+		return "too-large"
+	}
+	return ""
+}
+type Reference struct {
+	Txid  string
+	Index int
+}
+func (r Reference) String() string { return fmt.Sprintf("%s:%d", r.Txid, r.Index) }
+func referenceLess(a, b Reference) bool {
+	if a.Txid != b.Txid {
+		return a.Txid < b.Txid
+	}
+	return a.Index < b.Index
+}
+type Output struct {
+	Address string
+	Amount  int
+}
+type Coin struct {
+	Output
+	Height   int
+	Coinbase bool
+}
+type Utxo map[Reference]Coin
+func (t *Transaction) OutputTotal() int {
+	total := 0
+	for _, out := range t.Outputs {
+		total += out.Amount
+	}
+	return total
+}
+func (c Coin) Mature(height, maturity int) bool {
+	return !c.Coinbase || c.Height == 0 || height >= c.Height+maturity
+}
+func checkTransaction(t *Transaction, utxo Utxo, spent map[Reference]bool, height, maturity int, owners map[string]*Wallet) (string, int) {
+	for _, out := range t.Outputs {
+		if owners[out.Address] == nil || out.Amount == 0 {
+			return "bad-output", 0
+		}
+	}
+	seen := map[Reference]bool{}
+	total := 0
+	for i, ref := range t.Inputs {
+		if spent[ref] || seen[ref] {
+			return "double-spend", 0
+		}
+		c, ok := utxo[ref]
+		if !ok {
+			return "missing-input", 0
+		}
+		if !c.Mature(height, maturity) {
+			return "immature", 0
+		}
+		if t.Signatures[i] != sign(owners[c.Address].Secret, i, t.Body) {
+			return "bad-sig", 0
+		}
+		seen[ref] = true
+		total += c.Amount
+	}
+	if total < t.OutputTotal() {
+		return "overspend", 0
+	}
+	return "", total - t.OutputTotal()
+}
+func applyTransaction(utxo Utxo, t *Transaction, height int) {
+	for _, ref := range t.Inputs {
+		delete(utxo, ref)
+	}
+	for j, out := range t.Outputs {
+		utxo[Reference{t.Txid, j}] = Coin{out, height, t.Coinbase}
+	}
+}
+func copyUtxo(source Utxo) Utxo {
+	target := Utxo{}
+	for k, v := range source {
+		target[k] = v
+	}
+	return target
+}

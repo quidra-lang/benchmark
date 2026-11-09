@@ -1,0 +1,504 @@
+const Allocator = std.mem.Allocator;
+const Text = []const u8;
+const Int = i64;
+const Error = Allocator.Error;
+
+fn equal(a: Text, b: Text) bool {
+    return std.mem.eql(u8, a, b);
+}
+fn number(text: Text) Int {
+    return std.fmt.parseInt(Int, text, 10) catch unreachable;
+fn words(gpa: Allocator, text: Text) Error![]const Text {
+    var result: std.ArrayList(Text) = .empty;
+    var iterator = std.mem.tokenizeScalar(u8, text, ' ');
+    while (iterator.next()) |item| try result.append(gpa, item);
+    return result.items;
+}
+const Builder = struct {
+    gpa: Allocator,
+    bytes: std.ArrayList(u8) = .empty,
+    fn add(self: *Builder, text: Text) Error!void {
+        try self.bytes.appendSlice(self.gpa, text);
+    }
+    fn print(self: *Builder, comptime format: Text, args: anytype) Error!void {
+        const text = try std.fmt.allocPrint(self.gpa, format, args);
+        defer self.gpa.free(text);
+        try self.add(text);
+    }
+    fn line(self: *Builder, comptime format: Text, args: anytype) Error!void {
+        try self.print(format ++ "\n", args);
+fn member(items: []const Text, value: Text) bool {
+    for (items) |item| if (equal(item, value)) return true;
+    return false;
+const ActionKind = enum { assign, raise, send, cancel, log };
+const Action = struct {
+    kind: ActionKind,
+    name: Text = "",
+    text: Text = "",
+    delay: Int = 0,
+    value: ?*Expression = null,
+};
+fn parseActions(gpa: Allocator, text: Text) Error![]const Action {
+    var result: std.ArrayList(Action) = .empty;
+    if (text.len == 0) return result.items;
+    var iterator = std.mem.splitSequence(u8, text, "; ");
+    while (iterator.next()) |item| {
+        var action: Action = undefined;
+        } else if (std.mem.startsWith(u8, item, "log ")) {
+            action = .{ .kind = .log };
+            const tail = item[4..];
+            if (tail[0] == '"') {
+                const end = std.mem.findScalar(u8, tail[1..], '"').? + 1;
+                action.text = tail[1..end];
+                if (end + 1 < tail.len) action.value = try parseExpression(gpa, tail[end + 2 ..]);
+            } else action.value = try parseExpression(gpa, tail);
+        } else {
+        }
+        try result.append(gpa, action);
+    }
+    return result.items;
+const StateKind = enum { root, state, parallel, final, history };
+const State = struct {
+    name: Text = "",
+    kind: StateKind,
+    parent: usize = 0,
+    depth: usize = 0,
+    initialName: Text = "",
+    defaultName: Text = "",
+    initial: usize = 0,
+    defaultTarget: usize = 0,
+    deep: bool = false,
+    children: std.ArrayList(usize) = .empty,
+    childStates: std.ArrayList(usize) = .empty,
+    entries: std.ArrayList([]const Action) = .empty,
+    exits: std.ArrayList([]const Action) = .empty,
+    transitions: std.ArrayList(*Transition) = .empty,
+    history: ?[]const usize = null,
+    entered: Int = 0,
+    taken: Int = 0,
+    dwell: Int = 0,
+    entryTime: Int = 0,
+};
+const TriggerKind = enum { event, timer, always };
+const Mode = enum { internal, external, local };
+const Transition = struct {
+    source: usize,
+    target: ?usize = null,
+    targetName: Text = "",
+    kind: TriggerKind = .event,
+    mode: Mode = .internal,
+    descriptors: []const Text = &.{},
+    delay: Int = 0,
+    guard: ?*Expression = null,
+    actions: []const Action = &.{},
+};
+const Definition = struct { text: Text, line: usize, kind: Text = "", state: usize = 0, problem: ?Text = null };
+const Event = struct { name: Text = "", value: Int = 0 };
+const Reservation = struct { due: Int, order: Int = 0, timer: ?*Transition = null, event: Event = .{} };
+const Trigger = struct { kind: TriggerKind = .event, timer: ?*Transition = null, event: Event = .{} };
+const Selected = struct { transition: *Transition, scope: usize = 0, exits: []bool };
+
+const Chart = struct {
+    gpa: Allocator,
+    out: *Builder,
+    states: std.ArrayList(*State) = .empty,
+    names: std.StringHashMapUnmanaged(usize) = .empty,
+    variables: std.StringHashMapUnmanaged(Int) = .empty,
+    variableNames: std.ArrayList(Text) = .empty,
+    document: std.ArrayList(usize) = .empty,
+    active: []bool = &.{},
+    queue: std.ArrayList(Event) = .empty,
+    queueHead: usize = 0,
+    reservations: std.ArrayList(Reservation) = .empty,
+    time: Int = 0,
+    creation: Int = 0,
+    data: Int = 0,
+    macrosteps: Int = 0,
+    microsteps: Int = 0,
+    trace: bool = false,
+    halted: bool = false,
+    fn makeSet(self: *Chart) Error![]bool {
+        const result = try self.gpa.alloc(bool, self.states.items.len);
+        @memset(result, false);
+        return result;
+    fn compound(self: *Chart, id: usize) bool {
+        return id == 0 or self.states.items[id].kind == .state and self.states.items[id].childStates.items.len > 0;
+    }
+    fn parallel(self: *Chart, id: usize) bool {
+        return self.states.items[id].kind == .parallel and self.states.items[id].childStates.items.len > 0;
+    }
+    fn problem(self: *Chart, comptime format: Text, args: anytype) Error!?Text {
+        return try std.fmt.allocPrint(self.gpa, format, args);
+    }
+    fn reference(self: *Chart, expression: ?*const Expression) Error!?Text {
+        const e = expression orelse return null;
+    fn actionReferences(self: *Chart, actions: []const Action) Error!?Text {
+        for (actions) |action| {
+            if (action.kind == .assign and !self.variables.contains(action.name)) return self.problem("unknown variable {s}", .{action.name});
+            if (try self.reference(action.value)) |message| return message;
+        }
+        return null;
+    fn parseTransition(self: *Chart, text: Text) Error!*Transition {
+        const endSource = std.mem.findScalar(u8, text[3..], ' ').? + 3;
+        const transition = try self.gpa.create(Transition);
+        transition.* = .{ .source = self.names.get(text[3..endSource]).? };
+        var tail = text[endSource + 1 ..];
+        var bracket: usize = 0;
+        var i: usize = 0;
+        while (i + 2 < tail.len) : (i += 1) {
+            if (tail[i] == '[') bracket += 1;
+            if (tail[i] == ']') bracket -= 1;
+            if (bracket == 0 and equal(tail[i .. i + 3], " / ")) {
+                transition.actions = try parseActions(self.gpa, tail[i + 3 ..]);
+                tail = tail[0..i];
+                break;
+            }
+        }
+        if (std.mem.find(u8, tail, " [")) |start| {
+            const end = std.mem.findScalar(u8, tail[start + 2 ..], ']').? + start + 2;
+            transition.guard = try parseExpression(self.gpa, tail[start + 2 .. end]);
+            tail = try std.mem.concat(self.gpa, u8, &.{ tail[0..start], tail[end + 1 ..] });
+        }
+        for ([_]Text{ " -> ", " ~> " }) |arrow| {
+            if (std.mem.find(u8, tail, arrow)) |position| {
+                transition.mode = if (equal(arrow, " -> ")) .external else .local;
+                transition.targetName = tail[position + 4 ..];
+                transition.target = self.names.get(transition.targetName);
+                tail = tail[0..position];
+                break;
+            }
+        }
+        if (equal(tail, "always")) {
+            transition.kind = .always;
+        } else if (std.mem.startsWith(u8, tail, "after ")) {
+            transition.kind = .timer;
+            transition.delay = number(tail[6..]);
+        } else {
+            var descriptors: std.ArrayList(Text) = .empty;
+            var iterator = std.mem.splitScalar(u8, tail, '|');
+            while (iterator.next()) |descriptor| try descriptors.append(self.gpa, descriptor);
+            transition.descriptors = descriptors.items;
+        }
+        return transition;
+    }
+    fn visit(self: *Chart, id: usize) Error!void {
+        try self.document.append(self.gpa, id);
+        for (self.states.items[id].children.items) |child| try self.visit(child);
+    }
+    fn define(self: *Chart, definitions: []Definition) Error!bool {
+        const root = try self.gpa.create(State);
+        root.* = .{ .kind = .root };
+        try self.states.append(self.gpa, root);
+        for (definitions) |*definition| {
+            const fields = try words(self.gpa, definition.text);
+            definition.kind = fields[0];
+            if (member(&.{ "state", "parallel", "final", "history" }, definition.kind)) {
+                const name = fields[1];
+                if (self.names.contains(name)) {
+                    definition.problem = try self.problem("duplicate state {s}", .{name});
+                    continue;
+                }
+                const parentName = if (fields.len > 2 and !equal(fields[2], "initial")) fields[2] else "";
+                var parent: usize = 0;
+                if (parentName.len > 0) {
+                    parent = self.names.get(parentName) orelse {
+                        definition.problem = try self.problem("unknown state {s}", .{parentName});
+                        continue;
+                    };
+                    if (self.states.items[parent].kind == .final or self.states.items[parent].kind == .history) {
+                        definition.problem = try self.problem("{s} cannot have children", .{parentName});
+                        continue;
+                    }
+                }
+                const state = try self.gpa.create(State);
+                state.* = .{ .name = name, .kind = std.meta.stringToEnum(StateKind, definition.kind).?, .parent = parent, .depth = self.states.items[parent].depth + 1 };
+                if (state.kind == .state) {
+                    for (fields[2..], 2..) |field, index| if (equal(field, "initial")) {
+                        state.initialName = fields[index + 1];
+                        break;
+                    };
+                }
+                definition.state = self.states.items.len;
+                try self.names.put(self.gpa, name, definition.state);
+                try self.states.append(self.gpa, state);
+                try self.states.items[parent].children.append(self.gpa, definition.state);
+                if (state.kind != .history) try self.states.items[parent].childStates.append(self.gpa, definition.state);
+            } else if (equal(definition.kind, "var")) {
+            }
+        }
+        for (definitions) |*definition| {
+            if (definition.problem != null) continue;
+            const fields = try words(self.gpa, definition.text);
+            if (equal(definition.kind, "state")) {
+                const state = self.states.items[definition.state];
+                if (state.initialName.len > 0) {
+                }
+            } else if (member(&.{ "final", "history" }, definition.kind)) {
+            } else if (member(&.{ "entry", "exit" }, definition.kind)) {
+            } else if (equal(definition.kind, "on")) {
+                if (self.names.get(fields[1])) |id| {
+                    const state = self.states.items[id];
+                    if (state.kind == .final or state.kind == .history) {
+                        definition.problem = try self.problem("{s} cannot have transitions", .{state.name});
+                    } else {
+                        const transition = try self.parseTransition(definition.text);
+                        definition.problem = try self.reference(transition.guard);
+                        if (definition.problem == null and transition.targetName.len > 0 and transition.target == null) definition.problem = try self.problem("unknown state {s}", .{transition.targetName});
+                        if (definition.problem == null) definition.problem = try self.actionReferences(transition.actions);
+                        if (definition.problem == null) try state.transitions.append(self.gpa, transition);
+                    }
+                } else definition.problem = try self.problem("unknown state {s}", .{fields[1]});
+            }
+        }
+        var valid = true;
+        for (definitions) |definition| if (definition.problem) |message| {
+            try self.out.line("error line {d}: {s}", .{ definition.line, message });
+            valid = false;
+        };
+        if (!valid) return false;
+        for (self.states.items) |state| if (state.childStates.items.len > 0) {
+            state.initial = if (state.initialName.len > 0) self.names.get(state.initialName).? else state.childStates.items[0];
+        };
+        for (root.children.items) |child| try self.visit(child);
+        self.active = try self.makeSet();
+        return true;
+    fn enqueue(self: *Chart, name: Text, value: Int) Error!void {
+        try self.queue.append(self.gpa, .{ .name = name, .value = value });
+    fn perform(self: *Chart, actions: []const Action) Error!void {
+        for (actions) |action| {
+            var value: Int = 0;
+            if (action.value) |expression| value = self.evaluate(expression) orelse {
+                try self.enqueue("error.execution", 0);
+                return;
+            };
+            switch (action.kind) {
+                .assign => try self.variables.put(self.gpa, action.name, value),
+                .raise => try self.enqueue(action.name, value),
+                .send => try self.reserve(.{ .due = self.time + action.delay, .event = .{ .name = action.name, .value = value } }),
+                .log => {
+                    if (action.value != null) {
+                        try self.out.line("{s}{d}", .{ action.text, value });
+                    } else try self.out.line("{s}", .{action.text});
+                },
+            }
+        }
+    fn transitionSet(self: *Chart, transition: *Transition) Error!Selected {
+        var result: Selected = .{ .transition = transition, .exits = try self.makeSet() };
+        if (transition.mode == .internal) return result;
+    fn matches(transition: *const Transition, trigger: Trigger) bool {
+        if (transition.kind != trigger.kind) return false;
+        if (trigger.kind == .always) return true;
+        if (trigger.kind == .timer) return transition == trigger.timer.?;
+        for (transition.descriptors) |descriptor| {
+            const name = trigger.event.name;
+            if (equal(descriptor, "*") or equal(descriptor, name) or name.len > descriptor.len and std.mem.startsWith(u8, name, descriptor) and name[descriptor.len] == '.') return true;
+        }
+        return false;
+    }
+    fn selectTransitions(self: *Chart, trigger: Trigger) Error![]const Selected {
+        var result: std.ArrayList(Selected) = .empty;
+        var seen: std.ArrayList(*Transition) = .empty;
+        const occupied = try self.makeSet();
+        for (self.document.items) |atomic| {
+            if (!self.active[atomic] or self.states.items[atomic].childStates.items.len != 0) continue;
+            var found: ?*Transition = null;
+            var id = atomic;
+            while (id != 0 and found == null) : (id = self.states.items[id].parent) {
+                for (self.states.items[id].transitions.items) |transition| {
+                    if (!matches(transition, trigger)) continue;
+                    const value: ?Int = if (transition.guard) |guard| self.evaluate(guard) else 1;
+                    if (value) |actual| {
+                        if (actual != 0) {
+                            found = transition;
+                            break;
+                        }
+                    } else try self.enqueue("error.execution", 0);
+                }
+            }
+            const transition = found orelse continue;
+            if (std.mem.findScalar(*Transition, seen.items, transition) != null) continue;
+            try seen.append(self.gpa, transition);
+            const selected = try self.transitionSet(transition);
+            var conflict = false;
+            for (self.document.items) |candidate| if (selected.exits[candidate] and occupied[candidate]) {
+                conflict = true;
+                break;
+            };
+            if (!conflict) {
+                try result.append(self.gpa, selected);
+                for (self.document.items) |candidate| occupied[candidate] = occupied[candidate] or selected.exits[candidate];
+            }
+        }
+        return result.items;
+    }
+    fn expand(self: *Chart, entries: []bool) void {
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (self.document.items) |id| {
+                if (!entries[id]) continue;
+                const state = self.states.items[id];
+                if (self.parallel(id)) {
+                    for (state.childStates.items) |child| if (!entries[child]) {
+                        entries[child] = true;
+                        changed = true;
+                    };
+                } else if (self.compound(id)) {
+                    var hasChild = false;
+                    for (state.childStates.items) |child| if (entries[child]) {
+                        hasChild = true;
+                        break;
+                    };
+                    if (!hasChild) {
+                        entries[state.initial] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    fn enter(self: *Chart, entries: []const bool) Error!void {
+        for (self.document.items) |id| {
+            if (!entries[id]) continue;
+            const state = self.states.items[id];
+            self.active[id] = true;
+            state.entered += 1;
+            state.entryTime = self.time;
+            for (state.transitions.items) |transition| if (transition.kind == .timer) try self.reserve(.{ .due = self.time + transition.delay, .timer = transition });
+            for (state.entries.items) |actions| try self.perform(actions);
+            if (state.kind == .final) {
+                const parent = state.parent;
+                try self.enqueue(try std.fmt.allocPrint(self.gpa, "done.state.{s}", .{self.states.items[parent].name}), 0);
+            }
+        }
+    fn microstep(self: *Chart, trigger: Trigger, transitions: []const Selected) Error!void {
+        const exits = try self.makeSet();
+        for (transitions) |selected| for (self.document.items) |id| {
+            exits[id] = exits[id] or selected.exits[id];
+        };
+        for (self.document.items) |id| {
+            const history = self.states.items[id];
+            if (history.kind != .history or !exits[history.parent]) continue;
+        }
+        const entries = try self.makeSet();
+        for (transitions) |selected| {
+            if (selected.transition.mode == .internal) continue;
+        }
+        self.expand(entries);
+        var index = self.document.items.len;
+        while (index > 0) {
+            index -= 1;
+            const id = self.document.items[index];
+            if (!exits[id]) continue;
+            const state = self.states.items[id];
+            for (state.exits.items) |actions| try self.perform(actions);
+            self.active[id] = false;
+        }
+        for (transitions) |selected| {
+            try self.perform(selected.transition.actions);
+            self.states.items[selected.transition.source].taken += 1;
+        }
+        try self.enter(entries);
+    fn performMicrostep(self: *Chart, trigger: Trigger, transitions: []const Selected, count: *usize) Error!bool {
+        if (transitions.len == 0) return true;
+        if (count.* == 1000) {
+            try self.out.line("LIVELOCK t={d}", .{self.time});
+            self.halted = true;
+            return false;
+        }
+        count.* += 1;
+        self.microsteps += 1;
+        try self.microstep(trigger, transitions);
+        return true;
+    }
+    fn macrostep(self: *Chart, start: bool, trigger: Trigger) Error!void {
+        self.macrosteps += 1;
+        var count: usize = 0;
+        self.data = 0;
+        if (start) {
+            const entries = try self.makeSet();
+            entries[self.states.items[0].initial] = true;
+            self.expand(entries);
+            try self.enter(entries);
+        } else {
+            if (trigger.kind == .event) self.data = trigger.event.value;
+            if (!try self.performMicrostep(trigger, try self.selectTransitions(trigger), &count)) return;
+        }
+        while (true) {
+            self.data = 0;
+            const always: Trigger = .{ .kind = .always };
+            const transitions = try self.selectTransitions(always);
+            if (transitions.len > 0) {
+                if (!try self.performMicrostep(always, transitions, &count)) return;
+                continue;
+            }
+            if (self.queueHead == self.queue.items.len) return;
+            const event = self.queue.items[self.queueHead];
+            self.queueHead += 1;
+            self.data = event.value;
+            const next: Trigger = .{ .kind = .event, .event = event };
+            if (!try self.performMicrostep(next, try self.selectTransitions(next), &count)) return;
+        }
+    }
+    fn dump(self: *Chart) Error!void {
+        try self.out.line("dump t={d}", .{self.time});
+        for (self.document.items) |id| if (self.active[id]) {
+            for (0..self.states.items[id].depth * 2) |_| try self.out.add(" ");
+            try self.out.line("{s}", .{self.states.items[id].name});
+        };
+    fn script(self: *Chart, text: Text) Error!void {
+        if (self.halted) return;
+        const fields = try words(self.gpa, text);
+        if (equal(fields[0], "event")) {
+            try self.macrostep(false, .{ .event = .{ .name = fields[1], .value = if (fields.len == 3) number(fields[2]) else 0 } });
+        } else if (equal(fields[0], "tick")) {
+                const reservation = self.reservations.orderedRemove(index);
+                self.time = reservation.due;
+                try self.macrostep(false, if (reservation.timer) |timer| .{ .kind = .timer, .timer = timer } else .{ .event = reservation.event });
+        } else if (equal(fields[0], "set")) {
+        } else if (equal(fields[0], "trace")) {
+        } else if (equal(fields[0], "eval")) {
+        } else if (equal(fields[0], "dump")) try self.dump();
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    var inputBuffer: [8192]u8 = undefined;
+    var input = std.Io.File.stdin().readerStreaming(init.io, &inputBuffer);
+    const text = try input.interface.allocRemaining(gpa, .unlimited);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const count = number(std.mem.trimEnd(u8, lines.next().?, "\r"));
+    var lineNumber: usize = 1;
+    var out: Builder = .{ .gpa = gpa };
+    var chartIndex: Int = 0;
+    while (chartIndex < count) : (chartIndex += 1) {
+        const header = std.mem.trimEnd(u8, lines.next().?, "\r");
+        lineNumber += 1;
+        try out.line("chart {s}", .{header[6..]});
+        var chartArena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer chartArena.deinit();
+        const chartAllocator = chartArena.allocator();
+        var definitions: std.ArrayList(Definition) = .empty;
+        while (lines.next()) |raw| {
+            lineNumber += 1;
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (equal(line, "RUN")) break;
+            try definitions.append(chartAllocator, .{ .text = line, .line = lineNumber });
+        }
+        var chart: Chart = .{ .gpa = chartAllocator, .out = &out };
+        const valid = try chart.define(definitions.items);
+        if (valid) {
+            try chart.warn();
+            try chart.macrostep(true, .{});
+        }
+        while (lines.next()) |raw| {
+            lineNumber += 1;
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (equal(line, "END")) break;
+            if (valid) try chart.script(line);
+        }
+        if (valid) try chart.statistics();
+    }
+    var outputBuffer: [8192]u8 = undefined;
+    var output = std.Io.File.stdout().writerStreaming(init.io, &outputBuffer);
+    try output.interface.writeAll(out.bytes.items);
+    try output.interface.flush();

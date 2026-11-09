@@ -1,0 +1,351 @@
+    static readonly Dictionary<string, int> ReportArities = new(StringComparer.Ordinal)
+        ["HOURLY"] = 1, ["DAILY"] = 0, ["BILL"] = 0, ["SAVINGS"] = 0,
+    static long Integer(string text) => long.Parse(text, CultureInfo.InvariantCulture);
+    static long CeilDiv(long value, long divisor) => (value + divisor - 1) / divisor;
+    static long Min3(long a, long b, long c) => Math.Min(a, Math.Min(b, c));
+    static string Field(object value, int width) =>
+        Convert.ToString(value, CultureInfo.InvariantCulture)!.PadLeft(width);
+    static string Money(long value)
+    {
+        long magnitude = Math.Abs(value);
+        return $"{(value < 0 ? "-" : "")}{magnitude / 100}.{magnitude % 100:00}";
+    }
+
+    static string Percentage(long numerator, long denominator) =>
+        Money(denominator == 0 ? 0 : 10000 * numerator / denominator);
+    enum Item { Capacity, Initial, Charge, Discharge, Ceff, Deff, Reserve, Cost, Export, Feedin, Fixed, Demand, Pvscale }
+    enum StrategyKind { Self, Tou, PeakShave, Backup, ExportPeak }
+
+    static T Named<T>(string name, string error) where T : struct, Enum
+    {
+        foreach (T value in Enum.GetValues<T>())
+            if (value.ToString().ToUpperInvariant() == name) return value;
+        throw new CommandError($"{error} {name}");
+    static (long Minimum, long Maximum) Bounds(Item item) => (
+        item is Item.Capacity or Item.Charge or Item.Discharge or Item.Ceff or Item.Deff ? 1 : 0,
+        item switch
+        {
+            Item.Initial or Item.Ceff or Item.Deff or Item.Reserve => 100,
+    sealed record Settings(long Capacity, long Initial, long Charge, long Discharge,
+        long Ceff, long Deff, long Reserve, long Cost, long Export, long Feedin,
+        long Fixed, long Demand, long Pvscale = 100)
+    {
+        public long this[Item item] => item switch
+        {
+            Item.Capacity => Capacity, Item.Initial => Initial, Item.Charge => Charge,
+        public Settings With(Item item, long value) => item switch
+            Item.Initial => this with { Initial = value },
+    sealed record Strategy(StrategyKind Kind, long Parameter = 0)
+    {
+        public bool HasParameter => Kind is StrategyKind.Tou or StrategyKind.PeakShave or StrategyKind.Backup;
+        public string Notation => Kind.ToString().ToUpperInvariant() + (HasParameter ? $" {Parameter}" : "");
+    }
+
+    static List<Strategy> Strategies(string[] words)
+    {
+        var strategies = new List<Strategy>();
+        for (int i = 0; i < words.Length; i++)
+        {
+            string name = words[i];
+            var kind = Named<StrategyKind>(name, "unknown strategy");
+            var strategy = new Strategy(kind);
+            if (strategy.HasParameter)
+            strategies.Add(strategy);
+        return strategies;
+    static Strategy OneStrategy(string[] words)
+    {
+        var parsed = Strategies(words);
+        if (parsed.Count != 1) throw new CommandError("wrong number of arguments");
+        return parsed[0];
+    }
+
+    readonly record struct HourInput(long Load, long Pv, int Period);
+    sealed record Outage(int First, int Last);
+    sealed class Data(string[] periods, HourInput[] hours, HashSet<int> holidays)
+    {
+        public string[] Periods { get; } = periods;
+        public HourInput[] Hours { get; } = hours;
+        public int Days => Hours.Length / 24;
+        public bool Weekend(int day) => day % 7 >= 5 || holidays.Contains(day);
+    sealed class Metrics
+    {
+        public long Load, Pv, Charge, Discharge, Drawn, Soc, Imported, Exported;
+        public long Curtailed, Shortfall, Loss, ImportCost, ExportIncome;
+        public long Net => ImportCost - ExportIncome;
+        public void Add(Metrics other)
+            Load += other.Load;
+            Imported += other.Imported;
+            Exported += other.Exported;
+            Shortfall += other.Shortfall;
+            ImportCost += other.ImportCost;
+            ExportIncome += other.ExportIncome;
+    sealed record HourRecord(int Period, Metrics Values, long[] Flows);
+    sealed class Result
+    {
+        public Settings Settings { get; }
+        public long[] Prices { get; }
+        public Strategy Strategy { get; }
+        public HourRecord[] Records { get; }
+        public long Starting { get; }
+        public Metrics Total { get; } = new();
+        public Metrics[] Periods { get; }
+        public long Peak { get; }
+        public long DemandCharge { get; }
+        public long Bill { get; }
+        public long EndSoc => Records[^1].Values.Soc;
+        public Result(Settings settings, IReadOnlyList<long> prices, Strategy strategy,
+            HourRecord[] records, long starting, long reserve)
+        {
+            Settings = settings;
+            Prices = prices.ToArray();
+            Strategy = strategy;
+            Records = records;
+            Starting = starting;
+            Periods = Enumerable.Range(0, prices.Count).Select(_ => new Metrics()).ToArray();
+            foreach (var record in records)
+                Total.Add(record.Values);
+                Periods[record.Period].Add(record.Values);
+                Peak = Math.Max(Peak, record.Values.Imported);
+            DemandCharge = Peak * settings.Demand / 1000;
+            Bill = Total.Net + settings.Fixed + DemandCharge;
+        }
+
+        public Metrics Sum(IEnumerable<int> indices)
+        {
+            var total = new Metrics();
+            foreach (int index in indices) total.Add(Records[index].Values);
+            return total;
+    static Result Simulate(Data data, Settings settings, IReadOnlyList<long> prices,
+        Strategy strategy, Outage? outage = null)
+    {
+        long capacity = settings.Capacity;
+        long reservePercent = strategy.Kind == StrategyKind.Backup
+            ? Math.Max(settings.Reserve, strategy.Parameter) : settings.Reserve;
+        long reserve = capacity * reservePercent / 100;
+        long starting = capacity * settings.Initial / 100;
+        bool arbitrage = strategy.Kind == StrategyKind.ExportPeak && settings.Feedin > prices[periods.Low];
+        long soc = starting;
+        var records = new HourRecord[data.Hours.Length];
+        for (int i = 0; i < records.Length; i++)
+        {
+            var input = data.Hours[i];
+            int p = input.Period;
+            long pv = input.Pv * settings.Pvscale / 100;
+            long direct = Math.Min(input.Load, pv);
+            long surplus = pv - direct, deficit = input.Load - direct;
+            long x1 = Min3(surplus, settings.Charge, CeilDiv(100 * (capacity - soc), settings.Ceff));
+            long stored1 = x1 * settings.Ceff / 100;
+            soc += stored1;
+            surplus -= x1;
+            bool off = outage != null && i >= outage.First && i <= outage.Last;
+            long target = off ? deficit : strategy.Kind switch
+            {
+                StrategyKind.Self or StrategyKind.Backup => deficit,
+            };
+            long lower = off ? 0 : reserve;
+            long y1 = Min3(CeilDiv(100 * target, settings.Deff), settings.Discharge, Math.Max(0, soc - lower));
+            long d1 = y1 * settings.Deff / 100;
+            soc -= y1;
+            deficit -= d1;
+            long gridLoad = off ? 0 : deficit;
+            long e1 = off ? 0 : Math.Min(surplus, settings.Export);
+            long x2 = 0, y2 = 0, d2 = 0;
+            if (!off)
+            {
+                long? targetSoc = null;
+                switch (strategy.Kind)
+                {
+                    case StrategyKind.Tou:
+                    case StrategyKind.PeakShave:
+                    case StrategyKind.Backup:
+                    case StrategyKind.ExportPeak:
+                }
+                if (targetSoc is long goal)
+                {
+                }
+                if (strategy.Kind == StrategyKind.ExportPeak && arbitrage && p == periods.High && x1 == 0)
+                {
+                }
+            }
+            long imported = gridLoad + x2, exported = e1 + d2, curtailed = surplus - e1;
+            var values = new Metrics
+            {
+                Load = input.Load, Pv = pv, Charge = x1 + x2, Discharge = d1 + d2,
+                Drawn = y1 + y2, Soc = soc, Imported = imported, Exported = exported,
+                Curtailed = curtailed, Shortfall = off ? deficit : 0,
+                ImportCost = imported * prices[p] / 100000,
+                ExportIncome = exported * settings.Feedin / 100000
+            };
+            records[i] = new HourRecord(p, values,
+                new[] { direct, x1, e1, curtailed, d1, d2, gridLoad, x2 });
+        }
+        return new Result(settings, prices, strategy, records, starting, reserve);
+    sealed class Dispatch
+    {
+        readonly Data data;
+        readonly Settings initialSettings;
+        readonly long[] initialPrices;
+        Settings settings;
+        long[] prices;
+        Result? current;
+        public StringBuilder Output { get; } = new();
+        Result Current => current ?? throw new CommandError("no run");
+
+        public Dispatch(Data data, Settings settings, long[] prices)
+        {
+            this.data = data;
+            this.settings = initialSettings = settings;
+            this.prices = prices.ToArray();
+            initialPrices = prices.ToArray();
+        }
+
+        void Emit(string line) => Output.Append(line).Append('\n');
+        static void Arity(string[] args, int count)
+        {
+            if (args.Length != count) throw new CommandError("wrong number of arguments");
+        int DayArgument(string text)
+        {
+            long day = Integer(text);
+            if (day < 1 || day > data.Days) throw new CommandError("invalid day");
+            return (int)day - 1;
+        void Table(params object[] values) =>
+            Emit(Field(values[0], 4) + string.Concat(values.Skip(1).Select(value => Field(value, 7))));
+        void EvaluateOutage(string[] args)
+        {
+            Arity(args, 3);
+            int day = DayArgument(args[0]);
+            long start = Integer(args[1]), end = Integer(args[2]);
+            if (start < 0 || end > 23 || start > end) throw new CommandError("invalid hours");
+            var saved = Current;
+            int first = day * 24 + (int)start, last = day * 24 + (int)end;
+            var trial = Simulate(data, saved.Settings, saved.Prices, saved.Strategy, new Outage(first, last));
+            long before = first == 0 ? trial.Starting : trial.Records[first - 1].Values.Soc;
+            Emit($"OUTAGE day {day + 1} hours {start}-{end} strategy {saved.Strategy.Notation} soc {before}");
+            Emit("hour   load     pv  disch    soc  short   curt");
+            var total = new Metrics();
+            for (int i = first; i <= last; i++)
+            {
+                var v = trial.Records[i].Values;
+                total.Add(v);
+                Table(i % 24, v.Load, v.Pv, v.Discharge, v.Soc, v.Shortfall, v.Curtailed);
+            }
+            string served = total.Load == 0 ? "100.00" : Percentage(total.Load - total.Shortfall, total.Load);
+            Emit($"TOTAL load {total.Load} unserved {total.Shortfall} served {served}% bill {Money(trial.Bill)}");
+        void Bill(Result r)
+        {
+            Emit($"BILL strategy {r.Strategy.Notation} days {data.Days}");
+            for (int p = 0; p < data.Periods.Length; p++)
+                Emit($"IMPORT {data.Periods[p]} {r.Periods[p].Imported} Wh {Money(r.Periods[p].ImportCost)}");
+            Emit($"EXPORT {r.Total.Exported} Wh {Money(-r.Total.ExportIncome)}");
+            Emit($"FIXED {Money(r.Settings.Fixed)}");
+            Emit($"DEMAND {r.Peak} Wh {Money(r.DemandCharge)}");
+            Emit($"TOTAL {Money(r.Bill)}");
+        void Report(string command, Result r, int argument)
+            switch (command)
+                case "BILL": Bill(r); break;
+        public bool Execute(string line)
+        {
+            string[] words = line.Split(' '), args = words[1..];
+            string command = words[0];
+            try
+            {
+                if (ReportArities.TryGetValue(command, out int count))
+                {
+                    Arity(args, count);
+                    int argument = 0;
+                    if (command is "HOURLY" or "CHART") argument = DayArgument(args[0]);
+                    Report(command, Current, argument);
+                    return false;
+                }
+                switch (command)
+                {
+                    case "END": Arity(args, 0); return true;
+                    case "RUN":
+                    {
+                        var strategy = OneStrategy(args);
+                        var trial = Simulate(data, settings, prices, strategy);
+                        current = trial;
+                        Emit($"RUN {strategy.Notation} bill {Money(trial.Bill)} import {trial.Total.Imported} " +
+                            $"export {trial.Total.Exported} soc {trial.EndSoc}");
+                        break;
+                    }
+                    case "SET":
+                    {
+                        Arity(args, 2);
+                        var item = Named<Item>(args[0], "unknown parameter");
+                        long value = Integer(args[1]);
+                        var bounds = Bounds(item);
+                        if (value < bounds.Minimum || value > bounds.Maximum) throw new CommandError($"invalid value for {args[0]}");
+                        long previous = settings[item];
+                        settings = settings.With(item, value);
+                        Emit($"SET {args[0]} {previous} -> {value}");
+                        break;
+                    case "OUTAGE": EvaluateOutage(args); break;
+            catch (CommandError error) { Emit($"ERROR {error.Message}"); }
+            return false;
+    static Dispatch ReadInput()
+    {
+        static string[] Words() => Console.ReadLine()!.Split(' ');
+        long[] battery = Words().Skip(1).Select(Integer).ToArray();
+        long[] grid = Words().Skip(1).Select(Integer).ToArray();
+        var settings = new Settings(battery[0], battery[1], battery[2], battery[3],
+            battery[4], battery[5], battery[6], battery[7], grid[0], grid[1], grid[2], grid[3]);
+        int periodCount = (int)Integer(Words()[1]);
+        var names = new string[periodCount];
+        var prices = new long[periodCount];
+        for (int i = 0; i < periodCount; i++)
+        {
+            var line = Words();
+            names[i] = line[0];
+            prices[i] = Integer(line[1]);
+        }
+        var divisions = new int[2][];
+        for (int type = 0; type < 2; type++)
+        {
+            var line = Words();
+            divisions[type] = new int[24];
+            for (int i = 1; i < line.Length; i += 2)
+            {
+                int start = (int)Integer(line[i]);
+                int end = i + 2 < line.Length ? (int)Integer(line[i + 2]) : 24;
+                int period = Array.IndexOf(names, line[i + 1]);
+                Array.Fill(divisions[type], period, start, end - start);
+            }
+        }
+        int profileCount = (int)Integer(Words()[1]);
+        var profiles = new Dictionary<(string Kind, string Name), long[]>();
+        for (int i = 0; i < profileCount; i++)
+        {
+            var line = Words();
+            profiles[(line[0], line[1])] = line.Skip(2).Select(Integer).ToArray();
+        }
+        int days = (int)Integer(Words()[1]);
+        var hours = new HourInput[days * 24];
+        for (int day = 0; day < days; day++)
+        {
+            var line = Words();
+            var load = profiles[("LOAD", line[0])];
+            var pv = profiles[("PV", line[2])];
+            long loadPercent = Integer(line[1]), pvPercent = Integer(line[3]);
+            for (int hour = 0; hour < 24; hour++)
+                hours[day * 24 + hour] = new HourInput(load[hour] * loadPercent / 100, pv[hour] * pvPercent / 100, 0);
+        }
+        var holidays = Words().Skip(2).Select(word => (int)Integer(word) - 1).ToHashSet();
+        var data = new Data(names, hours, holidays);
+        for (int i = 0; i < hours.Length; i++)
+            hours[i] = hours[i] with { Period = divisions[data.Weekend(i / 24) ? 1 : 0][i % 24] };
+        int overrides = (int)Integer(Words()[1]);
+        for (int i = 0; i < overrides; i++)
+        {
+            var line = Words().Select(Integer).ToArray();
+            int index = ((int)line[0] - 1) * 24 + (int)line[1];
+            hours[index] = hours[index] with { Load = line[2], Pv = line[3] };
+        }
+        return new Dispatch(data, settings, prices);
+    static void Main()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        var dispatch = ReadInput();
+        while (Console.ReadLine() is { } line)
+            if (dispatch.Execute(line)) break;
+        Console.Write(dispatch.Output.ToString());

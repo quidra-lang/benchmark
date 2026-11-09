@@ -1,0 +1,262 @@
+function normalize(values) {
+    let total = 0;
+    for (const value of values) total += value;
+    return values.map(value => value / total);
+}
+
+class Model {
+    constructor(name, states, symbols, missing, initial, transition, emission) {
+        this.name = name;
+        this.states = states;
+        this.symbols = symbols;
+        this.missing = missing;
+        this.initial = initial;
+        this.transition = transition;
+        this.emission = emission;
+    }
+function readRows(filename) {
+    return fs.readFileSync(`input/${filename}`, 'ascii').slice(0, -1)
+        .split('\n').map(line => line.split(' '));
+}
+
+function readInputs() {
+    const rows = readRows('model.txt');
+    const states = rows[0].slice(1);
+    const symbols = rows[1].slice(1);
+    const count = states.length;
+    const initial = normalize(rows[3].slice(1).map(Number));
+    const transition = rows.slice(4, 4 + count)
+        .map(row => normalize(row.slice(2).map(Number)));
+    const emission = rows.slice(4 + count)
+        .map(row => normalize(row.slice(2).map(Number)));
+    return {
+        model: new Model('INITIAL', states, symbols, rows[2][1], initial,
+            transition, emission),
+        sequences: readRows('sequences.txt'),
+        labeled: readRows('labeled.txt'),
+        parameters: readRows('params.txt'),
+    };
+}
+function argmax(values) {
+    let best = 0;
+    for (let i = 1; i < values.length; i++) {
+        if (values[i] > values[best]) best = i;
+    }
+    return best;
+}
+
+function emission(model, observation, state) {
+    return observation < 0 ? 1 : model.emission[state][observation];
+}
+
+function logEmission(model, observation, state) {
+    return observation < 0 ? 0 : Math.log(model.emission[state][observation]);
+}
+
+function forward(model, observations) {
+    const count = model.states.length;
+    const factors = [];
+    const scales = [];
+    let loglik = 0;
+    for (let t = 0; t < observations.length; t++) {
+        const row = [];
+        for (let j = 0; j < count; j++) {
+            let probability = model.initial[j];
+            if (t > 0) {
+                probability = 0;
+                for (let i = 0; i < count; i++) {
+                    probability += factors[t - 1][i] * model.transition[i][j];
+                }
+            }
+            row.push(probability * emission(model, observations[t], j));
+        }
+        let scale = 0;
+        for (const value of row) scale += value;
+        scales.push(scale);
+        factors.push(row.map(value => value / scale));
+        loglik += Math.log(scale);
+    }
+    return { factors, scales, loglik };
+}
+
+function forwardBackward(model, observations) {
+    const result = forward(model, observations);
+    const count = model.states.length;
+    const length = observations.length;
+    const backward = Array(length);
+    backward[length - 1] = Array(count).fill(1);
+    for (let t = length - 2; t >= 0; t--) {
+        backward[t] = [];
+        for (let i = 0; i < count; i++) {
+            let value = 0;
+            for (let j = 0; j < count; j++) {
+                value += model.transition[i][j] * emission(model, observations[t + 1], j)
+                    * backward[t + 1][j];
+            }
+            backward[t].push(value / result.scales[t + 1]);
+        }
+    }
+    const gamma = result.factors.map((row, t) =>
+        row.map((value, i) => value * backward[t][i]));
+    return { ...result, backward, gamma };
+}
+
+function viterbi(model, observations) {
+    const count = model.states.length;
+    const transitions = model.transition.map(row => row.map(Math.log));
+    let delta = model.initial.map((value, j) =>
+        Math.log(value) + logEmission(model, observations[0], j));
+    const predecessors = [Array(count).fill(0)];
+    for (let t = 1; t < observations.length; t++) {
+        const next = [];
+        const row = [];
+        for (let j = 0; j < count; j++) {
+            const candidates = delta.map((value, i) => value + transitions[i][j]);
+            const best = argmax(candidates);
+            row.push(best);
+            next.push((delta[best] + transitions[best][j])
+                + logEmission(model, observations[t], j));
+        }
+        predecessors.push(row);
+        delta = next;
+    }
+    const path = Array(observations.length);
+    path[path.length - 1] = argmax(delta);
+    const logprob = delta[path[path.length - 1]];
+    for (let t = path.length - 1; t > 0; t--) path[t - 1] = predecessors[t][path[t]];
+    return { path, logprob };
+}
+
+function decode(model, observations) {
+    const result = forwardBackward(model, observations);
+    const best = viterbi(model, observations);
+    const posterior = result.gamma.map(argmax);
+    const confidence = result.gamma.map((row, t) => row[posterior[t]]);
+    return { ...result, viterbi: best.path, logprob: best.logprob, posterior, confidence };
+}
+function confusion(size) {
+    return Array.from({ length: size }, () => Array(size).fill(0));
+}
+
+function accumulate(matrix, truth, prediction) {
+    let correct = 0;
+    for (let t = 0; t < truth.length; t++) {
+        matrix[truth[t]][prediction[t]]++;
+        if (truth[t] === prediction[t]) correct++;
+    }
+    return correct;
+}
+function rejectionReason(record, seen, model, params, labeled) {
+    const duplicate = seen.has(record.name);
+    seen.add(record.name);
+    if (duplicate) return 'duplicate name';
+    record.text = record.text.toUpperCase();
+    record.observations = Array.from(record.text, character => model.symbols.indexOf(character));
+    if (labeled) record.path = Array.from(record.labels, character => model.states.indexOf(character));
+    return null;
+}
+
+function validate(input, params) {
+    const data = { unlabeled: [], train: [], test: [], rejected: [] };
+    let seen = new Set();
+    for (let i = 0; i < input.sequences.length; i++) {
+        const [name, text] = input.sequences[i];
+        const record = { name, text };
+        const reason = rejectionReason(record, seen, input.model, params, false);
+        if (reason === null) data.unlabeled.push(record);
+        else data.rejected.push({ file: 'sequences.txt', line: i + 1, name, reason });
+    }
+    seen = new Set();
+    for (let i = 0; i < input.labeled.length; i += 2) {
+        const [name, role, text] = input.labeled[i];
+        const record = { name, role, text, labels: input.labeled[i + 1][0] };
+        const reason = rejectionReason(record, seen, input.model, params, true);
+        if (reason === null) data[role === 'TRAIN' ? 'train' : 'test'].push(record);
+        else data.rejected.push({ file: 'labeled.txt', line: i + 1, name, reason });
+    }
+    return data;
+function evaluationBlock(model, records, decoded, decoder, params) {
+    const matrix = confusion(model.states.length);
+    const region = { predicted: 0, truth: 0, matchedPredicted: 0, matchedTruth: 0 };
+    const boundary = { predicted: 0, truth: 0, matchedPredicted: 0, matchedTruth: 0 };
+    const bins = Array.from({ length: 10 }, () => ({ positions: 0, correct: 0 }));
+    const recordLines = [];
+    let correct = 0;
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const result = decoded[i];
+        const path = decoder === 'VITERBI' ? result.viterbi : result.posterior;
+        const count = accumulate(matrix, record.path, path);
+        correct += count;
+        recordLines.push(`RECORD ${record.name} length ${path.length} correct ${count}`);
+        const predicted = segments(path, params);
+        const truth = runs(record.path).filter(run => run.state === params.segment_state);
+        region.predicted += predicted.length;
+        region.truth += truth.length;
+        for (const segment of predicted) if (truth.some(other => overlaps(segment, other))) region.matchedPredicted++;
+        for (const segment of truth) if (predicted.some(other => overlaps(segment, other))) region.matchedTruth++;
+        const predictedBoundaries = boundaries(path);
+        const trueBoundaries = boundaries(record.path);
+        boundary.predicted += predictedBoundaries.length;
+        boundary.truth += trueBoundaries.length;
+        boundary.matchedPredicted += matchedBoundaries(predictedBoundaries, trueBoundaries, params.boundary_tolerance);
+        boundary.matchedTruth += matchedBoundaries(trueBoundaries, predictedBoundaries, params.boundary_tolerance);
+        if (decoder === 'POSTERIOR') {
+            for (let t = 0; t < path.length; t++) {
+                const bin = Math.min(9, Math.floor(10 * result.confidence[t]));
+                bins[bin].positions++;
+                if (path[t] === record.path[t]) bins[bin].correct++;
+            }
+        }
+    }
+    const lines = [`EVALUATION ${model.name} ${decoder}`, ...confusionLines(matrix, model.states),
+        ...metricLines(matrix, model.states)];
+    lines.push(`REGIONS ${model.states[params.segment_state]} predicted ${region.predicted} true ${region.truth}`
+        + ` precision ${fraction(region.matchedPredicted, region.predicted)} recall ${fraction(region.matchedTruth, region.truth)}`);
+    lines.push(`BOUNDARIES predicted ${boundary.predicted} true ${boundary.truth}`
+        + ` precision ${fraction(boundary.matchedPredicted, boundary.predicted)} recall ${fraction(boundary.matchedTruth, boundary.truth)}`);
+    for (let b = 0; b < bins.length; b++) {
+        if (bins[b].positions === 0) continue;
+        const range = b === 9 ? '0.9-1.0' : `0.${b}-0.${b + 1}`;
+        lines.push(`CALIBRATION ${range} positions ${bins[b].positions} correct ${bins[b].correct}`
+            + ` accuracy ${fraction(bins[b].correct, bins[b].positions)}`);
+    }
+    lines.push(...recordLines);
+    return { lines, correct };
+}
+function pathText(path, states) {
+    return path.map(state => states[state]).join('');
+}
+function annotate(model, records, decoded, params) {
+    const generator = new Minstd(params.posterior_seed);
+    const lines = [];
+    const segmentLines = ['sequence,decoder,start,end,length,mean_posterior,support,rich_fraction,motif_ratio,island'];
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const result = decoded[i];
+        const differences = record.observations.length - correctCount(result.viterbi, result.posterior);
+        lines.push(`SEQUENCE ${record.name} length ${record.observations.length} loglik ${real(result.loglik)}`
+            + ` viterbi ${real(result.logprob)} differences ${differences} uncertain ${uncertain}`
+            + ` expected_segments ${real(segmentCount / params.posterior_samples)}`,
+        `VITERBI ${pathText(result.viterbi, model.states)}`, `POSTERIOR ${pathText(result.posterior, model.states)}`,
+        `CONFIDENT ${confident}`, `IMPUTED ${imputed}`);
+    const input = readInputs();
+    const params = parameters(input.parameters, input.model);
+    const data = validate(input, params);
+    const models = [input.model, bw.model, vt.model, supervised.model];
+    const decoded = models.map(model => data.unlabeled.map(record => decode(model, record.observations)));
+    const testDecoded = models.map(model => data.test.map(record => decode(model, record.observations)));
+    const evaluation = [];
+    const scores = [];
+    for (let i = 0; i < models.length; i++) {
+        const row = [];
+        for (const decoder of DECODERS) {
+            const result = evaluationBlock(models[i], data.test, testDecoded[i], decoder, params);
+            evaluation.push(result.lines);
+            row.push(result.correct);
+        }
+        scores.push(row);
+    }
+    const annotation = annotate(bw.model, data.unlabeled, decoded[1], params);
+    writeLines('decodings.txt', annotation.lines);
+    writeLines('evaluation.txt', joinBlocks(evaluation));

@@ -1,0 +1,222 @@
+def half_up(n, d)
+  (2 * n + d).div(2 * d)
+end
+def half_away(n, d)
+  n.negative? ? -half_up(-n, d) : half_up(n, d)
+end
+def decimal(n, sign = '-')
+  (n.negative? ? sign : '') + "#{n.abs / 10}.#{n.abs % 10}"
+end
+def index_text(n)
+  n.nil? ? 'none' : decimal(n, '+')
+end
+def allocation(h, si)
+  q, r = h.abs.divmod(18)
+  si.map { |i| h >= 0 ? q + (i <= r ? 1 : 0) : -q - (i >= 19 - r ? 1 : 0) }
+end
+def handicap(index, course, tee)
+  half_up(index * tee.slope + 113 * (tee.rating - 10 * course.par), 1130)
+end
+Course = Struct.new(:id, :pars, :si, :par, :tees)
+Tee = Struct.new(:id, :rating, :slope)
+class Player
+  attr_reader :id, :name
+  attr_accessor :index, :rounds, :records, :calculation
+  def initialize(id, name, index)
+    @id = id
+    @name = name
+    @index = index
+    @rounds = []
+    @records = []
+    @calculation = nil
+  end
+  def low(day)
+    @records.select { |d, _| d >= day - 365 && d < day }.min_by { |d, i| [i, d] }
+  end
+  def eligible
+    reduction = 0
+    rows = []
+    (@rounds.length - 1).downto([0, @rounds.length - 20].max) do |i|
+      r = @rounds[i]
+      reduction += r.exceptional
+      rows << [i + 1, r, r.diff - reduction]
+    end
+    rows.reverse
+  end
+  def counting(rows)
+    n = rows.length
+    return [[], 0] if n < 3
+    k = [5, 8, 11, 14, 16, 18, 19, 20].index { |limit| n <= limit } + 1
+    adjustment = n == 3 ? -20 : [4, 6].include?(n) ? -10 : 0
+    [rows.sort_by { |number, _, adjusted| [adjusted, -number] }.first(k), adjustment]
+  end
+  def update(day)
+    selected, adjustment = counting(eligible)
+    if selected.empty?
+      @calculation = nil
+      return
+    end
+    average = half_away(selected.sum { |row| row[2] }, selected.length)
+    candidate = average + adjustment
+    record = low(day)
+    low_index = record&.last
+    soft = false
+    hard = false
+    maximum = false
+    unless low_index.nil?
+      if candidate - low_index > 30
+        candidate = low_index + 30 + (candidate - low_index - 30) / 2
+        soft = true
+      end
+      if candidate - low_index > 50
+        candidate = low_index + 50
+        hard = true
+      end
+    end
+    if candidate > 540
+      candidate = 540
+      maximum = true
+    end
+    @index = candidate
+    @calculation = {k: selected.length, average: average, adjustment: adjustment,
+                    low: low_index, hard: hard, soft: soft, maximum: maximum}
+  end
+end
+class GolfRound
+  attr_reader :course, :tee, :day, :scores, :previous_index, :previous_records,
+              :previous_calculation, :hcp, :adjusted, :ags, :diff, :exceptional
+  def initialize(player, course, tee, day, scores)
+    @course = course
+    @tee = tee
+    @day = day
+    @scores = scores
+    @previous_index = player.index
+    @previous_records = player.records.length
+    @previous_calculation = player.calculation
+    @hcp = player.index.nil? ? nil : handicap(player.index, course, tee)
+    strokes = allocation(@hcp || 0, course.si)
+    @adjusted = scores.each_with_index.map do |score, h|
+      limit = @hcp.nil? ? course.pars[h] + 5 : course.pars[h] + 2 + strokes[h]
+      score == '-' ? course.pars[h] + strokes[h] : score == 'X' ? limit : [score, limit].min
+    end
+    @ags = @adjusted.sum
+    @diff = half_away(113 * (10 * @ags - tee.rating), tee.slope)
+    @exceptional = if !player.index.nil? && player.index - @diff >= 70
+                     player.index - @diff >= 100 ? 20 : 10
+                   else
+                     0
+                   end
+  end
+end
+class GolfScorer
+  attr_reader :output
+  def initialize
+    @courses = {}
+    @players = {}
+    @output = []
+  end
+  def emit(*parts)
+    @output << parts.join(' ')
+  end
+  def player(id)
+    raise CommandError, 'unknown player' unless @players.key?(id)
+    @players[id]
+  end
+  def course(id)
+    raise CommandError, 'unknown course' unless @courses.key?(id)
+    @courses[id]
+  end
+  def tee(cid, tid)
+    c = course(cid)
+    raise CommandError, 'unknown tee' unless c.tees.key?(tid)
+    [c, c.tees[tid]]
+  end
+  def command(cmd, a)
+    case cmd
+    when 'COURSE'
+      raise CommandError, 'duplicate course' if @courses.key?(a[0])
+      pars = a[1, 18].map(&:to_i)
+      si = a[19, 18].map(&:to_i)
+      raise CommandError, 'invalid course' unless pars.all? { |p| [3, 4, 5].include?(p) } && si.sort == (1..18).to_a
+      @courses[a[0]] = Course.new(a[0], pars, si, pars.sum, {})
+    when 'TEE'
+      c = course(a[0])
+      raise CommandError, 'duplicate tee' if c.tees.key?(a[1])
+      rating, slope = a[2, 2].map(&:to_i)
+      raise CommandError, 'invalid tee' unless (500..900).cover?(rating) && (55..155).cover?(slope)
+      c.tees[a[1]] = Tee.new(a[1], rating, slope)
+    when 'PLAYER'
+      raise CommandError, 'duplicate player' if @players.key?(a[0])
+      index = a.length == 3 ? a[2].to_i : nil
+      raise CommandError, 'invalid index' if !index.nil? && !(-100..540).cover?(index)
+      @players[a[0]] = Player.new(a[0], a[1], index)
+    when 'ROUND'
+      p = player(a[0])
+      c, t = tee(a[1], a[2])
+      day = a[3].to_i
+      raise CommandError, 'invalid day' if !p.rounds.empty? && day < p.rounds.last.day
+      scores = a.drop(4).map { |s| %w[X -].include?(s) ? s : s.to_i }
+      raise CommandError, 'too few holes' if scores.count('-') >= 5
+      r = GolfRound.new(p, c, t, day, scores)
+      p.rounds << r
+      p.update(day)
+      p.records << [day, p.index] unless p.index.nil?
+      parts = ['round', p.id, "#{p.rounds.length}:", 'ags', r.ags, 'diff', decimal(r.diff)]
+      parts.push('exceptional', decimal(-r.exceptional)) unless r.exceptional.zero?
+      emit(*parts, 'index', index_text(p.index))
+    when 'REMOVE'
+      p = player(a[0])
+      raise CommandError, 'no rounds' if p.rounds.empty?
+      number = p.rounds.length
+      r = p.rounds.pop
+      p.index = r.previous_index
+      p.records = p.records.first(r.previous_records)
+      p.calculation = r.previous_calculation
+      emit('removed', p.id, "#{number}:", 'index', index_text(p.index))
+    when 'INDEX'
+      p = player(a[0])
+      parts = ['index', "#{p.id}:", index_text(p.index), 'rounds', p.rounds.length]
+      c = p.calculation
+      if c
+        parts.push('lowest', c[:k], 'average', decimal(c[:average]), 'adjustment', decimal(c[:adjustment]))
+        parts.push('low', index_text(c[:low])) unless c[:low].nil?
+        if c[:hard]
+          parts.push('hard', 'cap')
+        elsif c[:soft]
+          parts.push('soft', 'cap')
+        end
+        parts << 'maximum' if c[:maximum]
+      end
+      emit(*parts)
+    when 'HISTORY'
+      p = player(a[0])
+      rows = p.eligible
+      counted = p.counting(rows)[0].map(&:first)
+      emit('history', "#{p.id}:", 'rounds', p.rounds.length)
+      rows.each do |number, r, adjusted|
+        parts = [number, 'day', r.day, r.course.id, r.tee.id, 'ags', r.ags, 'diff', decimal(r.diff)]
+        parts.push('adjusted', decimal(adjusted)) if adjusted != r.diff
+        parts << '*' if counted.include?(number)
+        emit(*parts)
+      end
+    when 'LOWINDEX'
+      p = player(a[0])
+      day = a[1].to_i
+      low = p.low(day)
+      parts = ['lowindex', p.id, "#{day}:"]
+      low ? parts.push(index_text(low[1]), 'day', low[0]) : parts.push('none')
+      emit(*parts)
+    end
+  end
+  def execute(line)
+    cmd, *args = line.split
+    begin
+      command(cmd, args)
+    rescue CommandError => error
+      emit('ERROR', error.message)
+    end
+  end
+end
+scorer = GolfScorer.new
+STDIN.gets.to_i.times { scorer.execute(STDIN.gets.chomp) }
+STDOUT.write(scorer.output.join("\n") + "\n") unless scorer.output.empty?

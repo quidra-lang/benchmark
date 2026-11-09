@@ -1,0 +1,5 @@
+Within the comparison loop, copying the existing predecessor into the current position is followed by one increment of the per-step `shifts` count. The unit is one existing array element moved right. At the given first insertion, 52 moves once for extracted 17. The final `a[j] = v` lies after the loop and has no accompanying increment, so placing the extracted value does not count a second shift. The local zero initialization and increment association establish this without tracing later passes.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

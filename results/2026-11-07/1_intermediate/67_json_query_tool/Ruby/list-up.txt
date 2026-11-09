@@ -1,0 +1,294 @@
+class JsonFault < StandardError
+  attr_reader :position
+  def initialize(message, position)
+    super(message)
+    @position = position
+class StrictJson
+  attr_reader :position
+  def initialize(text)
+    @text = text
+    @position = 0
+  def fail_at(reason, position = @position)
+    raise JsonFault.new(reason, position)
+  def whitespace
+    @position += 1 while [' ', "\n"].include?(@text[@position])
+  def string
+    @position += 1
+    output = +''
+    loop do
+      char = @text[@position]
+      fail_at('unterminated string') if char.nil? || char == "\n"
+      if char == '"'
+        @position += 1
+        return output
+      end
+      if char == '\\'
+      else
+        output << char
+        @position += 1
+      end
+    end
+  def value
+    whitespace
+    char = @text[@position]
+    fail_at('unexpected end of input') if char.nil?
+    if char == '{' || char == '['
+      object = char == '{'
+      result = object ? {} : []
+      ending = object ? '}' : ']'
+      @position += 1
+      whitespace
+      if @text[@position] == ending
+        @position += 1
+        return result
+      end
+      loop do
+        if object
+          whitespace
+          fail_at('unexpected end of input') if @text[@position].nil?
+          fail_at('expected key') unless @text[@position] == '"'
+          key_start = @position
+          key = string
+          fail_at('duplicate key ' + JsonTool.quote(key), key_start) if result.key?(key)
+          whitespace
+          fail_at('unexpected end of input') if @text[@position].nil?
+          fail_at("expected ':'") unless @text[@position] == ':'
+          @position += 1
+          result[key] = value
+        else
+          result << value
+        end
+        whitespace
+        if @text[@position] == ending
+          @position += 1
+          return result
+        end
+        fail_at('unexpected end of input') if @text[@position].nil?
+        fail_at("expected ',' or '#{ending}'") unless @text[@position] == ','
+        @position += 1
+        whitespace
+        fail_at('trailing comma') if @text[@position] == ending
+      end
+    elsif char == '"'
+    elsif char == '-' || char.match?(/[0-9]/)
+    elsif char.match?(/[A-Za-z]/)
+      start = @position
+      @position += 1 while @text[@position]&.match?(/[A-Za-z]/)
+      word = @text[start...@position]
+      fail_at("invalid literal '#{word}'", start) unless %w[true false null].include?(word)
+      { 'true' => true, 'false' => false, 'null' => nil }[word]
+    else
+      fail_at("unexpected character '#{char}'")
+    end
+  def read
+    result = value
+    whitespace
+    fail_at('trailing characters') if @position < @text.length
+    result
+class JsonTool
+  INTEGER = /\A(?:0|-?[1-9][0-9]{0,8})\z/
+  IDENTIFIER = /\A[A-Za-z_][A-Za-z0-9_]*\z/
+  COMMANDS = %w[LOAD GET COMPACT PRETTY TYPE LENGTH KEYS FLATTEN COUNT SUM MIN MAX AVG FILTER SET DELETE INSERT MERGE SORT RENAME UNDO].freeze
+  def self.quote(text, delimiter = '"')
+    escapes = { "\b" => '\\b', "\f" => '\\f', "\n" => '\\n', "\r" => '\\r', "\t" => '\\t' }
+    delimiter + text.each_char.map do |char|
+      if char == delimiter || char == '\\'
+        '\\' + char
+      elsif escapes.key?(char)
+        escapes[char]
+      elsif char.ord < 32 || char.ord == 127
+        format('\\u%04x', char.ord)
+      else
+        char
+      end
+    end.join + delimiter
+  def initialize
+    @document = nil
+    @history = []
+  def copy(value)
+    Marshal.load(Marshal.dump(value))
+  def compact(value)
+    case value
+    when nil then 'null'
+  def pretty(value, indent = '')
+    return compact(value) unless (value.is_a?(Hash) || value.is_a?(Array)) && !value.empty?
+    next_indent = indent + '  '
+    if value.is_a?(Hash)
+      items = value.map { |key, item| next_indent + self.class.quote(key) + ': ' + pretty(item, next_indent) }
+      "{\n" + items.join(",\n") + "\n#{indent}}"
+    else
+      "[\n" + value.map { |item| next_indent + pretty(item, next_indent) }.join(",\n") + "\n#{indent}]"
+  def path(text, field = false)
+    begin
+      raise 'bad' unless text && text[0] == (field ? '@' : '$')
+      position = 1
+      selectors = []
+      while position < text.length
+        descendant = false
+        if text[position, 2] == '..' && !field
+        elsif text[position] == '.'
+          position += 1
+          match = /\A(?:[A-Za-z_][A-Za-z0-9_]*|\*)/.match(text[position..])
+          raise 'bad' unless match && (!field || match[0] != '*')
+          word = match[0]
+          selectors << [false, word == '*' ? :all : :key, word]
+          position += word.length
+          next
+        elsif text[position] != '['
+          raise 'bad'
+        end
+        if text[position] == '['
+          position += 1
+          if text[position] == "'"
+          else
+            finish = text.index(']', position)
+            raise 'bad' unless finish
+            word = text[position...finish]
+            position = finish
+            if INTEGER.match?(word)
+            elsif word == '*' && !field
+              kind = :all
+              key = nil
+            end
+          end
+          raise 'bad' unless text[position] == ']'
+          position += 1
+        end
+        selectors << [descendant, kind, key]
+      end
+      selectors
+    rescue RuntimeError
+      raise(field ? 'ERROR bad field' : 'ERROR bad path')
+    end
+  def location(steps)
+    '$' + steps.map { |step| step.is_a?(Integer) ? "[#{step}]" : (IDENTIFIER.match?(step) ? '.' + step : '[' + self.class.quote(step, "'") + ']') }.join
+  def children(match)
+    value, steps, positions = match
+    if value.is_a?(Hash)
+      value.each_with_index.map { |(key, item), index| [item, steps + [key], positions + [index]] }
+    elsif value.is_a?(Array)
+      value.each_with_index.map { |item, index| [item, steps + [index], positions + [index]] }
+    else
+      []
+  def select(match, selector)
+    _, kind, key = selector
+    value = match[0]
+    all = children(match)
+    case kind
+    when :key then value.is_a?(Hash) ? all.select { |item| item[1].last == key } : []
+    when :all then all
+  def evaluate(selectors, initial = [[@document, [], []]])
+    selectors.reduce(initial) do |matches, selector|
+      matches.flat_map { |match| (selector[0] ? preorder(match) : [match]).flat_map { |item| select(item, selector) } }
+  def at(steps)
+    steps.reduce(@document) { |value, step| value[step] }
+  def assign(steps, value)
+    if steps.empty?
+      @document = value
+    else
+      at(steps[0...-1])[steps[-1]] = value
+  def command(line)
+    command, argument = line.split(' ', 2)
+    raise "ERROR unknown command '#{command}'" unless COMMANDS.include?(command)
+    count = { 'SET' => 2, 'MERGE' => 2, 'INSERT' => 3, 'FILTER' => 4 }[command]
+    args = argument ? argument.split(/ /, count || -1) : []
+    if %w[SET MERGE INSERT].include?(command)
+    elsif command == 'FILTER'
+    elsif command == 'SORT'
+    else
+      expected = %w[COMPACT PRETTY FLATTEN].include?(command) ? [0, 1] : (command == 'UNDO' ? [0] : command == 'RENAME' ? [2] : [1])
+      raise 'ERROR bad arguments' unless expected.include?(args.length)
+    end
+    if command == 'UNDO'
+      raise 'ERROR nothing to undo' if @history.empty?
+      @document = @history.pop
+      puts "UNDO #{@history.length}"
+      return
+    end
+    selectors = path(args[0] || '$')
+    if command == 'FILTER'
+    elsif command == 'SORT'
+    elsif command == 'INSERT'
+    elsif command == 'RENAME'
+      begin
+        if IDENTIFIER.match?(args[1])
+          new_key = args[1]
+        end
+      rescue RuntimeError
+        raise 'ERROR bad key'
+      end
+    end
+    matches = evaluate(selectors)
+    case command
+    when 'RENAME'
+      bad = matches.find { |item| item[1].empty? || !item[1].last.is_a?(String) }
+      raise "ERROR not a member at #{location(bad[1])}" if bad
+    end
+    if %w[SET DELETE INSERT MERGE SORT RENAME].include?(command)
+      if command == 'SET' && !selectors.empty? && selectors[-1][0] == false && selectors[-1][1] == :key
+      end
+      targets = matches.uniq { |item| item[1] }.sort { |a, b| b[2] <=> a[2] }
+      original = copy(@document)
+      begin
+        targets.each do |_, steps, _|
+          case command
+          when 'RENAME'
+            parent = at(steps[0...-1])
+            key = steps[-1]
+            raise "ERROR key exists at #{location(steps)}" if key != new_key && parent.key?(new_key)
+            assign(steps[0...-1], parent.to_h { |name, item| [name == key ? new_key : name, item] })
+          end
+        end
+      rescue RuntimeError
+        @document = original
+        raise
+      end
+      @history << original
+      puts "#{command} #{targets.length}"
+    elsif %w[COUNT SUM MIN MAX AVG].include?(command)
+    else
+      output = []
+      matches.each do |match|
+        value, steps, = match
+        case command
+        when 'PRETTY' then output << pretty(value)
+        end
+      end
+      puts(output.empty? ? ['no match'] : output)
+    end
+  rescue RuntimeError => error
+    puts error.message
+  def load_document(lines)
+    text = lines.join("\n")
+    begin
+      value = StrictJson.new(text).read
+      @history << copy(@document)
+      @document = value
+      stats = lambda do |item|
+        children = item.is_a?(Hash) ? item.values : item.is_a?(Array) ? item : []
+        nested = children.map { |child| stats.call(child) }
+        [1 + nested.sum(&:first), 1 + (nested.map(&:last).max || 0)]
+      end
+      count, depth = stats.call(value)
+      puts "LOADED nodes=#{count} depth=#{depth}"
+    rescue JsonFault => error
+    end
+  def run
+    input = STDIN.each_line.map { |line| line.chomp("\n").delete_suffix("\r") }
+    position = 0
+    loop do
+      block = []
+      while input[position] != '%%'
+        block << input[position]
+        position += 1
+      end
+      position += 1
+      load_document(block)
+      while input[position] != 'LOAD' && input[position] != 'END'
+        command(input[position])
+        position += 1
+      end
+      break if input[position] == 'END'
+      position += 1
+    end
+JsonTool.new.run

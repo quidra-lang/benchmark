@@ -1,0 +1,207 @@
+pub const CLASSES: [&str; 7] = ["ALU", "MUL", "LOAD", "STORE", "BRANCH", "JUMP", "NOP"];
+    pub fn control(&self) -> bool {
+        self.class == 4 || self.class == 5
+    }
+pub fn register(word: &str) -> Option<Option<usize>> {
+    if word == "-" { return Some(None); }
+    let number: usize = word.strip_prefix('r')?.parse().ok()?;
+    if number <= 31 && format!("r{}", number) == word { Some(Some(number)) } else { None }
+}
+
+pub fn read() -> io::Result<(Vec<String>, Config)> {
+    let trace = fs::read_to_string("input/trace.txt")?.lines().map(str::to_owned).collect();
+    let mut config = Config { btb: 0, ras: 0, predictors: Vec::new(), variants: Vec::new(), primary: (String::new(), String::new()), window: (0, 0), top: 0, interval: 0 };
+    for line in fs::read_to_string("input/config.txt")?.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let integer = |i: usize| words[i].parse::<usize>().unwrap();
+        match words[0] {
+            "VARIANT" => config.variants.push(Variant { name: words[1].into(), forwarding: words[2] == "ON", id: words[3] == "ID", multiply: integer(4) }),
+            "PRIMARY" => config.primary = (words[1].into(), words[2].into()),
+            "WINDOW" => config.window = (integer(1), integer(2)),
+            "TOP" => config.top = integer(1),
+            "INTERVAL" => config.interval = integer(1),
+            _ => unreachable!(),
+        }
+    }
+    Ok((trace, config))
+}
+pub fn dependencies(instructions: &[Instruction]) -> Vec<Vec<Source>> {
+    let mut latest = [None; 32];
+    let mut sources = Vec::new();
+    for (i, instruction) in instructions.iter().enumerate() {
+        sources.push([instruction.rs1, instruction.rs2].iter().filter_map(|&r| r.filter(|&r| r > 0))
+            .map(|register| Source { register, producer: latest[register] }).collect());
+        if let Some(register) = instruction.rd.filter(|&r| r > 0) { latest[register] = Some(i); }
+    }
+    sources
+}
+
+pub fn id_resolved(instruction: &Instruction, variant: &Variant) -> bool {
+    instruction.control() && ((instruction.class == 5 && instruction.rs1.is_none()) || variant.id)
+}
+
+pub fn ready(consumer: &Instruction, producer: &Instruction, timing: &Timing, variant: &Variant) -> usize {
+    if variant.forwarding {
+        (if producer.class == 2 { timing.w } else { timing.m }) + usize::from(id_resolved(consumer, variant))
+    } else { timing.w + 1 }
+}
+pub const CAUSES: [&str; 4] = ["control", "structural", "load_use", "raw"];
+pub struct Timing {
+    pub f: usize,
+    pub d: usize,
+    pub x: usize,
+    pub m: usize,
+    pub w: usize,
+}
+
+pub struct Stall {
+    pub cause: usize,
+    pub cycles: usize,
+    pub responsible: usize,
+    pub waiting: Option<usize>,
+    pub producer: Option<usize>,
+}
+pub fn simulate(instructions: &[Instruction], sources: &[Vec<Source>], variant: &Variant, mispredicted: &[bool]) -> Run {
+    let mut timing: Vec<Timing> = Vec::new();
+    let mut stalls = Vec::new();
+    for i in 0..instructions.len() {
+        let (f, d, x) = if i == 0 { (1, 2, 3) } else {
+            let previous = timing[i - 1];
+            let f = if mispredicted[i - 1] { previous.x + usize::from(!hazards::id_resolved(&instructions[i - 1], variant)) } else { previous.d };
+            let d = (f + 1).max(previous.x);
+            let base = previous.x + 1;
+            let mut bounds = [d + 1, previous.m, base, base];
+            let mut producers = [None; 4];
+            for source in &sources[i] {
+                if let Some(p) = source.producer {
+                    let cause = if instructions[p].class == 2 { 2 } else { 3 };
+                    let ready = hazards::ready(&instructions[i], &instructions[p], &timing[p], variant);
+                    if ready > bounds[cause] { bounds[cause] = ready; producers[cause] = Some(p); }
+                }
+            }
+            let mut x = base;
+            for cause in 0..4 {
+                if bounds[cause] > x {
+                    stalls.push(Stall { cause, cycles: bounds[cause] - x, responsible: if cause < 2 { i - 1 } else { i }, waiting: Some(i), producer: producers[cause] });
+                    x = bounds[cause];
+                }
+            }
+            (f, d, x)
+        };
+        let m = x + if instructions[i].class == 1 { variant.multiply } else { 1 };
+        timing.push(Timing { f, d, x, m, w: m + 1 });
+    }
+    let mut totals = [0; 4];
+    let mut events = [0; 4];
+    for stall in &stalls { totals[stall.cause] += stall.cycles; events[stall.cause] += 1; }
+    let cycles = timing.last().unwrap().w;
+    Run { timing, stalls, totals, events, cycles }
+}
+fn check(line: &str, number: usize, first: &BTreeMap<i64, usize>, accepted: &[Instruction]) -> Result<Instruction, &'static str> {
+    let words: Vec<&str> = line.split(' ').collect();
+    if words.len() != 8 || words.iter().any(|s| s.is_empty()) { return Err("fields"); }
+    let pc = trace_io::hex(words[0]).filter(|p| p % 4 == 0).ok_or("pc")?;
+    let class = CLASSES.iter().position(|&c| c == words[1]).ok_or("class")?;
+    let rd = trace_io::register(words[2]).ok_or("register")?;
+    let rs1 = trace_io::register(words[3]).ok_or("register")?;
+    let rs2 = trace_io::register(words[4]).ok_or("register")?;
+    Ok(Instruction { pc, class, rd, rs1, rs2, taken: words[5] == "T", target, address, line: number })
+}
+fn span(start: usize, end: usize, first: char, rest: char, stage: Option<usize>) -> Span {
+    Span { start, end, first, rest, stage }
+}
+
+fn diagram(instructions: &[Instruction], predictions: &Predictions, variant: &trace_io::Variant, run: &Run) -> Vec<Row> {
+    let mut annotations = vec![String::new(); instructions.len()];
+    for stall in &run.stalls { if let Some(i) = stall.waiting { annotations[i] += &format!(" {} {}", CAUSES[stall.cause], stall.cycles); } }
+    let mut rows = Vec::new();
+    for (i, instruction) in instructions.iter().enumerate() {
+        let t = run.timing[i];
+        if let Some(kind) = predictions.values[i].kind { annotations[i] += &format!(" mispredict {}", MISPREDICTIONS[kind]); }
+        rows.push(Row { instruction: Some(i), pc: instruction.pc, class: CLASSES[instruction.class].into(), annotation: annotations[i].clone(), spans: vec![
+            span(t.f, t.d - 1, 'F', '*', Some(0)), span(t.d, t.x - 1, 'D', '*', Some(1)), span(t.x, t.m - 1, 'X', 'X', Some(2)),
+            span(t.m, t.m, 'M', 'M', Some(3)), span(t.w, t.w, 'W', 'W', Some(4))] });
+        }
+    }
+    rows
+}
+fn main() -> io::Result<()> {
+    let (raw, config) = trace_io::read()?;
+    let mut instructions = Vec::new();
+    let mut first = BTreeMap::new();
+    let mut rejected = Vec::new();
+    for (line, text) in raw.iter().enumerate() {
+        match check(text, line + 1, &first, &instructions) {
+            Ok(instruction) => { first.entry(instruction.pc).or_insert(instructions.len()); instructions.push(instruction); }
+            Err(reason) => rejected.push(format!("reject line {} {}", line + 1, reason)),
+        }
+    }
+    let n = instructions.len();
+    let sources = hazards::dependencies(&instructions);
+    let predictions: Vec<Predictions> = (0..config.predictors.len()).map(|i| predict(&instructions, &config, i)).collect();
+    let flags: Vec<Vec<bool>> = predictions.iter().map(|p| p.values.iter().map(|p| p.kind.is_some()).collect()).collect();
+    let runs: Vec<Vec<Run>> = config.variants.iter().map(|v| flags.iter().map(|f| pipeline::simulate(&instructions, &sources, v, f)).collect()).collect();
+    let primary_variant = config.variants.iter().position(|v| v.name == config.primary.0).unwrap();
+    let primary_predictor = config.predictors.iter().position(|p| p.name == config.primary.1).unwrap();
+    let variant = &config.variants[primary_variant];
+    let prediction = &predictions[primary_predictor];
+    let run = &runs[primary_variant][primary_predictor];
+    let cycle_count = run.cycles;
+    let rows = diagram(&instructions, prediction, variant, run);
+    let (start, end) = config.window;
+    let mut pipeline_lines = vec![format!("pipeline variant={} predictor={} cycles {}-{}", variant.name, config.predictors[primary_predictor].name, start, end), report::digits(start, end)];
+    for row in &rows {
+        if let Some(line) = row.format(start, end) {
+            written += 1;
+            for c in start..=end { match row.cell(c).0 { '*' => stall_cells += 1, 'x' => flushed += 1, _ => {} } }
+            pipeline_lines.push(line);
+        }
+    }
+    pipeline_lines.extend([format!("rows {} completed {} stall_cells {} flushed {}", written, run.timing.iter().filter(|t| t.w >= start && t.w <= end).count(), stall_cells, flushed),
+        String::new(), "stages".into(), "cycle IF ID EX MEM WB".into()]);
+    for cycle in start..=end {
+        let mut contents = vec![".".to_owned(); 5];
+        for row in &rows {
+            if let Some(stage) = row.cell(cycle).1 { contents[stage] = row.instruction.map_or("w".into(), |i| (i + 1).to_string()); }
+        }
+        pipeline_lines.push(format!("{} {}", cycle, contents.join(" ")));
+    }
+    let mut per_pc: BTreeMap<i64, [usize; 4]> = BTreeMap::new();
+    let mut dependencies: BTreeMap<(i64, i64, usize), (usize, usize)> = BTreeMap::new();
+    let mut class_stalls = [0usize; 7];
+    for stall in &run.stalls {
+        let responsible = &instructions[stall.responsible];
+        per_pc.entry(responsible.pc).or_insert([0; 4])[stall.cause] += stall.cycles;
+    let stalls: usize = run.totals.iter().sum();
+    parts.push(vec![format!("timing variant={} predictor={}", variant.name, config.predictors[primary_predictor].name),
+        format!("forwarding {} branch_stage {} mul_latency {}", if variant.forwarding { "on" } else { "off" }, if variant.id { "ID" } else { "EX" }, variant.multiply),
+        format!("cycles {}", cycle_count), format!("cpi {} {}", fraction(cycle_count, n), decimal(cycle_count, n)), format!("ipc {}", decimal(n, cycle_count)),
+        format!("stall_cycles total {} control {} structural {} load_use {} raw {}", stalls, run.totals[0], run.totals[1], run.totals[2], run.totals[3]),
+        format!("stall_events control {} structural {} load_use {} raw {}", run.events[0], run.events[1], run.events[2], run.events[3]), format!("flushed {}", refetch),
+    let mut segment_groups: BTreeMap<i64, (usize, usize, usize)> = BTreeMap::new();
+    let mut segment_start = 0;
+    for i in 0..n {
+        if instructions[i].control() || i + 1 == n {
+            let cycles = run.timing[i].w - if segment_start == 0 { 0 } else { run.timing[segment_start - 1].w };
+            let entry = segment_groups.entry(instructions[segment_start].pc).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += i - segment_start + 1;
+            entry.2 += cycles;
+            segment_start = i + 1;
+        }
+    }
+    let mut segment_order: Vec<i64> = segment_groups.keys().copied().collect();
+    segment_order.sort_by_key(|pc| (std::cmp::Reverse(segment_groups[pc].2), *pc));
+    profile.extend([String::new(), format!("segments total {}", segment_order.len())]);
+    for (rank, &pc) in segment_order.iter().take(config.top).enumerate() {
+        let (instances, instructions, cycles) = segment_groups[&pc];
+        profile.push(format!("{} {} instances {} instructions {} cycles {} cpi {}", rank + 1, hex(pc), instances, instructions, cycles, decimal(cycles, instructions)));
+    }
+    profile.extend([String::new(), "instructions".into()]);
+    for (&pc, &i) in &first {
+        let instruction = &instructions[i];
+        let count = instructions.iter().filter(|i| i.pc == pc).count();
+        let stalls = per_pc.get(&pc).map_or(0, |counts| counts.iter().sum::<usize>());
+        profile.push(format!("{} {} {} {} {} executions {} stall_cycles {}", hex(pc), CLASSES[instruction.class], register(instruction.rd), register(instruction.rs1), register(instruction.rs2), count, stalls));
+    }
+    for (name, lines) in [("pipeline.txt", pipeline_lines), ("stats.txt", stats), ("branches.csv", branch_lines), ("comparison.csv", comparison), ("profile.txt", profile)] { report::write(name, &lines)?; }

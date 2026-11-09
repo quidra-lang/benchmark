@@ -1,0 +1,187 @@
+state <- new.env(parent = emptyenv())
+state$stations <- list()
+state$lines <- list()
+state$walks <- list()
+state$closed <- list()
+state$tariff <- NULL
+
+say <- function(...) cat(paste0(...), "\n", sep = "")
+fail <- function(message) {
+  stop(structure(list(message = message, call = NULL), class = c("MetroError", "error", "condition")))
+}
+ordered <- function(x) sort(unique(x), method = "radix")
+keys <- function(x) ordered(names(x))
+minutes <- function(text) {
+  parts <- as.integer(strsplit(text, ":", fixed = TRUE)[[1]])
+  parts[[1]] * 60L + parts[[2]]
+}
+segment <- function(a, b) paste(ordered(c(a, b)), collapse = "-")
+blocked <- function(a, b) !is.null(state$closed[[segment(a, b)]])
+station_check <- function(id) {
+  if (is.null(state$stations[[id]])) fail(paste("unknown station", id))
+}
+open_check <- function(id) {
+  if (state$stations[[id]]$closed) fail(paste("station", id, "is closed"))
+}
+journey_check <- function(origin, destination) {
+  station_check(origin)
+  station_check(destination)
+  if (origin == destination) fail("origin and destination are the same")
+  open_check(origin)
+  open_check(destination)
+}
+trips <- function(line) (line$last - line$first) %/% line$headway + 1L
+duration <- function(line) tail(line$offsets, 1L)
+directions <- function(line) {
+  list(list(stops = line$stops, offsets = line$offsets),
+       list(stops = rev(line$stops), offsets = duration(line) - rev(line$offsets)))
+}
+next_train <- function(line, offset, ready) {
+  difference <- max(0L, ready - line$first - line$delay - offset)
+  q <- (difference + line$headway - 1L) %/% line$headway
+  if (q < trips(line)) q else NULL
+}
+train_time <- function(line, q, offset) line$first + line$delay + q * line$headway + offset
+running_lines <- function() Filter(function(line) !line$suspended, state$lines[keys(state$lines)])
+ride_leg <- function(line, terminal, from, start, to, finish, stops) {
+  list(kind = "ride", line = line, terminal = terminal, from = from, start = start,
+       to = to, finish = finish, stops = stops)
+}
+walk_leg <- function(from, start, to, finish) list(kind = "walk", from = from, start = start, to = to, finish = finish)
+update_label <- function(labels, destination, time, journey) {
+  old <- labels[[destination]]
+  if (!is.null(old) && old$time <= time) return(FALSE)
+  labels[[destination]] <- list(time = time, journey = journey)
+  TRUE
+}
+earliest <- function(origin, departure) {
+  labels <- new.env(parent = emptyenv())
+  labels[[origin]] <- list(time = departure, journey = list())
+  settled <- character()
+  lines <- running_lines()
+  repeat {
+    candidates <- setdiff(ordered(ls(labels)), settled)
+    if (!length(candidates)) break
+    times <- vapply(candidates, function(id) labels[[id]]$time, numeric(1))
+    u <- candidates[[which.min(times)]]
+    settled <- c(settled, u)
+    arrival <- labels[[u]]$time
+    journey <- labels[[u]]$journey
+    ready <- arrival + if (u == origin) 0L else state$stations[[u]]$transfer
+    for (line in lines) {
+      if (!(u %in% line$stops)) next
+      for (direction in directions(line)) {
+        stops <- direction$stops
+        offsets <- direction$offsets
+        i <- match(u, stops)
+        if (i == length(stops)) next
+        q <- next_train(line, offsets[[i]], ready)
+        if (is.null(q)) next
+        boarding <- train_time(line, q, offsets[[i]])
+        for (j in (i + 1L):length(stops)) {
+          if (blocked(stops[[j - 1L]], stops[[j]])) break
+          if (state$stations[[stops[[j]]]]$closed) next
+          time <- train_time(line, q, offsets[[j]])
+          leg <- ride_leg(line$id, tail(stops, 1L), u, boarding, stops[[j]], time, j - i)
+          update_label(labels, stops[[j]], time, c(journey, list(leg)))
+        }
+      }
+    }
+    for (v in keys(state$walks[[u]])) {
+      time <- arrival + state$walks[[u]][[v]]
+      if (state$stations[[v]]$closed || time > 1440L) next
+      update_label(labels, v, time, c(journey, list(walk_leg(u, arrival, v, time))))
+    }
+  }
+  as.list(labels)
+}
+print_fare <- function(origin, destination, time_text, fare_class, journey) {
+  tariff <- state$tariff
+  half <- function(x) ((x + 19L) %/% 20L) * 10L
+  cap <- if (fare_class == "CHILD") half(tariff$discount) else tariff$discount
+  tickets <- list()
+  previous_end <- NULL
+  for (leg in journey) {
+    if (leg$kind != "ride") next
+    line <- state$lines[[leg$line]]
+    for (direction in directions(line)) if (tail(direction$stops, 1L) == leg$terminal) break
+    stops <- direction$stops
+    selected <- stops[match(leg$from, stops):match(leg$to, stops)]
+    zone_count <- length(unique(vapply(selected, function(id) state$stations[[id]]$zone, integer(1))))
+    price <- tariff$prices[[min(zone_count, length(tariff$prices))]]
+    if (fare_class == "CHILD") price <- half(price)
+    discount <- if (!is.null(previous_end) && leg$start - previous_end <= tariff$window) min(cap, price) else 0L
+    tickets[[length(tickets) + 1L]] <- list(line = leg$line, from = leg$from, to = leg$to,
+      zones = zone_count, price = price, discount = discount, pay = price - discount)
+    previous_end <- leg$finish
+  }
+  total <- sum(vapply(tickets, function(ticket) ticket$pay, numeric(1)))
+  say("FARE ", origin, " ", destination, " ", time_text, " ", fare_class, " rides ", length(tickets), " total ", total)
+  for (ticket in tickets) say("TICKET ", ticket$line, " ", ticket$from, " ", ticket$to, " zones ", ticket$zones,
+      " price ", ticket$price, " discount ", ticket$discount, " pay ", ticket$pay)
+}
+search_command <- function(command, args) {
+  origin <- args[[1]]
+  destination <- args[[2]]
+  journey_check(origin, destination)
+  departure <- if (length(args) >= 3L) minutes(args[[3]]) else NULL
+  if (command == "FARE") {
+    if (!(args[[4]] %in% c("ADULT", "CHILD"))) fail(paste("unknown fare class", args[[4]]))
+    if (is.null(state$tariff)) fail("no tariff")
+  }
+  if (command %in% c("ROUTE", "FARE")) {
+    label <- earliest(origin, departure)[[destination]]
+    if (is.null(label)) {
+      say(command, " ", paste(args, collapse = " "), " unreachable")
+    } else {
+      print_fare(origin, destination, args[[3]], args[[4]], label$journey)
+    }
+execute <- function(text) {
+  words <- strsplit(text, " ", fixed = TRUE)[[1]]
+  command <- words[[1]]
+  args <- words[-1]
+  a <- if (length(args)) args[[1]] else NULL
+  b <- if (length(args) >= 2L) args[[2]] else NULL
+  switch(command,
+    STATION = {
+      if (!is.null(state$stations[[a]])) fail(paste("station", a, "already exists"))
+      state$stations[[a]] <- list(zone = as.integer(b), name = args[[3]], transfer = 0L, closed = FALSE)
+      state$walks[[a]] <- list()
+    },
+    LINE = {
+      if (!is.null(state$lines[[a]])) fail(paste("line", a, "already exists"))
+      stops <- args[seq.int(5L, length(args), by = 2L)]
+      for (id in stops) station_check(id)
+      seen <- character()
+      for (id in stops) {
+        if (id %in% seen) fail(paste("station", id, "appears twice on line", a))
+        seen <- c(seen, id)
+      }
+      first <- minutes(b)
+      last <- minutes(args[[3]])
+      if (first > last) fail(paste("line", a, "first departure is after last departure"))
+      offsets <- c(0L, cumsum(as.integer(args[seq.int(6L, length(args) - 1L, by = 2L)])))
+      if (last + tail(offsets, 1L) > 1440L) fail(paste("line", a, "runs past 24:00"))
+      line <- list(id = a, first = first, last = last, headway = as.integer(args[[4]]),
+                   stops = stops, offsets = offsets, delay = 0L, suspended = FALSE)
+      state$lines[[a]] <- line
+    },
+    WALK = {
+      station_check(a)
+      station_check(b)
+      if (a == b) fail(paste("walk from", a, "to itself"))
+      state$walks[[a]][[b]] <- as.integer(args[[3]])
+      state$walks[[b]][[a]] <- as.integer(args[[3]])
+    },
+    TARIFF = {
+      prices <- as.integer(args[-c(1L, 2L)])
+      if (any(diff(prices) < 0L)) fail("tariff prices must not decrease")
+      state$tariff <- list(discount = as.integer(a), window = as.integer(b), prices = prices)
+    },
+    FARE = search_command(command, args),
+input <- file("stdin", "r")
+count <- as.integer(readLines(input, n = 1L, warn = FALSE))
+for (i in seq_len(count)) {
+  text <- readLines(input, n = 1L, warn = FALSE)
+  tryCatch(execute(text), MetroError = function(error) say("ERROR ", conditionMessage(error)))
+}

@@ -1,0 +1,22 @@
+# Task B selection — R
+
+## Answer requirements shared across languages
+
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
+
+## Selected source locations
+
+- `main.R`: 2, 3, 9, 11, 15, 16, 17, 51, 52, 53, 54, 55, 56, 57, 58, 84, 319, 320, 321, 322, 323, 324, 325, 326, 328, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 420, 424, 425, 426, 427, 428, 429, 430, 448, 449, 450, 451, 452, 453, 454, 455, 464, 465, 466, 483, 485, 486, 488, 489, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 700
+
+## Evidence and language semantics
+
+The requested change belongs in the event transformation, after target selection and signed pitch addition and before the payload assignment. Replace the range-failure removal path with a lower/upper bound clamp. Every selected event must reach the retained-event path exactly once; leave tick, status/channel, second data byte and track order untouched. Equal resulting pitches are separate sequence entries, including entries at the same tick; no set, grouping or note-pair operation is required. The transposed count includes those now clamped, including a zero shift; dropped becomes zero and its detail loop receives no events. DECODE already formats the stored payload in track order. ENCODE already uses each retained absolute tick minus the previous retained tick, so preserving events preserves the original delta sequence, including zero deltas; the shortest base-128 encoding and channel payload emission remain applicable. Existing running-status compression only suppresses status bytes, while NOTE_OFF ZERO changes status/velocity at encoding time and keeps the pitch. Neither operation coalesces events. R uses one-based data indexing: data[1] is the note, data[2] is velocity/pressure. kind/channel_names establish the first three valid status families selected by status<176. The local list row appends each e through [[length(row)+1L]], preserving duplicates and order; clamp the numeric sum before the payload write and remove next from the out-of-range path. R copy-on-modify means updating local s must be followed by the selected store[[a[1]]]<-s; that persistence line cannot be omitted. Numeric values here represent bounded integers exactly, and no static integer declaration is required. The command-membership check, exists lookup and valid check show error order and their direct line output preserves error: formatting. event_line returns the pasted stored fields, and encode copies local body, appends one body per event and uses the existing VLQ helper. A pitch collision never selects a list element by pitch and therefore never merges events.
+
+## Minimization and alternatives
+
+A transformation-only excerpt cannot establish downstream display, delta-time encoding or required error precedence. HEX/TEXT construction, pairing, timing, quantization and other edits are omitted because the input song is already valid. The relevant event/list types, selected formatting branches, VLQ code, encoder traversal, command guards and persistent-state write are retained. Custom helper bodies appear only where they determine a required behavior; ordinary collection/ownership rules are stated in the evidence. Source declarations and branch guards needed to identify selected definitions are retained even when a smaller candidate omitted them. This final excerpt was independently read and checked against the same four requirements used for all languages; no implementation changes or program execution were performed.
+
+The excerpt contains 1794 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -1,0 +1,166 @@
+  bool get empty => false;
+final class TextValue extends Value {
+  final String text;
+  const TextValue(this.text);
+  @override
+  ValueKind get kind => ValueKind.string;
+  @override
+  TextValue copy() => this;
+final class Entry {
+  final Value value;
+  final int? expiry;
+  const Entry(this.value, [this.expiry]);
+  Entry copy() => Entry(value.copy(), expiry);
+typedef Database = Map<String, Entry>;
+int number(String text, [String error = notInteger]) {
+  if (text == '0') return 0;
+  final start = text.startsWith('-') ? 1 : 0;
+  final digits = text.length - start;
+  if (digits < 1 || digits > 9 || text.codeUnitAt(start) < 49 || text.codeUnitAt(start) > 57) {
+    throw CommandError(error);
+  }
+  var value = 0;
+  for (var i = start; i < text.length; i++) {
+    final digit = text.codeUnitAt(i) - 48;
+    if (digit < 0 || digit > 9) throw CommandError(error);
+    value = value * 10 + digit;
+  }
+  return start == 0 ? value : -value;
+String quote(String text) => '"' + text.replaceAll(r'\', r'\\').replaceAll('"', r'\"') + '"';
+List<String> integerReply(int value) => ['(integer) $value'];
+List<String> textReply(String? value) => [value == null ? '(nil)' : quote(value)];
+List<String>? splitArguments(String line) {
+  final words = <String>[];
+  var position = 0;
+  while (position < line.length) {
+    if (line[position] == ' ') { position++; continue; }
+    if (line[position] != '"') {
+      final start = position;
+      while (position < line.length && line[position] != ' ') { position++; }
+      words.add(line.substring(start, position));
+      continue;
+    }
+  }
+  return words;
+final commands = buildCommands();
+Map<String, CommandSpec> buildCommands() {
+  final result = <String, CommandSpec>{};
+  void add(Group group, String names, int minimum, [int maximum = -1, int parity = -1]) {
+    for (final name in names.split(' ')) {
+      result[name] = (group: group, minimum: minimum, maximum: maximum, parity: parity);
+    }
+  }
+  add(Group.text, 'SET', 2);
+  add(Group.text, 'GET INCR DECR STRLEN', 1, 1);
+  add(Group.key, 'TYPE KEYS TTL PERSIST TICK', 1, 1);
+  add(Group.control, 'BEGIN COMMIT ROLLBACK', 0, 0);
+  add(Group.control, 'SNAPSHOT RESTORE', 1, 1);
+  return result;
+final class Store {
+  Database database = {};
+  final List<Database> transactions = [];
+  final Map<String, Database> snapshots = {};
+  int time = 0;
+
+  static Database copy(Database source) => {for (final entry in source.entries) entry.key: entry.value.copy()};
+  T read<T extends Value>(String key, T empty) {
+    final entry = database[key];
+    if (entry == null) return empty;
+    final value = entry.value;
+    if (value is! T) throw const CommandError(wrongType);
+    return value.copy() as T;
+  }
+  void replace(String key, Value value, [int? expiry]) {
+    if (value.empty) {
+      database.remove(key);
+    } else {
+      database[key] = Entry(value, expiry);
+    }
+  }
+  int purge() {
+    final expired = database.keys.where((key) {
+      final expiry = database[key]!.expiry;
+      return expiry != null && expiry <= time;
+    }).toList();
+    for (final key in expired) { database.remove(key); }
+    return expired.length;
+  List<String> textCommand(String command, List<String> args) {
+    final key = args[0];
+    if (command == 'SET') {
+      final options = <String>{};
+      String? secondsWord;
+      for (var i = 2; i < args.length; i++) {
+        final option = args[i].toUpperCase();
+        if (!['NX', 'XX', 'EX', 'KEEPTTL', 'GET'].contains(option) || !options.add(option)) {
+          throw const CommandError(syntaxError);
+        }
+        if (option == 'EX') {
+          if (++i == args.length) throw const CommandError(syntaxError);
+          secondsWord = args[i];
+        }
+      }
+      if (options.contains('NX') && options.contains('XX') || options.contains('EX') && options.contains('KEEPTTL')) {
+        throw const CommandError(syntaxError);
+      }
+      int? expiry;
+      if (secondsWord != null) {
+        final seconds = number(secondsWord);
+        if (seconds <= 0) throw const CommandError("ERR invalid expire time in 'set' command");
+        expiry = time + seconds;
+      }
+      final entry = database[key], exists = entry != null;
+      String? old;
+      final changed = !(options.contains('NX') && exists) && !(options.contains('XX') && !exists);
+      if (changed) replace(key, TextValue(args[1]), expiry);
+      return options.contains('GET') ? textReply(old) : changed ? ['OK'] : textReply(null);
+    }
+    var text = read(key, const TextValue('')).text;
+    if (command == 'GET') return textReply(database.containsKey(key) ? text : null);
+  List<String> keyCommand(String command, List<String> args) {
+    if (command == 'TICK') {
+      final ticks = number(args[0]);
+      if (ticks <= 0) throw const CommandError(positive);
+      time += ticks;
+      return integerReply(purge());
+    }
+  List<String> controlCommand(String command, List<String> args) {
+    if (command == 'BEGIN') { transactions.add(copy(database)); return ['OK']; }
+    if (command == 'COMMIT' || command == 'ROLLBACK') {
+      if (transactions.isEmpty) throw const CommandError('ERR no transaction');
+      final saved = transactions.removeLast();
+      if (command == 'ROLLBACK') { database = saved; purge(); }
+      return ['OK'];
+    }
+    if (command == 'SNAPSHOT') { snapshots[args[0]] = copy(database); return ['OK']; }
+    final saved = snapshots[args[0]];
+    if (saved == null) throw const CommandError('ERR no such snapshot');
+    database = copy(saved);
+    purge();
+    return ['OK'];
+  List<String> execute(String line) {
+    final words = splitArguments(line);
+    if (words == null) return ['Invalid argument(s)'];
+    final original = words.first, command = original.toUpperCase();
+    final spec = commands[command];
+    if (spec == null) throw CommandError("ERR unknown command '$original'");
+    final args = words.sublist(1);
+    if (args.length < spec.minimum || spec.maximum >= 0 && args.length > spec.maximum ||
+        spec.parity >= 0 && args.length % 2 != spec.parity) {
+      final name = command.toLowerCase();
+      throw CommandError("ERR wrong number of arguments for '$name' command");
+    }
+    return switch (spec.group) {
+      Group.text => textCommand(command, args),
+      Group.key => keyCommand(command, args),
+      Group.control => controlCommand(command, args),
+    };
+void main() {
+  final count = int.parse(stdin.readLineSync()!);
+  final store = Store();
+  for (var i = 0; i < count; i++) {
+    final line = stdin.readLineSync()!;
+    try {
+      stdout.writeln(store.execute(line).join('\n'));
+    } on CommandError catch (error) {
+    }
+  }

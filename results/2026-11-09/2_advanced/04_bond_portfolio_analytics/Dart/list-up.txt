@@ -1,0 +1,313 @@
+const businessDayRules = {'FOLLOWING', 'MODIFIED_FOLLOWING', 'PRECEDING', 'UNADJUSTED'};
+bool isLeap(int year) => year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+int monthLength(int year, int month) => month == 2 && isLeap(year) ? 29 : [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+bool validDate(String text) {
+  final year = int.parse(text.substring(0, 4)), month = int.parse(text.substring(5, 7)), day = int.parse(text.substring(8));
+  return year >= 2001 && year <= 2099 && month >= 1 && month <= 12 && day >= 1 && day <= monthLength(year, month);
+}
+int dayNumber(int year, int month, int day) {
+  var number = day - 1;
+  for (var earlier = 2000; earlier < year; earlier++) number += isLeap(earlier) ? 366 : 365;
+  for (var earlier = 1; earlier < month; earlier++) number += monthLength(year, earlier);
+  return number;
+}
+int parseDate(String text) => dayNumber(int.parse(text.substring(0, 4)), int.parse(text.substring(5, 7)), int.parse(text.substring(8)));
+(int, int, int) civilDate(int number) {
+  var year = 2000;
+  while (number >= (isLeap(year) ? 366 : 365)) { number -= isLeap(year) ? 366 : 365; year++; }
+  var month = 1;
+  while (number >= monthLength(year, month)) { number -= monthLength(year, month); month++; }
+  return (year, month, number + 1);
+}
+String formatDate(int number) { final (year, month, day) = civilDate(number); return '${year.toString().padLeft(4, '0')}-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}'; }
+class Calendar {
+  final Set<int> holidays;
+  Calendar(Iterable<int> days) : holidays = days.toSet();
+  bool business(int day) => (day + 5) % 7 < 5 && !holidays.contains(day);
+  int following(int day) { while (!business(day)) day++; return day; }
+  int preceding(int day) { while (!business(day)) day--; return day; }
+  int adjust(int day, String rule) {
+    if (rule == 'FOLLOWING') return following(day);
+    if (rule == 'PRECEDING') return preceding(day);
+    if (rule == 'MODIFIED_FOLLOWING') { final next = following(day); return civilDate(next).$2 == civilDate(day).$2 ? next : preceding(day); }
+    return day;
+  }
+  int move(int day, int count) {
+    final direction = count < 0 ? -1 : 1;
+    if (count < 0) count = -count;
+    while (count > 0) { day += direction; if (business(day)) count--; }
+    return day;
+  }
+}
+const dayCounts = {'30/360', '30E/360', 'ACT/360', 'ACT/365F', 'ACT/ACT'};
+(int, int) yearFraction(String convention, int start, int end) {
+  var (y1, m1, d1) = civilDate(start);
+  var (y2, m2, d2) = civilDate(end);
+  if (convention == '30/360' || convention == '30E/360') {
+    if (convention == '30/360') {
+      final february = m1 == 2 && d1 == monthLength(y1, 2);
+      if (february && m2 == 2 && d2 == monthLength(y2, 2)) d2 = 30;
+      if (february) d1 = 30;
+      if (d2 == 31 && d1 >= 30) d2 = 30;
+      if (d1 == 31) d1 = 30;
+    } else { if (d1 == 31) d1 = 30; if (d2 == 31) d2 = 30; }
+    return (360 * (y2 - y1) + 30 * (m2 - m1) + d2 - d1, 360);
+  }
+}
+const basisPoint = 0.0001;
+double bisection(double Function(double) function, double low, double high, double target) {
+  for (var step = 0; step < 80; step++) { final middle = (low + high) / 2; if (function(middle) > target) low = middle; else high = middle; }
+  return (low + high) / 2;
+}
+class Risk {
+  final double macaulay, modified, convexity, dv01;
+  Risk(this.macaulay, this.modified, this.convexity, this.dv01);
+}
+class YieldPricer {
+  final List<int> flows;
+  final double fraction;
+  final int frequency, outstanding;
+  YieldPricer(this.flows, this.fraction, this.frequency, this.outstanding);
+  List<double> values(double rate) {
+    final first = 1 + fraction * rate / frequency, growth = 1 + rate / frequency;
+    var factor = 1.0;
+    final values = <double>[];
+    for (final flow in flows) { values.add(flow / (first * factor)); factor *= growth; }
+    return values;
+  }
+  double dirty(double rate) { var sum = 0.0; for (final value in values(rate)) sum += value; return sum * 100 / outstanding; }
+  double solve(double target) => bisection(dirty, 0.0, 1.0, target);
+  bool inRange(double target) => dirty(0.0) > target && target > dirty(1.0);
+  Risk risk(double rate) {
+    final growth = 1 + rate / frequency, present = values(rate);
+    var total = 0.0, weighted = 0.0, curvature = 0.0;
+    for (var index = 0; index < present.length; index++) { final years = (index + fraction) / frequency, value = present[index]; total += value; weighted += years * value; curvature += years * (years + 1 / frequency) * value; }
+    final macaulay = weighted / total;
+    return Risk(macaulay, macaulay / growth, curvature / (total * growth * growth), (dirty(rate - basisPoint) - dirty(rate + basisPoint)) / 2);
+  }
+}
+List<int> couponSchedule(int issue, int maturity, int frequency, bool eom, bool long) {
+  final (year, month, day) = civilDate(maturity);
+  eom = eom && day == monthLength(year, month);
+  final dates = <int>[];
+  var boundary = maturity;
+  while (boundary > issue) {
+    dates.add(boundary);
+    final index = year * 12 + month - 1 - (12 ~/ frequency) * dates.length, y = index ~/ 12, m = index % 12 + 1;
+    final length = monthLength(y, m);
+    boundary = dayNumber(y, m, eom || day > length ? length : day);
+  }
+  if (long && boundary != issue && dates.length >= 2) dates.removeLast();
+  dates.add(issue);
+  return dates.reversed.toList();
+}
+class ZeroCurve {
+  final List<int> days;
+  final List<double> rates;
+  ZeroCurve(this.days, this.rates);
+  double zero(int day) {
+    if (day <= days.first) return rates.first;
+    if (day >= days.last) return rates.last;
+    var index = 1; while (days[index] < day) index++;
+    final low = days[index - 1];
+    return rates[index - 1] + (rates[index] - rates[index - 1]) * ((day - low) / (days[index] - low));
+  }
+  double discount(int day, [double spread = 0.0]) {
+    final rate = zero(day) + spread; var growth = 1.0;
+    for (var year = 0; year < day ~/ 365; year++) growth *= 1 + rate;
+    return 1 / (growth * (1 + rate * (day % 365) / 365));
+  }
+  double presentValue(List<(int, double)> flows, [double spread = 0.0]) { var total = 0.0; for (final (day, flow) in flows) total += flow * discount(day, spread); return total; }
+ZeroCurve bootstrap(int settlement, List<(int, int, int)> pillars) {
+  final curve = ZeroCurve([], []);
+  for (final (maturity, coupon, frequency) in pillars) {
+    final dates = couponSchedule(settlement, maturity, frequency, false, false), flows = <(int, double)>[];
+    for (var index = 1; index < dates.length; index++) {
+      final (n, m) = yearFraction('30/360', dates[index - 1], dates[index]);
+      var flow = coupon * n / (10000 * m);
+      if (index == dates.length - 1) flow += 1;
+      flows.add((dates[index] - settlement, flow));
+    }
+    curve.days.add(maturity - settlement); curve.rates.add(0.0);
+    final last = curve.rates.length - 1;
+    final rate = bisection((trial) { curve.rates[last] = trial; return curve.presentValue(flows); }, 0.0, 1.0, 1.0);
+    curve.rates[last] = rate;
+  }
+  return curve;
+}
+double zSpread(ZeroCurve curve, List<(int, double)> flows, int target) => bisection((spread) => curve.presentValue(flows, spread), -0.5, 0.5, target.toDouble());
+const bondTypes = ['FIXED', 'ZERO', 'AMORT', 'FRN'];
+const frequencies = {1, 2, 4, 12};
+const optionKeys = {'FIXED': {'EOM', 'LONG', 'CALL'}, 'ZERO': {'EOM', 'LONG'}, 'AMORT': {'EOM', 'LONG', 'SINK'}, 'FRN': {'EOM', 'LONG', 'LAG', 'CAP', 'FLOOR'}};
+const bucketNames = ['0-1Y', '1-3Y', '3-5Y', '5-10Y', '10Y+'];
+typedef Scenario = (String, List<double>);
+class InputError implements Exception { final String message; InputError(this.message); }
+int rounded(int a, int b) => (2 * a + b) ~/ (2 * b);
+String hundredths(int value) { final magnitude = value < 0 ? -value : value; return '${value < 0 ? '-' : ''}${magnitude ~/ 100}.${(magnitude % 100).toString().padLeft(2, '0')}'; }
+String decimals(double value, int digits) {
+  var scale = 1; for (var index = 0; index < digits; index++) scale *= 10;
+  final magnitude = value < 0 ? -value : value, integer = (magnitude * scale + 0.5).toInt();
+  return '${value < 0 && integer != 0 ? '-' : ''}${integer ~/ scale}.${(integer % scale).toString().padLeft(digits, '0')}';
+}
+String percent(double value) => decimals(value * 100, 4);
+String amount(double cents) => decimals(cents / 100, 2);
+int thousandths(String text) { final parts = text.split('.'); return int.parse(parts[0]) * 1000 + int.parse(parts[1]); }
+List<String> readLines(String name) => File('input/$name').readAsStringSync().split('\n')..removeLast();
+List<(int, List<String>)> rows(String name) { final lines = readLines(name); return [for (var index = 1; index < lines.length; index++) (index + 1, lines[index].split(','))]; }
+void writeLines(String name, List<String> lines) => File('output/$name').writeAsStringSync(lines.isEmpty ? '' : '${lines.join('\n')}\n');
+List<String> sortedKeys<T>(Map<String, T> map) => map.keys.toList()..sort();
+class Options {
+  bool eom = false, long = false;
+  int? lag, cap, floor;
+  final List<(String, int)> sinks = [], calls = [];
+}
+Options parseOptions(String kind, String text) {
+  final options = Options(), seen = <String>{};
+  for (final item in text == '-' ? <String>[] : text.split(';')) {
+    final equal = item.indexOf('='), key = equal < 0 ? item : item.substring(0, equal), value = equal < 0 ? '' : item.substring(equal + 1);
+    if (!optionKeys[kind]!.contains(key) || (!seen.add(key) && key != 'SINK' && key != 'CALL')) throw InputError('invalid option');
+    if (key == 'EOM') options.eom = true;
+    else if (key == 'LONG') options.long = true;
+    else if (key == 'LAG') options.lag = int.parse(value);
+    else if (key == 'CAP') options.cap = int.parse(value);
+    else if (key == 'FLOOR') options.floor = int.parse(value);
+    else { final parts = value.split(':'); (key == 'SINK' ? options.sinks : options.calls).add((parts[0], key == 'SINK' ? int.parse(parts[1]) : thousandths(parts[1]))); }
+  }
+  if (kind == 'FRN' && (options.lag == null || options.lag! < 1 || options.lag! > 5 || (options.cap ?? 1200) > 1200 || (options.floor ?? 0) > (options.cap ?? 1200))) throw InputError('invalid option');
+  return options;
+}
+  return low == 0 ? null : fixings[low - 1].$2;
+}
+class Period {
+  final int number, start, end, payment, n, m, rate, opening, coupon, principal;
+  int get cash => coupon + principal;
+  Period(this.number, this.start, this.end, this.payment, this.n, this.m, this.rate, this.opening, this.coupon, this.principal);
+}
+class Bond {
+  final String code, kind, daycount;
+  final int issue, maturity, frequency, face;
+  final List<(int, int)> calls;
+  final List<Period> periods;
+  Bond(this.code, this.kind, this.issue, this.maturity, this.frequency, this.daycount, this.face, this.calls, this.periods);
+}
+Bond parseBond(List<String> fields, Set<String> seen, Calendar calendar, List<(int, int)> fixings) {
+  final code = fields[0], kind = fields[1], coupon = int.parse(fields[4]), frequency = int.parse(fields[5]), daycount = fields[6], bdc = fields[7], face = int.parse(fields[8]);
+  if (seen.contains(code)) throw InputError('duplicate id');
+  if (!bondTypes.contains(kind)) throw InputError('unknown type');
+  if (!validDate(fields[2]) || !validDate(fields[3])) throw InputError('invalid date');
+  final issue = parseDate(fields[2]), maturity = parseDate(fields[3]);
+  if (maturity <= issue) throw InputError('maturity not after issue');
+  if (!frequencies.contains(frequency)) throw InputError('invalid frequency');
+  if (!dayCounts.contains(daycount)) throw InputError('unknown day count');
+  if (!businessDayRules.contains(bdc)) throw InputError('unknown business day rule');
+  if (face % 100000 != 0 || face > 10000000) throw InputError('invalid face');
+  if (coupon > 1200 || kind == 'ZERO' && coupon != 0) throw InputError('invalid coupon');
+  final options = parseOptions(kind, fields[9]), dates = couponSchedule(issue, maturity, frequency, options.eom, options.long);
+  final sinks = <int, int>{}; var total = 0;
+  for (final (day, value) in scheduleDays(options.sinks, dates, 'invalid sinking fund')) { if (value == 0) throw InputError('invalid sinking fund'); sinks[day] = value; total += value; }
+  if (kind == 'AMORT' && (total == 0 || total >= face)) throw InputError('invalid sinking fund');
+  final calls = scheduleDays(options.calls, dates, 'invalid call schedule');
+  if (calls.any((call) => call.$2 < 100000 || call.$2 > 110000)) throw InputError('invalid call schedule');
+  final periods = <Period>[]; var opening = face;
+  for (var number = 1; number < dates.length; number++) {
+    final start = dates[number - 1], end = dates[number], fraction = yearFraction(daycount, start, end);
+    var rate = kind == 'ZERO' ? 0 : coupon;
+    if (kind == 'FRN') {
+      final fixing = latestFixing(fixings, calendar.move(calendar.adjust(start, bdc), -options.lag!));
+      if (fixing == null) throw InputError('missing fixing');
+      rate = fixing + coupon;
+      if (options.floor != null && rate < options.floor!) rate = options.floor!;
+      if (options.cap != null && rate > options.cap!) rate = options.cap!;
+    }
+    final principal = number == dates.length - 1 ? opening : (sinks[end] ?? 0), couponAmount = rounded(opening * rate * fraction.$1, 10000 * fraction.$2);
+    periods.add(Period(number, start, end, calendar.adjust(end, bdc), fraction.$1, fraction.$2, rate, opening, couponAmount, principal));
+    opening -= principal;
+  }
+  return Bond(code, kind, issue, maturity, frequency, daycount, face, calls, periods);
+}
+class Valuation {
+  final Bond bond;
+  final int clean;
+  late List<Period> remaining, cashflows;
+  late List<(int, double)> flows;
+  late int outstanding, cleanAmount, unitValue, workout, nextPayment;
+  late double accrued, target, fraction;
+  late YieldPricer pricer;
+  late Risk risk;
+  double ytm = 0, ytw = 0, wal = 0, curveClean = 0, spread = 0;
+  Valuation(this.bond, this.clean, int settlement) {
+    final index = bond.periods.indexWhere((period) => period.end > settlement), current = bond.periods[index];
+    remaining = bond.periods.sublist(index); outstanding = current.opening;
+    final (n, m) = yearFraction(bond.daycount, current.start, settlement);
+    accrued = current.rate * n / (100 * m);
+    final accruedAmount = rounded(outstanding * current.rate * n, 10000 * m);
+    cleanAmount = rounded(outstanding * clean, 100000); unitValue = cleanAmount + accruedAmount; target = clean / 1000 + accrued;
+    final remainingFraction = yearFraction(bond.daycount, settlement, current.end);
+    fraction = bond.frequency * remainingFraction.$1 / remainingFraction.$2;
+    cashflows = remaining.where((period) => period.cash >= 1).toList(); flows = cashflows.map((period) => (period.payment - settlement, period.cash.toDouble())).toList();
+    pricer = YieldPricer(remaining.map((period) => period.cash).toList(), fraction, bond.frequency, outstanding);
+    workout = bond.maturity; nextPayment = cashflows.first.payment;
+  }
+  void analyze(ZeroCurve curve, int settlement) {
+    ytm = pricer.solve(target); risk = pricer.risk(ytm); ytw = ytm;
+    for (final (day, price) in bond.calls) {
+      if (day <= settlement) continue;
+      final values = <int>[];
+      for (final period in remaining) { values.add(period.coupon); if (period.end == day) { values[values.length - 1] += rounded(period.opening * price, 100000); break; } }
+      final rate = YieldPricer(values, fraction, bond.frequency, outstanding).solve(target);
+      if (rate < ytw) { ytw = rate; workout = day; }
+    }
+    var principalDays = 0;
+    for (final period in cashflows) principalDays += period.principal * (period.payment - settlement);
+    wal = principalDays / (365 * outstanding); curveClean = curve.presentValue(flows) * 100 / outstanding - accrued; spread = zSpread(curve, flows, unitValue);
+  }
+}
+class Position {
+  final Valuation valuation;
+  final int units, book;
+void main() {
+  var valuationDate = 0, settlementDays = 0;
+  final scenarioLines = <(int, String, List<int>)>[], limits = <List<String>>[];
+  final params = readLines('params.txt');
+  for (var index = 0; index < params.length; index++) {
+    final words = params[index].split(' ');
+    if (words[0] == 'valuation_date') valuationDate = parseDate(words[1]);
+    else if (words[0] == 'settlement_days') settlementDays = int.parse(words[1]);
+    else if (words[0] == 'scenario') scenarioLines.add((index + 1, words[1], words.skip(2).map(int.parse).toList()));
+    else limits.add(words.sublist(1));
+  }
+  final calendar = Calendar(readLines('calendar.txt').map(parseDate)), fixings = rows('fixings.csv').map((row) => (parseDate(row.$2[0]), int.parse(row.$2[1]))).toList();
+  final settlement = calendar.move(valuationDate, settlementDays), errors = <String>[], seen = <String>{}, pillars = <(int, int, int)>[];
+  for (final (number, fields) in rows('curve_quotes.csv')) {
+    final text = fields[0], frequency = int.parse(fields[2]);
+    final reason = seen.contains(text) ? 'duplicate pillar' : !validDate(text) ? 'invalid date' : parseDate(text) <= settlement ? 'pillar not after settlement' : !frequencies.contains(frequency) ? 'invalid frequency' : null;
+    if (reason == null) pillars.add((parseDate(text), int.parse(fields[1]), frequency)); else record(errors, 'curve_quotes.csv', number, text, reason);
+    seen.add(text);
+  }
+  seen.clear(); final bonds = <String, Bond>{};
+  for (final (number, fields) in rows('bonds.csv')) {
+    try { bonds[fields[0]] = parseBond(fields, seen, calendar, fixings); } on InputError catch (error) { record(errors, 'bonds.csv', number, fields[0], error.message); }
+    seen.add(fields[0]);
+  }
+  seen.clear(); final valuations = <String, Valuation>{};
+  for (final (number, fields) in rows('prices.csv')) {
+    final code = fields[0];
+    try {
+      final bond = bonds[code]; if (bond == null) throw InputError('unknown bond');
+      if (seen.contains(code)) throw InputError('duplicate price');
+      if (bond.issue > settlement || settlement >= bond.maturity) throw InputError('not outstanding');
+      final value = Valuation(bond, thousandths(fields[1]), settlement);
+      if (!value.pricer.inRange(value.target)) throw InputError('yield out of range');
+      valuations[code] = value;
+    } on InputError catch (error) { record(errors, 'prices.csv', number, code, error.message); }
+    seen.add(code);
+  }
+  final curve = bootstrap(settlement, pillars);
+  for (final value in valuations.values) value.analyze(curve, settlement);
+  final cashflows = ['bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal'];
+  for (final code in sortedKeys(bonds)) for (final period in bonds[code]!.periods) if (period.cash >= 1) cashflows.add([code, period.number, formatDate(period.start), formatDate(period.end), formatDate(period.payment), decimals(period.n / period.m, 6), period.rate, period.opening, period.coupon, period.principal].join(','));
+  final analytics = ['bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread'];
+  for (final code in sortedKeys(valuations)) { final v = valuations[code]!; analytics.add([code, decimals(v.clean / 1000, 6), decimals(v.accrued, 6), decimals(v.target, 6), percent(v.ytm), percent(v.ytw), formatDate(v.workout), formatDate(v.nextPayment), decimals(v.wal, 4), decimals(v.risk.macaulay, 4), decimals(v.risk.modified, 4), decimals(v.risk.convexity, 4), decimals(v.risk.dv01, 6), decimals(v.curveClean, 6), percent(v.spread)].join(',')); }
+  Directory('output').createSync(recursive: true);
+  for (final entry in {'errors.txt': errors, 'cashflows.csv': cashflows, 'analytics.csv': analytics, 'curve.txt': curveRows, 'portfolio.txt': report, 'scenarios.csv': scenarioRows, 'compliance.txt': compliance}.entries) writeLines(entry.key, entry.value);
+}

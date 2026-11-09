@@ -1,0 +1,240 @@
+  void send(Client c, String text) {
+    sent.add('$time ${c.id} $text');
+    c.sent++;
+  }
+  void disconnect(Client c, String reason, String kind) {
+    if (kind != 'closed') {
+      errors++;
+      send(c, 'ERROR :Closing Link: ${c.addressee}[${c.host}] ($reason)');
+    }
+    if (c.registered) peers(c, ':${c.prefix} QUIT :$reason');
+    for (final ch in List<Channel>.of(c.channels)) {
+      remove(c, ch);
+    }
+    discarded += c.queue.length;
+    c.queue.clear();
+    c.alive = false;
+    byID.remove(c.id);
+    clients.remove(c);
+    gone.add('GONE $time ${c.id} ${c.addressee} $reason');
+    disconnects[kind] = (disconnects[kind] ?? 0) + 1;
+  }
+  void process(Client c, String raw) {
+    processed++;
+    final (cmd, a) = parse(raw);
+    if (cmd.isEmpty) {
+      empty++;
+      return;
+    }
+    commands[cmd] = (commands[cmd] ?? 0) + 1;
+    if (!c.registered &&
+        !['NICK', 'USER', 'PING', 'PONG', 'QUIT'].contains(cmd)) {
+      errorReply(c, 451);
+      return;
+    }
+    switch (cmd) {
+      case 'PONG':
+        return;
+      default:
+        numeric(c, 421, '$cmd :Unknown command');
+    }
+  }
+  void arrive(Traffic e) {
+    if (e.body.startsWith('CONNECT ')) {
+      connectLines++;
+      final c = Client(e.id, e.body.substring(8), time, setting('BUCKET'));
+      clients.add(c);
+      byID[c.id] = c;
+      if (clients.length > peakConnections) {
+        peakConnections = clients.length;
+        peakConnectionsAt = time;
+      }
+      return;
+    }
+    if (e.body == 'DISCONNECT') {
+      disconnectLines++;
+      final c = byID[e.id];
+      if (c != null)
+        disconnect(c, 'Remote host closed the connection', 'closed');
+      return;
+    }
+    messageLines++;
+    final c = byID[e.id];
+    if (c == null) {
+      dropped++;
+      return;
+    }
+    c.received++;
+    c.lastReceived = time;
+    c.pinging = false;
+    if (c.queue.isEmpty && c.tokens > 0) {
+      c.use(time, setting('BUCKET'), setting('REFILL'));
+      process(c, e.body);
+    } else if (c.queue.length >= setting('QUEUE')) {
+      discarded++;
+      disconnect(c, 'Excess Flood', 'flood');
+    } else {
+      c.queue.add(e.body);
+      queued++;
+    }
+  }
+  void run() {
+    var at = 0;
+    for (time = 0; time <= end; time++) {
+      for (final c in List<Client>.of(clients)) {
+        c.refillTokens(time, setting('BUCKET'), setting('REFILL'));
+        while (c.alive && c.queue.isNotEmpty && c.tokens > 0) {
+          c.use(time, setting('BUCKET'), setting('REFILL'));
+          final raw = c.queue.removeAt(0);
+          process(c, raw);
+        }
+      }
+      while (at < traffic.length && traffic[at].time == time) {
+        arrive(traffic[at++]);
+      }
+      for (final c in List<Client>.of(clients)) {
+        if (c.pinging) {
+          if (time - c.pingAt >= setting('TIMEOUT'))
+            disconnect(
+              c,
+              'Ping timeout: ${time - c.lastReceived} seconds',
+              'timeout',
+            );
+        } else if (time - c.lastReceived >= setting('PINGFREQ')) {
+          send(c, 'PING :${config['NAME']}');
+          pings++;
+          c.pinging = true;
+          c.pingAt = time;
+        }
+      }
+    }
+  }
+  List<String> clientLines() {
+    final out = <String>[];
+    var registered = 0, invisible = 0, away = 0;
+    for (final c in clients) {
+      final user = c.user.isEmpty ? '*' : c.user,
+          signon = c.registered ? '${c.signon}' : '-';
+      if (c.registered) registered++;
+      if (c.invisible) invisible++;
+      var joined = channelNames(c, ','),
+          invites = c.invites.map((ch) => ch.name).join(',');
+      if (joined.isEmpty) joined = 'none';
+      if (invites.isEmpty) invites = 'none';
+      out.add(
+        'CLIENT ${c.id} ${c.addressee} $user ${c.host} ${c.mode} connected ${c.connected} signon $signon received ${c.received} sent ${c.sent} tokens ${c.tokens} queue ${c.queue.length} channels $joined invites $invites',
+      );
+      if (c.away.isNotEmpty) {
+        away++;
+        out.add('AWAY ${c.id} ${c.away}');
+      }
+    }
+    out.add(
+      'TOTAL clients ${clients.length} registered $registered invisible $invisible away $away',
+    );
+    return out;
+  }
+  List<String> statLines() {
+    final pending = clients.fold(0, (a, c) => a + c.queue.length),
+        numCount = numerics.values.fold(0, (a, b) => a + b),
+        numericKeys = numerics.keys.toList()..sort();
+    final out = [
+      'END $end',
+      'LINES total ${traffic.length} connect $connectLines disconnect $disconnectLines messages $messageLines',
+      'MESSAGES dropped $dropped queued $queued processed $processed discarded $discarded pending $pending empty $empty',
+      'SENT lines ${sent.length} numerics $numCount pings $pings errors $errors',
+    ];
+    final commandKeys = commands.keys.toList()..sort();
+    for (final cmd in commandKeys) {
+      out.add('COMMAND $cmd ${commands[cmd]}');
+    }
+    for (final n in numericKeys) {
+      out.add('NUMERIC ${n.toString().padLeft(3, '0')} ${numerics[n]}');
+    }
+    out.addAll([
+      'PEAK connections $peakConnections at $peakConnectionsAt',
+      'PEAK registered $peakRegistered at $peakRegisteredAt',
+      'DISCONNECTS quit ${disconnects['quit'] ?? 0} closed ${disconnects['closed'] ?? 0} flood ${disconnects['flood'] ?? 0} timeout ${disconnects['timeout'] ?? 0}',
+      ...gone,
+    ]);
+    return out;
+  }
+void main() {
+  final s = Server();
+  for (final line in File('input/server.txt').readAsLinesSync()) {
+    final i = line.indexOf(' '),
+        key = line.substring(0, i),
+        value = line.substring(i + 1);
+    if (key == 'MOTD') {
+      s.motd.add(value);
+    } else {
+      s.config[key] = value;
+    }
+  }
+  for (final line in File('input/traffic.txt').readAsLinesSync()) {
+    final i = line.indexOf(' '),
+        j = line.indexOf(' ', i + 1),
+        t = number(line.substring(0, i));
+    s.traffic.add(Traffic(t, line.substring(i + 1, j), line.substring(j + 1)));
+    s.end = t;
+  }
+  s.run();
+  Directory('output').createSync(recursive: true);
+  final reports = {
+    'sent.txt': s.sent,
+    'channels.txt': s.channelLines(),
+    'clients.txt': s.clientLines(),
+    'stats.txt': s.statLines(),
+  };
+  for (final e in reports.entries) {
+    File(
+      'output/${e.key}',
+    ).writeAsStringSync(e.value.isEmpty ? '' : '${e.value.join('\n')}\n');
+  }
+}
+  void use(int t, int bucket, int interval) {
+    if (tokens == bucket) refill = t + interval;
+    tokens--;
+  }
+  void refillTokens(int t, int bucket, int interval) {
+    if (refill == t) {
+      tokens++;
+      refill = tokens < bucket ? t + interval : -1;
+    }
+  }
+(String, List<String>) parse(String raw) {
+  var i = 0;
+  if (raw.startsWith(':')) {
+    final k = raw.indexOf(' ');
+    if (k < 0) return ('', []);
+    i = k;
+  }
+  while (i < raw.length && raw[i] == ' ') {
+    i++;
+  }
+  var start = i;
+  while (i < raw.length && raw[i] != ' ') {
+    i++;
+  }
+  final command = raw.substring(start, i).toUpperCase(), args = <String>[];
+  while (i < raw.length) {
+    while (i < raw.length && raw[i] == ' ') {
+      i++;
+    }
+    if (i == raw.length) break;
+    if (raw[i] == ':') {
+      args.add(raw.substring(i + 1));
+      break;
+    }
+    if (args.length == 14) {
+      args.add(raw.substring(i));
+      break;
+    }
+    start = i;
+    while (i < raw.length && raw[i] != ' ') {
+      i++;
+    }
+    args.add(raw.substring(start, i));
+  }
+  return (command, args);
+}

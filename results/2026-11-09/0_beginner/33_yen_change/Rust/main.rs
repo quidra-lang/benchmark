@@ -1,0 +1,15 @@
+fn main() {
+    for amount in [3780, 15420, 99999, 506, 48263] {
+        let (mut remaining, mut total) = (amount, 0);
+        print!("{} yen:", amount);
+        for d in [10000, 5000, 1000, 500, 100, 50, 10, 5, 1] {
+            let count = remaining / d;
+            remaining %= d;
+            if count > 0 {
+                print!(" {}x{}", d, count);
+                total += count;
+            }
+        }
+        println!(" ({} pieces)", total);
+    }
+}

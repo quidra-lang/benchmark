@@ -1,0 +1,9 @@
+The current question asks: Connect Roman-numeral encoding of 1994 with decoding the generated result. Trace the remaining-value changes that create its subtractive symbol pairs, then show how the reverse conversion reads those symbol pairs and combines signed contributions. Identify how the decoder receives the encoded numeral rather than the original integer, and explain the boundary between the two conversion operations without describing unrelated inputs.
+
+Answer and source evidence: For 1994, descending value/symbol pairs append M leaving 994, CM leaving 94, XC leaving 4, then IV leaving 0: MCMXCIV. Decoder input is this generated roman text. Looking at the next symbol subtracts a smaller current value: 1000-100+1000-10+100-1+5=1994. The encoder remainder and decoder signed accumulator are separate operations connected only by the numeral string.
+
+Selection: `main.rs` lines 1, 2, 3, 5, 7, 9, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34. The conversion tables, relevant single-symbol values, encoder and decoder paths establish each pair and signed contribution. Unused value-function cases and output text can be omitted.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

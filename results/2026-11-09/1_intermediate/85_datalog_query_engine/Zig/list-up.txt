@@ -1,0 +1,105 @@
+fn compareValue(a: Value, b: Value) std.math.Order {
+    return switch (a) {
+        .integer => |n| switch (b) {
+            .integer => |m| std.math.order(n, m),
+            .symbol => .lt,
+        },
+        .symbol => |s| switch (b) {
+            .integer => .gt,
+            .symbol => |t| std.mem.order(u8, s, t),
+        },
+    };
+}
+fn compareTuple(a: []const Value, b: []const Value) std.math.Order {
+    for (a, b) |x, y| {
+        const order = compareValue(x, y);
+        if (order != .eq) return order;
+    }
+    return .eq;
+}
+fn valueText(gpa: Allocator, value: Value) Error!Text {
+    if (value == .integer) return std.fmt.allocPrint(gpa, "{d}", .{value.integer});
+    const text = value.symbol;
+    var simple = text.len > 0 and asciiLower(text[0]) and !inList(text, &reserved);
+    for (text) |c| if (!wordCharacter(c)) {
+        simple = false;
+        break;
+    };
+    return if (simple) text else try std.fmt.allocPrint(gpa, "\"{s}\"", .{text});
+}
+fn variables(gpa: Allocator, terms: []const Term) Error![]const Text {
+    var result: std.ArrayList(Text) = .empty;
+    for (terms) |term| if (term.kind == .variable and !inList(term.name, result.items)) try result.append(gpa, term.name);
+    return result.items;
+}
+fn tupleKey(gpa: Allocator, values: []const Value) Error!Text {
+    var out: Builder = .{ .gpa = gpa };
+    for (values) |value| switch (value) {
+        .integer => |n| try out.print("i{d};", .{n}),
+        .symbol => |s| try out.print("s{d}:{s}", .{ s.len, s }),
+    };
+    return out.bytes.items;
+}
+fn assignmentKey(gpa: Allocator, binding: Assignment) Error!Text {
+    var values: std.ArrayList(Value) = .empty;
+    for (try sortedKeys(gpa, binding)) |name| try values.append(gpa, binding.get(name).?);
+    return tupleKey(gpa, values.items);
+const SolutionSearch = struct {
+    gpa: Allocator,
+    body: []const Literal,
+    model: ModelTuples,
+    before: ?usize,
+    result: std.ArrayList(Assignment) = .empty,
+    finished: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn visit(self: *SolutionSearch, binding: Assignment, remaining: []const Literal) Error!void {
+        if (!filtersAccept(self.body, self.model, binding)) return;
+        if (remaining.len == 0) {
+            const key = try assignmentKey(self.gpa, binding);
+            if (!self.finished.contains(key)) {
+                try self.finished.put(self.gpa, key, {});
+                try self.result.append(self.gpa, try copyAssignment(self.gpa, binding));
+            }
+            return;
+fn solutions(gpa: Allocator, body: []const Literal, model: ModelTuples, before: ?usize) Error![]const Assignment {
+    var positives: std.ArrayList(Literal) = .empty;
+    for (body) |literal| if (literal.kind == .positive) try positives.append(gpa, literal);
+    var search: SolutionSearch = .{ .gpa = gpa, .body = body, .model = model, .before = before };
+    try search.visit(.empty, positives.items);
+    return search.result.items;
+const Answers = struct { names: []const Text, rows: []const []const Value };
+fn answerRows(gpa: Allocator, statement: Statement, model: Model) Error!Answers {
+    const names = try variables(gpa, try allTerms(gpa, .{ .kind = .query, .body = statement.body }));
+    var rows: std.ArrayList([]const Value) = .empty;
+    for (try solutions(gpa, statement.body, model.tuples, null)) |binding| {
+        const row = try gpa.alloc(Value, names.len);
+        for (names, row) |name, *value| value.* = binding.get(name).?;
+        try rows.append(gpa, row);
+    }
+    std.mem.sort([]const Value, rows.items, {}, struct {
+        fn less(_: void, a: []const Value, b: []const Value) bool {
+            return compareTuple(a, b) == .lt;
+        }
+    }.less);
+    return .{ .names = names, .rows = rows.items };
+}
+fn answerText(gpa: Allocator, names: []const Text, row: []const Value) Error!Text {
+    var out: Builder = .{ .gpa = gpa };
+    for (names, row, 0..) |name, value, i| {
+        if (i > 0) try out.add(", ");
+        try out.print("{s} = {s}", .{ name, try valueText(gpa, value) });
+    }
+    return out.bytes.items;
+}
+        switch (kind) {
+            .query => {
+                const answers = try answerRows(self.scratch, statement, model);
+                if (sameText(statement.aggregate, "count")) {
+                    try self.out.line("{d}", .{answers.rows.len});
+                } else if (sameText(statement.aggregate, "sum")) {
+                } else if (inList(statement.aggregate, &.{ "min", "max" })) {
+                } else if (answers.names.len == 0) {
+                    try self.out.line("{s}", .{if (answers.rows.len > 0) "true." else "false."});
+                } else {
+                    for (answers.rows) |row| try self.out.line("{s}", .{try answerText(self.scratch, answers.names, row)});
+                    try self.out.line("{d} {s}", .{ answers.rows.len, plural(answers.rows.len, "answer", "answers") });

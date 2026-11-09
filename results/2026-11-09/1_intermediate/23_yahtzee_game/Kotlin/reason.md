@@ -1,0 +1,23 @@
+# Task B selection — Kotlin
+
+## Answer requirements shared across languages
+
+1. Trace GAME, LOAD, ROLL, SCORE ONES, UNDO, REDO, another ROLL, UNDO, HOLD 00000 and a final ROLL through command parsing, successful validation and printed output.
+2. Use one player A with seed 1 and loaded faces 1 2 3 4 5, then five sixes, then five twos; explain the first upper-category score of 1 and the next turn.
+3. Explain scorecard occupancy, upper subtotal/bonus, Yahtzee bonus, current player/round, dice, holds and roll-count state retained or restored by entry history, UNDO and REDO.
+4. Explain independent loaded-face/RNG consumption and face history: restoring scoring/turn state never restores the loaded queue, RNG state or face counters; the last roll therefore uses the five twos.
+5. Identify successful HOLD and ROLL clearing redo availability after validation, and why a rejected command cannot apply that success-state change.
+
+## Selected source locations
+
+- `main.kt`: 1, 2, 3, 8, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 32, 33, 34, 51, 52, 53, 54, 55, 56, 57, 58, 59, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 91, 92, 93, 94, 95, 96, 97, 98, 101, 103, 104, 105, 106, 107, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 447, 448, 449, 452, 482, 483, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 512, 513, 514, 515, 516, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 581, 586, 587, 588, 589, 590, 591, 592, 593, 594
+
+## Evidence and language semantics
+
+Common valid input has 10 commands: GAME 1 A; LOAD 1 2 3 4 5 6 6 6 6 6 2 2 2 2 2; ROLL; SCORE ONES; UNDO; REDO; ROLL; UNDO; HOLD 00000; ROLL. Each semicolon separates a line. The first roll is 1 2 3 4 5, ONES scores 1 (both bonuses remain zero), and scoring starts round 2. UNDO reopens ONES and restores round-1 dice/roll state; REDO re-enters the same score and restores the saved next-turn state. The next roll consumes the five sixes. Undoing the entry again restores the original round-1 hand but leaves the queue consumed; HOLD 00000 clears redo, and the final roll 2 uses the five twos. The face counters reflect all 15 consumed faces. Kotlin data-class copy is shallow for IntArray, so the explicit before.faces.copyOf() before roll mutation is indispensable. Turn properties are val and HOLD replaces only the scalar hold mask; saved before/after turns therefore retain independent hands. Player scores use -1 for open boxes and bonuses start at zero; derived upper/round/total follow restored scores. The separate ArrayDeque loaded queue, randomState and faceCounts never participate in Undo/Redo. Generic evaluate visits other categories, so normalScore read-only branches are shown to establish no mutation of its IntArray input. Validation precedes redo.clear in both successful methods. Nullable finished turns, deque/list operations, string parsing and catch/emit semantics supply the remaining language guarantees.
+
+## Minimization and alternatives
+
+A single first-turn upper-category entry is the smallest trace that covers score insertion, used-box and bonus state, turn advancement, undo/redo restoration and later dice consumption. Choosing ONES avoids unrelated lower-category scoring; no bot, advice, simulation, records or end-of-game path is needed. The bonus calculation and stored bonus delta are retained even though this trace has zero bonus. Loaded faces avoid depending on a long RNG arithmetic trace, but the generator/queue split and independent counters remain explicit. Full score/undo/redo mutation routes and the selected snapshot or copy implementation establish what is restored; the omitted source is not used to claim hidden mutation absence. Parser, rule defaults, successful validation and output helpers close the trace. Each complete selected line was reviewed for necessity, alternative derived versus stored state was considered, and the excerpt alone was reviewed against the shared requirements.
+
+The excerpt contains 4406 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

@@ -1,0 +1,179 @@
+function expand_commands(rows::Vector{Vector{String}})
+    commands = Command[]
+    for words in rows
+        if words[1] == "move"
+            direction = findfirst(==(words[2]), DIRECTION_NAMES)
+            dx, dy = DIRECTIONS[direction]
+            command = Command(:move, dx, dy, 0)
+            count = length(words) > 2 ? parse(Int, words[3]) : 1
+        elseif words[1] == "wait"
+            command = Command(:wait, 0, 0, 0)
+            count = length(words) > 1 ? parse(Int, words[2]) : 1
+        elseif words[1] in ("pickup", "descend")
+            command = Command(Symbol(words[1]), 0, 0, 0)
+            count = 1
+        else
+            command = Command(Symbol(words[1]), 0, 0, parse(Int, words[2]))
+            count = 1
+        end
+        append!(commands, fill(command, count))
+    end
+    commands
+    Game(config, monster_types, item_types, commands, Minstd(config.game_seed), levels, player, 1, String[], String[],
+        falses(config.height, config.width), Matrix{Int}(undef, 0, 0), nothing, "", 0, 0, 0, 0, AttackStats(), AttackStats(), 0, 0, zeros(Int, 6), zeros(Int, length(monster_types)))
+function die!(game::Game, cause::String)
+    say!(game, "You die.")
+    game.result = "died"
+    game.cause = cause
+end
+function run_game!(game::Game)
+    update_view!(game)
+    for command in game.commands
+        if !isnothing(game.result)
+            game.unused += 1
+            continue
+        end
+        if !execute!(game, command)
+            game.failed += 1
+            continue
+        end
+        game.succeeded += 1
+        isnothing(game.result) && advance_turn!(game)
+    end
+    if isnothing(game.result)
+        game.result = "alive"
+        game.cause = "commands_exhausted"
+    end
+end
+function advance_turn!(game::Game)
+    update_view!(game)
+    level = current_level(game)
+    game.distance = distances(level, game.player.x, game.player.y)
+    for monster in level.monsters
+        monster.energy += game.monster_types[monster.kind].speed
+        while monster.energy >= 2
+            monster.energy -= 2
+            monster_action!(game, monster)
+            !isnothing(game.result) && return
+        end
+    end
+    end_turn!(game)
+    !isnothing(game.result) && return
+    if game.turn in game.config.checkpoints
+        push!(game.map_lines, "CHECKPOINT turn $(game.turn) depth $(game.player.depth)")
+        append!(game.map_lines, map_rows(game, level, true))
+        push!(game.map_lines, status_line(game))
+    end
+    game.turn += 1
+end
+function execute!(game::Game, command::Command)
+    command.kind == :move && return move_player!(game, command.dx, command.dy)
+    command.kind == :wait && return true
+    command.kind == :pickup && return pickup!(game)
+    command.kind == :descend && return descend!(game)
+    use_item!(game, command.kind, command.number)
+function pickup!(game::Game)
+    level = current_level(game)
+    player = game.player
+    number = item_at(level, player.x, player.y)
+    if isnothing(number)
+        say!(game, "There is nothing here.")
+        return false
+    end
+    item = level.items[number]
+    name = display_name(item, game.item_types)
+    category = game.item_types[item.kind].category
+    if category isa GoldType
+        player.gold += item.amount
+        say!(game, "You pick up $name.")
+    elseif category isa AmuletType
+        say!(game, "You pick up the amulet.")
+        say!(game, "You win!")
+        game.result = "won"
+        game.cause = "amulet"
+    else
+        if length(player.pack) >= game.config.pack_limit
+            say!(game, "Your pack is full.")
+            return false
+        end
+        push!(player.pack, item)
+        say!(game, "You pick up the $name ($(length(player.pack))).")
+    end
+    deleteat!(level.items, number)
+    level.picked += 1
+    game.usage[1] += 1
+    true
+    elseif action == :quaff
+        deleteat!(player.pack, number)
+        game.usage[2] += 1
+        say!(game, "You quaff the $(display_name(item, game.item_types)).")
+        effect = (category::PotionType).effect
+        if effect isa HealEffect
+            player.hp += roll!(game.generator, effect.dice)
+            if player.hp > player.max_hp
+                player.max_hp += 1
+                player.hp = player.max_hp
+            end
+            player.poison = 0
+            say!(game, "You feel better.")
+        elseif effect isa PoisonEffect
+            player.poison += effect.turns
+            say!(game, "You feel very sick.")
+        read_scroll!(game, (category::ScrollType).effect)
+    else
+        deleteat!(player.pack, number)
+        game.usage[4] += 1
+        player.food = min(game.config.food_max, player.food + (category::FoodType).nutrition)
+        say!(game, "You eat the $(display_name(item, game.item_types)).")
+    player = game.player
+    outcome, damage = resolve_attack!(game.generator, kind.to_hit, defense(player, game.item_types), kind.damage, 0)
+    record_attack!(game.monster_attacks, outcome, damage)
+    if outcome == attack_miss
+        say!(game, "The $(kind.name) misses you.")
+        return
+    end
+    hard = outcome == attack_critical ? " hard" : ""
+    say!(game, "The $(kind.name) hits you$hard for $damage.")
+    player.hp -= damage
+    if player.hp <= 0
+        die!(game, "killed_by $(kind.name)")
+    elseif kind.poisonous
+        player.poison += 5
+        say!(game, "You are poisoned.")
+    end
+function end_turn!(game::Game)
+    player = game.player
+    for monster in current_level(game).monsters
+        game.monster_types[monster.kind].regenerates && monster.hp < monster.max_hp && (monster.hp += 1)
+    end
+    if player.poison > 0
+        player.hp -= 1
+        game.poison_damage += 1
+        if player.hp <= 0
+            die!(game, "poison")
+            return
+        end
+        player.poison -= 1
+        player.poison == 0 && say!(game, "You feel less sick.")
+    end
+    if player.food == 0
+        player.hp -= 1
+        game.starvation_damage += 1
+        if player.hp <= 0
+            die!(game, "starvation")
+            return
+        end
+    else
+        before = hunger_state(game)
+        player.food -= 1
+        after = hunger_state(game)
+        if before != after
+            messages = Dict("hungry" => "You are getting hungry.", "weak" => "You feel weak from hunger.", "starving" => "You are starving.")
+            say!(game, messages[after])
+        end
+    end
+    if game.turn % game.config.regen_interval == 0 && player.poison == 0 && player.food > 0 && player.hp < player.max_hp
+        player.hp += 1
+    end
+end
+    lines = ["FINAL turn $(game.succeeded) depth $(game.player.depth)"]

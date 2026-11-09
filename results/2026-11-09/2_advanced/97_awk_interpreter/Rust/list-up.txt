@@ -1,0 +1,967 @@
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Position {
+    pub line: usize,
+    pub column: usize
+}
+impl Position {
+    pub fn text(self) -> String {
+        format!("{}:{}", self.line, self.column)
+    }
+}
+#[derive(Clone)]
+pub struct Token {
+    pub kind: &'static str,
+    pub text: String,
+    pub value: String,
+    pub position: Position
+}
+pub fn lex(text: &str) -> Result<Vec<Token>, Position> {
+    let bytes = text.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut line = 1;
+    let mut column = 1;
+    while i < bytes.len() {
+        let position = Position {
+            line,
+            column
+        };
+        let start = i;
+        if bytes[i] == b' ' {
+            i += 1;
+            column += 1;
+            continue;
+        }
+        if bytes[i] == b'\n' {
+            result.push(Token {
+                kind: "newline",
+                text: "\n".into(),
+                value: String::new(),
+                position
+            });
+            i += 1;
+            line += 1;
+            column = 1;
+            continue;
+        }
+        let kind;
+        let mut value = String::new();
+        if bytes[i].is_ascii_digit() {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            kind = "number";
+        }
+        else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &text[start..i];
+            kind = if ["BEGIN", "END", "function", "if", "else", "while", "for", "do", "break", "continue", "next", "exit", "return", "delete", "in", "getline", "print", "printf"].contains(&word) {
+                "keyword"
+            }
+            else if ["length", "substr", "index", "split", "sprintf", "toupper", "tolower", "close", "int"].contains(&word) {
+                "builtin"
+            } else if bytes.get(i) == Some(&b'(') {
+                "function"
+            } else {
+                "name"
+            };
+        } else if bytes[i] == b'"' {
+            i += 1;
+            loop {
+                if i >= bytes.len() || bytes[i] == b'\n' {
+                    return Err(position);
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                if bytes[i] == b'\\' {
+                } else {
+                    value.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            kind = "string";
+        } else {
+            let matched = ["+=", "-=", "*=", "/=", "%=", "^=", "==", "<=", ">=", "!=", "++", "--", "&&", "||", ">>"].iter().find(|op| text[i..].starts_with(**op));
+            if let Some(op) = matched {
+                i += op.len();
+                kind = "symbol";
+            }
+            else if b"+-*/%^!><?:=()[]{};,$".contains(&bytes[i]) {
+                i += 1;
+                kind = "symbol";
+            } else {
+                return Err(position);
+            }
+        }
+        column += i - start;
+        result.push(Token {
+            kind,
+            text: text[start..i].into(),
+            value,
+            position
+        });
+    }
+    result.push(Token {
+        kind: "end",
+        text: String::new(),
+        value: String::new(),
+        position: Position {
+            line,
+            column: 1
+        }
+    });
+    Ok(result)
+}
+pub struct Expression {
+    pub position: Position,
+    pub kind: ExprKind
+}
+#[derive(Clone)]
+pub enum ExprKind {
+    Number(i64),
+    String(String),
+    Name(String),
+    Index(String, Vec<Expression>),
+    Field(Box<Expression>),
+    Parentheses(Box<Expression>),
+    Unary(String, Box<Expression>),
+    Binary(String, Box<Expression>, Box<Expression>),
+    Assignment(String, Box<Expression>, Box<Expression>),
+impl Expression {
+    pub fn lvalue(&self) -> bool {
+        matches!(self.kind, ExprKind::Name(_) | ExprKind::Index(_, _) | ExprKind::Field(_))
+    }
+}
+    }
+    fn take(&mut self) -> Token {
+        let token = self.peek().clone();
+        if token.kind != "end" {
+            self.index += 1;
+        }
+        token
+    }
+    fn expect(&mut self, text: &str) -> Result<Token> {
+        if self.text() == text && self.peek().kind != "end" {
+            Ok(self.take())
+        } else {
+            Err(self.peek().position)
+        }
+    }
+    fn name(&mut self) -> Result<Token> {
+        if self.peek().kind == "name" {
+            Ok(self.take())
+        } else {
+            Err(self.peek().position)
+        }
+    }
+    fn newlines(&mut self) {
+        while self.peek().kind == "newline" {
+            self.take();
+        }
+    }
+    fn terminator(&mut self) -> Result<()> {
+        if self.text() == ";" || self.peek().kind == "newline" {
+            self.take();
+            Ok(())
+        } else if self.text() == "}" {
+            Ok(())
+        } else {
+            Err(self.peek().position)
+        }
+    }
+    fn expressions(&mut self, suppress: bool) -> Result<Vec<Expression>> {
+        let mut expressions = vec![self.expression(suppress)?];
+        while self.text() == "," {
+            self.take();
+            self.newlines();
+            expressions.push(self.expression(suppress)?);
+        }
+        Ok(expressions)
+    }
+    fn expression(&mut self, suppress: bool) -> Result<Expression> {
+        let left = self.conditional(suppress)?;
+        if left.lvalue() && ["=", "+=", "-=", "*=", "/=", "%=", "^="].contains(&self.text()) {
+            let token = self.take();
+            let right = self.expression(suppress)?;
+            Ok(Expression {
+                position: token.position,
+                kind: ExprKind::Assignment(token.text, Box::new(left), Box::new(right))
+            })
+        } else {
+            Ok(left)
+        }
+    }
+    fn conditional(&mut self, suppress: bool) -> Result<Expression> {
+        let condition = self.binary(1, suppress)?;
+        if self.text() == "?" {
+        } else {
+            Ok(condition)
+        }
+    }
+    fn binary(&mut self, minimum: usize, suppress: bool) -> Result<Expression> {
+        let mut left = self.unary(suppress)?;
+        loop {
+            let explicit = match self.text() {
+                "||" => 1,
+                "&&" => 2,
+                "in" => 3,
+                "<" | "<=" | "==" | "!=" | ">=" => 4,
+                ">" if !suppress => 4,
+                "+" | "-" => 6,
+                "*" | "/" | "%" => 7,
+                _ => 0
+            };
+            let concat = explicit == 0 && (["number", "string", "name", "function", "builtin"].contains(&self.peek().kind) || ["$", "(", "++", "--"].contains(&self.text()));
+            let precedence = if concat {
+                5
+            } else {
+                explicit
+            };
+            if precedence == 0 || precedence < minimum {
+                break;
+            }
+        }
+        Ok(left)
+    }
+    fn unary(&mut self, suppress: bool) -> Result<Expression> {
+        if ["!", "-", "+"].contains(&self.text()) {
+        }
+        let left = self.postfix(suppress)?;
+        if self.text() == "^" {
+        } else {
+            Ok(left)
+        }
+    }
+    fn postfix(&mut self, suppress: bool) -> Result<Expression> {
+        if self.text() == "++" || self.text() == "--" {
+            return self.prefix(suppress);
+        }
+        let body = self.atom(suppress)?;
+        if body.lvalue() && (self.text() == "++" || self.text() == "--") {
+        } else {
+            Ok(body)
+        }
+    }
+    fn lvalue(&mut self, suppress: bool) -> Result<Expression> {
+        if self.peek().kind != "name" && self.text() != "$" {
+            return Err(self.peek().position);
+        }
+        self.atom(suppress)
+    }
+    fn atom(&mut self, suppress: bool) -> Result<Expression> {
+        let token = self.peek().clone();
+        let position = token.position;
+        let kind = match token.kind {
+            "number" => {
+                self.take();
+                ExprKind::Number(token.text.parse().unwrap())
+            },
+            "string" => {
+                self.take();
+                ExprKind::String(token.value)
+            },
+            "name" => {
+                self.take();
+                if self.text() == "[" {
+                } else {
+                    ExprKind::Name(token.text)
+                }
+            },
+            "function" | "builtin" => {
+            _ => match token.text.as_str() {
+                "$" => {
+                    self.take();
+                    let field = if self.text() == "++" || self.text() == "--" {
+                    } else {
+                        self.atom(suppress)?
+                    };
+                    ExprKind::Field(Box::new(field))
+                },
+                _ => return Err(position)
+            }
+        };
+        Ok(Expression {
+            position,
+            kind
+        })
+    }
+    fn block(&mut self) -> Result<Statement> {
+        let position = self.expect("{")?.position;
+        let mut statements = Vec::new();
+        while self.text() != "}" {
+            if self.peek().kind == "newline" || self.text() == ";" {
+                self.take();
+            } else {
+                statements.push(self.statement()?);
+            }
+        }
+        self.expect("}")?;
+        Ok(Statement {
+            position,
+            kind: StmtKind::Block(statements)
+        })
+    }
+    fn statement(&mut self) -> Result<Statement> {
+        let token = self.peek().clone();
+        let position = token.position;
+        let kind;
+        match token.text.as_str() {
+            "{" => return self.block(),
+            ";" => {
+                self.take();
+                return Ok(Statement {
+                    position,
+            "print" | "printf" => {
+                self.take();
+                let printf = token.text == "printf";
+                let empty = [";", "\n", "}", ">", ">>"].contains(&self.text());
+                let mut parenthesized = false;
+                if self.text() == "(" {
+                if empty && printf {
+                    return Err(self.peek().position);
+                }
+                let arguments = if empty {
+                    Vec::new()
+                } else if parenthesized {
+                    self.take();
+                    let arguments = self.expressions(false)?;
+                    self.expect(")")?;
+                    arguments
+                } else {
+                    self.expressions(true)?
+                };
+                let redirect = if self.text() == ">" || self.text() == ">>" {
+                    let op = self.take();
+                    Some((op.text == ">>", self.binary(5, false)?, op.position))
+                } else {
+                    None
+                };
+                kind = StmtKind::Output(printf, arguments, redirect);
+            },
+                };
+            },
+            _ => kind = StmtKind::Expression(self.expression(false)?)
+        }
+        self.terminator()?;
+        Ok(Statement {
+            position,
+            kind
+        })
+    }
+}
+pub fn parse(tokens: Vec<Token>) -> Result<Program> {
+    let mut parser = Parser {
+        tokens,
+        index: 0,
+        function: false,
+        special: false,
+        loops: 0
+    };
+    let mut program = Program {
+        rules: Vec::new(),
+        functions: Vec::new()
+    };
+    while parser.peek().kind != "end" {
+        if parser.text() == ";" || parser.peek().kind == "newline" {
+            parser.take();
+            continue;
+        }
+        let position = parser.peek().position;
+        if parser.text() == "function" {
+            parser.take();
+        } else if parser.text() == "BEGIN" || parser.text() == "END" {
+            let begin = parser.take().text == "BEGIN";
+            parser.special = true;
+            let action = parser.block()?;
+            parser.special = false;
+            program.rules.push(Rule {
+                kind: if begin {
+                    "BEGIN"
+                } else {
+                    "END"
+                },
+                position,
+                start: None,
+                end: None,
+                action: Some(action)
+            });
+        } else if parser.text() == "{" {
+            let action = parser.block()?;
+            program.rules.push(Rule {
+                kind: "all",
+                position,
+                start: None,
+                end: None,
+                action: Some(action)
+            });
+        }
+    }
+    Ok(program)
+}
+pub enum Value {
+    Number(i64),
+    String(String),
+    Numeric(String, i64),
+    Uninitialized
+}
+fn whitespace(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\n'
+}
+impl Value {
+    pub fn input(text: String) -> Self {
+        let trimmed = text.trim_matches(whitespace);
+        let digits = trimmed.strip_prefix('+').or_else(|| trimmed.strip_prefix('-')).unwrap_or(trimmed);
+        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+            let number = Self::String(text.clone()).number();
+            Self::Numeric(text, number)
+        } else {
+            Self::String(text)
+        }
+    }
+    pub fn number(&self) -> i64 {
+        match self {
+            Self::Number(n) | Self::Numeric(_, n) => *n,
+            Self::Uninitialized => 0,
+            Self::String(text) => {
+        }
+    }
+    pub fn text(&self) -> String {
+        match self {
+            Self::Number(n) => n.to_string(),
+            Self::String(s) | Self::Numeric(s, _) => s.clone(),
+            Self::Uninitialized => String::new()
+        }
+    }
+    pub fn display(&self) -> String {
+        match self {
+            Self::Number(n) => n.to_string(),
+            Self::String(s) => quote(s),
+            Self::Numeric(s, _) => format!("{} (strnum)", quote(s)),
+            Self::Uninitialized => "(uninitialized)".into()
+        }
+    }
+}
+pub fn quote(text: &str) -> String {
+    let mut result = String::from("\"");
+    for b in text.bytes() {
+        match b {
+            b'"' => result.push_str("\\\""),
+            b'\\' => result.push_str("\\\\"),
+            10 => result.push_str("\\n"),
+            9 => result.push_str("\\t"),
+            32..=126 => result.push(b as char),
+            _ => result.push_str(&format!("\\{:03o}", b))
+        }
+    }
+    result.push('"');
+    result
+}
+pub fn split(text: &str, separator: &str) -> Vec<String> {
+    if separator == " " {
+        text.split(whitespace).filter(|s| !s.is_empty()).map(str::to_string).collect()
+    }
+    else if separator.is_empty() {
+        text.chars().map(|c| c.to_string()).collect()
+    }
+    else if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split(separator).map(str::to_string).collect()
+    }
+}
+pub struct Fields {
+    pub record: Value,
+    pub fields: Vec<Value>
+}
+impl Fields {
+    pub fn new() -> Self {
+        Self {
+            record: Value::String(String::new()),
+            fields: Vec::new()
+        }
+    }
+    pub fn set(&mut self, text: String, separator: &str) {
+        self.record = Value::input(text.clone());
+        self.fields = split(&text, separator).into_iter().map(Value::input).collect();
+    }
+    pub fn get(&self, index: usize) -> Value {
+        if index == 0 {
+            self.record.clone()
+        } else {
+            self.fields.get(index - 1).cloned().unwrap_or(Value::Uninitialized)
+        }
+    }
+    pub fn rebuild(&mut self, separator: &str) {
+        self.record = Value::input(self.fields.iter().map(Value::text).collect::<Vec<_>>().join(separator));
+    }
+    pub fn assign(&mut self, index: usize, value: Value, fs: &str, ofs: &str) {
+        if index == 0 {
+            self.set(value.text(), fs);
+        } else {
+            if index > self.fields.len() {
+                self.fields.resize(index, Value::String(String::new()));
+            }
+            self.fields[index - 1] = value;
+            self.rebuild(ofs);
+        }
+    }
+    pub fn nf(&mut self, size: usize, ofs: &str) {
+        self.fields.resize(size, Value::String(String::new()));
+        self.rebuild(ofs);
+    }
+}
+pub enum Operand {
+    Assignment(String, String),
+    File(String, usize)
+}
+pub struct Arguments {
+    pub options: Vec<(String, String)>,
+    pub operands: Vec<Operand>,
+    pub files: Vec<(String, usize)>
+}
+pub fn valid_name(text: &str) -> bool {
+    !text.is_empty() && !text.starts_with('.') && text.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+fn variable(text: &str) -> bool {
+    !text.is_empty() && (text.as_bytes()[0].is_ascii_alphabetic() || text.as_bytes()[0] == b'_') && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+pub fn arguments(text: &str) -> Arguments {
+    let mut arguments = Arguments {
+        options: Vec::new(),
+        operands: Vec::new(),
+        files: Vec::new()
+    };
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("-F ") {
+            arguments.options.push(("FS".into(), value.into()));
+        }
+        else if let Some(value) = line.strip_prefix("-v ") {
+            let (name, value) = value.split_once('=').unwrap();
+            arguments.options.push((name.into(), value.into()));
+        }
+        else if let Some((name, value)) = line.split_once('=').filter(|(name, _)| variable(name)) {
+            arguments.operands.push(Operand::Assignment(name.into(), value.into()));
+        }
+        else {
+            let i = arguments.files.len();
+            arguments.files.push((line.into(), 0));
+            arguments.operands.push(Operand::File(line.into(), i));
+        }
+    }
+    arguments
+}
+pub struct Streams {
+    pub stdout: String,
+    pub writes: usize,
+    pub outputs: Vec<Output>,
+    pub inputs: Vec<Input>
+}
+pub fn read_file(name: &str) -> Option<Vec<String>> {
+    if !valid_name(name) {
+        return None;
+    }
+    fs::read_to_string(format!("input/{}", name)).ok().map(|s| s.lines().map(str::to_string).collect())
+}
+impl Streams {
+    pub fn new() -> Self {
+        Self {
+            stdout: String::new(),
+            writes: 0,
+            outputs: Vec::new(),
+            inputs: Vec::new()
+        }
+    }
+    pub fn output(&mut self, name: Option<&str>, append: bool, text: &str) {
+        if let Some(name) = name {
+        } else {
+            self.stdout.push_str(text);
+            self.writes += 1;
+        }
+    }
+    pub fn save(&self) {
+        fs::create_dir_all("output").unwrap();
+        fs::write("output/stdout.txt", &self.stdout).unwrap();
+        for output in &self.outputs {
+            fs::write(format!("output/{}", output.name), &output.text).unwrap();
+        }
+    }
+}
+    globals: BTreeSet<String>,
+    arrays: BTreeSet<Key>,
+    uses: Vec<(Key, Position)>,
+    calls: Vec<CallSite>,
+    lines: BTreeMap<usize,
+    usize>,
+    functions: BTreeMap<String,
+    usize>
+}
+impl Preparation {
+    fn key(program: &Program, scope: Option<usize>, name: &str) -> Key {
+        if scope.map_or(false, |i| program.functions[i].parameters.iter().any(|p| p.0 == name)) {
+            Key(scope, name.into())
+        } else {
+            Key(None, name.into())
+        }
+    }
+    fn name(&mut self, program: &Program, scope: Option<usize>, name: &str, position: Position, array: bool) {
+        let key = Self::key(program, scope, name);
+        if key.0.is_none() {
+            self.globals.insert(name.into());
+        }
+        if array {
+            self.arrays.insert(key.clone());
+        }
+        self.uses.push((key, position));
+    }
+    fn expression(&mut self, program: &Program, scope: Option<usize>, expression: &Expression) {
+        match &expression.kind {
+            ExprKind::Name(name) => self.name(program, scope, name, expression.position, false),
+            ExprKind::Field(body) | ExprKind::Parentheses(body) | ExprKind::Unary(_, body) | ExprKind::Increment(_, _, body) => self.expression(program, scope, body),
+            ExprKind::Binary(_, a, b) | ExprKind::Assignment(_, a, b) => {
+                self.expression(program, scope, a);
+                self.expression(program, scope, b);
+            },
+    fn statement(&mut self, program: &Program, scope: Option<usize>, statement: &Statement) {
+        if !matches!(statement.kind, StmtKind::Block(_) | StmtKind::Empty) {
+            self.lines.entry(statement.position.line).or_insert(0);
+        }
+        match &statement.kind {
+            StmtKind::Block(statements) => for statement in statements {
+                self.statement(program, scope, statement);
+            },
+            StmtKind::Expression(expression) => self.expression(program, scope, expression),
+            StmtKind::Output(_, arguments, redirect) => {
+                for argument in arguments {
+                    self.expression(program, scope, argument);
+                }
+                if let Some((_, target, _)) = redirect {
+                    self.expression(program, scope, target);
+                }
+            },
+    fn analyze(program: &Program) -> Result<Self,
+    (Position, String)> {
+        let mut prep = Self {
+            globals: ["FILENAME", "FNR", "FS", "NF", "NR", "OFS", "ORS", "SUBSEP"].iter().map(|s| s.to_string()).collect(),
+            arrays: BTreeSet::new(),
+            uses: Vec::new(),
+            calls: Vec::new(),
+            lines: BTreeMap::new(),
+            functions: BTreeMap::new()
+        };
+        let mut errors = Vec::new();
+        for (i, function) in program.functions.iter().enumerate() {
+        for rule in &program.rules {
+            if let Some(start) = &rule.start {
+                prep.expression(program, None, start);
+            }
+            if let Some(end) = &rule.end {
+                prep.expression(program, None, end);
+            }
+            if let Some(action) = &rule.action {
+                prep.statement(program, None, action);
+            }
+        }
+        for (key, position) in &prep.uses {
+            if prep.functions.contains_key(&key.1) {
+                errors.push((*position, 2, format!("function {} used as variable", key.1)));
+            }
+        }
+        if !errors.is_empty() {
+            errors.sort_by_key(|e| (e.0, e.1));
+            let (position, _, message) = errors.remove(0);
+            return Err((position, message));
+        }
+        Ok(prep)
+    fn new(program: &'a Program, preparation: Preparation, arguments: streams::Arguments) -> Self {
+        let mut globals = BTreeMap::new();
+        for name in &preparation.globals {
+            let cell = if preparation.arrays.contains(&Key(None, name.clone())) {
+                Cell::Array(Rc::new(RefCell::new(BTreeMap::new())))
+            } else {
+                Cell::Scalar(Value::Uninitialized)
+            };
+            globals.insert(name.clone(), cell);
+        }
+        for (name, value) in [("FS", Value::String(" ".into())), ("OFS", Value::String(" ".into())), ("ORS", Value::String("\n".into())), ("SUBSEP", Value::String("\x1c".into())), ("NR", Value::Number(0)), ("FNR", Value::Number(0)), ("FILENAME", Value::String(String::new()))].iter().cloned() {
+            globals.insert(name.into(), Cell::Scalar(value));
+        }
+        Self {
+            program,
+            preparation,
+            globals,
+            locals: Vec::new(),
+            fields: Fields::new(),
+            streams: streams::Streams::new(),
+            arguments,
+            operand: 0,
+            current: None,
+            phase: "BEGIN",
+            status: 0,
+            rules: vec![0; program.rules.len()],
+            ranges: vec![false; program.rules.len()],
+            calls: vec![0; program.functions.len()],
+            active: vec![0; program.functions.len()],
+            depths: vec![0; program.functions.len()]
+        }
+    }
+    fn variable(&self, name: &str) -> Option<usize> {
+        if self.locals.last().map_or(false, |local| local.contains_key(name)) {
+            Some(self.locals.len() - 1)
+        } else {
+            None
+        }
+    }
+    fn cell(&self, frame: Option<usize>, name: &str) -> Option<&Cell> {
+        if let Some(frame) = frame {
+            self.locals[frame].get(name)
+        } else {
+            self.globals.get(name)
+        }
+    }
+    fn value(&self, frame: Option<usize>, name: &str) -> Value {
+        if frame.is_none() && name == "NF" {
+            return Value::Number(self.fields.fields.len() as i64);
+        }
+        match self.cell(frame, name) {
+            Some(Cell::Scalar(value)) => value.clone(),
+            None => Value::Uninitialized,
+            _ => unreachable!()
+        }
+    }
+    fn global(&self, name: &str) -> Value {
+        self.value(None, name)
+    }
+    fn location(&mut self, expression: &Expression) -> Evaluation<Location> {
+        match &expression.kind {
+            ExprKind::Name(name) => Ok(Location::Variable(self.variable(name), name.clone())),
+            ExprKind::Index(name, indices) => {
+            ExprKind::Field(index) => {
+                let index = self.expression(index)?.number();
+                if index < 0 {
+                    return Err(builtins::error(expression.position, "negative field index").into());
+                }
+                Ok(Location::Field(index as usize))
+            },
+            _ => unreachable!()
+        }
+    }
+    fn read(&mut self, location: &Location) -> Value {
+        match location {
+            Location::Variable(frame, name) => self.value(*frame, name),
+            Location::Field(index) => self.fields.get(*index)
+        }
+    }
+    fn store(&mut self, location: &Location, value: Value, position: Position) -> Evaluation<Value> {
+        match location {
+            Location::Variable(frame, name) => {
+                if frame.is_none() && name == "NF" {
+                    let n = value.number();
+                    if n < 0 {
+                        return Err(builtins::error(position, "negative NF").into());
+                    }
+                    let ofs = self.global("OFS").text();
+                    self.fields.nf(n as usize, &ofs);
+                }
+                else if let Some(frame) = frame {
+                    self.locals[*frame].insert(name.clone(), Cell::Scalar(value));
+                }
+                else {
+                    self.preparation.globals.insert(name.clone());
+                    self.globals.insert(name.clone(), Cell::Scalar(value));
+                }
+            },
+            Location::Field(index) => {
+                let fs = self.global("FS").text();
+                let ofs = self.global("OFS").text();
+                self.fields.assign(*index, value, &fs, &ofs);
+            }
+        }
+        Ok(self.read(location))
+    }
+    fn expression(&mut self, expression: &Expression) -> Evaluation<Value> {
+        let position = expression.position;
+        match &expression.kind {
+            ExprKind::Number(n) => Ok(Value::Number(*n)),
+            ExprKind::String(s) => Ok(Value::String(s.clone())),
+            ExprKind::Name(_) | ExprKind::Index(_, _) | ExprKind::Field(_) => {
+                let location = self.location(expression)?;
+                Ok(self.read(&location))
+            },
+            ExprKind::Parentheses(body) => self.expression(body),
+            ExprKind::Assignment(op, target, right) => {
+                let location = self.location(target)?;
+                let b = self.expression(right)?;
+                let value = if op == "=" {
+                    b
+                } else {
+                    let a = self.read(&location);
+                    self.arithmetic(&op[..1], a.number(), b.number(), position)?
+                };
+                self.store(&location, value, position)
+            },
+    fn output(&mut self, printf: bool, arguments: &[Expression], redirect: &Option<(bool, Expression, Position)>, position: Position) -> Evaluation<()> {
+        let mut values = Vec::new();
+        for argument in arguments {
+            values.push(self.expression(argument)?);
+        }
+        let text = if printf {
+        } else {
+            if values.is_empty() {
+                values.push(self.fields.record.clone());
+            }
+            values.iter().map(Value::text).collect::<Vec<_>>().join(&self.global("OFS").text()) + &self.global("ORS").text()
+        };
+        if let Some((append, target, position)) = redirect {
+        } else {
+            self.streams.output(None, false, &text);
+        }
+        Ok(())
+    }
+    fn statement(&mut self, statement: &Statement) -> Evaluation<()> {
+        let position = statement.position;
+        if !matches!(statement.kind, StmtKind::Block(_) | StmtKind::Empty) {
+            *self.preparation.lines.get_mut(&position.line).unwrap() += 1;
+        }
+        match &statement.kind {
+            StmtKind::Block(statements) => for statement in statements {
+                self.statement(statement)?;
+            },
+            StmtKind::Empty => (),
+            StmtKind::Expression(expression) => {
+                self.expression(expression)?;
+            },
+            StmtKind::Output(printf, arguments, redirect) => self.output(*printf, arguments, redirect, position)?,
+    fn next_record(&mut self) -> Evaluation<Option<String>> {
+        loop {
+            if let Some((file, lines, position)) = &mut self.current {
+                if *position < lines.len() {
+                    let line = lines[*position].clone();
+                    *position += 1;
+                    self.arguments.files[*file].1 += 1;
+                    let nr = self.global("NR").number() + 1;
+                    let fnr = self.global("FNR").number() + 1;
+                    self.globals.insert("NR".into(), Cell::Scalar(Value::Number(nr)));
+                    self.globals.insert("FNR".into(), Cell::Scalar(Value::Number(fnr)));
+                    return Ok(Some(line));
+                }
+            }
+            let operand = match self.arguments.operands.get(self.operand) {
+                Some(operand) => operand.clone(),
+                None => return Ok(None)
+            };
+            self.operand += 1;
+            match operand {
+                streams::Operand::Assignment(name, value) => {
+                    self.preparation.globals.insert(name.clone());
+                    self.globals.insert(name, Cell::Scalar(Value::input(value)));
+                },
+                streams::Operand::File(name, index) => {
+                    self.globals.insert("FILENAME".into(), Cell::Scalar(Value::String(name.clone())));
+                    self.globals.insert("FNR".into(), Cell::Scalar(Value::Number(0)));
+                    self.current = Some((index, streams::read_file(&name).unwrap(), 0));
+                }
+            }
+        }
+    }
+    fn execute(&mut self) -> Evaluation<()> {
+        for (name, value) in self.arguments.options.clone() {
+            self.preparation.globals.insert(name.clone());
+            self.globals.insert(name, Cell::Scalar(Value::input(value)));
+        }
+        let mut exiting = false;
+        for i in 0..self.program.rules.len() {
+            let rule = self.program.rules[i].clone();
+            if rule.kind == "BEGIN" {
+                self.rules[i] += 1;
+                match self.statement(rule.action.as_ref().unwrap()) {
+                    Err(Flow::Exit) => {
+                        exiting = true;
+                        break;
+                    },
+                    result => result?
+                }
+            }
+        }
+        self.phase = "rules";
+        if !exiting && self.program.rules.iter().any(|r| r.kind != "BEGIN") {
+            'records: while let Some(record) = self.next_record()? {
+                let fs = self.global("FS").text();
+                self.fields.set(record, &fs);
+                for i in 0..self.program.rules.len() {
+                    let rule = self.program.rules[i].clone();
+                    if rule.kind == "BEGIN" || rule.kind == "END" {
+                        continue;
+                    }
+                    let tested: Evaluation<bool> = (|| {
+                        Ok(if rule.kind == "all" {
+                            true
+                    })();
+                    let matched = match tested {
+                        Ok(matched) => matched,
+                        Err(Flow::Next) => continue 'records,
+                        Err(Flow::Exit) => break 'records,
+                        Err(flow) => return Err(flow)
+                    };
+                    if matched {
+                        self.rules[i] += 1;
+                        let result = if let Some(action) = &rule.action {
+                            self.statement(action)
+                        };
+                        match result {
+                            Err(Flow::Next) => continue 'records,
+                            Err(Flow::Exit) => break 'records,
+                            result => result?
+                        }
+                    }
+                }
+            }
+    fn report(&self, status: String) {
+        self.streams.save();
+        let mut lines = vec![status, "[inputs]".into()];
+        for (name, count) in &self.arguments.files {
+            lines.push(format!("{} records={}", name, count));
+        }
+        lines.push("[rules]".into());
+        for (i, rule) in self.program.rules.iter().enumerate() {
+            lines.push(format!("{} {} count={}", rule.position.text(), rule.kind, self.rules[i]));
+        }
+        lines.push("[outputs]".into());
+        lines.push(format!("stdout.txt writes={} bytes={}", self.streams.writes, self.streams.stdout.len()));
+        lines.push("[lines]".into());
+        for (line, count) in &self.preparation.lines {
+            lines.push(format!("{} count={}", line, count));
+        }
+        lines.push("[globals]".into());
+        for name in &self.preparation.globals {
+            let value = match self.globals.get(name) {
+                Some(Cell::Array(array)) => format!("array ({})", array.borrow().len()),
+                _ => self.global(name).display()
+            };
+            lines.push(format!("{} = {}", name, value));
+        }
+        save_stats(&lines);
+    }
+}
+fn save_stats(lines: &[String]) {
+    fs::create_dir_all("output").unwrap();
+    fs::write("output/stats.txt", lines.join("\n") + "\n").unwrap();
+}
+fn main() {
+    let source = fs::read_to_string("input/program.awk").unwrap();
+    let program = match lexer::lex(&source).and_then(parser::parse) {
+        Ok(program) => program,
+    let preparation = match Preparation::analyze(&program) {
+        Ok(preparation) => preparation,
+    let arguments = streams::arguments(&fs::read_to_string("input/args.txt").unwrap());
+    let mut runtime = Runtime::new(&program, preparation, arguments);
+    let status = match runtime.execute() {
+        Err(Flow::Runtime(error)) => format!("status: runtime error at {}: {}", error.position.text(), error.message),
+        _ => format!("status: exit {}", runtime.status)
+    };
+    runtime.report(status);

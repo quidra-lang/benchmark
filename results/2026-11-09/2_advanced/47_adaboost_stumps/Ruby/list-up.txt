@@ -1,0 +1,158 @@
+  def train_discrete(rows, max_rounds, weights: nil, shrinkage: 1.0, space: nil)
+    space ||= SearchSpace.new(rows)
+    labels = rows.map(&:label)
+    weights = weights ? weights.dup : Array.new(rows.length, 1.0 / rows.length)
+    rounds = []
+    bound = 1.0
+    stop = 'completed'
+    max_rounds.times do
+      error, feature, threshold, polarity = discrete_search(space, labels, weights)
+      if error >= 0.5
+        stop = 'weak'
+        break
+      end
+      alpha = error <= 1e-10 ? 1.0 : shrinkage * (0.5 * Math.log((1.0 - error) / error))
+      stump = Stump.new(feature, [threshold], [-polarity * alpha, polarity * alpha])
+      updated = rows.each_index.map do |i|
+        decision = rows[i].values[feature] > threshold ? polarity : -polarity
+        factor = decision == labels[i] ? Math.exp(-alpha) : Math.exp(alpha)
+        weights[i].zero? ? 0.0 : weights[i] * factor
+      end
+      z = ordered_sum(updated)
+      weights = updated.map { |weight| weight / z }
+      rounds << Round.new(stump: stump, weights: before, error: error, alpha: alpha,
+                          polarity: polarity, z: z, bound: bound)
+      if error <= 1e-10
+        stop = 'perfect'
+        break
+      end
+    end
+    Model.new(rounds: rounds, stop: stop)
+  end
+    def initialize(rows)
+      @rows = rows
+      @orders = []
+      @groups = []
+      @thresholds = []
+      rows[0].values.length.times do |feature|
+        order = rows.each_index.sort_by { |index| [rows[index].values[feature], index] }
+        groups = []
+        distinct = []
+        order.each do |index|
+          value = rows[index].values[feature]
+          if distinct.empty? || value != distinct[-1]
+            distinct << value
+            groups << []
+          end
+          groups[-1] << index
+        end
+        thresholds = [distinct[0] - 1.0]
+        distinct.each_cons(2) { |left, right| thresholds << (left + right) / 2.0 }
+        @orders << order
+        @groups << groups
+        @thresholds << thresholds
+      end
+    end
+  end
+  def ordered_sum(values)
+    total = 0.0
+    values.each { |value| total += value }
+    total
+  end
+
+  def left_cumulative(groups, values)
+    total = 0.0
+    sums = [total]
+    groups[0...-1].each do |group|
+      group.each { |index| total += values[index] }
+      sums << total
+    end
+    sums
+  end
+  def discrete_search(space, labels, weights)
+    positives = labels.each_index.map { |i| labels[i] == 1 ? weights[i] : 0.0 }
+    negatives = labels.each_index.map { |i| labels[i] == -1 ? weights[i] : 0.0 }
+    positive_total = ordered_sum(positives)
+    negative_total = ordered_sum(negatives)
+    candidates = []
+    space.thresholds.each_with_index do |thresholds, feature|
+      left_positive = left_cumulative(space.groups[feature], positives)
+      left_negative = left_cumulative(space.groups[feature], negatives)
+      thresholds.each_with_index do |threshold, index|
+        positive = left_positive[index]
+        negative = left_negative[index]
+        candidates << [positive + (negative_total - negative), feature, threshold, 1]
+        candidates << [negative + (positive_total - positive), feature, threshold, -1]
+      end
+    end
+    choose(candidates)
+  end
+  def prediction(score)
+    score.positive? ? 1 : -1
+  end
+  def row_score(rounds, values)
+    ordered_sum(rounds.map { |record| record.stump.call(values) })
+  end
+
+  def score_rows(rounds, rows)
+    rows.map { |row| row_score(rounds, row.values) }
+  end
+
+  def add_round_scores(record, rows, scores)
+    rows.each_with_index { |row, i| scores[i] += record.stump.call(row.values) }
+  end
+  def training_curve(rounds, training, testing, variant)
+    train_scores = Array.new(training.length, 0.0)
+    test_scores = Array.new(testing.length, 0.0)
+    scale = 0.0
+    rounds.each_with_index.map do |record, i|
+      add_round_scores(record, training, train_scores)
+      add_round_scores(record, testing, test_scores)
+      scale += magnitude(record)
+      minimum = training.each_index.map { |index| training[index].label * train_scores[index] }.min
+      { round: i + 1, train_errors: count_errors(training, train_scores),
+        test_errors: count_errors(testing, test_scores), train_loss: loss(training, train_scores, variant),
+        test_loss: loss(testing, test_scores, variant), margin: minimum / scale }
+    end
+  end
+  def cross_validate(rows, params)
+    space = SearchSpace.new(rows)
+    errors = Array.new(params.rounds, 0)
+    folds = params.folds.times.map do |fold_number|
+      indices = rows.each_index.select { |i| i % params.folds == fold_number }
+      training_count = rows.length - indices.length
+      weights = rows.each_index.map { |i| i % params.folds == fold_number ? 0.0 : 1.0 / training_count }
+      model = train_discrete(rows, params.rounds, weights: weights, space: space)
+      validation = indices.map { |i| rows[i] }
+      scores = Array.new(validation.length, 0.0)
+      fold_errors = params.rounds.times.map do |i|
+        add_round_scores(model.rounds[i], validation, scores) if i < model.rounds.length
+        count = count_errors(validation, scores)
+        errors[i] += count
+        count
+      end
+      { indices: indices, train: training_count, model: model, errors: fold_errors }
+    end
+    selected = errors.index(errors.min) + 1
+    oof_scores = Array.new(rows.length, 0.0)
+    folds.each do |fold|
+      rounds = fold[:model].rounds.first(selected)
+      fold[:indices].each { |i| oof_scores[i] = row_score(rounds, rows[i].values) }
+    end
+    { folds: folds, errors: errors, selected: selected, scores: oof_scores }
+  end
+  def analyze_variants(inputs, selected)
+    inputs.params.variants.to_h do |variant|
+      model = train_variant(variant, inputs.train, inputs.params)
+      rounds = variant == 'discrete' ? model.rounds.first(selected) : model.rounds
+      [variant, { full: model, rounds: rounds, scale: total_magnitude(rounds),
+                  train: score_rows(rounds, inputs.train), test: score_rows(rounds, inputs.test),
+                  curve: training_curve(model.rounds, inputs.train, inputs.test, variant),
+                  importance: magnitude_importance(rounds, inputs.features.length) }]
+    end
+  end
+    params.variants.each do |variant|
+      result = analysis[variant]
+      rounds = result[:rounds].length
+      lines << metrics_line('train', variant, rounds, training, result[:train])
+      lines << metrics_line('test', variant, rounds, testing, result[:test])

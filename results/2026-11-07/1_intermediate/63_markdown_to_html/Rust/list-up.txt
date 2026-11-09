@@ -1,0 +1,252 @@
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Read};
+const TOC: &str = "\x01toc\x02";
+fn trim(s: &str) -> &str {
+    s.trim_matches(' ')
+}
+fn white(c: u8) -> bool {
+    c == b' ' || c == b'\n'
+}
+fn label(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
+}
+fn escape(s: &str) -> String {
+    let mut result = String::new();
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"), '<' => result.push_str("&lt;"), '>' => result.push_str("&gt;"), '"' => result.push_str("&quot;"), _ => result.push(c),
+        }
+    }
+    result
+}
+fn strip_tags(s: &str) -> String {
+    let mut result = String::new();
+    let mut at = 0;
+    while at < s.len() {
+        if s.as_bytes()[at] == b'<' {
+            if let Some(end) = s[at..].find('>') {
+                at += end + 1;
+                continue;
+            }
+        }
+        result.push(s.as_bytes()[at] as char);
+        at += 1;
+    }
+    result
+}
+enum Block {
+    Heading(usize, String),
+    Quote(Vec<Block>),
+    Toc,
+}
+fn atx(s: &str) -> Option<Block> {
+    let n = s.bytes().take_while(|&c| c == b'#').count();
+    if n == 0 || n > 6 || (n < s.len() && s.as_bytes()[n] != b' ') {
+        return None;
+    }
+    let mut text = trim(&s[n..]);
+    let unmarked = text.trim_end_matches('#');
+    if unmarked.is_empty() || unmarked.ends_with(' ') {
+        text = trim(unmarked);
+    }
+    Some(Block::Heading(n, text.into()))
+}
+#[derive(Default)]
+struct Parser {
+    references: HashMap<String, Reference>,
+    footnotes: HashMap<String, String>,
+}
+impl Parser {
+    fn parse(&mut self, lines: &[String]) -> Vec<Block> {
+        let mut blocks = Vec::new();
+        let mut at = 0;
+        while at < lines.len() {
+            let line = &lines[at];
+            if line.is_empty() {
+                at += 1;
+                continue;
+            }
+            if !line.starts_with(' ') {
+                if let Some(heading) = atx(line) {
+                    blocks.push(heading);
+                    at += 1;
+                    continue;
+                }
+                if line.starts_with('>') {
+                    let mut content = Vec::new();
+                    while at < lines.len() && lines[at].starts_with('>') {
+                        let row = &lines[at][1..];
+                        content.push(row.strip_prefix(' ').unwrap_or(row).to_owned());
+                        at += 1;
+                    }
+                    let kind = content[0].strip_prefix("[!").and_then(|s| s.strip_suffix(']'));
+                    if let Some(kind) = kind.filter(|k| ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"].contains(k)) {
+                        blocks.push(Block::Alert(kind.into(), self.parse(&content[1..])));
+                    } else {
+                        blocks.push(Block::Quote(self.parse(&content)));
+                    }
+                    continue;
+                }
+            let mut text = vec![line.trim_start_matches(' ').to_owned()];
+            at += 1;
+            let mut level = 0;
+            while at < lines.len() && !lines[at].is_empty() {
+            }
+            let text = text.join("\n");
+            blocks.push(if level > 0 {
+                Block::Heading(level, text)
+            } else if text == "[TOC]" {
+                Block::Toc
+            } else {
+                Block::Paragraph(text)
+            });
+        }
+        blocks
+    }
+struct Piece {
+    html: String,
+    delimiter: u8,
+}
+impl Piece {
+    fn text(html: String) -> Self {
+        Self {
+            html, delimiter: 0, length: 0, open: false, close: false
+        }
+    }
+}
+fn emphasis(pieces: &[Piece]) -> String {
+    let mut html = String::new();
+    let mut at = 0;
+    while at < pieces.len() {
+        let piece = &pieces[at];
+        if piece.delimiter == 0 {
+            html.push_str(&piece.html);
+            at += 1;
+            continue;
+        }
+    }
+    html
+}
+struct Heading {
+    level: usize,
+    id: String,
+    text: String,
+}
+struct Renderer {
+    used_ids: HashSet<String>,
+    headings: Vec<Heading>,
+}
+impl Renderer {
+    fn new(parser: Parser) -> Self {
+        Self {
+            references: parser.references, footnotes: parser.footnotes, used_ids: HashSet::new(), headings: Vec::new(), note_numbers: HashMap::new(), note_names: Vec::new(), note_counts: Vec::new()
+        }
+    }
+    fn inline(&mut self, s: &str, links: bool, notes: bool) -> String {
+        let mut pieces = Vec::new();
+        let mut at = 0;
+        while at < s.len() {
+            pieces.push(Piece::text(escape(&s[at..at + 1])));
+            at += 1;
+        }
+        emphasis(&pieces)
+    }
+    fn blocks(&mut self, blocks: &[Block]) -> String {
+        let mut html = String::new();
+        for block in blocks {
+            html.push_str(&self.render(block));
+            html.push('\n');
+        }
+        html
+    }
+    fn render(&mut self, block: &Block) -> String {
+        match block {
+            Block::Heading(level, text) => self.heading(*level, text), Block::Paragraph(text) => format!("<p>{}</p>", self.inline(text, true, true)), Block::Rule => "<hr />".into(), Block::Code(language, lines) => {
+            }
+            Block::Quote(blocks) => format!("<blockquote>\n{}</blockquote>", self.blocks(blocks)), Block::Alert(kind, blocks) => {
+            }
+            Block::Toc => TOC.into(),
+        }
+    }
+    fn heading(&mut self, level: usize, source: &str) -> String {
+        let mut text = source;
+        let explicit = source.rfind(" {#").filter(|_| source.ends_with('}')).and_then(|at| {
+            let name = &source[at + 3..source.len() - 1];
+            if !name.is_empty() && name.bytes().all(label) {
+                Some((at, name))
+            } else {
+                None
+            }
+        });
+        let id = if let Some((at, name)) = explicit {
+            text = source[..at].trim_end_matches(' ');
+            name.into()
+        } else {
+            let mut base: String = source.to_ascii_lowercase().bytes().filter_map(|c| if label(c) {
+                Some(c as char)
+            } else if white(c) {
+                Some('-')
+            } else {
+                None
+            }).collect();
+            if base.is_empty() {
+                base = "heading".into();
+            }
+            let mut id = base.clone();
+            let mut suffix = 1;
+            while self.used_ids.contains(&id) {
+                id = format!("{}-{}", base, suffix);
+                suffix += 1;
+            }
+            id
+        };
+        self.used_ids.insert(id.clone());
+        let html = self.inline(text, true, true);
+        self.headings.push(Heading {
+            level, id: id.clone(), text: strip_tags(&html)
+        });
+        format!("<h{} id=\"{}\">{}</h{}>", level, id, html, level)
+    }
+    fn toc_list(&self, children: &[Vec<usize>], entries: &[usize]) -> String {
+        let mut html = "<ul>\n".to_owned();
+        for &i in entries {
+            let heading = &self.headings[i];
+            html.push_str(&format!("<li><a href=\"#{}\">{}</a>", heading.id, heading.text));
+            if !children[i].is_empty() {
+                html.push_str(&format!("\n{}\n", self.toc_list(children, &children[i])));
+            }
+            html.push_str("</li>\n");
+        }
+        html + "</ul>"
+    }
+    fn toc(&self) -> String {
+        let mut roots = Vec::new();
+        let mut parents: Vec<usize> = Vec::new();
+        let mut children = vec![Vec::new(); self.headings.len()];
+        for (i, heading) in self.headings.iter().enumerate() {
+            while parents.last().is_some_and(|&p| self.headings[p].level >= heading.level) {
+                parents.pop();
+            }
+            if let Some(&p) = parents.last() {
+                children[p].push(i);
+            } else {
+                roots.push(i);
+            }
+            parents.push(i);
+        }
+        format!("<nav class=\"toc\">\n{}\n</nav>", self.toc_list(&children, &roots))
+    }
+    fn document(&mut self, blocks: &[Block]) -> String {
+        let html = self.blocks(blocks);
+        let mut html = html.replace(TOC, &self.toc());
+        html
+    }
+fn main() {
+    let mut source = String::new();
+    io::stdin().read_to_string(&mut source).unwrap();
+    let lines: Vec<String> = source.lines().take_while(|&s| s != "@@END@@").map(str::to_owned).collect();
+    let mut parser = Parser::default();
+    let blocks = parser.parse(&lines);
+    let mut renderer = Renderer::new(parser);
+    print!("{}", renderer.document(&blocks));
+}

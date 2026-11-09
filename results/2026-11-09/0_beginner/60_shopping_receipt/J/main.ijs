@@ -1,0 +1,19 @@
+main =: 3 : 0
+  names =. ;:'milk notebook bread apple detergent eggs'
+  prices =. 198 165 248 128 437 268
+  quantities =. 2 3 1 4 1 1
+  food =. 1 0 1 1 0 1
+  subtotals =. prices*quantities
+  for_i. i.6 do.
+    smoutput (>i{names),' ',(":i{prices),' x ',(":i{quantities),' = ',":i{subtotals
+  end.
+  foodtotal =. +/food#subtotals
+  generaltotal =. +/(-.food)#subtotals
+  foodtax =. <.(foodtotal*8)%100
+  generaltax =. <.(generaltotal*10)%100
+  total =. foodtotal+generaltotal+foodtax+generaltax
+  smoutput 'food: ',(":foodtotal),' yen, tax ',(":foodtax),' yen'
+  smoutput 'general: ',(":generaltotal),' yen, tax ',(":generaltax),' yen'
+  smoutput 'total: ',(":total),' yen'
+)
+main ''

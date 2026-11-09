@@ -1,0 +1,9 @@
+The current question asks: Follow the local rank-representation block for T and A through ordinary high-card values and ace-low-straight comparison values. State the numeric encoding actually used, or its equivalent explicit ordering, identify the low-ace special-case condition and explain how its resulting comparison sequence differs from an ordinary ace-high hand. Distinguish rank values from the final hand's printed position; do not trace full category selection.
+
+Answer and source evidence: The alphabet23456789TJQKA with offset2 encodes T=10 and A=14. Ordinary high-card comparison orders larger ranks first (secondary to multiplicity); an ace is normally14. The wheel condition identifies exactly A,2,3,4,5 as a straight and replaces its comparison sequence with[5,4,3,2,1], so the ace contributes low1 in that special case. These rank numbers are comparison data, independent of one-based printed hand positions.
+
+Selection: `main.rs` lines 8, 13, 14, 19, 22, 23, 43, 44, 45, 46. Retain rank mapping, ordinary comparison order, wheel recognition and replacement only. Category selection and output ranking are outside the local rank-representation question.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,9 @@
+The current question asks: Explain the operation that derives one complete next generation from a current board. Identify cell traversal, neighbor-count construction, the live/dead decision and storage of the result, including how the corner at (0, 0) rejects a neighbor at (-1, 0) before access. Explain the actual guard evaluation and how newly computed cells cannot influence later neighbor counts. Stop after producing one next board rather than tracing all four generations.
+
+Answer and source evidence: Create a separate next board and visit every current cell. For each, reset neighbors, inspect the eight offsets except self, reject out-of-bounds coordinates before reading board, then apply birth at 3 and survival at 2 or 3. At corner (0,0), neighbor (-1,0) fails the row guard and short-circuit && prevents indexed access. Write only next during traversal and replace board after all cells, so new values cannot influence later counts.
+
+Selection: `main.go` lines 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38. One complete generation-transition block establishes traversal, short-circuit safety, rule and old/new storage. Initialization, printing and later generations are outside scope.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

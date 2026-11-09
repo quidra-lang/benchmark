@@ -1,0 +1,22 @@
+# Task B selection — Dart
+
+## Answer requirements shared across languages
+
+1. Trace TRANSPOSE dispatch and preserve unknown-command, missing-song and numeric-argument validation precedence, including optional channel and semitone bounds.
+2. Identify NOTE_ON, NOTE_OFF and POLY_PRESSURE target events and replace out-of-range deletion with clamping while retaining every event, tick and within-track position, even when different events obtain the same note.
+3. Preserve the command result schema: all affected retained events contribute to transposed, dropped is zero and no dropped-event detail lines are produced.
+4. Trace subsequent DECODE note rendering and ordered traversal and ENCODE traversal, note/status payload, absolute-to-delta conversion and VLQ output so the edited song remains consistent.
+
+## Selected source locations
+
+- `main.dart`: 4, 8, 10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 29, 32, 60, 62, 65, 88, 89, 90, 91, 92, 93, 96, 329, 330, 331, 332, 333, 335, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 426, 429, 437, 450, 451, 452, 453, 454, 455, 457, 458, 463, 464, 468, 473, 475, 477, 478, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 504, 505, 506, 507, 645
+
+## Evidence and language semantics
+
+The requested change belongs in the event transformation, after target selection and signed pitch addition and before the payload assignment. Replace the range-failure removal path with a lower/upper bound clamp. Every selected event must reach the retained-event path exactly once; leave tick, status/channel, second data byte and track order untouched. Equal resulting pitches are separate sequence entries, including entries at the same tick; no set, grouping or note-pair operation is required. The transposed count includes those now clamped, including a zero shift; dropped becomes zero and its detail loop receives no events. DECODE already formats the stored payload in track order. ENCODE already uses each retained absolute tick minus the previous retained tick, so preserving events preserves the original delta sequence, including zero deltas; the shortest base-128 encoding and channel payload emission remain applicable. Existing running-status compression only suppresses status bytes, while NOTE_OFF ZERO changes status/velocity at encoding time and keeps the pitch. Neither operation coalesces events. The Dart Event stores a signed int tick/code and List<int> data; the channel interval and kind table identify NOTE_OFF/NOTE_ON/POLY_PRESSURE. The clamp belongs between pitch addition and data[0] assignment, replacing the removal/continue branch. The rebuilt List<Event> receives every original reference in order and is assigned to s.tracks[t]; lists preserve duplicates, and s refers to the Song held in the map. Dart int represents these bounded signed values exactly. range, the argument parse and the command/song branches establish unchanged error precedence; fail throws Failure, with its existing error: catch shown. eventText consumes the same payload via noteName, while encode writes every event with a per-track tick difference encoded by vlq and preserves its local zero-off/running handling. No note-pairing or sorting dependency is involved.
+
+## Minimization and alternatives
+
+A transformation-only excerpt cannot establish downstream display, delta-time encoding or required error precedence. HEX/TEXT construction, pairing, timing, quantization and other edits are omitted because the input song is already valid. The relevant event/list types, selected formatting branches, VLQ code, encoder traversal, command guards and persistent-state write are retained. Custom helper bodies appear only where they determine a required behavior; ordinary collection/ownership rules are stated in the evidence. Source declarations and branch guards needed to identify selected definitions are retained even when a smaller candidate omitted them. This final excerpt was independently read and checked against the same four requirements used for all languages; no implementation changes or program execution were performed.
+
+The excerpt contains 1802 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

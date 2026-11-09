@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Fresh cache storage starts empty with zero totals and is separate from the literal access sequence. Before the fourth access B the MRU order is C A B; lookup finds B, increments hits, removes it and unshifts it, yielding B C A (hits 1, misses 3). Next D is absent, increments misses, evicts the LRU A at capacity 3 and inserts D first, yielding D B C (hits 1, misses 4). splice/pop/unshift mutate the named cache array in JS/TS; PHP array_splice/array_pop/array_unshift update its own array variable. The next iteration reads that updated state, while access order never aliases it. Initial state, access binding, both branches and status/order rendering are necessary; final totals-only rendering is redundant.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. PHP array/string/arithmetic and formatting operations are interpreted with their standard runtime semantics; no stronger static invariant is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

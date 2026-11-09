@@ -1,0 +1,325 @@
+CATEGORIES = %w[
+  ONES TWOS THREES FOURS FIVES SIXES THREEKIND FOURKIND FULLHOUSE
+  SMALL LARGE YAHTZEE CHANCE
+].freeze
+UPPER = CATEGORIES.first(6).freeze
+LOWER = CATEGORIES.drop(6).freeze
+FACES = (1..6).to_a.freeze
+MODULUS = 2_147_483_647
+MULTIPLIER = 48_271
+class CommandError < StandardError; end
+
+def require_value(condition, message)
+  raise CommandError, message unless condition
+end
+
+def integer_word(text, minimum, maximum)
+  require_value(/\A-?(?:0|[1-9][0-9]*)\z/.match?(text) && text != '-0', "bad value #{text}")
+  value = text.to_i
+  require_value(value.between?(minimum, maximum), "bad value #{text}")
+  value
+end
+
+def player_name(text)
+  require_value(/\A[A-Z]{1,8}\z/.match?(text), "bad name #{text}")
+  text
+end
+
+def hold_pattern(text)
+  require_value(/\A[01]{5}\z/.match?(text), "bad pattern #{text}")
+  text.chars.map { |mark| mark == '1' }
+end
+
+def category_name(text)
+  require_value(CATEGORIES.include?(text), "bad category #{text}")
+  text
+def face_text(faces)
+  faces.empty? ? '-' : faces.join(' ')
+end
+
+def pattern_text(holds)
+  holds.map { |v| v ? '1' : '0' }.join
+end
+
+def held_faces(faces, holds)
+  faces.each_with_index.filter_map { |face, i| face if holds[i] }
+def yahtzee?(faces)
+  faces.all? { |face| face == faces[0] }
+end
+
+def normal_score(category, faces)
+  upper = UPPER.index(category)
+  return (upper + 1) * faces.count(upper + 1) unless upper.nil?
+class DiceRoller
+  attr_accessor :loaded
+  attr_reader :counts
+  def initialize(seed)
+    @state = seed
+    @loaded = []
+    @counts = Array.new(6, 0)
+  end
+
+  def roll_die
+    face = if @loaded.empty?
+      @state = MULTIPLIER * @state % MODULUS
+      @state % 6 + 1
+    else
+      @loaded.shift
+    end
+    @counts[face - 1] += 1
+    face
+  end
+end
+
+class Player
+  attr_accessor :strategy, :yahtzee_bonus
+  attr_reader :name, :boxes
+  def initialize(name, strategy = 'KIND')
+    @name, @strategy = name, strategy
+    @boxes = CATEGORIES.to_h { |category| [category, nil] }
+    @yahtzee_bonus = 0
+  end
+
+  def open_categories
+    CATEGORIES.select { |category| @boxes[category].nil? }
+  end
+
+  def used_count
+    13 - open_categories.length
+  end
+
+  def round
+    used_count + 1
+  end
+
+  def upper_subtotal
+    UPPER.sum { |category| @boxes[category] || 0 }
+  end
+
+  def upper_bonus
+    upper_subtotal >= 63 ? 35 : 0
+  end
+
+  def total
+    @boxes.values.compact.sum + upper_bonus + @yahtzee_bonus
+  end
+end
+
+class Turn
+  attr_accessor :seat, :rolls, :faces, :holds
+  def initialize(seat, rolls = 0, faces = [], holds = Array.new(5, false))
+    @seat, @rolls = seat, rolls
+    @faces, @holds = faces.dup, holds.dup
+  end
+
+  def duplicate
+    Turn.new(@seat, @rolls, @faces, @holds)
+  end
+end
+
+ScoreEntry = Struct.new(:player, :category, :points, :bonus, :joker, :turn)
+
+class Game
+  attr_accessor :turn
+  attr_reader :players, :rules, :roller, :entries, :redo_list
+  def initialize(players, rules, roller)
+    @players, @rules, @roller = players, rules, roller
+    @turn = Turn.new(0)
+    @entries, @redo_list = [], []
+  end
+
+  def finished?
+    @turn.nil?
+  end
+
+  def current_player
+    @players[@turn.seat]
+  def roll
+    if @turn.rolls.zero?
+      @turn.faces = Array.new(5) { @roller.roll_die }
+    else
+      5.times { |i| @turn.faces[i] = @roller.roll_die unless @turn.holds[i] }
+    end
+    @turn.rolls += 1
+    @redo_list.clear
+    "#{current_player.name} roll #{@turn.rolls}: #{face_text(@turn.faces)}"
+  end
+
+  def set_holds(holds)
+    @turn.holds = holds.dup
+    @redo_list.clear
+    "#{current_player.name} holds #{pattern_text(holds)}: #{face_text(held_faces(@turn.faces, holds))}"
+  end
+
+  def joker_situation?(player, faces)
+    @rules[:joker] != 'OFF' && yahtzee?(faces) && !player.boxes['YAHTZEE'].nil?
+  end
+
+  def allowed_categories(player, faces, joker)
+    open = player.open_categories
+    return open unless joker && @rules[:joker] == 'FORCED'
+  def points_to_enter(faces, category, joker)
+    joker && JOKER_POINTS.key?(category) ? JOKER_POINTS.fetch(category) : normal_score(category, faces)
+  def prepare_entry(category)
+    player, faces = current_player, @turn.faces
+    require_value(player.boxes[category].nil?, "#{category} already used")
+    joker = joker_situation?(player, faces)
+    unless allowed_categories(player, faces, joker).include?(category)
+      upper = UPPER[faces[0] - 1]
+      raise CommandError, player.boxes[upper].nil? ? "joker requires #{upper}" : 'joker requires lower box'
+    end
+    points = points_to_enter(faces, category, joker)
+    bonus = yahtzee?(faces) && player.boxes['YAHTZEE'] == 50 ? 100 : 0
+    ScoreEntry.new(player, category, points, bonus, joker, @turn.duplicate)
+  end
+
+  def score_line(entry, verb)
+    player = entry.player
+    parts = [player.name, verb, entry.points, 'in', entry.category]
+    parts << 'joker' if entry.joker
+    parts.concat(['ybonus', entry.bonus]) if entry.bonus.positive?
+    subtotal = player.upper_subtotal + (UPPER.include?(entry.category) ? entry.points : 0)
+    gain = player.upper_bonus.zero? && subtotal >= 63 ? 35 : 0
+    parts.concat(['ubonus', gain]) if gain.positive?
+    parts.concat(['total', player.total + entry.points + entry.bonus + gain])
+    parts.join(' ')
+  end
+
+  def enter(entry)
+    entry.player.boxes[entry.category] = entry.points
+    entry.player.yahtzee_bonus += entry.bonus
+    @entries << entry
+  end
+
+  def score(category)
+    entry = prepare_entry(category)
+    line = score_line(entry, 'scores')
+    enter(entry)
+    @redo_list.clear
+    if @players.all? { |player| player.used_count == 13 }
+      @turn = nil
+      return [line, 'game over']
+    end
+    @turn = Turn.new((@turn.seat + 1) % @players.length)
+    [line, "turn #{current_player.round} #{current_player.name}"]
+  end
+
+  def undo
+    entry = @entries.pop
+    entry.player.boxes[entry.category] = nil
+    entry.player.yahtzee_bonus -= entry.bonus
+    @redo_list << [@turn, entry]
+    @turn = entry.turn.duplicate
+    entry
+  end
+
+  def redo
+    turn, entry = @redo_list.pop
+    enter(entry)
+    @turn = turn
+    entry
+class YahtzeeTable
+  attr_reader :output
+  def initialize
+    @rules = { rolls: 3, joker: 'FORCED' }
+    @game = nil
+    @output = []
+  def emit(line)
+    @output << line
+  end
+
+  def require_no_game
+    require_value(@game.nil?, 'game in progress')
+  end
+
+  def require_game
+    require_value(!@game.nil?, 'no game')
+    @game
+  end
+
+  def require_turn
+    game = require_game
+    require_value(!game.finished?, 'game over')
+    game
+  end
+
+  def require_rolled
+    game = require_turn
+    require_value(game.turn.rolls > 0, 'not rolled')
+    game
+  end
+
+  def require_rolls_left
+    game = require_rolled
+    require_value(game.turn.rolls < @rules[:rolls], 'no rolls left')
+    game
+  def start_game(args)
+    seed = integer_word(args[0], 1, MODULUS - 1)
+    names = args.drop(1).map { |name| player_name(name) }
+    require_value(names.length <= 6, 'too many players')
+    require_no_game
+    names.each_with_index do |name, index|
+      require_value(!names.first(index).include?(name), "duplicate name #{name}")
+    end
+    @game = Game.new(names.map { |name| Player.new(name) }, @rules, DiceRoller.new(seed))
+    emit("game seed #{seed} players #{names.join(' ')}")
+    emit("turn 1 #{names[0]}")
+  def load(args)
+    faces = args.map { |text| integer_word(text, 1, 6) }
+    roller = require_game.roller
+    roller.loaded.concat(faces)
+    emit("loaded #{roller.loaded.length}")
+  end
+
+  def roll
+    game = require_turn
+    require_value(game.turn.rolls < @rules[:rolls], 'no rolls left')
+    require_value(!game.turn.holds.all?, 'all dice held')
+    emit(game.roll)
+  end
+
+  def hold(args)
+    holds = hold_pattern(args[0])
+    emit(require_rolls_left.set_holds(holds))
+  def score(args)
+    category = category_name(args[0])
+    @output.concat(require_rolled.score(category))
+  def undo
+    game = require_game
+    require_value(!game.entries.empty?, 'nothing to undo')
+    entry = game.undo
+    emit("undo #{entry.player.name} #{entry.category} #{entry.points}")
+  end
+
+  def redo
+    game = require_game
+    require_value(!game.redo_list.empty?, 'nothing to redo')
+    entry = game.redo
+    emit("redo #{entry.player.name} #{entry.category} #{entry.points}")
+  HANDLERS = {
+    'RULE' => :set_rule, 'GAME' => :start_game, 'BOT' => :set_bot, 'LOAD' => :load,
+    'ROLL' => :roll, 'HOLD' => :hold, 'KEEP' => :keep, 'SCORE' => :score,
+    'WHATIF' => :what_if, 'UNDO' => :undo, 'REDO' => :redo, 'SUGGEST' => :suggest,
+  ARGUMENT_HANDLERS = %i[
+    set_rule start_game set_bot load hold keep score what_if odds auto simulate
+  ].freeze
+
+  def execute(line)
+    command, *args = line.split
+    handler = HANDLERS[command]
+    require_value(!handler.nil?, "unknown command #{command}")
+    if ARGUMENT_HANDLERS.include?(handler)
+      send(handler, args)
+    else
+      send(handler)
+    end
+  rescue CommandError => error
+    emit("error: #{error.message}")
+  end
+end
+
+input = STDIN.each_line
+commands = input.next.to_i
+table = YahtzeeTable.new
+commands.times { table.execute(input.next.chomp) }
+puts table.output

@@ -1,0 +1,161 @@
+struct TextValue <: Value
+    text::String
+end
+empty_value(::TextValue) = false
+struct Entry
+    value::Value
+    expiry::Union{Nothing,Int}
+end
+const Database = Dict{String,Entry}
+mutable struct Store
+    database::Database
+    clock::Int
+    stack::Vector{Database}
+    snapshots::Dict{String,Database}
+end
+Store() = Store(Database(), 0, Database[], Dict{String,Database}())
+
+quoted(::Nothing) = "(nil)"
+quoted(text::AbstractString) = "\"" * replace(text, '\\' => "\\\\", '"' => "\\\"") * "\""
+integer_reply(value::Integer) = "(integer) $value"
+function split_line(line::String)
+    words = String[]
+    i, n = 1, length(line)
+    while i <= n
+        if line[i] == ' '
+            i += 1
+            continue
+        end
+        if line[i] != '"'
+            start = i
+            while i <= n && line[i] != ' '
+                i += 1
+            end
+            push!(words, line[start:i-1])
+            continue
+        end
+    end
+    words
+valid_integer(text::String) = occursin(r"^(0|-?[1-9][0-9]{0,8})$", text)
+function number(text::String, message::String=NOT_INTEGER)
+    valid_integer(text) || fail(message)
+    parse(Int, text)
+end
+function read_value(store::Store, key::String, ::Type{T}, empty::T) where {T<:Value}
+    entry = get(store.database, key, nothing)
+    isnothing(entry) && return empty
+    entry.value isa T || fail(WRONG_TYPE)
+    entry.value::T
+end
+text_value(store::Store, key::String) = read_value(store, key, TextValue, TextValue("")).text
+function replace_value!(store::Store, key::String, value::Value, expiry::Union{Nothing,Int}=nothing)
+    if empty_value(value)
+        delete!(store.database, key)
+    else
+        store.database[key] = Entry(value, expiry)
+    end
+function purge!(store::Store)
+    before = length(store.database)
+    filter!(pair -> isnothing(pair.second.expiry) || pair.second.expiry > store.clock, store.database)
+    before - length(store.database)
+struct CommandSpec
+    minimum::Int
+    maximum::Union{Nothing,Int}
+    parity::Union{Nothing,Int}
+end
+const COMMANDS = let commands = Dict{String,CommandSpec}()
+    function register!(names, minimum, maximum=minimum, parity=nothing)
+        for name in split(names)
+            commands[name] = CommandSpec(minimum, maximum, parity)
+        end
+    end
+    register!("TIME DBSIZE FLUSH INFO BEGIN COMMIT ROLLBACK", 0)
+    register!("GET INCR DECR STRLEN LLEN HGETALL HLEN HKEYS HVALS SMEMBERS SCARD ZCARD TYPE KEYS TTL PERSIST TICK SNAPSHOT RESTORE", 1)
+    register!("SET LPUSH RPUSH HDEL SADD SREM ZREM SINTERSTORE SUNIONSTORE SDIFFSTORE", 2, nothing)
+    commands
+function command_name(words::Vector{String})
+    name = uppercase(words[1])
+    spec = get(COMMANDS, name, nothing)
+    isnothing(spec) && fail("ERR unknown command '$(words[1])'")
+    n = length(words) - 1
+    if n < spec.minimum || (!isnothing(spec.maximum) && n > spec.maximum) ||
+       (!isnothing(spec.parity) && mod(n, 2) != spec.parity)
+        fail("ERR wrong number of arguments for '$(lowercase(name))' command")
+    end
+    name
+function set_string!(store::Store, args::Vector{String})
+    key = args[1]
+    options = Set{String}()
+    seconds_text = nothing
+    i = 3
+    while i <= length(args)
+        option = uppercase(args[i])
+        i += 1
+        option in ("NX", "XX", "EX", "KEEPTTL", "GET") && !(option in options) || fail("ERR syntax error")
+        push!(options, option)
+        if option == "EX"
+            i <= length(args) || fail("ERR syntax error")
+            seconds_text = args[i]
+            i += 1
+        end
+    end
+    expiry = nothing
+    if "EX" in options
+        seconds = number(seconds_text)
+        seconds > 0 || fail("ERR invalid expire time in 'set' command")
+        expiry = store.clock + seconds
+    end
+    blocked = ("NX" in options && !isnothing(old)) || ("XX" in options && isnothing(old))
+    if !blocked
+        "KEEPTTL" in options && !isnothing(old) && (expiry = old.expiry)
+        replace_value!(store, key, TextValue(args[2]), expiry)
+    end
+    "GET" in options ? quoted(old_text) : blocked ? "(nil)" : "OK"
+function string_command!(store::Store, command::String, args::Vector{String})
+    key = args[1]
+    command == "SET" && return set_string!(store, args)
+    value = text_value(store, key)
+    command == "STRLEN" ? integer_reply(length(value)) : quoted(haskey(store.database, key) ? value : nothing)
+function key_command!(store::Store, command::String, args::Vector{String})
+    elseif command == "TICK"
+        ticks = number(args[1])
+        ticks > 0 || fail(POSITIVE)
+        store.clock += ticks
+        return integer_reply(purge!(store))
+    end
+function control_command!(store::Store, command::String, args::Vector{String})
+    if command == "BEGIN"
+        push!(store.stack, copy(store.database))
+    elseif command in ("COMMIT", "ROLLBACK")
+        isempty(store.stack) && fail("ERR no transaction")
+        saved = pop!(store.stack)
+        if command == "ROLLBACK"
+            store.database = saved
+            purge!(store)
+        end
+    elseif command == "SNAPSHOT"
+        store.snapshots[args[1]] = copy(store.database)
+    else
+        saved = get(store.snapshots, args[1], nothing)
+        isnothing(saved) && fail("ERR no such snapshot")
+        store.database = copy(saved)
+        purge!(store)
+    end
+    "OK"
+function execute!(store::Store, words::Vector{String})
+    command = command_name(words)
+    args = words[2:end]
+    command in ("SET", "GET", "MSET", "MGET", "INCR", "DECR", "INCRBY", "DECRBY", "APPEND", "STRLEN", "GETRANGE") &&
+        return string_command!(store, command, args)
+    command in ("BEGIN", "COMMIT", "ROLLBACK", "SNAPSHOT", "RESTORE") && return control_command!(store, command, args)
+    key_command!(store, command, args)
+function main()
+    store = Store()
+    for _ in 1:parse(Int, readline())
+        words = split_line(readline())
+        reply = try
+            isnothing(words) ? "Invalid argument(s)" : execute!(store, words)
+        end
+        reply isa String ? println(reply) : foreach(println, reply)
+    end
+main()

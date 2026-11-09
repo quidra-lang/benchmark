@@ -1,0 +1,211 @@
+read_ecg <- function() {
+  rows <- strsplit(readLines("input/ecg.csv")[-1L], ",", fixed=TRUE)
+  vapply(rows, function(row) as.numeric(row[2L]), numeric(1))
+}
+read_annotations <- function() {
+  lapply(strsplit(readLines("input/annotations.csv")[-1L], ",", fixed=TRUE),
+         function(row) list(sample=as.numeric(row[1L]), label=row[2L]))
+}
+read_params <- function() {
+  rows <- strsplit(readLines("input/params.txt"), " ", fixed=TRUE)
+  setNames(vapply(rows, function(row) as.numeric(row[2L]), numeric(1)),
+           vapply(rows, `[`, character(1), 1L))
+}
+build_beats <- function(detection,band,params) {
+  beats <- list()
+  for (index in detection$registered) {
+    peak <- detection$peaks[[index]]
+    k <- length(beats)+1L
+    sample <- max(0,peak$r-21)
+    rr <- if (k == 1L) NULL else 5*(sample-beats[[k-1L]]$sample)
+    width <- width_ms(band,peak$r)
+    label <- "N"
+    if (k >= 10L) {
+      total <- sum(vapply(beats[seq.int(k-8L,k-1L)],`[[`,numeric(1),"rr"))
+      if (800*rr < params[["premature_percent"]]*total) label <- if (width > params[["qrs_width_ms"]]) "V" else "A"
+    }
+    beats[[k]] <- list(sample=sample,rr=rr,hr=if (is.null(rr)) NULL else rdiv(6000000,rr),
+      width=width,label=label,method=if (peak$kind == "qrs") "threshold" else "searchback",annotation=0L,offset=0)
+  }
+  beats
+}
+match_annotations <- function(beats,annotations,tolerance) {
+  matched <- integer(length(annotations))
+  for (k in seq_along(beats)) {
+    distance <- vapply(annotations,function(ref) abs(ref$sample-beats[[k]]$sample),numeric(1))
+    candidates <- which(matched == 0L & distance <= tolerance)
+    if (!length(candidates)) next
+    j <- candidates[which.min(distance[candidates])]
+    matched[j] <- k
+    beats[[k]]$annotation <- j
+    beats[[k]]$offset <- 5*(beats[[k]]$sample-annotations[[j]]$sample)
+  }
+  list(beats=beats,matched=matched)
+}
+segments_for <- function(beats,annotations,matched,peaks,n,params) {
+  step <- params[["segment_ms"]] %/% 5
+  lapply(seq.int(0,n-1L,by=step),function(start) {
+    stop <- min(start+step,n)
+    refs <- which(vapply(annotations,function(ref) start <= ref$sample && ref$sample < stop,logical(1)))
+    selected <- Filter(function(b) start <= b$sample && b$sample < stop,beats)
+    tp <- sum(matched[refs] > 0L)
+    list(start=5*start,stop=5*stop,refs=length(refs),tp=tp,fn=length(refs)-tp,
+      fp=sum(vapply(selected,function(b) b$annotation == 0L,logical(1))),beats=length(selected),
+      noise=sum(vapply(peaks,function(p) p$kind == "noise" && start <= p$time && p$time < stop,logical(1))),
+      rr=unlist(lapply(selected,`[[`,"rr"),use.names=FALSE))
+  })
+}
+csv_outputs <- function(ecg,signals,peaks,beats,annotations,matched,params) {
+  lines <- "beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"
+  for (k in seq_along(beats)) {
+    b <- beats[[k]]
+    ref <- if (b$annotation) annotations[[b$annotation]] else NULL
+    lines <- c(lines,csv_row(k,b$sample,5*b$sample,missing_dash(b$rr),if (is.null(b$hr)) "-" else two(b$hr),
+      b$width,b$label,b$method,if (is.null(ref)) "-" else ref$sample,if (is.null(ref)) "-" else ref$label))
+  }
+  write_lines("beats.csv",lines)
+  records <- list()
+  for (j in seq_along(annotations)) {
+    ref <- annotations[[j]]
+    k <- matched[j]
+    if (!k) row <- csv_row(ref$sample,ref$label,"-","-","-","-","FN","-") else {
+      b <- beats[[k]]
+      row <- csv_row(
+          ref$sample,
+          ref$label,
+          k,
+          b$sample,
+          b$label,
+          b$offset,
+          "TP",
+          if (ref$label == b$label) "yes" else "no"
+      )
+    }
+    records[[length(records)+1L]] <- list(sample=ref$sample,kind=0L,text=row)
+  }
+  for (k in seq_along(beats)) {
+    b <- beats[[k]]
+    if (b$annotation) next
+    records[[length(records)+1L]] <- list(sample=b$sample,kind=1L,
+      text=csv_row("-","-",k,b$sample,b$label,"-","FP","-"))
+  }
+  order_records <- order(vapply(records,`[[`,numeric(1),"sample"),vapply(records,`[[`,integer(1),"kind"))
+  write_lines("matching.csv",c("ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree",
+    vapply(records[order_records],`[[`,character(1),"text")))
+performance_lines <- function(beats,annotations,matched,peaks,detection,segments,params,n) {
+  refs <- setNames(
+      vapply(LABELS,function(c) sum(vapply(annotations,function(r) r$label == c,logical(1))),numeric(1)),
+      LABELS
+  )
+  detected <- setNames(
+      vapply(LABELS,function(c) sum(vapply(beats,function(b) b$label == c,logical(1))),numeric(1)),
+      LABELS
+  )
+  tp <- sum(matched > 0L)
+  fn <- length(annotations)-tp
+  fp <- length(beats)-tp
+  tally <- function(values) paste(paste0(names(values),"=",integer_text(unlist(values))),collapse=" ")
+    "MATCHING",fmt("tolerance_ms %s",params[["match_ms"]]),
+    fmt(
+        "references %s %s",
+        length(annotations),
+        tally(refs)
+    ),fmt("detections %s %s",length(beats),tally(detected)),
+    fmt("true_positives %s",tp),fmt("false_positives %s",fp),fmt("false_negatives %s",fn),
+    paste0("sensitivity ",ratio(tp,tp+fn)),paste0("positive_predictivity ",ratio(tp,tp+fp)),
+    paste0("detection_error_rate ",ratio(fp+fn,length(annotations))))
+  method_stats <- vapply(c("threshold","searchback"),function(method) {
+    selected <- Filter(function(b) b$method == method,beats)
+    fmt("%s=%s/%s",method,sum(vapply(selected,function(b) b$annotation > 0L,logical(1))),length(selected))
+  },character(1))
+  lines <- c(lines,paste0("by_method ",paste(method_stats,collapse=" ")))
+  offsets <- vapply(Filter(function(b) b$annotation > 0L,beats),`[[`,numeric(1),"offset")
+  lines <- c(lines,if (!length(offsets)) "offset_ms none" else fmt("offset_ms mean=%s mean_abs=%s max_abs=%s",
+    two(rdiv(100*sum(offsets),tp)),two(rdiv(100*sum(abs(offsets)),tp)),max(abs(offsets))))
+  confusion <- matrix(0,nrow=4L,ncol=4L,dimnames=list(c(LABELS,"extra"),c(LABELS,"miss")))
+  for (j in seq_along(annotations)) {
+    label <- if (matched[j]) beats[[matched[j]]]$label else "miss"
+    c <- annotations[[j]]$label
+    confusion[c,label] <- confusion[c,label]+1L
+  }
+  for (b in beats) if (!b$annotation) confusion["extra",b$label] <- confusion["extra",b$label]+1L
+  padded <- function(values) paste(sprintf("%6s",integer_text(values)),collapse="")
+  lines <- c(lines,"CONFUSION",paste0("ref  ",paste(sprintf("%6s",LABELS),collapse=""),"  miss"))
+  for (c in LABELS) lines <- c(lines,paste0(c,"    ",padded(confusion[c,])))
+  lines <- c(lines,paste0("extra",padded(confusion["extra",LABELS])))
+  for (c in c("V","A")) {
+    prefix <- if (c == "V") "veb" else "sveb"
+    lines <- c(lines,paste0(prefix,"_sensitivity ",ratio(confusion[c,c],refs[[c]])),
+      paste0(prefix,"_positive_predictivity ",ratio(confusion[c,c],detected[[c]])))
+  }
+  lines <- c(lines,fmt("SEGMENTS segment_ms=%s segments=%s",params[["segment_ms"]],length(segments)))
+  for (s in segments) lines <- c(lines,fmt("%6s-%6s refs=%s tp=%s fp=%s fn=%s noise_peaks=%s",
+    s$start,s$stop,s$refs,s$tp,s$fp,s$fn,s$noise))
+  errors <- list()
+  for (k in seq_along(beats)) {
+    b <- beats[[k]]
+    if (!b$annotation) errors[[length(errors)+1L]] <- list(sample=b$sample,kind=0L,
+      text=fmt("false_positive beat=%s sample=%s time_ms=%s label=%s",k,b$sample,5*b$sample,b$label))
+  }
+  for (j in seq_along(annotations)) {
+    ref <- annotations[[j]]
+    if (!matched[j]) errors[[length(errors)+1L]] <- list(sample=ref$sample,kind=1L,
+      text=fmt("false_negative sample=%s time_ms=%s label=%s",ref$sample,5*ref$sample,ref$label))
+  }
+  indices <- order(vapply(errors,`[[`,numeric(1),"sample"),vapply(errors,`[[`,integer(1),"kind"))
+  c(lines,fmt("ERRORS count=%s",fp+fn),vapply(errors[indices],`[[`,character(1),"text"))
+}
+rhythm_lines <- function(ecg,beats,annotations,params) {
+  start <- params[["strip_start_ms"]] %/% 5
+  n <- params[["strip_ms"]] %/% 5
+  columns <- n %/% 10
+  beat_marks <- ref_marks <- rep(" ",columns)
+  for (b in beats) if (start <= b$sample && b$sample < start+n) beat_marks[(b$sample-start) %/% 10+1L] <- b$label
+  for (ref in annotations) if (start <= ref$sample && ref$sample < start+n) ref_marks[(ref$sample-start) %/% 10+1L] <- ref$label
+  c(
+      lines,
+      paste0(" beats |",paste(beat_marks,collapse=""),"|"),
+      paste0("  refs |",paste(ref_marks,collapse=""),"|")
+  )
+}
+  ecg <- read_ecg()
+  annotations <- read_annotations()
+  params <- read_params()
+  signals <- filter_ecg(ecg)
+  detection <- detect_beats(find_peaks(signals),signals,params)
+  peaks <- detection$peaks
+  matches <- match_annotations(
+      build_beats(detection,signals$bandpass,params),
+      annotations,
+      params[["match_ms"]] %/% 5
+  )
+  beats <- matches$beats
+  matched <- matches$matched
+  segments <- segments_for(beats,annotations,matched,peaks,length(ecg),params)
+  csv_outputs(ecg,signals,peaks,beats,annotations,matched,params)
+  write_lines(
+      "performance.txt",
+      performance_lines(beats,annotations,matched,peaks,detection,segments,params,length(ecg))
+  )
+  write_lines("rhythm_strip.txt",rhythm_lines(ecg,beats,annotations,params))
+rdiv <- function(a,b) (2*a+b) %/% (2*b)
+integer_text <- function(value) sprintf("%.0f",value)
+two <- function(value) {
+  paste0(if (value < 0) "-" else "",integer_text(abs(value) %/% 100),
+         ".",sprintf("%02.0f",abs(value) %% 100))
+}
+fraction <- function(a,b) {
+  x <- abs(a)
+  y <- abs(b)
+  while (y != 0) {
+    remainder <- x %% y
+    x <- y
+    y <- remainder
+  }
+  paste0(integer_text(a %/% x),"/",integer_text(b %/% x))
+}
+ratio <- function(a,b) {
+  if (b == 0) return(paste0(integer_text(a),"/0 none"))
+  paste0(integer_text(a),"/",integer_text(b)," reduced=",fraction(a,b),
+         " percent=",two(rdiv(10000*a,b)))
+}

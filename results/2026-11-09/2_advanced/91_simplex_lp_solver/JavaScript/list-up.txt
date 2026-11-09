@@ -1,0 +1,414 @@
+function append(target, lines) {
+  for (const line of lines) target.push(line);
+}
+
+function dot(first, second) {
+  let value = zero;
+  for (let index = 0; index < first.length; index++) value = value.add(first[index].multiply(second[index]));
+  return value;
+}
+
+function coefficients(terms, variables, indices) {
+  const result = variables.map(() => zero);
+  for (const term of terms) {
+    const index = indices.get(term.name);
+    result[index] = result[index].add(term.coefficient);
+  }
+  return result;
+}
+function modelData(raw) {
+  if (raw.error !== null) return {name: raw.name, error: raw.error};
+  const variables = [];
+  const indices = new Map();
+  for (const expression of [raw.objective, ...raw.constraints]) {
+    for (const term of expression.terms) {
+      if (!indices.has(term.name)) {
+        indices.set(term.name, variables.length);
+        variables.push(term.name);
+      }
+    }
+  }
+  const model = {name: raw.name, direction: raw.direction, variables, error: null,
+    c: coefficients(raw.objective.terms, variables, indices),
+    constraints: raw.constraints.map(constraint => ({...constraint,
+      coefficients: coefficients(constraint.terms, variables, indices)})),
+    lower: variables.map(() => zero), upper: variables.map(() => null), integers: []};
+  const integral = variables.map(() => false);
+  model.integers = variables.map((_, index) => index).filter(index => integral[index]);
+  return model;
+}
+function standardForm(model, lower, upper) {
+  const columns = [];
+  const maps = [];
+  function addVariableColumn(name, variable, direction) {
+    const number = columns.length;
+    columns.push({name, variable, direction, artificial: false});
+    return number;
+  }
+  for (let variable = 0; variable < model.variables.length; variable++) {
+    const name = model.variables[variable];
+    if (lower[variable] !== null) {
+      maps.push({kind: 'shift', offset: lower[variable], upperRow: null,
+        columns: [addVariableColumn(name, variable, 1)]});
+    }
+  }
+  const offsets = maps.map(mapping => mapping.offset);
+  const rows = model.constraints.map(constraint => ({name: constraint.name, op: constraint.op,
+    values: columns.map(column => constraint.coefficients[column.variable].multiply(column.direction)),
+    rhs: constraint.rhs.subtract(dot(constraint.coefficients, offsets)), sigma: 1, slack: null, artificial: null}));
+  for (let variable = 0; variable < maps.length; variable++) {
+    if (maps[variable].kind !== 'shift' || upper[variable] === null) continue;
+  }
+  for (const row of rows) {
+    if (row.rhs.n >= 0n) continue;
+  }
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (row.op === '=') continue;
+  }
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (row.op === '<=') continue;
+    row.artificial = columns.length;
+    columns.push({name: 'a:' + row.name, variable: null, direction: 0, artificial: true});
+    for (let other = 0; other < rows.length; other++) rows[other].values.push(other === index ? one : zero);
+  }
+  for (const row of rows) row.initial = row.op === '<=' ? row.slack : row.artificial;
+  const sign = model.direction === 'minimize' ? 1 : -1;
+  const phase1 = columns.map(column => column.artificial ? one : zero);
+  const phase2 = columns.map(column => column.variable === null ? zero :
+    model.c[column.variable].multiply(column.direction * sign));
+  return {model, lower, upper, columns, maps, rows, phase1, phase2, sign,
+    constant: dot(model.c, offsets), artificialCount: columns.filter(column => column.artificial).length};
+}
+function originalValues(form, values, includeOffset = true) {
+  return form.maps.map(mapping => {
+    let value = includeOffset ? mapping.offset : zero;
+    for (const column of mapping.columns) value = value.add(values[column].multiply(form.columns[column].direction));
+    return value;
+  });
+}
+function solveLP(model, lower, upper, node, logLevel) {
+  const form = standardForm(model, lower, upper);
+  const tableau = new Tableau(form);
+  const lines = [];
+  const emit = (level, line) => {
+    if (level <= logLevel) lines.push(line);
+  };
+  const phaseLines = lines_ => {
+    if (logLevel >= 1) append(lines, lines_);
+  };
+  const display = (heading, costs, objective) => {
+  };
+  const objective = value => form.constant.add(value.multiply(form.sign));
+  const identity = value => value;
+  const result = {form, tableau, lines, phase1: 0, phase2: 0, drives: 0, redundant: 0,
+    objective: null, solution: null, w: zero};
+  const finish = status => {
+    result.status = status;
+    result.pivots = result.phase1 + result.phase2 + result.drives;
+    emit(0, `RESULT ${status} objective ${result.objective === null ? '-' : result.objective} ` +
+      `phase1 ${result.phase1} phase2 ${result.phase2} drives ${result.drives} redundant ${result.redundant}`);
+    return result;
+  };
+  emit(0, `SOLVE node ${node} rows ${form.rows.length} columns ${form.columns.length} artificials ${form.artificialCount}`);
+  for (let variable = 0; variable < model.variables.length; variable++) {
+    const mapping = form.maps[variable];
+    let line = `MAP ${model.variables[variable]} ${mapping.kind}`;
+    if (mapping.kind === 'shift') line += ` ${lower[variable]}` + (upper[variable] === null ? '' : ` upper ${upper[variable]}`);
+    else if (mapping.kind === 'reflect') line += ` ${upper[variable]}`;
+    emit(1, line);
+  }
+  for (const row of form.rows) if (row.sigma === -1) emit(1, `FLIP ${row.name}`);
+  if (form.artificialCount > 0) {
+    emit(1, 'PHASE 1');
+    const phase = simplex.phase(tableau, form.phase1, form.columns.map((_, index) => index), identity);
+    result.phase1 = phase.iterations;
+    phaseLines(phase.lines);
+    const reduced = tableau.reduced(form.phase1);
+    result.w = reduced.value;
+    emit(1, `PHASE 1 END objective ${result.w} iterations ${result.phase1}`);
+    if (result.w.n > 0n) {
+      result.farkas = form.rows.map(row => form.phase1[row.initial].subtract(reduced.costs[row.initial]).multiply(row.sigma));
+      return finish('INFEASIBLE');
+    }
+    for (let row = 0; row < form.rows.length; row++) {
+      const leaving = tableau.basis[row];
+      if (!form.columns[leaving].artificial) continue;
+      const entering = form.columns.findIndex((column, index) => !column.artificial && tableau.T[row][index].n !== 0n);
+      if (entering === -1) {
+        result.redundant++;
+        emit(1, `REDUNDANT row ${form.rows[row].name}`);
+      } else {
+        emit(1, `DRIVE row ${form.rows[row].name} enter ${form.columns[entering].name} leave ${form.columns[leaving].name}`);
+        tableau.pivot(row, entering);
+        result.drives++;
+      }
+    }
+  }
+  emit(1, 'PHASE 2');
+  const candidates = form.columns.map((_, index) => index).filter(index => !form.columns[index].artificial);
+  const phase = simplex.phase(tableau, form.phase2, candidates, objective);
+  result.phase2 = phase.iterations;
+  phaseLines(phase.lines);
+  if (phase.status === 'unbounded') emit(1, `UNBOUNDED enter ${form.columns[phase.entering].name}`);
+  const value = objective(tableau.reduced(form.phase2).value);
+  emit(1, `PHASE 2 END objective ${value} iterations ${result.phase2}`);
+  result.solution = originalValues(form, tableau.solution());
+  if (phase.status === 'optimal') {
+    result.objective = value;
+    return finish('OPTIMAL');
+  }
+  const delta = form.columns.map(() => zero);
+  delta[phase.entering] = one;
+  for (let row = 0; row < form.rows.length; row++) delta[tableau.basis[row]] = tableau.T[row][phase.entering].negate();
+  result.ray = originalValues(form, delta, false);
+  result.rate = dot(model.c, result.ray);
+  return finish('UNBOUNDED');
+}
+function solveModel(model, settings) {
+  const counts = {solves: 0, phase1: 0, phase2: 0, drives: 0};
+  if (model.error !== null) return {model, status: 'ERROR', root: null, objective: null, solution: null,
+    lines: [`MODEL ${model.name} error`], tree: [], counts, pivots: 0};
+  const level = settings.logs.get(model.name) ?? settings.log_level;
+  const limit = settings.limits.get(model.name) ?? settings.node_limit;
+  const lines = [`MODEL ${model.name} level ${level}`];
+  const solveNode = (lower, upper, number) => {
+    const lp = solveLP(model, lower, upper, number, level);
+    append(lines, lp.lines);
+    counts.solves++;
+    counts.phase1 += lp.phase1;
+    counts.phase2 += lp.phase2;
+    counts.drives += lp.drives;
+    return lp;
+  };
+  let result;
+  let tree = [];
+  if (model.integers.length > 0) {
+    append(tree, result.lines);
+  } else {
+    const root = solveNode(model.lower, model.upper, 1);
+    result = {status: root.status, root, objective: root.objective,
+      solution: root.status === 'OPTIMAL' ? root.solution : null, processed: 1};
+  }
+  return {model, status: result.status, root: result.root, objective: result.objective, solution: result.solution,
+    lines, tree, counts, pivots: counts.phase1 + counts.phase2 + counts.drives};
+function solutionLines(result) {
+  const {model, root} = result;
+  if (model.error !== null) return [`MODEL ${model.name}`, `STATUS ERROR line ${model.error.line} ${model.error.message}`];
+  const lines = [`MODEL ${model.name} ${model.direction} variables ${model.variables.length} ` +
+    `constraints ${model.constraints.length} integers ${model.integers.length}`,
+  coefficientStatistics(model), `STATUS ${result.status}`];
+  if (result.solution !== null) lines.push(`OBJECTIVE ${result.objective} approx ${approximate(result.objective)}`);
+  if (result.solution !== null || result.status === 'UNBOUNDED') {
+    const values = result.solution === null ? root.solution : result.solution;
+    for (let variable = 0; variable < model.variables.length; variable++) lines.push(`VALUE ${model.variables[variable]} ${values[variable]}`);
+  }
+  lines.push(`PIVOTS ${result.pivots}`);
+  return lines;
+}
+function summaryRow(result) {
+  const objective = result.objective === null ? '-' : String(result.objective);
+  const decimal = result.objective === null ? '-' : approximate(result.objective);
+  const relaxation = result.root === null || result.root.status !== 'OPTIMAL' ? '-' : String(result.root.objective);
+  return [result.model.name, result.status, objective, decimal, relaxation, result.counts.solves, result.pivots].join(',');
+}
+
+function main() {
+  const {models: rawModels, settings} = parser.readInputs();
+  const files = {'iterations.txt': [], 'solutions.txt': [], 'sensitivity.txt': [], 'bnb_tree.txt': [],
+    'summary.csv': ['model,status,objective,approx,relaxation,nodes,pivots']};
+  const totals = {solves: 0, phase1: 0, phase2: 0, drives: 0};
+  const statuses = {OPTIMAL: 0, INFEASIBLE: 0, UNBOUNDED: 0, NODE_LIMIT: 0, ERROR: 0};
+  for (const raw of rawModels) {
+    const result = solveModel(modelData(raw), settings);
+    append(files['iterations.txt'], result.lines);
+    append(files['solutions.txt'], solutionLines(result));
+    files['summary.csv'].push(summaryRow(result));
+    for (const name of Object.keys(totals)) totals[name] += result.counts[name];
+    statuses[result.status]++;
+  }
+  files['iterations.txt'].push(`TOTAL solves ${totals.solves} phase1 ${totals.phase1} phase2 ${totals.phase2} drives ${totals.drives} ` +
+    `pivots ${totals.phase1 + totals.phase2 + totals.drives}`);
+  files['solutions.txt'].push(`SUMMARY models ${rawModels.length} optimal ${statuses.OPTIMAL} infeasible ${statuses.INFEASIBLE} ` +
+    `unbounded ${statuses.UNBOUNDED} node_limit ${statuses.NODE_LIMIT} error ${statuses.ERROR}`);
+  fs.mkdirSync('output', {recursive: true});
+  for (const [name, lines] of Object.entries(files)) fs.writeFileSync(`output/${name}`, lines.join('\n') + '\n', 'ascii');
+}
+
+main();
+function expression(items) {
+  let index = 0;
+  let sign = 1;
+  if (items[index] === '-') {
+    sign = -1;
+    index++;
+  }
+  const terms = [];
+  while (true) {
+    const coefficient = number(items[index]);
+    if (coefficient !== null && isName(items[index + 1])) {
+      terms.push({name: items[index + 1], coefficient: coefficient.multiply(sign)});
+      index += 2;
+    } else if (isName(items[index])) {
+      terms.push({name: items[index], coefficient: one.multiply(sign)});
+      index++;
+    } else return null;
+    if (index === items.length) return terms;
+    if (items[index] !== '+' && items[index] !== '-') return null;
+    sign = items[index++] === '-' ? -1 : 1;
+  }
+}
+
+function label(text) {
+  return typeof text === 'string' && text.endsWith(':') && isName(text.slice(0, -1)) ? text.slice(0, -1) : null;
+}
+
+function objective(items, line) {
+  const name = label(items[0]);
+  if (items.length < 2 || name === null) return null;
+  const terms = expression(items.slice(1));
+  return terms === null ? null : {name, terms, line};
+}
+
+function constraint(items, line) {
+  const name = label(items[0]);
+  if (items.length < 4 || name === null || !['<=', '>=', '='].includes(items.at(-2))) return null;
+  const rhs = number(items.at(-1), true);
+  const terms = expression(items.slice(1, -2));
+  return rhs === null || terms === null ? null : {name, terms, op: items.at(-2), rhs, line};
+}
+function parseModel(block) {
+  const result = {name: block.name, constraints: [], bounds: [], integers: [], binaries: [], error: null};
+  let state = 'A';
+  for (const {text, line} of block.body) {
+    const items = text.split(' ');
+    let accepted = false;
+    if (state === 'A') {
+      if (text === 'maximize' || text === 'minimize') {
+        result.direction = text;
+        state = 'B';
+        accepted = true;
+      }
+    } else if (state === 'B') {
+      result.objective = objective(items, line);
+      if (result.objective !== null) {
+        state = 'C';
+        accepted = true;
+      }
+    } else if (state === 'C') {
+      if (text === 'subject to') {
+        state = 'D';
+        accepted = true;
+      }
+    } else if (state === 'D' || state === 'E') {
+      const parsed = constraint(items, line);
+      if (parsed !== null) {
+        result.constraints.push(parsed);
+        state = 'E';
+        accepted = true;
+      }
+    }
+    if (!accepted) {
+      result.error = {line, message: 'syntax error'};
+      return result;
+    }
+  }
+  if (['A', 'B', 'C', 'D'].includes(state)) result.error = {line: block.endLine, message: 'syntax error'};
+  return result;
+}
+
+function readInputs() {
+  const lines = fs.readFileSync('input/models.lp', 'ascii').slice(0, -1).split('\n');
+  const models = [];
+  let block = null;
+  for (let index = 0; index < lines.length; index++) {
+    const text = lines[index];
+    if (text === '' || text.startsWith('#')) continue;
+    if (block === null) block = {name: text.split(' ')[1], body: []};
+    else if (text === 'end') {
+      block.endLine = index + 1;
+      models.push(parseModel(block));
+      block = null;
+    } else block.body.push({text, line: index + 1});
+  }
+  const settings = {logs: new Map(), limits: new Map()};
+  for (const line of fs.readFileSync('input/params.txt', 'ascii').slice(0, -1).split('\n')) {
+    const [kind, first, second] = line.split(' ');
+    if (kind === 'log') settings.logs.set(first, Number(second));
+    else if (kind === 'limit') settings.limits.set(first, Number(second));
+    else settings[kind] = Number(first);
+  }
+  return {models, settings};
+}
+  const lines = [];
+  let iterations = 0;
+  while (true) {
+    const reduced = tableau.reduced(costs);
+    const entering = candidates.find(column => reduced.costs[column].n < 0n);
+    if (entering === undefined) return {status: 'optimal', iterations, lines, entering: null};
+    let leaving = null;
+    let ratio = null;
+    for (let row = 0; row < tableau.T.length; row++) {
+      if (tableau.T[row][entering].n <= 0n) continue;
+      const proposed = tableau.beta[row].divide(tableau.T[row][entering]);
+      if (leaving === null || proposed.compare(ratio) < 0 ||
+          (proposed.compare(ratio) === 0 && tableau.basis[row] < tableau.basis[leaving])) {
+        leaving = row;
+        ratio = proposed;
+      }
+    }
+    if (leaving === null) return {status: 'unbounded', iterations, lines, entering};
+    const enteringName = tableau.form.columns[entering].name;
+    const leavingName = tableau.form.columns[tableau.basis[leaving]].name;
+    const rowName = tableau.form.rows[leaving].name;
+    tableau.pivot(leaving, entering);
+    iterations++;
+    const value = objective(tableau.reduced(costs).value);
+    lines.push(`PIVOT ${iterations} enter ${enteringName} reduced ${reduced.costs[entering]} ` +
+      `leave ${leavingName} row ${rowName} ratio ${ratio} objective ${value}`);
+  }
+}
+
+module.exports = {phase};
+const {zero} = require('./rational');
+
+class Tableau {
+  constructor(form) {
+    this.form = form;
+    this.T = form.rows.map(row => row.values.slice());
+    this.beta = form.rows.map(row => row.rhs);
+    this.basis = form.rows.map(row => row.initial);
+  }
+
+  reduced(costs) {
+    const reduced = costs.slice();
+    let value = zero;
+    for (let row = 0; row < this.T.length; row++) {
+      const basicCost = costs[this.basis[row]];
+      value = value.add(basicCost.multiply(this.beta[row]));
+      for (let column = 0; column < reduced.length; column++) {
+        reduced[column] = reduced[column].subtract(basicCost.multiply(this.T[row][column]));
+      }
+    }
+    return {costs: reduced, value};
+  }
+
+  pivot(row, column) {
+    const divisor = this.T[row][column];
+    this.T[row] = this.T[row].map(value => value.divide(divisor));
+    this.beta[row] = this.beta[row].divide(divisor);
+    for (let other = 0; other < this.T.length; other++) {
+      if (other === row) continue;
+      const factor = this.T[other][column];
+      this.T[other] = this.T[other].map((value, index) => value.subtract(factor.multiply(this.T[row][index])));
+      this.beta[other] = this.beta[other].subtract(factor.multiply(this.beta[row]));
+    }
+    this.basis[row] = column;
+  }
+
+  solution() {
+    const values = this.form.columns.map(() => zero);
+    for (let row = 0; row < this.basis.length; row++) values[this.basis[row]] = this.beta[row];
+    return values;
+  }

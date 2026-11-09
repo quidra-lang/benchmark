@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+JS/TS currently stores flattened integers: neighbor=r*width+c, parent[neighbor]=cell, start points to itself, and reconstruction follows cell=parent[cell]. Change stored parent values to [row,column], replace -1 absence with a compatible null/missing contract and update its visited test, initialize start marker to its coordinate pair, and convert read pairs to cell indices when indexing the flattened maze/parent table. TypeScript must change the parent element type accordingly. PHP already stores coordinate pairs: key serialization affects only lookup keys, while start/self marker, first-discovery writes and reconstruction values are row/column arrays. No PHP change is needed. The contract/marker/write/read sites suffice; BFS order and maze literal are unaffected.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+The message and shift 3 are passed to caesar, and its result is named encrypted/$ciphertext and passed to decryption with -3. JavaScript/TypeScript replaces only ASCII letters, chooses base 65 or 97, and wraps the shifted code modulo 26; Z becomes C and the following comma is untouched. replace constructs a new immutable string without modifying message. PHP normalizes the shift modulo 26, builds a rotated uppercase alphabet and lowercase mapping, and strtr returns a new translated string; unlisted comma characters remain. The selected function operations and caller/result uses establish range, wrapping, preservation and construction; the separate ciphertext-only output is redundant in JavaScript/TypeScript.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

@@ -1,0 +1,578 @@
+    fun reverseComplement(sequence: String)=sequence.reversed().map {
+        "TGCAN"["ACGTN".indexOf(it)]
+    }.joinToString("")
+    fun read(): Input {
+        val references=mutableListOf<Reference>();
+        var name: String?=null;
+        val bases=StringBuilder();
+        var masked=0;
+        for(line in File("input","reference.fasta").readLines())if(line.startsWith('>')) {
+            val previous=name;
+            if(previous!=null)references.add(Reference(previous,bases.toString(),masked));
+            name=line.substring(1).substringBefore(' ');
+            bases.setLength(0);
+            masked=0
+        } else {
+            masked+=line.count {
+                it in 'a'..'z'
+            };
+            bases.append(line.uppercase(Locale.ROOT))
+        };
+        val previous=name;
+        if(previous!=null)references.add(Reference(previous,bases.toString(),masked));
+        val lines=File("input","reads.fastq").readLines();
+        val reads=(lines.indices step 4).map {
+            Read(lines[it].substring(1),lines[it+1],lines[it+3])
+        };
+        val parameters=File("input","params.txt").readLines().associate {
+            val w=it.split(' ');
+            w[0] to w.drop(1).map {
+                v->v.toInt()
+            }.toIntArray()
+        };
+        return Input(references,reads,parameters)
+    }
+class FmIndex(text: String,suffixes: IntArray,val interval: Int,sampleInterval: Int=0) {
+    data class Interval(val lower: Int,val upper: Int) {
+        fun empty()=lower>=upper
+    }
+    data class Location(val position: Int,val steps: Int)
+    val size=text.length;
+    val bwt=suffixes.map {
+        text[if(it==0)size-1 else it-1]
+    }.joinToString("");
+    val c=IntArray(6);
+    val samples=IntArray(size) {
+        -1
+    };
+    val checkpoints=Array(size/interval+1) {
+        IntArray(6)
+    };
+    var sampleCount=0
+    init {
+        val frequencies=IntArray(6);
+        for(symbol in text)frequencies[SuffixArray.SYMBOLS.indexOf(symbol)]++;
+        var total=0;
+        for(i in 0..5) {
+            c[i]=total;
+            total+=frequencies[i]
+        };
+        val counts=IntArray(6);
+        for(i in 0 until size) {
+            counts[SuffixArray.SYMBOLS.indexOf(bwt[i])]++;
+            if((i+1)%interval==0)checkpoints[(i+1)/interval]=counts.copyOf()
+        };
+        if(sampleInterval>0)for(row in 0 until size)if(suffixes[row]%sampleInterval==0) {
+            samples[row]=suffixes[row];
+            sampleCount++
+        }
+    }
+    fun occurrence(symbol: Char,position: Int): Int {
+        val checkpoint=position/interval;
+        val start=checkpoint*interval;
+        var count=checkpoints[checkpoint][SuffixArray.SYMBOLS.indexOf(symbol)];
+        for(i in start until position)if(bwt[i]==symbol)count++;
+        return count
+    }
+    fun lf(row: Int): Int {
+        val symbol=bwt[row];
+        return c[SuffixArray.SYMBOLS.indexOf(symbol)]+occurrence(symbol,row)
+    }
+    fun extend(lower: Int,upper: Int,base: Char): Interval {
+        if(base=='N')return Interval(0,0);
+        val start=c[SuffixArray.SYMBOLS.indexOf(base)];
+        return Interval(start+occurrence(base,lower),start+occurrence(base,upper))
+    }
+    fun locate(start: Int): Location {
+        var row=start;
+        var steps=0;
+        while(samples[row]<0) {
+            row=lf(row);
+            steps++
+        };
+        return Location(samples[row]+steps,steps)
+    fun backward(sequence: String): Interval {
+        var range=Interval(0,size);
+        for(base in sequence.reversed()) {
+            range=extend(range.lower,range.upper,base);
+            if(range.empty())break
+        };
+        return range
+    }
+    fun bounds(sequence: String,reverse: FmIndex): IntArray {
+        val values=IntArray(sequence.length);
+        var mismatches=0;
+        var range=FmIndex.Interval(0,reverse.size);
+        for((i,base) in sequence.withIndex()) {
+            range=reverse.extend(range.lower,range.upper,base);
+            if(range.empty()) {
+                mismatches++;
+                range=FmIndex.Interval(0,reverse.size)
+            };
+            values[i]=mismatches
+        };
+        return values
+    }
+    fun backtrack(sequence: String,maximum: Int,forward: FmIndex,reverse: FmIndex): Result {
+        val lowerBounds=bounds(sequence,reverse);
+        val stack=ArrayDeque<State>();
+        stack.push(State(sequence.lastIndex,maximum,0,forward.size));
+        var nodes=0;
+        var positions=0;
+        val leaves=mutableListOf<Leaf>();
+        while(stack.isNotEmpty()) {
+            val state=stack.pop();
+            nodes++;
+            if(state.remaining<(if(state.position<0)0 else lowerBounds[state.position]))continue;
+            if(state.position==-1) {
+                leaves.add(Leaf(state.lower,state.upper,maximum-state.remaining));
+                positions+=state.upper-state.lower;
+                continue
+            };
+            for(base in "TGCA") {
+                val range=forward.extend(state.lower,state.upper,base);
+                if(range.empty())continue;
+                val mismatch=if(base==sequence[state.position])0 else 1;
+                if(mismatch==0||state.remaining>=1)stack.push(State(state.position-1,state.remaining-mismatch,
+                    range.lower,range.upper))
+            }
+        };
+        return Result(nodes,leaves,positions)
+    }
+    class Result(val read: SequenceIo.Read) {
+        val qualities=IntArray(read.quality.length) {
+            read.quality[it].code-33
+        };
+        var length=read.bases.length;
+        var trimmed=0;
+        var mapq=0;
+        var score=0;
+        var x0=0;
+        var x1=0;
+        var core="";
+        var reason="SHORT";
+        var method="";
+        var mapped=false;
+        var primary: Alignment?=null;
+        var others=listOf<Alignment>();
+        var targets=listOf<Int>()
+    }
+    fun value(key: String)=parameters.getValue(key)[0]
+    fun buildText() {
+        offsets=IntArray(references.size);
+        var offset=0;
+        for((r,reference) in references.withIndex()) {
+            offsets[r]=offset;
+            offset+=reference.bases.length+1
+        };
+        text=references.joinToString("#") {
+            it.bases
+        }+"$";
+        reverseText=text.dropLast(1).reversed()+"$"
+    }
+    fun position(p: Int): Position? {
+        for(r in references.indices.reversed())if(p>=offsets[r])return if(p<offsets[r]+references[r].bases.length)Position(r,
+            p-offsets[r]) else null;
+        return null
+    }
+    fun locate(row: Int)=position(forward.locate(row).position)!!
+    fun runs(operations: String): List<Run> {
+        val result=mutableListOf<Run>();
+        var i=0;
+        while(i<operations.length) {
+            var j=i+1;
+            while(j<operations.length&&operations[j]==operations[i])j++;
+            result.add(Run(operations[i],j-i));
+            i=j
+        };
+        return result
+    }
+    fun describe(reference: Int,position: Int,strand: Int,operations: String,result: Result): Alignment {
+        val a=Alignment(reference,position,strand,operations,if(strand==0)result.core else SequenceIo.reverseComplement(result.core));
+        val sequence=references[reference].bases;
+        val cigar=StringBuilder();
+        val md=StringBuilder();
+        var i=0;
+        var j=position;
+        var matches=0;
+        for(run in runs(operations)) {
+            val count=run.count;
+            cigar.append(count).append(run.operation);
+            when(run.operation) {
+                'I'-> {
+                    i+=count;
+                    a.nm+=count
+                };
+                'D'-> {
+                    md.append(matches).append('^').append(sequence.substring(j,j+count));
+                    matches=0;
+                    j+=count;
+                    a.nm+=count
+                };
+                else->repeat(count) {
+                    a.pairs.add(Pair(i,j));
+                    if(a.oriented[i]==sequence[j])matches++ else {
+                        md.append(matches).append(sequence[j]);
+                        matches=0;
+                        a.nm++
+                    };
+                    i++;
+                    j++
+                }
+            }
+        };
+        md.append(matches);
+        if(result.trimmed>0) {
+            val soft="${result.trimmed}S";
+            if(strand==0)cigar.append(soft) else cigar.insert(0,soft)
+        };
+        a.cigar=cigar.toString();
+        a.md=md.toString();
+        return a
+    }
+    fun map(read: SequenceIo.Read): Result {
+        val result=Result(read);
+        while(result.length>0&&result.qualities[result.length-1]<value("TRIM_QUALITY"))result.length--;
+        result.trimmed=read.bases.length-result.length;
+        result.core=read.bases.take(result.length);
+        if(result.length<value("MIN_READ_LENGTH"))return result;
+        val oriented=listOf(result.core,SequenceIo.reverseComplement(result.core));
+        val exact=oriented.map {
+            forward.backward(it)
+        };
+        val maximum=if(exact.any {
+            !it.empty()
+        })1 else value("MAX_MISMATCHES");
+        val hits=mutableListOf<Hit>();
+        for((strand,sequence) in oriented.withIndex()) {
+            val search=Search.backtrack(sequence,maximum,forward,reverse);
+            searchCounts[0]++;
+            searchCounts[1]+=search.nodes;
+            searchCounts[2]+=search.leaves.size;
+            searchCounts[3]+=search.positions;
+            for(leaf in search.leaves)for(row in leaf.lower until leaf.upper) {
+                val position=locate(row);
+                hits.add(Hit(leaf.mismatches,position.reference,position.offset,strand))
+            }
+        };
+        if(hits.isEmpty())seed(result,oriented) else finish(result,hits);
+        return result
+    }
+    fun finish(result: Result,hits: List<Hit>) {
+        val ordered=hits.sortedWith(compareBy<Hit> {
+            it.mismatches
+        }.thenBy {
+            it.reference
+        }.thenBy {
+            it.position
+        }.thenBy {
+            it.strand
+        });
+        val best=ordered.first().mismatches;
+        val n1=ordered.count {
+            it.mismatches==best
+        };
+        val n2=ordered.count {
+            it.mismatches==best+1
+        };
+        val alignments=ordered.filter {
+            it.mismatches<=best+1
+        }.map {
+            describe(it.reference,it.position,it.strand,"M".repeat(result.length),result)
+        };
+        result.mapped=true;
+        result.primary=alignments.first();
+        result.others=alignments.drop(1);
+        result.targets=ordered.filter {
+            it.mismatches==best
+        }.map {
+            it.reference
+        }.distinct().sorted();
+        result.method=if(best==0)"EXACT" else "MISMATCH";
+        val scores=parameters.getValue("SCORES");
+        result.score=(result.length-best)*scores[0]-best*scores[1];
+        result.x0=n1;
+        result.x1=n2;
+        result.mapq=if(n1>=2)0 else if(n2==0)60-12*best else maxOf(30-12*best-3*n2,1)
+    }
+    fun coverage(results: List<Result>): Coverage {
+        val depths=references.map {
+            IntArray(it.bases.length)
+        };
+        val starts=references.map {
+            IntArray(it.bases.length)
+        };
+        val pileups=references.map {
+            Array(it.bases.length) {
+                Array(4) {
+                    IntArray(2)
+                }
+            }
+        };
+        val variant=parameters.getValue("VARIANTS");
+        val minMapq=value("COVERAGE_MIN_MAPQ");
+        for(result in results) {
+            if(!result.mapped)continue;
+            val a=result.primary!!;
+            val r=a.reference;
+            if(result.mapq==0)starts[r][a.position]++;
+            if(result.mapq<minMapq)continue;
+            for(pair in a.pairs) {
+                depths[r][pair.offset]++;
+                val base=a.oriented[pair.readOffset];
+                val cycle=if(a.strand==0)pair.readOffset+1 else result.length-pair.readOffset;
+                if(base!='N'&&result.qualities[cycle-1]>=variant[1])pileups[r][pair.offset][SuffixArray.BASES.indexOf(base)][a.strand]++
+            }
+        };
+        val window=value("COVERAGE_WINDOW");
+        val coverage=mutableListOf("window $window min_mapq $minMapq");
+        val variants=mutableListOf("min_depth ${variant[0]} min_base_quality ${variant[1]} min_alt_percent ${variant[2]} hom_percent ${variant[3]}");
+        var callable=0;
+        var variantCount=0;
+        var heterozygous=0;
+        var homozygous=0;
+        for((r,reference) in references.withIndex()) {
+            val length=reference.bases.length;
+            val depth=depths[r];
+            val covered=depth.count {
+                it>0
+            };
+            val maximum=depth.max();
+            val histogram=IntArray(maximum+1);
+            for(d in depth)histogram[d]++;
+            coverage.add("reference ${reference.name} length $length covered $covered breadth ${ratio(covered,length)} mean_depth ${ratio(depth.sum(),length)} max_depth $maximum");
+            coverage.add("depth_histogram "+histogram.indices.joinToString(" ") {
+                "$it:${histogram[it]}"
+            });
+            for(first in 0 until length step window) {
+                val last=minOf(first+window,length);
+                val size=last-first;
+                val values=depth.sliceArray(first until last);
+                val gc=reference.bases.substring(first,last).count {
+                    it=='G'||it=='C'
+                };
+                val total=values.sum();
+                val mapq0=starts[r].sliceArray(first until last).sum();
+                coverage.add("${reference.name} ${first+1} $last gc ${ratio(gc,size)} sum $total mean ${ratio(total,size)} max ${values.max()} zero ${values.count{it==0}} mapq0 $mapq0 |${"#".repeat(10*total/size)}")
+            };
+            for(j in 0 until length) {
+                val counts=IntArray(4) {
+                    pileups[r][j][it].sum()
+                };
+                val depth=counts.sum();
+                if(depth<variant[0])continue;
+                callable++;
+                val referenceBase=reference.bases[j];
+                val alternative=(0..3).filter {
+                    SuffixArray.BASES[it]!=referenceBase
+                }.maxWith(compareBy<Int> {
+                    counts[it]
+                }.thenBy {
+                    -it
+                });
+                val count=counts[alternative];
+                if(count<2||100*count<variant[2]*depth)continue;
+                val hom=100*count>=variant[3]*depth;
+                if(hom)homozygous++ else heterozygous++;
+                variantCount++;
+                variants.add("${reference.name} ${j+1} $referenceBase>${SuffixArray.BASES[alternative]} depth $depth alt $count fraction ${ratio(count,depth)} genotype ${if(hom)"1/1" else "0/1"} strands ${pileups[r][j][alternative][0]} ${pileups[r][j][alternative][1]} counts ${counts.joinToString(" ")}")
+            }
+        };
+        variants.add("callable $callable variants $variantCount heterozygous $heterozygous homozygous $homozygous");
+        return Coverage(coverage,variants)
+    }
+    fun errorStatistics(results: List<Result>): List<String> {
+        val maxCycle=results.maxOf {
+            it.read.bases.length
+        };
+        val cycles=Array(maxCycle+1) {
+            IntArray(2)
+        };
+        val substitutions=Array(4) {
+            IntArray(5)
+        };
+        val bins=Array(5) {
+            IntArray(2)
+        };
+        val qualityCounts=IntArray(2);
+        val qualitySums=IntArray(2);
+        val operationCounts=IntArray(4);
+        val events=IntArray(2);
+        val indelBases=IntArray(2);
+        for(result in results) {
+            if(!result.mapped)continue;
+            val a=result.primary!!;
+            for(operation in a.operations)operationCounts["MIDS".indexOf(operation)]++;
+            operationCounts[3]+=result.trimmed;
+            if(result.x0!=1)continue;
+            val sequence=references[a.reference].bases;
+            for(pair in a.pairs) {
+                val observed=a.oriented[pair.readOffset];
+                val reference=sequence[pair.offset];
+                val mismatch=if(observed==reference)0 else 1;
+                val cycle=if(a.strand==0)pair.readOffset+1 else result.length-pair.readOffset;
+                val quality=result.qualities[cycle-1];
+                cycles[cycle][0]++;
+                cycles[cycle][1]+=mismatch;
+                substitutions[SuffixArray.BASES.indexOf(reference)]["ACGTN".indexOf(observed)]++;
+                qualityCounts[mismatch]++;
+                qualitySums[mismatch]+=quality;
+                val bin=minOf(quality/10,4);
+                bins[bin][0]++;
+                bins[bin][1]+=mismatch
+            };
+            for(run in runs(a.operations))if(run.operation=='I'||run.operation=='D') {
+                val kind=if(run.operation=='I')0 else 1;
+                events[kind]++;
+                indelBases[kind]+=run.count
+            }
+        };
+        val aligned=qualityCounts.sum();
+        val mismatches=qualityCounts[1];
+        val lines=mutableListOf("error_profile aligned_bases $aligned mismatches $mismatches rate ${ratio(mismatches,aligned)}",
+            "substitutions","ref A C G T N");
+        for(r in 0..3)lines.add("${SuffixArray.BASES[r]} "+substitutions[r].joinToString(" "));
+        lines.add("mismatch_by_cycle");
+        for(cycle in 1..maxCycle)lines.add("cycle $cycle aligned ${cycles[cycle][0]} mismatches ${cycles[cycle][1]} rate ${ratio(cycles[cycle][1],cycles[cycle][0])}");
+        lines.add("quality matched ${qualityCounts[0]} mean ${ratio(qualitySums[0],qualityCounts[0])} mismatched ${qualityCounts[1]} mean ${ratio(qualitySums[1],qualityCounts[1])}");
+        lines.add("quality_bins");
+        for((b,range) in listOf("0-9","10-19","20-29","30-39","40-").withIndex())lines.add("$range aligned ${bins[b][0]} mismatches ${bins[b][1]} rate ${ratio(bins[b][1],bins[b][0])}");
+        lines.add("cigar M ${operationCounts[0]} I ${operationCounts[1]} D ${operationCounts[2]} S ${operationCounts[3]}");
+        lines.add("indels insertions ${events[0]} ${indelBases[0]} deletions ${events[1]} ${indelBases[1]}");
+        return lines
+    }
+    fun statistics(results: List<Result>): List<String> {
+        val total=results.size;
+        val mapped=results.filter {
+            it.mapped
+        };
+        val unique=mapped.count {
+            it.x0==1
+        };
+        val shortCount=results.count {
+            !it.mapped&&it.reason=="SHORT"
+        };
+        val nohit=results.count {
+            !it.mapped&&it.reason=="NOHIT"
+        };
+        val trimmed=results.count {
+            it.trimmed>0
+        };
+        val trimmedBases=results.sumOf {
+            it.trimmed
+        };
+        val forward=mapped.count {
+            it.primary!!.strand==0
+        };
+        val lines=mutableListOf("reads total $total trimmed $trimmed trimmed_bases $trimmedBases short $shortCount",
+            "mapped ${mapped.size} rate ${ratio(mapped.size,total)} unique $unique multi ${mapped.size-unique} unmapped ${total-mapped.size}",
+            "unmapped short $shortCount nohit $nohit","method exact ${mapped.count{it.method=="EXACT"}} mismatch ${mapped.count{it.method=="MISMATCH"}} seed ${mapped.count{it.method=="SEED"}}",
+            "strand forward $forward reverse ${mapped.size-forward}");
+        for((r,reference) in references.withIndex()) {
+            val selected=mapped.filter {
+                it.primary!!.reference==r
+            };
+            val one=selected.count {
+                it.x0==1
+            };
+            val plus=selected.count {
+                it.primary!!.strand==0
+            };
+            lines.add("reference ${reference.name} mapped ${selected.size} unique $one forward $plus reverse ${selected.size-plus}")
+        };
+        lines.add("length_bins");
+        val minimum=results.minOf {
+            it.length
+        }
+        /10*10;
+        val maximum=results.maxOf {
+            it.length
+        }
+        /10*10;
+        for(lower in minimum..maximum step 10) {
+            val selected=results.filter {
+                it.length in lower..lower+9
+            };
+            val placed=selected.count {
+                it.mapped
+            };
+            val one=selected.count {
+                it.mapped&&it.x0==1
+            };
+            lines.add("$lower-${lower+9} reads ${selected.size} mapped $placed unique $one")
+        };
+        val withN=results.filter {
+            'N' in it.read.bases
+        };
+        val nBases=withN.sumOf {
+            it.read.bases.count {
+                base->base=='N'
+            }
+        };
+        lines.add("n_reads ${withN.size} n_bases $nBases mapped ${withN.count{it.mapped}}");
+        val targets=mapped.filter {
+            it.x0>=2
+        }.map {
+            result->result.targets.joinToString("+") {
+                references[it].name
+            }
+        }.groupingBy {
+            it
+        }.eachCount().toSortedMap();
+        lines.add("multi_targets");
+        if(targets.isEmpty())lines.add("none") else for((names,count) in targets)lines.add("$names $count");
+        val mapqs=mapped.groupingBy {
+            it.mapq
+        }.eachCount();
+        val nms=mapped.groupingBy {
+            it.primary!!.nm
+        }.eachCount();
+        lines.add("mapq_histogram");
+        for(value in mapqs.keys.sortedDescending())lines.add("$value ${mapqs.getValue(value)}");
+        lines.add("nm_histogram");
+        for(value in nms.keys.sorted())lines.add("$value ${nms.getValue(value)}");
+        lines.addAll(errorStatistics(results));
+        lines.add("search dfs_calls ${searchCounts[0]} dfs_nodes ${searchCounts[1]} dfs_leaves ${searchCounts[2]} dfs_positions ${searchCounts[3]}");
+        val keys=listOf("reads","seeds","with_n","repetitive","without_hit","candidates","passing");
+        lines.add("seeds "+keys.mapIndexed {
+            i,key->"$key ${seedCounts[i]}"
+        }.joinToString(" "));
+        return lines
+    }
+    @JvmStatic fun main(args: Array<String>) {
+        val input=SequenceIo.read();
+        references=input.references;
+        parameters=input.parameters;
+        buildText();
+        val built=SuffixArray.build(text);
+        val reversed=SuffixArray.build(reverseText);
+        forward=FmIndex(text,built.suffixes,value("OCC_INTERVAL"),value("SA_SAMPLE_INTERVAL"));
+        reverse=FmIndex(reverseText,reversed.suffixes,value("OCC_INTERVAL"));
+        val index=indexStatistics(built,reversed);
+        val results=input.reads.map {
+            map(it)
+        };
+        val sam=SamWriter.header(references);
+        for(result in results)sam.add(SamWriter.record(result,references,value("MAX_ALT_HITS")));
+        val coverageReport=coverage(results);
+        SamWriter.write("alignments.sam",sam);
+        SamWriter.write("coverage.txt",coverageReport.coverage);
+        SamWriter.write("variants.txt",coverageReport.variants);
+        SamWriter.write("index_stats.txt",index);
+        SamWriter.write("summary.txt",statistics(results))
+    }
+    fun record(result: FmAligner.Result,references: List<SequenceIo.Reference>,maximum: Int): String {
+        val read=result.read;
+        if(!result.mapped)return listOf(read.name,"4","*","0","0","*","*","0","0",read.bases,
+            read.quality,"YM:Z:"+result.reason).joinToString("\t");
+        val a=result.primary!!;
+        val reverse=a.strand==1;
+        val fields=mutableListOf(read.name,if(reverse)"16" else "0",references[a.reference].name,
+            (a.position+1).toString(),result.mapq.toString(),a.cigar,"*","0","0",if(reverse)SequenceIo.reverseComplement(read.bases) else read.bases,
+            if(reverse)read.quality.reversed() else read.quality,"NM:i:${a.nm}","MD:Z:${a.md}",
+            "AS:i:${result.score}","X0:i:${result.x0}","X1:i:${result.x1}","YM:Z:${result.method}");
+        if(result.others.size in 1..maximum)fields.add("XA:Z:"+result.others.joinToString("") {
+            "${references[it.reference].name},${if(it.strand==0)"+" else "-"}${it.position+1},${it.cigar},${it.nm};"
+        });
+        return fields.joinToString("\t")
+    }

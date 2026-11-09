@@ -1,0 +1,224 @@
+struct GolfCourse
+    id::String
+    pars::Vector{Int}
+    si::Vector{Int}
+    tees::Dict{String,Tuple{Int,Int}}
+end
+struct GolfRound
+    day::Int
+    course::String
+    tee::String
+    scores::Vector{String}
+    handicap::Union{Nothing,Int}
+    adjusted::Vector{Int}
+    ags::Int
+    diff::Int
+    exceptional::Int
+    beforeindex::Union{Nothing,Int}
+    beforerecords::Int
+    beforecalculation::Any
+end
+Base.@kwdef mutable struct GolfPlayer
+    id::String
+    name::String
+    index::Union{Nothing,Int} = nothing
+    rounds::Vector{GolfRound} = GolfRound[]
+    records::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[]
+    calculation::Any = nothing
+end
+const COURSES = Dict{String,GolfCourse}()
+const PLAYERS = Dict{String,GolfPlayer}()
+fail(message) = throw(ArgumentError(message))
+half_up(a,b) = fld(2a+b,2b)
+half_away(a,b) = (a < 0 ? -1 : 1)*div(2abs(a)+b,2b)
+tenths_text(v) = string(div(abs(v),10),'.',mod(abs(v),10))
+index_text(v) = v === nothing ? "none" : (v < 0 ? "+" : "")*tenths_text(v)
+signed_text(v) = (v < 0 ? "-" : "")*tenths_text(v)
+function get_player(id)
+    haskey(PLAYERS,id) || fail("unknown player")
+    return PLAYERS[id]
+end
+function get_course(id)
+    haskey(COURSES,id) || fail("unknown course")
+    return COURSES[id]
+end
+function tee_check(course,tee)
+    c = get_course(course)
+    haskey(c.tees,tee) || fail("unknown tee")
+    return c,c.tees[tee]
+end
+course_handicap(index,c,tee) = half_up(index*tee[2]+113*(tee[1]-10sum(c.pars)),1130)
+function stroke_allocation(handicap,si)
+    q,r = divrem(abs(handicap),18)
+    if handicap >= 0
+        return [q+Int(rank <= r) for rank in si]
+    end
+    return [-q-Int(rank >= 19-r) for rank in si]
+end
+function low_index(p,day)
+    best = nothing
+    for record in p.records
+        if day-365 <= record[1] < day && (best === nothing || (record[2],record[1]) < (best[2],best[1]))
+            best = record
+        end
+    end
+    return best
+end
+function counting_rule(n)
+    n < 3 && return (0,0)
+    n == 3 && return (1,-20)
+    n == 4 && return (1,-10)
+end
+function eligible(p)
+    result = NamedTuple[]
+    reduction = 0
+    for i in length(p.rounds):-1:max(1,length(p.rounds)-19)
+        r = p.rounds[i]
+        reduction += r.exceptional
+        push!(result,(number=i,round=r,adjusted=r.diff-reduction))
+    end
+    reverse!(result)
+    return result
+end
+function counting(items)
+    k,a = counting_rule(length(items))
+    ordered = sort(items;by=item -> (item.adjusted,-item.number))
+    return ordered[1:k]
+end
+function update_index!(p,day)
+    items = eligible(p)
+    k,adjustment = counting_rule(length(items))
+    if k == 0
+        p.calculation = nothing
+        return
+    end
+    average = half_away(sum(item.adjusted for item in counting(items)),k)
+    value = average+adjustment
+    low = low_index(p,day)
+    soft,hard,maximum = false,false,false
+    if low !== nothing
+        l = low[2]
+        if value-l > 30
+            newvalue = l+30+div(value-l-30,2)
+            soft = newvalue != value
+            value = newvalue
+        end
+        if value-l > 50
+            value = l+50
+            hard = true
+        end
+    end
+    if value > 540
+        value = 540
+        maximum = true
+    end
+    p.index = value
+    p.calculation = (k=k,average=average,adjustment=adjustment,low=low === nothing ? nothing : low[2],hard=hard,soft=soft,maximum=maximum)
+end
+function execute(line)
+    t = String.(split(line,' '))
+    cmd = t[1]
+    out = String[]
+    if cmd == "COURSE"
+        haskey(COURSES,t[2]) && fail("duplicate course")
+        pars,si = parse.(Int,t[3:20]),parse.(Int,t[21:38])
+        all(par -> par in (3,4,5),pars) && sort(si) == collect(1:18) || fail("invalid course")
+        COURSES[t[2]] = GolfCourse(t[2],pars,si,Dict{String,Tuple{Int,Int}}())
+    elseif cmd == "TEE"
+        c = get_course(t[2])
+        haskey(c.tees,t[3]) && fail("duplicate tee")
+        rating,slope = parse.(Int,t[4:5])
+        500 <= rating <= 900 && 55 <= slope <= 155 || fail("invalid tee")
+        c.tees[t[3]] = (rating,slope)
+    elseif cmd == "PLAYER"
+        haskey(PLAYERS,t[2]) && fail("duplicate player")
+        index = length(t) == 4 ? parse(Int,t[4]) : nothing
+        index !== nothing && !(-100 <= index <= 540) && fail("invalid index")
+        PLAYERS[t[2]] = GolfPlayer(id=t[2],name=t[3],index=index)
+    elseif cmd == "ROUND"
+        p = get_player(t[2])
+        c,tee = tee_check(t[3],t[4])
+        day = parse(Int,t[5])
+        !isempty(p.rounds) && day < p.rounds[end].day && fail("invalid day")
+        scores = t[6:end]
+        count(==("-"),scores) < 5 || fail("too few holes")
+        hcp = p.index === nothing ? nothing : course_handicap(p.index,c,tee)
+        strokes = stroke_allocation(something(hcp,0),c.si)
+        adjusted = Int[]
+        for (h,score) in enumerate(scores)
+            limit = c.pars[h]+(p.index === nothing ? 5 : 2+strokes[h])
+            if score == "X"
+                push!(adjusted,limit)
+            elseif score == "-"
+                push!(adjusted,c.pars[h]+strokes[h])
+            else
+                push!(adjusted,min(parse(Int,score),limit))
+            end
+        end
+        ags = sum(adjusted)
+        diff = half_away(113*(10ags-tee[1]),tee[2])
+        exceptional = 0
+        if p.index !== nothing && p.index-diff >= 70
+            exceptional = p.index-diff >= 100 ? 20 : 10
+        end
+        r = GolfRound(day,c.id,t[4],scores,hcp,adjusted,ags,diff,exceptional,p.index,length(p.records),p.calculation)
+        push!(p.rounds,r)
+        update_index!(p,day)
+        p.index !== nothing && push!(p.records,(day,p.index))
+        extra = exceptional == 0 ? "" : " exceptional $(signed_text(-exceptional))"
+        push!(out,"round $(p.id) $(length(p.rounds)): ags $ags diff $(signed_text(diff))$extra index $(index_text(p.index))")
+    elseif cmd == "REMOVE"
+        p = get_player(t[2])
+        isempty(p.rounds) && fail("no rounds")
+        number = length(p.rounds)
+        r = pop!(p.rounds)
+        p.index = r.beforeindex
+        resize!(p.records,r.beforerecords)
+        p.calculation = r.beforecalculation
+        push!(out,"removed $(p.id) $number: index $(index_text(p.index))")
+    elseif cmd in ("INDEX","HISTORY","LOWINDEX","COURSEHCP","CARD","STATS")
+        p = get_player(t[2])
+        if cmd == "INDEX"
+            text = "index $(p.id): $(index_text(p.index)) rounds $(length(p.rounds))"
+            calc = p.calculation
+            if calc !== nothing
+                text *= " lowest $(calc.k) average $(signed_text(calc.average)) adjustment $(signed_text(calc.adjustment))"
+                calc.low !== nothing && (text *= " low $(index_text(calc.low))")
+                if calc.hard
+                    text *= " hard cap"
+                elseif calc.soft
+                    text *= " soft cap"
+                end
+                calc.maximum && (text *= " maximum")
+            end
+            push!(out,text)
+        elseif cmd == "HISTORY"
+            push!(out,"history $(p.id): rounds $(length(p.rounds))")
+            items = eligible(p)
+            counted = Set(item.number for item in counting(items))
+            for item in items
+                r = item.round
+                text = "$(item.number) day $(r.day) $(r.course) $(r.tee) ags $(r.ags) diff $(signed_text(r.diff))"
+                item.adjusted != r.diff && (text *= " adjusted $(signed_text(item.adjusted))")
+                item.number in counted && (text *= " *")
+                push!(out,text)
+            end
+        elseif cmd == "LOWINDEX"
+            low = low_index(p,parse(Int,t[3]))
+            value = low === nothing ? "none" : "$(index_text(low[2])) day $(low[1])"
+            push!(out,"lowindex $(p.id) $(t[3]): $value")
+    end
+    return out
+end
+function main()
+    for i in 1:parse(Int,readline())
+        line = readline()
+        try
+            foreach(println,execute(line))
+        catch exception
+            exception isa ArgumentError || rethrow()
+            println("ERROR ",exception.msg)
+        end
+    end
+end
+main()

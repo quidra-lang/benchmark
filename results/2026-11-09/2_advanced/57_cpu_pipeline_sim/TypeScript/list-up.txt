@@ -1,0 +1,238 @@
+export const parseRegister = (value: string): number | undefined =>
+  value === '-' ? undefined : +value.slice(1);
+export function readInputs(): { lines: string[]; config: Configuration } {
+  const lines = readFileSync('input/trace.txt', 'ascii').slice(0, -1).split('\n');
+  for (const line of readFileSync('input/config.txt', 'ascii').trimEnd().split('\n')) {
+    const [kind, ...t] = line.split(' ');
+    else if (kind === 'PRIMARY') {
+      config.primaryVariant = t[0];
+      config.primaryPredictor = t[1];
+    } else if (kind === 'WINDOW') {
+      config.start = +t[0];
+      config.end = +t[1];
+    else if (kind === 'VARIANT') {
+      config.variants.push({
+        name: t[0],
+        forwarding: t[1] === 'ON',
+        stage: t[2] === 'ID' ? 'ID' : 'EX',
+        latency: +t[3],
+      });
+export const control = (instruction: Instruction) =>
+  instruction.kind === 'BRANCH' || instruction.kind === 'JUMP';
+export const idResolved = (instruction: Instruction, variant: Variant) =>
+  control(instruction) &&
+  (variant.stage === 'ID' || (instruction.kind === 'JUMP' && instruction.rs1 === undefined));
+export function dependencies(instructions: Instruction[]): Source[][] {
+  const latest = new Map<number, number>();
+  return instructions.map((instruction, i) => {
+    const sources: Source[] = [];
+    for (const position of ['rs1', 'rs2'] as const) {
+      const register = instruction[position];
+      if (register !== undefined && register !== 0) {
+        sources.push({ register, position, producer: latest.get(register) });
+      }
+    }
+    if (instruction.rd !== undefined && instruction.rd !== 0) latest.set(instruction.rd, i);
+    return sources;
+  });
+}
+export function ready(
+  source: Source,
+  instruction: Instruction,
+  variant: Variant,
+  instructions: Instruction[],
+  timings: Timing[],
+): number | undefined {
+  const p = source.producer;
+  if (p === undefined) return undefined;
+  return variant.forwarding
+    ? (instructions[p].kind === 'LOAD' ? timings[p].writeback : timings[p].memory) +
+        (idResolved(instruction, variant) ? 1 : 0)
+    : timings[p].writeback + 1;
+export const causes = ['control', 'structural', 'load_use', 'raw'] as const;
+export function simulate(
+  instructions: Instruction[],
+  sources: Source[][],
+  variant: Variant,
+  mispredicted: boolean[],
+): Run {
+  const timings: Timing[] = [];
+  const stalls: Stall[] = [];
+  instructions.forEach((instruction, i) => {
+    let fetch = 1;
+    let decode = 2;
+    let execute = 3;
+    if (i) {
+      const previous = timings[i - 1];
+      const ideal = previous.execute + 1;
+      fetch = mispredicted[i - 1]
+        ? previous.execute + (idResolved(instructions[i - 1], variant) ? 0 : 1)
+        : previous.decode;
+      decode = Math.max(fetch + 1, previous.execute);
+      const bounds: Record<Cause, number> = {
+        control: decode + 1,
+        structural: previous.memory,
+        load_use: ideal,
+        raw: ideal,
+      };
+      const producers: Partial<Record<Cause, number>> = {};
+      for (const source of sources[i]) {
+        const cycle = ready(source, instruction, variant, instructions, timings);
+        if (cycle === undefined || source.producer === undefined) continue;
+        const cause = instructions[source.producer].kind === 'LOAD' ? 'load_use' : 'raw';
+        if (cycle > bounds[cause]) {
+          bounds[cause] = cycle;
+          producers[cause] = source.producer;
+        }
+      }
+      execute = ideal;
+      for (const cause of causes) {
+        if (bounds[cause] > execute) {
+          stalls.push({
+            cause,
+            cycles: bounds[cause] - execute,
+            responsible: cause === 'control' || cause === 'structural' ? i - 1 : i,
+            waiting: i,
+            producer: producers[cause],
+          });
+          execute = bounds[cause];
+        }
+      }
+    }
+    const memory = execute + (instruction.kind === 'MUL' ? variant.latency : 1);
+    timings.push({ fetch, decode, execute, memory, writeback: memory + 1 });
+  });
+  return { timings, stalls, cycles: timings[last].writeback };
+function check(line: string, lineNumber: number): Instruction | string {
+  const fields = line.split(' ');
+  if (fields.length !== 8 || fields.some((field) => field === '')) return 'fields';
+  const [pcText, kind, rdText, rs1Text, rs2Text, outcome, targetText, addressText] = fields;
+  const pc = parseHex(pcText);
+  if (pc === undefined || pc % 4) return 'pc';
+  if (!isClass(kind)) return 'class';
+  const registers = [rdText, rs1Text, rs2Text];
+  const rd = parseRegister(rdText);
+  const rs1 = parseRegister(rs1Text);
+  const rs2 = parseRegister(rs2Text);
+  return {
+    number: instructions.length + 1,
+    line: lineNumber,
+    pc,
+    kind,
+    rd,
+    rs1,
+    rs2,
+    outcome: outcome === 'T' ? 'T' : outcome === 'N' ? 'N' : '-',
+    target,
+    address,
+  };
+}
+lines.forEach((line, i) => {
+  const result = check(line, i + 1);
+  if (typeof result === 'string') {
+    rejects.push(`reject line ${i + 1} ${result}`);
+    return;
+  executions.get(result.pc)!.push(instructions.length);
+  instructions.push(result);
+});
+const n = instructions.length;
+const sources = dependencies(instructions);
+const predictions = config.predictors.map(predict);
+const combinations: Combination[] = [];
+for (const variant of config.variants) {
+  for (const predictor of predictions) {
+    const run = simulate(instructions, sources, variant, predictor.flags);
+    const totals = zeroCauses();
+    for (const stall of run.stalls) totals[stall.cause] += stall.cycles;
+    combinations.push({ variant, predictor, run, totals });
+  }
+}
+const primary = combinations.find(
+  (pair) =>
+    pair.variant.name === config.primaryVariant &&
+    pair.predictor.config.name === config.primaryPredictor,
+)!;
+const { variant, predictor, run, totals } = primary;
+const { timings, stalls, cycles } = run;
+const events = zeroCauses();
+const byClass = new Map<InstructionClass, number>();
+const byPc = new Map<number, Record<Cause, number>>();
+const annotations = Array.from({ length: n }, () => '');
+interface DependencyPair {
+  producer: number;
+  waiting: number;
+  cause: 'load_use' | 'raw';
+  cycles: number;
+  events: number;
+}
+const dependencyGroups = new Map<string, DependencyPair>();
+for (const stall of stalls) {
+  events[stall.cause]++;
+  const responsible = instructions[stall.responsible];
+  const pcTotals = byPc.get(responsible.pc) ?? zeroCauses();
+  pcTotals[stall.cause] += stall.cycles;
+  byPc.set(responsible.pc, pcTotals);
+  byClass.set(responsible.kind, (byClass.get(responsible.kind) ?? 0) + stall.cycles);
+  if (stall.waiting !== undefined) annotations[stall.waiting] += ` ${stall.cause} ${stall.cycles}`;
+const stallTotal = sum(causes.map((cause) => totals[cause]));
+instructions.forEach((instruction, i) => {
+  const timing = timings[i];
+  const cells = new Map<number, string>();
+  const number = String(i + 1);
+  mark(cells, timing.fetch, timing.fetch, 'F');
+  mark(cells, timing.fetch + 1, timing.decode - 1, '*');
+  mark(cells, timing.decode, timing.decode, 'D');
+  mark(cells, timing.decode + 1, timing.execute - 1, '*');
+  mark(cells, timing.execute, timing.memory - 1, 'X');
+  mark(cells, timing.memory, timing.memory, 'M');
+  mark(cells, timing.writeback, timing.writeback, 'W');
+  occupy('IF', timing.fetch, timing.decode - 1, number);
+  occupy('ID', timing.decode, timing.execute - 1, number);
+  occupy('EX', timing.execute, timing.memory - 1, number);
+  occupy('MEM', timing.memory, timing.memory, number);
+  occupy('WB', timing.writeback, timing.writeback, number);
+  const prediction = predictor.predictions[i];
+  appendRow(
+    i + 1,
+    instruction.pc,
+    instruction.kind,
+    cells,
+    annotations[i] + (prediction.kind ? ` mispredict ${prediction.kind}` : ''),
+  );
+  `timing variant=${variant.name} predictor=${predictor.config.name}`,
+  `forwarding ${variant.forwarding ? 'on' : 'off'} branch_stage ${variant.stage} mul_latency ${variant.latency}`,
+  `cycles ${cycles}`,
+  `cpi ${fraction(cycles, n)} ${decimal(cycles, n)}`,
+  `ipc ${decimal(n, cycles)}`,
+  `stall_cycles total ${stallTotal} ${causeText(totals)}`,
+  `stall_events ${causeText(events)}`,
+  `flushed ${refetches}`,
+  `cycle_check ${n} + 4 + ${stallTotal} = ${n + 4 + stallTotal}`,
+    );
+  }
+  staticProfile.push(
+    `${hex(instruction.pc)} ${instruction.kind} ${registerText(instruction.rd)} ${registerText(instruction.rs1)} ${registerText(instruction.rs2)} executions ${indices.length} stall_cycles ${pcTotal(instruction.pc)}`,
+const segments = new Map<number, Segment>();
+let segmentStart = 0;
+instructions.forEach((instruction, i) => {
+  if (!control(instruction) && i !== n - 1) return;
+  const pc = instructions[segmentStart].pc;
+  const segment = segments.get(pc) ?? { pc, instances: 0, instructions: 0, cycles: 0 };
+  segment.instances++;
+  segment.instructions += i - segmentStart + 1;
+  segment.cycles += timings[i].writeback - (segmentStart ? timings[segmentStart - 1].writeback : 0);
+  segments.set(pc, segment);
+  segmentStart = i + 1;
+});
+const segmentProfile = [
+  `segments total ${segments.size}`,
+  ...[...segments.values()]
+    .sort((a, b) => b.cycles - a.cycles || a.pc - b.pc)
+    .slice(0, config.top)
+    .map(
+      (segment, i) =>
+        `${i + 1} ${hex(segment.pc)} instances ${segment.instances} instructions ${segment.instructions} cycles ${segment.cycles} cpi ${decimal(segment.cycles, segment.instructions)}`,
+    ),
+writeReport('pipeline.txt', pipeline);
+writeReport('stats.txt', stats);
+writeReport('profile.txt', profile);

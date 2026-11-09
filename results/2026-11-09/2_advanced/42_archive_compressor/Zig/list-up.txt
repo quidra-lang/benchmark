@@ -1,0 +1,296 @@
+const methods = [_][]const u8{ "STORE", "LZW", "LZ77", "LZH", "ARITH" };
+fn readBytes(io: std.Io, path: []const u8) ![]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, c.allocator, .unlimited);
+}
+fn textLines(bytes: []const u8) c.Lines {
+    var out: c.Lines = .{};
+    var first: usize = 0;
+    for (bytes, 0..) |byte, i| if (byte == 10) {
+        out.add("{s}", .{bytes[first..i]});
+        first = i + 1;
+    };
+    return out;
+}
+fn hex8(value: u32) []const u8 {
+    return c.fmt("{x:0>8}", .{value});
+}
+fn hexLines(bytes: []const u8) c.Lines {
+    var out: c.Lines = .{};
+    var first: usize = 0;
+    while (first < bytes.len) : (first += 32) {
+        var line: c.Text = .{};
+        for (bytes[first..@min(first + 32, bytes.len)]) |byte| line.add("{x:0>2}", .{byte});
+        out.add("{s}", .{line.value()});
+    }
+    return out;
+}
+fn adler(bytes: []const u8) u32 {
+    var s1: u32 = 1;
+    var s2: u32 = 0;
+    for (bytes) |byte| {
+        s1 = (s1 + byte) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    return s2 * 65536 + s1;
+}
+fn lzhEncode(tokens: []const lz77.Token, b: usize, k: usize, maximum: usize, stats: *LzhStats) []const u8 {
+    const literal = huffman.lengths(frequency, maximum);
+    const distance = huffman.lengths(offset_frequency, maximum);
+fn decode(method: usize, payload: []const u8, original: usize, b: usize, k: usize, output: *c.Bytes) c.DecodeError!void {
+    if (method == 0) {
+        for (payload) |byte| {
+            if (output.items.len == original) return;
+            c.append(u8, output, byte);
+        }
+        if (output.items.len < original) return error.end_of_data;
+        return;
+    }
+    if (method == 1) return lzw.decode(payload, original, output);
+    if (method == 4) return arith.decode(payload, original, output);
+const Encoded = struct { payloads: [5][]const u8 = undefined, best: usize = 0, tokens: []const lz77.Token,
+     lzw_stats: lzw.Statistics = .{}, lzh: LzhStats = .{}, arith_stats: arith.Statistics = .{} };
+fn encode(data: []const u8, b: usize, k: usize, maximum: usize) Encoded {
+    var out: Encoded = .{ .tokens = lz77.tokenize(data, b, k) };
+    out.payloads[0] = data;
+    out.payloads[1] = lzw.encode(data, &out.lzw_stats);
+    out.payloads[2] = lz77Encode(out.tokens, b, k);
+    out.payloads[3] = lzhEncode(out.tokens, b, k, maximum, &out.lzh);
+    out.payloads[4] = arith.encode(data, &out.arith_stats);
+    for (1..5) |method| if (out.payloads[method].len < out.payloads[out.best].len) {
+        out.best = method;
+    };
+    return out;
+}
+const File = struct { name: []const u8, data: []const u8, payload: []const u8 = &.{}, method: usize = 0 };
+fn bigEndian(bytes: *c.Bytes, value: u32, count: usize) void {
+    var remaining = count;
+    while (remaining > 0) {
+        remaining -= 1;
+        c.append(u8, bytes, @intCast((value >> @as(u5, @intCast(8 * remaining))) & 255));
+    }
+}
+fn readInteger(bytes: []const u8, first: usize, count: usize) u32 {
+    var value: u32 = 0;
+    for (bytes[first .. first + count]) |byte| value = (value << 8) | byte;
+    return value;
+}
+fn buildArchive(files: []const File, b: usize, k: usize) []const u8 {
+    var archive: c.Bytes = .empty;
+    for ("TXAR") |byte| c.append(u8, &archive, byte);
+    c.append(u8, &archive, @intCast(b));
+    c.append(u8, &archive, @intCast(k));
+    bigEndian(&archive, @intCast(files.len), 2);
+    for (files) |file| {
+        const first = archive.items.len;
+        c.append(u8, &archive, @intCast(file.name.len));
+        for (file.name) |byte| c.append(u8, &archive, byte);
+        c.append(u8, &archive, @intCast(file.method));
+        bigEndian(&archive, @intCast(file.data.len), 4);
+        bigEndian(&archive, @intCast(file.payload.len), 4);
+        bigEndian(&archive, adler(file.data), 4);
+        var sum: usize = 0;
+        for (archive.items[first..]) |byte| sum += byte;
+        c.append(u8, &archive, @intCast(sum % 256));
+        for (file.payload) |byte| c.append(u8, &archive, byte);
+    }
+    return archive.items;
+}
+const Status = enum { ok, repaired, checksum, failed, unsupported, truncated, bad_header };
+fn statusName(status: Status) []const u8 {
+    return if (status == .failed) "error" else @tagName(status);
+}
+const Entry = struct { number: usize, method: usize = 0, position: usize, start: usize = 0, original: usize = 0,
+     compressed: usize = 0, stored: u32 = 0, computed: u32 = 0, name: []const u8 = "", status: Status = .truncated,
+     error_reason: []const u8 = "", valid: bool = false, header_cut: bool = false, output: c.Bytes = .empty,
+     error_position: usize = 0, repair_position: usize = 0, repair_from: u8 = 0, repair_to: u8 = 0 };
+const Parsed = struct { error_reason: ?[]const u8 = null, b: usize = 0, k: usize = 0, declared: usize = 0,
+     size: usize, trailing: usize = 0, stopped: bool = false, entries: std.ArrayList(Entry) = .empty };
+fn powerMod(value_: i64, exponent_: i64) i64 {
+    var value = value_;
+    var exponent = exponent_;
+    var result: i64 = 1;
+    while (exponent > 0) {
+        if (@mod(exponent, 2) == 1) result = @mod(result * value, 65521);
+        value = @mod(value * value, 65521);
+        exponent = @divFloor(exponent, 2);
+    }
+    return result;
+}
+fn repair(entry: *Entry) bool {
+    const delta_a = @mod(c.n(entry.stored % 65536) - c.n(entry.computed % 65536), 65521);
+    const delta_b = @mod(c.n(entry.stored / 65536) - c.n(entry.computed / 65536), 65521);
+    const delta = if (delta_a >= 1 and delta_a <= 255) delta_a else if (delta_a >= 65266 and delta_a <= 65520) delta_a - 65521 else return false;
+    const inverse = powerMod(@mod(delta, 65521), 65519);
+    const t = @mod(delta_b * inverse, 65521);
+    if (t < 1 or t > c.n(entry.output.items.len)) return false;
+    const position = entry.output.items.len - c.u(t);
+    const old = entry.output.items[position];
+    const value = c.n(old) + delta;
+    if (value < 0 or value > 255) return false;
+    entry.output.items[position] = @intCast(value);
+    if (adler(entry.output.items) != entry.stored) {
+        entry.output.items[position] = old;
+        return false;
+    }
+    entry.repair_position = position;
+    entry.repair_from = old;
+    entry.repair_to = @intCast(value);
+    return true;
+}
+fn validName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 32) return false;
+    for (name) |char| if (!((char >= 'a' and char <= 'z') or (char >= '0' and char <= '9') or char == '.' or char == '_' or char == '-')) return false;
+    return true;
+}
+fn parse(bytes: []const u8) Parsed {
+    var out: Parsed = .{ .size = bytes.len };
+    if (bytes.len < 8 or !c.eq(bytes[0..4], "TXAR")) {
+        out.error_reason = "bad_magic";
+        return out;
+    }
+    out.b = bytes[4];
+    out.k = bytes[5];
+    if (out.b < 6 or out.b > 12 or out.k < 2 or out.k > 5) {
+        out.error_reason = "bad_params";
+        return out;
+    }
+    out.declared = readInteger(bytes, 6, 2);
+    var position: usize = 8;
+    for (1..out.declared + 1) |number| {
+        var entry: Entry = .{ .number = number, .position = position };
+        if (position >= bytes.len or position + 15 + bytes[position] > bytes.len) {
+            entry.header_cut = true;
+            c.append(Entry, &out.entries, entry);
+            out.stopped = true;
+            break;
+        }
+        const length = @as(usize, bytes[position]);
+        entry.name = bytes[position + 1 .. position + 1 + length];
+        entry.method = bytes[position + 1 + length];
+        entry.original = readInteger(bytes, position + 2 + length, 4);
+        entry.compressed = readInteger(bytes, position + 6 + length, 4);
+        entry.stored = readInteger(bytes, position + 10 + length, 4);
+        entry.start = position + 15 + length;
+        const next = entry.start + entry.compressed;
+        var sum: usize = 0;
+        for (bytes[position .. entry.start - 1]) |byte| sum += byte;
+        if (sum % 256 != bytes[entry.start - 1] or !validName(entry.name)) {
+            entry.status = .bad_header;
+            position = next;
+            c.append(Entry, &out.entries, entry);
+            if (position > bytes.len) {
+                out.stopped = true;
+                break;
+            }
+            continue;
+        }
+        entry.valid = true;
+        if (next > bytes.len) {
+            entry.status = .truncated;
+            c.append(Entry, &out.entries, entry);
+            out.stopped = true;
+            break;
+        }
+        if (entry.method >= 5) entry.status = .unsupported else {
+            decode(entry.method, bytes[entry.start..next], entry.original, out.b, out.k, &entry.output) catch |err| {
+                entry.status = .failed;
+                entry.error_reason = @errorName(err);
+                entry.error_position = entry.output.items.len;
+            };
+            if (entry.status != .failed) {
+                entry.computed = adler(entry.output.items);
+                entry.status = if (entry.computed == entry.stored) .ok else if (repair(&entry)) .repaired else .checksum;
+            }
+        }
+        c.append(Entry, &out.entries, entry);
+        position = next;
+    }
+    if (!out.stopped) out.trailing = bytes.len - position;
+    return out;
+}
+fn verified(parsed: Parsed, files: []const File) usize {
+    var count: usize = 0;
+    for (parsed.entries.items[0..@min(parsed.entries.items.len, files.len)], files[0..@min(parsed.entries.items.len,
+         files.len)]) |entry, file| count += @intFromBool(entry.status == .ok and c.eq(entry.output.items,
+         file.data));
+    return count;
+}
+    const manifest = textLines(try readBytes(init.io, "input/manifest.txt")).data.items;
+    const b = parseNumber(manifest[0]);
+    const k = parseNumber(manifest[1]);
+    const maximum = parseNumber(manifest[2]);
+    var given: c.Bytes = .empty;
+    for (textLines(try readBytes(init.io, "input/archive.hex")).data.items) |line| {
+        var i: usize = 0;
+        while (i < line.len) : (i += 2) c.append(u8, &given, std.fmt.parseInt(u8, line[i .. i + 2], 16) catch unreachable);
+    }
+    const parsed = parse(given.items);
+    try write(init.io, "listing.txt", listing(parsed));
+    var tested: c.Lines = .{};
+    var extracted: c.Lines = .{};
+    var comparison: c.Lines = .{};
+    var salvage: std.ArrayList(File) = .empty;
+    if (parsed.error_reason) |reason| tested.add("archive error {s}", .{reason}) else {
+        const statuses = [_]Status{ .ok, .repaired, .checksum, .failed, .unsupported, .truncated, .bad_header };
+        var counts = std.mem.zeroes([7]usize);
+        for (parsed.entries.items) |entry| {
+            for (statuses, 0..) |status, index| if (entry.status == status) {
+                counts[index] += 1;
+            };
+            if (entry.header_cut) tested.add("entry {d} offset {d} status truncated header", .{ entry.number,
+                 entry.position }) else if (!entry.valid) tested.add("entry {d} offset {d} status bad_header",
+                 .{ entry.number, entry.position }) else {
+                var line: c.Text = .{};
+                line.add("entry {d} offset {d} name {s} method {s} status {s}", .{ entry.number, entry.position,
+                     entry.name, methodName(entry.method), statusName(entry.status) });
+                switch (entry.status) {
+                    .repaired => line.add(" byte {d} from {d} to {d}", .{ entry.repair_position, entry.repair_from,
+                         entry.repair_to }),
+                    .checksum => line.add(" stored {s} computed {s}", .{ hex8(entry.stored), hex8(entry.computed) }),
+                    .failed => line.add(" {s} at {d}", .{ entry.error_reason, entry.error_position }),
+                    .truncated => line.add(" payload have {d} need {d}", .{ parsed.size - entry.start, entry.compressed }),
+                    else => {},
+                }
+                tested.add("{s}", .{line.value()});
+            }
+        }
+        var summary: c.Text = .{};
+        summary.add("summary entries {d} checked {d}", .{ parsed.declared, parsed.entries.items.len });
+        for (statuses, counts) |status, count| summary.add(" {s} {d}", .{ statusName(status), count });
+        summary.add(" missing {d} trailing {d}", .{ parsed.declared - parsed.entries.items.len, parsed.trailing });
+        tested.add("{s}", .{summary.value()});
+    }
+    const salvage_b = if (parsed.error_reason == null) parsed.b else b;
+    const salvage_k = if (parsed.error_reason == null) parsed.k else k;
+    var salvage_original: usize = 0;
+    for (parsed.entries.items) |entry| if (entry.status == .ok or entry.status == .repaired) {
+        const lines = textLines(entry.output.items);
+        var word_count: usize = 0;
+        var longest: usize = 0;
+        for (lines.data.items) |line| {
+            longest = @max(longest, line.len);
+            var in_word = false;
+            for (line) |byte| {
+                if (byte == ' ') in_word = false else if (!in_word) {
+                    word_count += 1;
+                    in_word = true;
+                }
+            }
+        }
+        extracted.add("file {s} bytes {d} lines {d} words {d} longest {d}", .{ entry.name, entry.output.items.len,
+             lines.data.items.len, word_count, longest });
+        extracted.extend(lines);
+        const encoded = encode(entry.output.items, salvage_b, salvage_k, maximum);
+        const file: File = .{ .name = entry.name, .data = entry.output.items, .payload = encoded.payloads[encoded.best],
+             .method = encoded.best };
+        tested.add("salvage {s} method {s} compressed {d} was {s} {d}", .{ entry.name, methods[file.method],
+             file.payload.len, methodName(entry.method), entry.compressed });
+        salvage_original += file.data.len;
+        c.append(File, &salvage, file);
+    };
+    const salvaged = buildArchive(salvage.items, salvage_b, salvage_k);
+    tested.add("salvaged entries {d} bytes {d} original {d} verified {d}", .{ salvage.items.len, salvaged.len,
+         salvage_original, verified(parse(salvaged), salvage.items) });
+    try write(init.io, "test_report.txt", tested);
+    try write(init.io, "extracted.txt", extracted);
+    try write(init.io, "salvaged.hex", hexLines(salvaged));

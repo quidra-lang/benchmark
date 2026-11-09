@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+Decode before testing membership: URLSearchParams yields decoded key/value strings; PHP splits on the first equals sign then urldecode handles percent escapes and +. Replace unconditional per-key append with a strict value-membership check followed by append only when absent (or an insertion-ordered Set). Appending &page=%32 decodes to page=>2, already present, so second query retains page values 2,3 in that order. Distinct later values still append; an empty value is retained once, and missing equals still means empty text. Preserve sorted keys and existing quotation/join output. Only decoder/bindings, accumulation and sorted output are needed; the question supplies the concrete appended item, so full query literals are unnecessary.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. JavaScript uses ordinary Number arithmetic (IEEE 754 double precision); no integer-only static contract is inferred. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

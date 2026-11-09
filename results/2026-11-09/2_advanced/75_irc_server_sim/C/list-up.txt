@@ -1,0 +1,366 @@
+static void send_line(Server *s, Client *client, const char *text) {
+    fprintf(s->sent, "%d %s %s\n", s->time, client->identifier, text);
+    ++s->sent_count;
+    ++client->sent;
+}
+static void disconnect(Server *s, Client *client, const char *reason, DisconnectKind kind) {
+    if (kind != CLOSED_KIND) {
+        sendf(s, client, "ERROR :Closing Link: %s[%s] (%s)", client_addressee(client),
+              client->hostname, reason);
+        ++s->statistics.errors;
+    }
+    if (client->registered)
+        peersf(s, client, ":%s QUIT :%s", client_prefix(client), reason);
+    while (client->channel_count)
+        remove_member(s, client, s->channels.items[client->channels[0]]);
+    s->statistics.discarded += client->queue_count;
+    for (int i = 0; i < client->queue_count; ++i)
+        free(client->queue[i]);
+    client->queue_count = 0;
+    for (int i = 0; i < s->client_count; ++i)
+        if (s->active_clients[i] == client->number) {
+            memmove(s->active_clients + i, s->active_clients + i + 1,
+                    (size_t)(s->client_count - i - 1) * sizeof *s->active_clients);
+            --s->client_count;
+            break;
+        }
+    client->active = false;
+    Gone record = {0};
+    record.time = s->time;
+    strcpy(record.identifier, client->identifier);
+    strcpy(record.addressee, client_addressee(client));
+    strcpy(record.reason, reason);
+    GoneList_append(&s->gone, record);
+    ++s->disconnections[kind];
+}
+static void process(Server *s, Client *client, const char *raw) {
+    ++s->statistics.processed;
+    Parsed p;
+    parse(raw, &p);
+    const char *command = p.command;
+    if (!*command) {
+        ++s->statistics.empty;
+        return;
+    }
+    count_command(s, command);
+    if (!client->registered && strcmp(command, "NICK") && strcmp(command, "USER") &&
+        strcmp(command, "PING") && strcmp(command, "PONG") && strcmp(command, "QUIT")) {
+        error(s, client, 451, "");
+        return;
+    }
+    if (!strcmp(command, "NICK"))
+        nick(s, client, &p);
+    else if (!strcmp(command, "USER"))
+        user(s, client, &p);
+    else if (!strcmp(command, "PING")) {
+        if (p.count == 0 || p.parameters[0][0] == 0)
+            error(s, client, 409, "");
+        else
+            sendf(s, client, ":%s PONG %s :%s", s->settings.name, s->settings.name,
+                  p.parameters[0]);
+    } else if (!strcmp(command, "PONG"))
+        return;
+    else if (!strcmp(command, "QUIT")) {
+        char reason[407];
+        if (p.count && p.parameters[0][0])
+            snprintf(reason, sizeof reason, "Quit: %s", p.parameters[0]);
+        else
+            strcpy(reason, "Client Quit");
+        disconnect(s, client, reason, QUIT_KIND);
+    } else if (!strcmp(command, "JOIN"))
+        join_channels(s, client, &p);
+    else if (!strcmp(command, "PART"))
+        part(s, client, &p);
+    else if (!strcmp(command, "PRIVMSG") || !strcmp(command, "NOTICE"))
+        message(s, client, &p, command);
+    else if (!strcmp(command, "TOPIC"))
+        topic(s, client, &p);
+    else if (!strcmp(command, "NAMES"))
+        names(s, client, &p);
+    else if (!strcmp(command, "WHOIS"))
+        whois(s, client, &p);
+    else if (!strcmp(command, "AWAY")) {
+        strcpy(client->away, p.count ? p.parameters[0] : "");
+        numeric(s, client, client->away[0] ? 306 : 305,
+                client->away[0] ? ":You have been marked as being away"
+                                : ":You are no longer marked as being away");
+    } else if (!strcmp(command, "INVITE"))
+        invite(s, client, &p);
+    else if (!strcmp(command, "KICK"))
+        kick(s, client, &p);
+    else if (!strcmp(command, "MODE")) {
+        if (require(s, client, &p, 1, "MODE")) {
+            if (p.parameters[0][0] == '#')
+                channel_mode(s, client, &p);
+            else
+                user_mode(s, client, &p);
+        }
+    } else
+        error(s, client, 421, command);
+}
+static void arrival(Server *s, const Traffic *record) {
+    if (record->kind == CONNECT_LINE) {
+        Client *client =
+            client_create(record->identifier, record->body + 8, s->time, s->settings.bucket);
+        client->number = (int)s->clients.count;
+        Clients_append(&s->clients, client);
+        s->active_clients[s->client_count++] = client->number;
+        if (s->client_count > s->peak_connections) {
+            s->peak_connections = s->client_count;
+            s->peak_connection_time = s->time;
+        }
+        return;
+    }
+    Client *client = find_id(s, record->identifier);
+    if (record->kind == DISCONNECT_LINE) {
+        if (client)
+            disconnect(s, client, "Remote host closed the connection", CLOSED_KIND);
+        return;
+    }
+    if (!client) {
+        ++s->statistics.dropped;
+        return;
+    }
+    ++client->received;
+    client->last_received = s->time;
+    client->ping_sent = -1;
+    if (client->queue_count == 0 && client->tokens >= 1) {
+        client_use_token(client, s->time, s->settings.bucket, s->settings.refill);
+        process(s, client, record->body);
+    } else if (client->queue_count >= s->settings.queue) {
+        ++s->statistics.discarded;
+        disconnect(s, client, "Excess Flood", FLOOD_KIND);
+    } else {
+        client->queue[client->queue_count++] = copy_string(record->body);
+        ++s->statistics.queued;
+    }
+}
+static void read_inputs(Server *s) {
+    FILE *file = fopen("input/server.txt", "r");
+    char line[512];
+    while (fgets(line, sizeof line, file)) {
+        line[strcspn(line, "\n")] = 0;
+        char *space = strchr(line, ' ');
+        *space = 0;
+        const char *value = space + 1;
+        Settings *p = &s->settings;
+        if (!strcmp(line, "NAME"))
+            strcpy(p->name, value);
+        else if (!strcmp(line, "VERSION"))
+            strcpy(p->version, value);
+        else if (!strcmp(line, "CREATED"))
+            strcpy(p->created, value);
+        else if (!strcmp(line, "DESCRIPTION"))
+            strcpy(p->description, value);
+        else if (!strcmp(line, "NICKLEN"))
+            p->nicklen = atoi(value);
+        else if (!strcmp(line, "CHANNELLEN"))
+            p->channellen = atoi(value);
+        else if (!strcmp(line, "TOPICLEN"))
+            p->topiclen = atoi(value);
+        else if (!strcmp(line, "MAXCHANNELS"))
+            p->maxchannels = atoi(value);
+        else if (!strcmp(line, "BUCKET"))
+            p->bucket = atoi(value);
+        else if (!strcmp(line, "REFILL"))
+            p->refill = atoi(value);
+        else if (!strcmp(line, "QUEUE"))
+            p->queue = atoi(value);
+        else if (!strcmp(line, "PINGFREQ"))
+            p->pingfreq = atoi(value);
+        else if (!strcmp(line, "TIMEOUT"))
+            p->timeout = atoi(value);
+        else
+            strcpy(p->motd[p->motd_count++], value);
+    }
+    fclose(file);
+    file = fopen("input/traffic.txt", "r");
+    while (fgets(line, sizeof line, file)) {
+        line[strcspn(line, "\n")] = 0;
+        char *first = strchr(line, ' '), *second = strchr(first + 1, ' ');
+        *first = *second = 0;
+        Traffic record = {0};
+        record.time = atoi(line);
+        strcpy(record.identifier, first + 1);
+        strcpy(record.body, second + 1);
+        record.kind = MESSAGE_LINE;
+        if (!strcmp(record.body, "DISCONNECT"))
+            record.kind = DISCONNECT_LINE;
+        else if (!strncmp(record.body, "CONNECT ", 8)) {
+            const char *host = record.body + 8;
+            bool valid = strlen(host) >= 1 && strlen(host) <= 63;
+            for (const char *p = host; *p; ++p)
+                if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+                      (*p >= '0' && *p <= '9') || *p == '.' || *p == '-'))
+                    valid = false;
+            if (valid)
+                record.kind = CONNECT_LINE;
+        }
+        ++s->line_counts[record.kind];
+        TrafficList_append(&s->traffic, record);
+    }
+    fclose(file);
+    s->end = s->traffic.items[s->traffic.count - 1].time;
+}
+static void client_report(Server *s, FILE *out) {
+    int registered = 0, invisible = 0, away = 0;
+    for (int i = 0; i < s->client_count; ++i) {
+        Client *client = s->clients.items[s->active_clients[i]];
+        registered += client->registered;
+        invisible += client->invisible;
+        away += client->away[0] != 0;
+        char *joined = joined_channels(s, client, ",");
+        fprintf(out, "CLIENT %s %s %s %s %s connected %d signon ", client->identifier,
+                client_addressee(client), client->user_set ? client->username : "*",
+                client->hostname, client_mode(client), client->connection_time);
+        if (client->registered)
+            fprintf(out, "%d", client->registration_time);
+        else
+            fputc('-', out);
+        fprintf(out, " received %d sent %d tokens %d queue %d channels %s invites ",
+                client->received, client->sent, client->tokens, client->queue_count,
+                client->channel_count ? joined : "none");
+        free(joined);
+        if (client->invite_count == 0)
+            fputs("none", out);
+        for (int j = 0; j < client->invite_count; ++j) {
+            if (j)
+                fputc(',', out);
+            fputs(s->channels.items[client->invites[j]]->name, out);
+        }
+        fputc('\n', out);
+        if (client->away[0])
+            fprintf(out, "AWAY %s %s\n", client->identifier, client->away);
+    }
+    fprintf(out, "TOTAL clients %d registered %d invisible %d away %d\n", s->client_count,
+            registered, invisible, away);
+}
+static void statistics_report(Server *s, FILE *out) {
+    int pending = 0, numerics = 0;
+    for (int i = 0; i < s->client_count; ++i)
+        pending += s->clients.items[s->active_clients[i]]->queue_count;
+    for (int i = 0; i < 1000; ++i)
+        numerics += s->numeric_counts[i];
+    fprintf(out, "END %d\nLINES total %zu connect %d disconnect %d messages %d\n", s->end,
+            s->traffic.count, s->line_counts[0], s->line_counts[1], s->line_counts[2]);
+    Statistics *p = &s->statistics;
+    fprintf(out, "MESSAGES dropped %d queued %d processed %d discarded %d pending %d empty %d\n",
+            p->dropped, p->queued, p->processed, p->discarded, pending, p->empty);
+    fprintf(out, "SENT lines %d numerics %d pings %d errors %d\n", s->sent_count, numerics,
+            p->pings, p->errors);
+    if (s->commands.count > 1)
+        qsort(s->commands.items, s->commands.count, sizeof *s->commands.items, command_compare);
+    for (size_t i = 0; i < s->commands.count; ++i)
+        fprintf(out, "COMMAND %s %d\n", s->commands.items[i].name, s->commands.items[i].count);
+    for (int i = 0; i < 1000; ++i)
+        if (s->numeric_counts[i])
+            fprintf(out, "NUMERIC %03d %d\n", i, s->numeric_counts[i]);
+    fprintf(out, "PEAK connections %d at %d\nPEAK registered %d at %d\n", s->peak_connections,
+            s->peak_connection_time, s->peak_registered, s->peak_registered_time);
+    fprintf(out, "DISCONNECTS quit %d closed %d flood %d timeout %d\n", s->disconnections[0],
+            s->disconnections[1], s->disconnections[2], s->disconnections[3]);
+    for (size_t i = 0; i < s->gone.count; ++i) {
+        Gone *record = &s->gone.items[i];
+        fprintf(out, "GONE %d %s %s %s\n", record->time, record->identifier, record->addressee,
+                record->reason);
+    }
+}
+int main(void) {
+    Server *s = calloc(1, sizeof *s);
+    read_inputs(s);
+    mkdir("output", 0777);
+    s->sent = output("sent.txt");
+    size_t position = 0;
+    for (s->time = 0; s->time <= s->end; ++s->time) {
+        int present[100], count = s->client_count;
+        memcpy(present, s->active_clients, (size_t)count * sizeof *present);
+        for (int i = 0; i < count; ++i) {
+            Client *client = s->clients.items[present[i]];
+            client_refill(client, s->time, s->settings.bucket, s->settings.refill);
+            while (client->active && client->queue_count && client->tokens >= 1) {
+                client_use_token(client, s->time, s->settings.bucket, s->settings.refill);
+                char *raw = client->queue[0];
+                memmove(client->queue, client->queue + 1,
+                        (size_t)(client->queue_count - 1) * sizeof *client->queue);
+                --client->queue_count;
+                process(s, client, raw);
+                free(raw);
+            }
+        }
+        while (position < s->traffic.count && s->traffic.items[position].time == s->time)
+            arrival(s, &s->traffic.items[position++]);
+        count = s->client_count;
+        memcpy(present, s->active_clients, (size_t)count * sizeof *present);
+        for (int i = 0; i < count; ++i) {
+            Client *client = s->clients.items[present[i]];
+            if (client->ping_sent >= 0) {
+                if (s->time - client->ping_sent >= s->settings.timeout) {
+                    char reason[64];
+                    snprintf(reason, sizeof reason, "Ping timeout: %d seconds",
+                             s->time - client->last_received);
+                    disconnect(s, client, reason, TIMEOUT_KIND);
+                }
+            } else if (s->time - client->last_received >= s->settings.pingfreq) {
+                sendf(s, client, "PING :%s", s->settings.name);
+                ++s->statistics.pings;
+                client->ping_sent = s->time;
+            }
+        }
+    }
+    fclose(s->sent);
+    FILE *file = output("channels.txt");
+    channel_report(s, file);
+    fclose(file);
+    file = output("clients.txt");
+    client_report(s, file);
+    fclose(file);
+    file = output("stats.txt");
+    statistics_report(s, file);
+void client_use_token(Client *client, int time, int capacity, int interval) {
+    if (client->tokens == capacity)
+        client->refill_time = time + interval;
+    --client->tokens;
+}
+void client_refill(Client *client, int time, int capacity, int interval) {
+    if (client->refill_time == time) {
+        ++client->tokens;
+        client->refill_time = client->tokens < capacity ? time + interval : -1;
+    }
+}
+void parse(const char *raw, Parsed *out) {
+    memset(out, 0, sizeof *out);
+    const char *p = raw;
+    if (*p == ':') {
+        p = strchr(p, ' ');
+        if (!p)
+            return;
+    }
+    while (*p == ' ')
+        ++p;
+    int count = 0;
+    while (*p && *p != ' ') {
+        char c = *p++;
+        out->command[count++] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    out->command[count] = 0;
+    if (count == 0)
+        return;
+    while (*p) {
+        while (*p == ' ')
+            ++p;
+        if (!*p)
+            break;
+        if (*p == ':') {
+            strcpy(out->parameters[out->count++], p + 1);
+            break;
+        }
+        if (out->count == 14) {
+            strcpy(out->parameters[out->count++], p);
+            break;
+        }
+        count = 0;
+        while (*p && *p != ' ')
+            out->parameters[out->count][count++] = *p++;
+        out->parameters[out->count++][count] = 0;
+    }
+}

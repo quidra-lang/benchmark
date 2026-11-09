@@ -1,0 +1,25 @@
+items = [
+  ['tent', 10, 120], ['stove', 3, 65], ['lantern', 2, 45], ['rope', 3, 20],
+  ['camera', 5, 90], ['blanket', 5, 85], ['water', 6, 100]
+]
+capacity = 20
+dp = Array.new(items.length + 1) { Array.new(capacity + 1, 0) }
+items.each_with_index do |(_, weight, value), index|
+  i = index + 1
+  (0..capacity).each do |limit|
+    dp[i][limit] = dp[i - 1][limit]
+    dp[i][limit] = [dp[i][limit], dp[i - 1][limit - weight] + value].max if weight <= limit
+  end
+end
+chosen = []
+remaining = capacity
+items.length.downto(1) do |i|
+  if dp[i][remaining] != dp[i - 1][remaining]
+    chosen << items[i - 1]
+    remaining -= items[i - 1][1]
+  end
+end
+chosen.reverse!
+puts "max value: #{dp[-1][capacity]}"
+puts "total weight: #{chosen.sum { |item| item[1] }}"
+puts "items: #{chosen.map(&:first).join(' ')}"

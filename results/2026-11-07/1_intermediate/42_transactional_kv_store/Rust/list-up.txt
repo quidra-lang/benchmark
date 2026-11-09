@@ -1,0 +1,148 @@
+#[derive(Clone)]
+enum Value {
+    Text(String),
+    fn empty(&self) -> bool {
+        match self {
+            Self::Text(_) => false, Self::List(v) => v.is_empty(), Self::Hash(v) => v.is_empty(),
+        }
+#[derive(Clone)]
+struct Entry { value: Value, expiry: Option<i32> }
+type Database = BTreeMap<String, Entry>;
+
+enum Reply { Status(String), Integer(i32), Text(Option<String>), Array(Vec<Option<String>>) }
+fn quote(text: &str) -> String { format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"")) }
+impl Display for Reply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Status(text) => f.write_str(text),
+            Self::Integer(value) => write!(f, "(integer) {value}"),
+            Self::Text(value) => f.write_str(&value.as_deref().map(quote).unwrap_or_else(|| "(nil)".into())),
+        }
+fn status(text: &str) -> Reply { Reply::Status(text.into()) }
+fn split_line(line: &str) -> Option<Vec<String>> {
+    let bytes = line.as_bytes();
+    let mut args = Vec::new();
+    let mut position = 0;
+    while position < bytes.len() {
+        if bytes[position] == b' ' { position += 1; continue; }
+        if bytes[position] != b'"' {
+            let start = position;
+            while position < bytes.len() && bytes[position] != b' ' { position += 1; }
+            args.push(line[start..position].to_owned());
+            continue;
+        }
+    }
+    Some(args)
+fn parse_integer(text: &str) -> Option<i32> {
+    if text == "0" { return Some(0); }
+    let digits = text.strip_prefix('-').unwrap_or(text).as_bytes();
+    if !(1..=9).contains(&digits.len()) || !(b'1'..=b'9').contains(&digits[0]) || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    text.parse().ok()
+}
+fn integer(text: &str) -> CommandResult<i32> { parse_integer(text).ok_or_else(|| NOT_INTEGER.into()) }
+    fn accepts(&self, count: usize) -> bool {
+        match *self {
+            Self::Exact(n) => count == n, Self::Between(a, b) => (a..=b).contains(&count),
+            Self::AtLeast(n) => count >= n, Self::Parity(n, parity) => count >= n && count % 2 == parity,
+        }
+fn arity(command: &str) -> Option<Arity> {
+    Some(match command {
+        "TIME" | "DBSIZE" | "FLUSH" | "INFO" | "BEGIN" | "COMMIT" | "ROLLBACK" => Arity::Exact(0),
+        "GET" | "INCR" | "DECR" | "STRLEN" | "LLEN" | "HGETALL" | "HLEN" | "HKEYS" | "HVALS" |
+        "SMEMBERS" | "SCARD" | "ZCARD" | "TYPE" | "KEYS" | "TTL" | "PERSIST" | "TICK" | "SNAPSHOT" | "RESTORE" => Arity::Exact(1),
+        "SET" | "LPUSH" | "RPUSH" | "HDEL" | "SADD" | "SREM" | "ZREM" | "SINTERSTORE" | "SUNIONSTORE" | "SDIFFSTORE" => Arity::AtLeast(2),
+    })
+#[derive(Default)]
+struct Store { database: Database, time: i32, stack: Vec<Database>, snapshots: BTreeMap<String, Database> }
+impl Store {
+    fn text(&self, key: &str) -> CommandResult<String> {
+        match self.database.get(key).map(|entry| &entry.value) {
+            None => Ok(String::new()), Some(Value::Text(text)) => Ok(text.clone()), _ => Err(WRONG_TYPE.into()),
+        }
+    fn replace(&mut self, key: &str, value: Value, expiry: Option<i32>) {
+        if value.empty() { self.database.remove(key); }
+        else { self.database.insert(key.to_owned(), Entry { value, expiry }); }
+    fn purge(&mut self) -> i32 {
+        let before = self.database.len();
+        let time = self.time;
+        self.database.retain(|_, entry| entry.expiry.is_none_or(|expiry| expiry > time));
+        (before - self.database.len()) as i32
+    fn execute(&mut self, command: &str, a: &[String]) -> CommandResult<Reply> {
+        Ok(match command {
+            "SET" => {
+                let mut options = BTreeSet::new();
+                let mut seconds_text = None;
+                let mut i = 2;
+                while i < a.len() {
+                    let option = a[i].to_ascii_uppercase();
+                    if !matches!(option.as_str(), "NX" | "XX" | "EX" | "KEEPTTL" | "GET") || !options.insert(option.clone()) {
+                        return Err("ERR syntax error".into());
+                    }
+                    if option == "EX" {
+                        i += 1;
+                        if i == a.len() { return Err("ERR syntax error".into()); }
+                        seconds_text = Some(&a[i]);
+                    }
+                    i += 1;
+                }
+                if (options.contains("NX") && options.contains("XX")) || (options.contains("EX") && options.contains("KEEPTTL")) {
+                    return Err("ERR syntax error".into());
+                }
+                let mut expiry = None;
+                if let Some(text) = seconds_text {
+                    let seconds = integer(text)?;
+                    if seconds <= 0 { return Err("ERR invalid expire time in 'set' command".into()); }
+                    expiry = Some(self.time + seconds);
+                }
+                let exists = self.database.contains_key(&a[0]);
+                let changed = !(options.contains("NX") && exists) && !(options.contains("XX") && !exists);
+                if changed { self.replace(&a[0], Value::Text(a[1].clone()), expiry); }
+                if options.contains("GET") { Reply::Text(old) } else if changed { status("OK") } else { Reply::Text(None) }
+            }
+            "GET" | "STRLEN" => {
+                let text = self.text(&a[0])?;
+                if command == "GET" { Reply::Text(self.database.contains_key(&a[0]).then_some(text)) }
+            }
+            "TICK" => {
+                let ticks = integer(&a[0])?;
+                if ticks <= 0 { return Err(POSITIVE.into()); }
+                self.time += ticks;
+                Reply::Integer(self.purge())
+            }
+            "BEGIN" => { self.stack.push(self.database.clone()); status("OK") }
+            "COMMIT" | "ROLLBACK" => {
+                let saved = self.stack.pop().ok_or_else(|| "ERR no transaction".to_owned())?;
+                if command == "ROLLBACK" { self.database = saved; self.purge(); }
+                status("OK")
+            }
+            "SNAPSHOT" => { self.snapshots.insert(a[0].clone(), self.database.clone()); status("OK") }
+            "RESTORE" => {
+                let saved = self.snapshots.get(&a[0]).ok_or_else(|| "ERR no such snapshot".to_owned())?;
+                self.database = saved.clone();
+                self.purge();
+                status("OK")
+            }
+        })
+    fn process(&mut self, line: &str) -> CommandResult<Reply> {
+        let Some(words) = split_line(line) else { return Ok(status("Invalid argument(s)")); };
+        let command = words[0].to_ascii_uppercase();
+        let spec = arity(&command).ok_or_else(|| format!("ERR unknown command '{}'", words[0]))?;
+        if !spec.accepts(words.len() - 1) {
+            return Err(format!("ERR wrong number of arguments for '{}' command", command.to_ascii_lowercase()));
+        }
+        self.execute(&command, &words[1..])
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let mut lines = input.lines();
+    let Some(first) = lines.next() else { return; };
+    let count: usize = first.parse().unwrap();
+    let mut store = Store::default();
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    for line in lines.take(count) {
+        match store.process(line) {
+            Ok(reply) => writeln!(output, "{reply}").unwrap(),
+        }
+    }

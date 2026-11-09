@@ -1,0 +1,160 @@
+typedef struct { int64_t n, d; } Fraction;
+typedef struct { int len; Fraction *c; } Polynomial;
+typedef struct Allocation { struct Allocation *next; max_align_t data[]; } Allocation;
+typedef struct { char *data; size_t len, capacity; } Text;
+typedef struct { char name[9]; Polynomial value; } Named;
+static const Fraction ZERO = {0, 1}, ONE = {1, 1};
+static Text output;
+static Named names[3000];
+static int name_count;
+static jmp_buf failure;
+static char error_message[128];
+static void *allocate(size_t size) {
+    Allocation *block = calloc(1, sizeof(*block) + size);
+    return block->data;
+static void emit(const char *format, ...) {
+    va_list args, measured;
+    va_start(args, format);
+    va_copy(measured, args);
+    int count = vsnprintf(NULL, 0, format, measured);
+    va_end(measured);
+    vsnprintf(output.data + output.len, output.capacity - output.len, format, args);
+    va_end(args);
+    output.len += (size_t)count;
+_Noreturn static void fail(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(error_message, sizeof(error_message), format, args);
+    va_end(args);
+    longjmp(failure, 1);
+static int64_t absolute(int64_t n) { return n < 0 ? -n : n; }
+static int64_t gcd_integer(int64_t a, int64_t b) {
+    a = absolute(a);
+    b = absolute(b);
+    while (b) { int64_t r = a % b; a = b; b = r; }
+    return a;
+static Fraction fraction(int64_t n, int64_t d) {
+    if (d < 0) { n = -n; d = -d; }
+    int64_t g = gcd_integer(n, d);
+    return (Fraction){n / g, d / g};
+static Fraction negate(Fraction a) { return (Fraction){-a.n, a.d}; }
+static Fraction add(Fraction a, Fraction b) { return fraction(a.n * b.d + b.n * a.d, a.d * b.d); }
+static Fraction subtract(Fraction a, Fraction b) { return fraction(a.n * b.d - b.n * a.d, a.d * b.d); }
+static Fraction multiply(Fraction a, Fraction b) { return fraction(a.n * b.n, a.d * b.d); }
+static Fraction divide(Fraction a, Fraction b) { return fraction(a.n * b.d, a.d * b.n); }
+static int compare(Fraction a, Fraction b) {
+    int64_t left = a.n * b.d, right = b.n * a.d;
+    return (left > right) - (left < right);
+static Fraction literal(const char *text) {
+    char *end;
+    int64_t n = strtoll(text, &end, 10), d = *end == '/' ? strtoll(end + 1, NULL, 10) : 1;
+    if (!d) fail("ERROR ZERO DENOMINATOR");
+    return fraction(n, d);
+typedef struct { char data[64]; } FractionText;
+static FractionText fraction_text(Fraction a) {
+    FractionText text;
+    if (a.d == 1) snprintf(text.data, sizeof(text.data), "%" PRId64, a.n);
+    else snprintf(text.data, sizeof(text.data), "%" PRId64 "/%" PRId64, a.n, a.d);
+    return text;
+static Polynomial polynomial(int length) {
+    Polynomial result = {length, length ? allocate((size_t)length * sizeof(Fraction)) : NULL};
+    for (int i = 0; i < length; ++i) result.c[i] = ZERO;
+    return result;
+static Polynomial trim(Polynomial a) {
+    while (a.len && !a.c[a.len - 1].n) --a.len;
+    return a;
+static Polynomial constant(Fraction c) {
+    Polynomial result = polynomial(c.n != 0);
+    if (result.len) result.c[0] = c;
+    return result;
+static Polynomial linear(Fraction c, Fraction slope) {
+    Polynomial result = polynomial(2);
+    result.c[0] = c;
+    result.c[1] = slope;
+    return trim(result);
+static Fraction coefficient(Polynomial a, int i) { return i < a.len ? a.c[i] : ZERO; }
+static Polynomial poly_add(Polynomial a, Polynomial b, bool minus) {
+    Polynomial result = polynomial(a.len > b.len ? a.len : b.len);
+    for (int i = 0; i < result.len; ++i)
+        result.c[i] = minus ? subtract(coefficient(a, i), coefficient(b, i)) : add(coefficient(a, i), coefficient(b, i));
+    return trim(result);
+static Polynomial product(Polynomial a, Polynomial b) {
+    if (!a.len || !b.len) return polynomial(0);
+    Polynomial result = polynomial(a.len + b.len - 1);
+    for (int i = 0; i < a.len; ++i)
+        for (int j = 0; j < b.len; ++j)
+            result.c[i + j] = add(result.c[i + j], multiply(a.c[i], b.c[j]));
+    return trim(result);
+static void write_polynomial(Polynomial a, const char *variable) {
+    bool first = true;
+    for (int i = a.len - 1; i >= 0; --i) {
+        Fraction c = a.c[i];
+        if (!c.n) continue;
+        if (first) { if (c.n < 0) emit("-"); }
+        else emit(c.n < 0 ? " - " : " + ");
+        c.n = absolute(c.n);
+        if (i == 0 || c.n != c.d) emit("%s", fraction_text(c).data);
+        if (i) { emit("%s", variable); if (i > 1) emit("^%d", i); }
+        first = false;
+    }
+    if (first) emit("0");
+static int find_name(const char *name) {
+    for (int i = 0; i < name_count; ++i) if (!strcmp(names[i].name, name)) return i;
+    return -1;
+static void print_named(const char *name, Polynomial value) {
+    emit("%s = ", name);
+    write_polynomial(value, "x");
+    emit("\n");
+static void store(const char *name, Polynomial value) {
+    Fraction *saved = value.len ? malloc((size_t)value.len * sizeof(Fraction)) : NULL;
+    if (value.len && !saved) exit(EXIT_FAILURE);
+    if (value.len) memcpy(saved, value.c, (size_t)value.len * sizeof(Fraction));
+    int index = find_name(name);
+    if (index < 0) { index = name_count++; strcpy(names[index].name, name); }
+    else free(names[index].value.c);
+    names[index].value = (Polynomial){value.len, saved};
+    print_named(name, names[index].value);
+static Polynomial interpolate(const Fraction *values, int count) {
+    int m = count / 2;
+    Fraction *x = allocate((size_t)m * sizeof(Fraction));
+    Fraction *d = allocate((size_t)m * sizeof(Fraction));
+    for (int i = 0; i < m; ++i) { x[i] = values[2 * i]; d[i] = values[2 * i + 1]; }
+    for (int j = 1; j < m; ++j)
+        for (int i = 0; i < j; ++i)
+            if (compare(x[j], x[i]) == 0) fail("ERROR DUPLICATE X %s", fraction_text(x[j]).data);
+    for (int j = 1; j < m; ++j) for (int i = m - 1; i >= j; --i) {
+        Fraction numerator = subtract(d[i], d[i - 1]);
+        Fraction denominator = subtract(x[i], x[i - j]);
+        d[i] = divide(numerator, denominator);
+    }
+    Polynomial result = polynomial(0);
+    for (int i = m - 1; i >= 0; --i)
+        result = poly_add(product(result, linear(negate(x[i]), ONE)), constant(d[i]), false);
+    return result;
+static void process(char *line) {
+    char *words[64];
+    int word_count = 0;
+    for (char *word = strtok(line, " "); word; word = strtok(NULL, " ")) words[word_count++] = word;
+    CommandKind kind = PRINT;
+    while (strcmp(words[0], command_names[kind])) ++kind;
+    int positions[4], source_count = 0;
+    switch (kind) {
+        case LIST: case INTERP: case SPECIAL: break;
+    }
+    Polynomial p[4] = {0};
+    for (int i = 0; i < source_count; ++i) p[i] = lookup(words[positions[i]]);
+    Fraction values[62];
+    int value_count = 0, start = -1;
+    if (kind == AREA || kind == TAYLOR || kind == EVAL || kind == INTERP) start = 2;
+    if (start >= 0) for (int i = start; i < word_count; ++i) values[value_count++] = literal(words[i]);
+    Polynomial a = p[0], b = p[1], result = polynomial(0);
+    bool save = false;
+    switch (kind) {
+        case INTERP: result = interpolate(values, value_count); save = true; break;
+    }
+    if (save) store(words[1], result);
+        if (!fgets(input, sizeof(input), stdin)) break;
+        input[strcspn(input, "\r\n")] = '\0';
+        output.len = 0;
+        if (setjmp(failure) == 0) { process(input); fputs(output.data, stdout); }
+        else printf("%s\n", error_message);

@@ -1,0 +1,275 @@
+pub const Position = struct { line: usize = 1, column: usize = 1 };
+pub const Token = struct { kind: enum { number, string, name, function_name, keyword, builtin, symbol, newline, eof }, spelling: v.Text, value: v.Value = .{}, position: Position };
+pub fn member(s: v.Text, words: v.Text) bool { var it = std.mem.splitScalar(u8, words, ' '); while (it.next()) |w| if (v.eq(s, w)) return true; return false; }
+pub const Lexer = struct {
+    a: std.mem.Allocator, source: v.Text, issue: Position = .{},
+    pub fn tokenize(l: *Lexer) ![]const Token {
+        var tokens: std.ArrayList(Token) = .empty; var p: usize = 0; var pos: Position = .{};
+        while (p < l.source.len) {
+            const s = l.source; const c = s[p]; const start = pos;
+            if (c == ' ') { p += 1; pos.column += 1; continue; }
+            if (c == 10) { try tokens.append(l.a, .{ .kind = .newline, .spelling = "\n", .position = pos }); p += 1; pos.line += 1; pos.column = 1; continue; }
+            var end = p + 1; var token: Token = .{ .kind = .symbol, .spelling = "", .position = start };
+            if (std.ascii.isDigit(c)) { while (end < s.len and std.ascii.isDigit(s[end])) end += 1; token.kind = .number; token.value = v.Value.number(try std.fmt.parseInt(i64, s[p..end], 10)); }
+            else if (std.ascii.isAlphabetic(c) or c == '_') {
+                while (end < s.len and (std.ascii.isAlphanumeric(s[end]) or s[end] == '_')) end += 1; const word = s[p..end];
+                token.kind = if (member(word, "BEGIN END function if else while for do break continue next exit return delete in getline print printf")) .keyword else if (member(word, "length substr index split sprintf toupper tolower close int")) .builtin else if (end < s.len and s[end] == '(') .function_name else .name;
+            } else if (c == '"') {
+                var bytes: std.ArrayList(u8) = .empty;
+                while (end < s.len and s[end] != '"') {
+                    if (s[end] == 10) { l.issue = start; return error.Syntax; }
+                    else try bytes.append(l.a, s[end]); end += 1;
+                }
+                if (end == s.len) { l.issue = start; return error.Syntax; } end += 1; token.kind = .string; token.value = v.Value.string(bytes.items);
+            } else if (end < s.len and member(s[p..end + 1], "+= -= *= /= %= ^= == <= >= != ++ -- && || >>")) end += 1
+            else if (std.mem.indexOfScalar(u8, "+-*/%^!><?:=()[]{},;$", c) == null) { l.issue = start; return error.Syntax; }
+            token.spelling = s[p..end]; try tokens.append(l.a, token); pos.column += end - p; p = end;
+        }
+        try tokens.append(l.a, .{ .kind = .eof, .spelling = "", .position = .{ .line = pos.line, .column = 1 } }); return tokens.items;
+    }
+pub const Node = struct {
+    kind: values.Text, token: lex.Token, name: values.Text = "", op: values.Text = "", args: []*Node = &.{}, params: []*Node = &.{},
+    x: ?*Node = null, y: ?*Node = null, z: ?*Node = null, w: ?*Node = null, flag: bool = false, delta: i64 = 0, binding: ?usize = null, redir: ?lex.Token = null,
+    pub fn is(n: *const Node, kind: values.Text) bool { return values.eq(n.kind, kind); }
+    pub fn lvalue(n: *const Node) bool { return n.is("name") or n.is("array") or n.is("field"); }
+};
+pub const Parser = struct {
+    a: std.mem.Allocator, tokens: []const lex.Token, p: usize = 0, issue: lex.Position = .{}, in_function: bool = false, phase: values.Text = "", loops: usize = 0,
+    fn peek(p: *Parser) lex.Token { return p.tokens[p.p]; }
+    fn at(p: *Parser, s: values.Text) bool { return values.eq(p.peek().spelling, s); }
+    fn take(p: *Parser) lex.Token { const t = p.peek(); p.p += 1; return t; }
+    fn fail(p: *Parser, pos: lex.Position) error{Syntax} { p.issue = pos; return error.Syntax; }
+    fn expect(p: *Parser, s: values.Text) !lex.Token { if (!p.at(s)) return p.fail(p.peek().position); return p.take(); }
+    fn accept(p: *Parser, s: values.Text) bool { if (p.at(s)) { p.p += 1; return true; } return false; }
+    fn newlines(p: *Parser) void { while (p.accept("\n")) {} }
+    fn node(p: *Parser, kind: values.Text, token: lex.Token) !*Node { const n = try p.a.create(Node); n.* = .{ .kind = kind, .token = token }; return n; }
+    fn name(p: *Parser) !*Node { if (p.peek().kind != .name) return p.fail(p.peek().position); const t = p.take(); const n = try p.node("name", t); n.name = t.spelling; return n; }
+    pub fn parse(p: *Parser) ![]*Node {
+        var items: std.ArrayList(*Node) = .empty;
+        while (p.peek().kind != .eof) {
+            if (p.accept("\n") or p.accept(";")) continue; const t = p.peek();
+            if (p.accept("function")) {
+            }
+            const n = try p.node("rule", t); var patterns: std.ArrayList(*Node) = .empty;
+            if (p.at("BEGIN") or p.at("END")) n.op = p.take().spelling
+            else if (p.at("{")) n.op = "all"
+            n.args = patterns.items; p.phase = n.op;
+            if (lex.member(n.op, "BEGIN END all") or p.at("{")) n.x = try p.block() else if (!p.at("\n") and !p.at(";") and p.peek().kind != .eof) return p.fail(p.peek().position);
+            p.phase = ""; try items.append(p.a, n);
+        }
+        return items.items;
+    }
+    fn block(p: *Parser) anyerror!*Node {
+        const n = try p.node("block", try p.expect("{")); var list: std.ArrayList(*Node) = .empty;
+        while (!p.at("}")) { if (p.peek().kind == .eof) return p.fail(p.peek().position); if (p.accept("\n") or p.accept(";")) continue; try list.append(p.a, try p.statement()); }
+        _ = p.take(); n.args = list.items; return n;
+    }
+    fn terminator(p: *Parser) !void { if (!p.accept(";") and !p.accept("\n") and !p.at("}")) return p.fail(p.peek().position); }
+    fn statement(p: *Parser) anyerror!*Node {
+        if (p.at("{")) return p.block(); const t = p.take(); const word = t.spelling;
+        if (values.eq(word, ";")) return p.node("empty", t);
+        var n: *Node = undefined;
+        if (values.eq(word, "print") or values.eq(word, "printf")) n = try p.output(t)
+        } else { p.p -= 1; n = try p.node("expression_statement", t); n.x = try p.expression(true); }
+        try p.terminator(); return n;
+    }
+    fn output(p: *Parser, t: lex.Token) !*Node {
+        const n = try p.node(t.spelling, t); var paren = false;
+        if (p.at("(")) { var depth: usize = 0; var i = p.p; while (i < p.tokens.len) : (i += 1) { if (values.eq(p.tokens[i].spelling, "(")) depth += 1 else if (values.eq(p.tokens[i].spelling, ")")) { depth -= 1; if (depth == 0) { const next = p.tokens[i + 1]; paren = next.kind == .eof or lex.member(next.spelling, "; \n } > >>"); break; } } } }
+        if (paren) { _ = p.take(); n.args = try p.expressionList(true); _ = try p.expect(")"); }
+        else if (!p.at(";") and !p.at("\n") and !p.at("}") and !p.at(">") and !p.at(">>")) n.args = try p.expressionList(false);
+        if (values.eq(t.spelling, "printf") and n.args.len == 0) return p.fail(p.peek().position);
+        if (p.at(">") or p.at(">>")) { n.redir = p.take(); n.x = try p.concat(); } return n;
+    }
+    fn expressionList(p: *Parser, greater: bool) ![]*Node { var list: std.ArrayList(*Node) = .empty; try list.append(p.a, try p.expression(greater)); while (p.accept(",")) { p.newlines(); try list.append(p.a, try p.expression(greater)); } return list.items; }
+    fn expression(p: *Parser, greater: bool) anyerror!*Node {
+        const left = try p.conditional(greater); if (left.lvalue() and lex.member(p.peek().spelling, "= += -= *= /= %= ^=")) { const op = p.take(); const n = try p.node("assignment", op); n.op = op.spelling; n.x = left; n.y = try p.expression(greater); return n; } return left;
+    }
+    fn conditional(p: *Parser, greater: bool) anyerror!*Node { const left = try p.logical(0, greater); if (!p.at("?")) return left; const n = try p.node("conditional", p.take()); n.x = left; n.y = try p.conditional(greater); _ = try p.expect(":"); n.z = try p.conditional(greater); return n; }
+    fn logical(p: *Parser, level: usize, greater: bool) anyerror!*Node {
+        if (level == 2) { var left = try p.comparison(greater); while (p.at("in")) { const n = try p.node("membership", p.take()); n.args = try p.a.dupe(*Node, &.{left}); n.x = try p.name(); left = n; } return left; }
+        var left = try p.logical(level + 1, greater); const word = if (level == 0) "||" else "&&"; while (p.at(word)) { const t = p.take(); p.newlines(); left = try p.binary(t, word, left, try p.logical(level + 1, greater)); } return left;
+    }
+    fn comparison(p: *Parser, greater: bool) anyerror!*Node { var left = try p.concat(); while (lex.member(p.peek().spelling, "< <= == != >= >") and (greater or !p.at(">"))) { const op = p.take(); left = try p.binary(op, op.spelling, left, try p.concat()); } return left; }
+    fn concat(p: *Parser) anyerror!*Node { var left = try p.additive(); while (true) { const t = p.peek(); if (t.kind != .number and t.kind != .string and t.kind != .name and t.kind != .function_name and t.kind != .builtin and !lex.member(t.spelling, "$ ( ++ --")) break; left = try p.binary(t, "concat", left, try p.additive()); } return left; }
+    fn additive(p: *Parser) anyerror!*Node { var left = try p.multiplicative(); while (p.at("+") or p.at("-")) { const op = p.take(); left = try p.binary(op, op.spelling, left, try p.multiplicative()); } return left; }
+    fn multiplicative(p: *Parser) anyerror!*Node { var left = try p.unary(); while (p.at("*") or p.at("/") or p.at("%")) { const op = p.take(); left = try p.binary(op, op.spelling, left, try p.unary()); } return left; }
+    fn unary(p: *Parser) anyerror!*Node { if (lex.member(p.peek().spelling, "! - +")) { const t = p.take(); const n = try p.node("unary", t); n.op = t.spelling; n.x = try p.unary(); return n; } var left = try p.postfix(); if (p.at("^")) { const op = p.take(); left = try p.binary(op, "^", left, try p.unary()); } return left; }
+    fn postfix(p: *Parser) anyerror!*Node { if (p.at("++") or p.at("--")) return p.prefix(); const left = try p.atom(); if (left.lvalue() and (p.at("++") or p.at("--"))) { const t = p.take(); const n = try p.node("increment", t); n.delta = if (values.eq(t.spelling, "++")) 1 else -1; n.x = left; return n; } return left; }
+    fn lvalue(p: *Parser) anyerror!*Node {
+        if (p.peek().kind == .name) { const n = try p.name(); if (p.accept("[")) { n.kind = "array"; n.args = try p.expressionList(true); _ = try p.expect("]"); } return n; }
+        if (p.at("$")) { const n = try p.node("field", p.take()); n.x = if (p.at("++") or p.at("--")) try p.prefix() else try p.atom(); return n; } return p.fail(p.peek().position);
+    }
+    fn atom(p: *Parser) anyerror!*Node {
+        const t = p.peek(); if (t.kind == .number or t.kind == .string) { _ = p.take(); return p.node(if (t.kind == .number) "number" else "string", t); }
+        if (t.kind == .name or p.at("$")) return p.lvalue();
+pub const Text = []const u8;
+pub const Value = struct {
+    kind: enum { number, string, strnum, uninitialized } = .uninitialized, n: i64 = 0, s: Text = "",
+    pub fn number(n: i64) Value { return .{ .kind = .number, .n = n }; }
+    pub fn string(s: Text) Value { return .{ .kind = .string, .s = s }; }
+    pub fn input(s: Text) Value { return .{ .kind = if (numeric(s)) .strnum else .string, .s = s, .n = numericPrefix(s) }; }
+    pub fn num(v: Value) i64 { return if (v.kind == .number or v.kind == .strnum) v.n else numericPrefix(v.s); }
+    pub fn text(v: Value, a: std.mem.Allocator) !Text { return if (v.kind == .number) std.fmt.allocPrint(a, "{d}", .{v.n}) else v.s; }
+    pub fn truth(v: Value) bool { return if (v.kind == .number or v.kind == .strnum) v.n != 0 else v.s.len != 0; }
+};
+pub fn eq(a: Text, b: Text) bool { return std.mem.eql(u8, a, b); }
+fn numeric(s: Text) bool { const t = std.mem.trim(u8, s, " \t\n"); var p: usize = 0; if (t.len > 0 and (t[0] == '+' or t[0] == '-')) p += 1; if (p == t.len) return false; for (t[p..]) |c| if (!std.ascii.isDigit(c)) return false; return true; }
+fn numericPrefix(s: Text) i64 { var p: usize = 0; while (p < s.len and (s[p] == ' ' or s[p] == 9 or s[p] == 10)) p += 1; const start = p; if (p < s.len and (s[p] == '+' or s[p] == '-')) p += 1; const digits = p; while (p < s.len and std.ascii.isDigit(s[p])) p += 1; return if (p == digits) 0 else std.fmt.parseInt(i64, s[start..p], 10) catch unreachable; }
+pub fn split(a: std.mem.Allocator, s: Text, separator: Text) ![]const Text {
+    var pieces: std.ArrayList(Text) = .empty; if (s.len == 0) return pieces.items;
+    if (eq(separator, " ")) { var words = std.mem.tokenizeAny(u8, s, " \t\n"); while (words.next()) |piece| try pieces.append(a, piece); }
+    else if (separator.len == 0) { for (0..s.len) |i| try pieces.append(a, s[i..i + 1]); }
+    else { var words = std.mem.splitSequence(u8, s, separator); while (words.next()) |piece| try pieces.append(a, piece); } return pieces.items;
+}
+pub const Record = struct {
+    zero: Value = Value.string(""), fields: std.ArrayList(Value) = .empty,
+    pub fn set(r: *Record, a: std.mem.Allocator, s: Text, fs: Text) !void { r.zero = Value.input(s); r.fields = .empty; for (try split(a, s, fs)) |piece| try r.fields.append(a, Value.input(piece)); }
+    pub fn get(r: *Record, index: usize) Value { return if (index == 0) r.zero else if (index <= r.fields.items.len) r.fields.items[index - 1] else .{}; }
+    pub fn resize(r: *Record, a: std.mem.Allocator, n: usize) !void { while (r.fields.items.len < n) try r.fields.append(a, Value.string("")); r.fields.items.len = n; }
+    pub fn rebuild(r: *Record, a: std.mem.Allocator, ofs: Text) !void { var bytes: std.ArrayList(u8) = .empty; for (r.fields.items, 0..) |v, i| { if (i > 0) try bytes.appendSlice(a, ofs); try bytes.appendSlice(a, try v.text(a)); } r.zero = Value.input(bytes.items); }
+};
+pub fn shown(a: std.mem.Allocator, v: Value) !Text {
+    if (v.kind == .uninitialized) return "(uninitialized)"; if (v.kind == .number) return v.text(a);
+    var b: std.ArrayList(u8) = .empty; try b.append(a, '"');
+    for (v.s) |c| switch (c) { '"' => try b.appendSlice(a, "\\\""), '\\' => try b.appendSlice(a, "\\\\"), 10 => try b.appendSlice(a, "\\n"), 9 => try b.appendSlice(a, "\\t"), else => if (c < 32 or c > 126) { try b.appendSlice(a, try std.fmt.allocPrint(a, "\\{o:0>3}", .{c})); } else try b.append(a, c) };
+    try b.append(a, '"'); if (v.kind == .strnum) try b.appendSlice(a, " (strnum)"); return b.items;
+}
+pub const Operand = struct { assignment: bool, name: Text, value: Text = "", records: usize = 0 };
+pub const Arguments = struct { options: []const Operand, operands: []Operand };
+pub fn valid(name: Text) bool { if (name.len == 0 or name[0] == '.') return false; for (name) |c| if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '_' and c != '-') return false; return true; }
+fn identifier(name: Text) bool { if (name.len == 0 or (!std.ascii.isAlphabetic(name[0]) and name[0] != '_')) return false; for (name) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return false; return true; }
+pub fn args(a: std.mem.Allocator, source: Text) !Arguments {
+    var options: std.ArrayList(Operand) = .empty; var operands: std.ArrayList(Operand) = .empty; var argument_lines = std.mem.tokenizeScalar(u8, source, '\n');
+    while (argument_lines.next()) |line| { if (std.mem.startsWith(u8, line, "-F ")) { try options.append(a, .{ .assignment = true, .name = "FS", .value = line[3..] }); continue; } const option = std.mem.startsWith(u8, line, "-v "); const text = if (option) line[3..] else line; const equal = std.mem.indexOfScalar(u8, text, '='); if (equal != null and identifier(text[0..equal.?])) { const item: Operand = .{ .assignment = true, .name = text[0..equal.?], .value = text[equal.? + 1..] }; if (option) try options.append(a, item) else try operands.append(a, item); } else try operands.append(a, .{ .assignment = false, .name = text }); }
+    return .{ .options = options.items, .operands = operands.items };
+}
+pub fn lines(a: std.mem.Allocator, source: Text) ![]const Text { var result: std.ArrayList(Text) = .empty; var it = std.mem.splitScalar(u8, source, '\n'); while (it.next()) |line| { if (it.index == null and line.len == 0) break; try result.append(a, line); } return result.items; }
+pub const Output = struct { name: Text, bytes: std.ArrayList(u8) = .empty, open: bool = true, writes: usize = 0 };
+pub const Input = struct { name: Text, records: ?[]const Text = null, cursor: usize = 0, open: bool = false, reads: usize = 0, ever: bool = false };
+pub const Streams = struct {
+    a: std.mem.Allocator, io: std.Io, stdout: Output = .{ .name = "stdout.txt" }, outputs: std.ArrayList(Output) = .empty, inputs: std.ArrayList(Input) = .empty,
+    pub fn readFile(s: *Streams, name: Text) !?[]const Text { if (!valid(name)) return null; const source = std.Io.Dir.cwd().readFileAlloc(s.io, try std.fmt.allocPrint(s.a, "input/{s}", .{name}), s.a, .unlimited) catch |err| switch (err) { error.FileNotFound => return null, else => return err }; return try lines(s.a, source); }
+    pub fn write(s: *Streams, name: ?Text, append: bool, text: Text) !void {
+        if (name == null) { try s.stdout.bytes.appendSlice(s.a, text); s.stdout.writes += 1; return; }
+    pub fn save(s: *Streams, stats: Text) !void { const file = try std.Io.Dir.cwd().createFile(s.io, "output/stdout.txt", .{}); defer file.close(s.io); try file.writeStreamingAll(s.io, s.stdout.bytes.items); const st = try std.Io.Dir.cwd().createFile(s.io, "output/stats.txt", .{}); defer st.close(s.io); try st.writeStreamingAll(s.io, stats); for (s.outputs.items) |out| { const f = try std.Io.Dir.cwd().createFile(s.io, try std.fmt.allocPrint(s.a, "output/{s}", .{out.name}), .{}); defer f.close(s.io); try f.writeStreamingAll(s.io, out.bytes.items); } }
+const Binding = struct { name: Text, scope: ?usize, array: bool = false, visible: bool = true };
+const Slot = struct { value: Value = .{}, array: *Array };
+const Function = struct { node: *Node, calls: usize = 0, active: usize = 0, depth: usize = 0 };
+const Rule = struct { node: *Node, count: usize = 0, inside: bool = false };
+const Issue = struct { position: lex.Position, message: Text, rank: usize = 0 };
+const Buffer = struct { a: std.mem.Allocator, data: std.ArrayList(u8) = .empty,
+    fn add(b: *Buffer, text: Text) !void { try b.data.appendSlice(b.a, text); }
+    fn print(b: *Buffer, comptime f: Text, args: anytype) !void { try b.add(try std.fmt.allocPrint(b.a, f, args)); }
+};
+const Runtime = struct {
+    a: std.mem.Allocator, items: []*Node, arguments: streams.Arguments, streams: streams.Streams,
+    bindings: std.ArrayList(Binding) = .empty, functions: std.ArrayList(Function) = .empty, rules: std.ArrayList(Rule) = .empty,
+    globals: []Slot = &.{}, locals: ?[]Slot = null, record: vals.Record = .{}, counts: [402]usize = @splat(0), statement_lines: [402]bool = @splat(false),
+    issue: ?Issue = null, static_issue: ?Issue = null, phase: Text = "", return_value: Value = .{}, exit_status: i64 = 0,
+    next_operand: usize = 0, current_operand: ?usize = null, current_lines: []const Text = &.{}, current_line: usize = 0,
+    fn binding(r: *Runtime, name: Text, scope: ?usize, visible: bool) !usize { for (r.bindings.items, 0..) |*b, i| if (b.scope == scope and vals.eq(b.name, name)) { b.visible = b.visible or visible; return i; }; try r.bindings.append(r.a, .{ .name = name, .scope = scope, .visible = visible }); return r.bindings.items.len - 1; }
+    fn function(r: *Runtime, name: Text) ?usize { for (r.functions.items, 0..) |f, i| if (vals.eq(f.node.name, name)) return i; return null; }
+    fn staticError(r: *Runtime, pos: lex.Position, rank: usize, message: Text) void { const old = r.static_issue; if (old == null or pos.line < old.?.position.line or (pos.line == old.?.position.line and (pos.column < old.?.position.column or (pos.column == old.?.position.column and rank < old.?.rank)))) r.static_issue = .{ .position = pos, .message = message, .rank = rank }; }
+    fn walk(r: *Runtime, n: *Node, scope: ?usize) anyerror!void {
+        if (n.is("name") or n.is("array") or n.is("parameter")) {
+            var local: ?usize = null; if (scope) |fi| for (r.functions.items[fi].node.params) |p| { if (vals.eq(p.name, n.name)) local = fi; };
+            n.binding = try r.binding(n.name, local, true); if (r.function(n.name) != null) r.staticError(n.token.position, 2, try std.fmt.allocPrint(r.a, "function {s} used as variable", .{n.name}));
+            if (n.is("array")) r.bindings.items[n.binding.?].array = true;
+        }
+        if (isStatement(n)) r.statement_lines[n.token.position.line] = true;
+        if (n.x) |x| try r.walk(x, scope); if (n.y) |y| try r.walk(y, scope); if (n.z) |z| try r.walk(z, scope); if (n.w) |w| try r.walk(w, scope); for (n.args) |child| try r.walk(child, scope);
+    }
+    fn prepare(r: *Runtime) !void {
+        for (r.items) |n| if (n.is("function")) { if (r.function(n.name) != null) r.staticError(n.token.position, 0, try std.fmt.allocPrint(r.a, "function {s} redefined", .{n.name})); try r.functions.append(r.a, .{ .node = n }); } else try r.rules.append(r.a, .{ .node = n });
+        for (r.functions.items, 0..) |f, fi| { for (f.node.params, 0..) |p, pi| { for (f.node.params[0..pi]) |previous| if (vals.eq(p.name, previous.name)) { r.staticError(p.token.position, 1, try std.fmt.allocPrint(r.a, "duplicate parameter {s}", .{p.name})); break; }; p.binding = try r.binding(p.name, fi, true); if (r.function(p.name) != null) r.staticError(p.token.position, 2, try std.fmt.allocPrint(r.a, "function {s} used as variable", .{p.name})); } try r.walk(f.node.x.?, fi); }
+        for (r.rules.items) |rule| try r.walk(rule.node, null);
+        if (r.static_issue != null) return;
+        for ([_]Text{"FS", "OFS", "ORS", "SUBSEP", "NR", "FNR", "FILENAME", "NF"}) |name| _ = try r.binding(name, null, true);
+        for (r.arguments.options) |o| _ = try r.binding(o.name, null, false); for (r.arguments.operands) |o| if (o.assignment) { _ = try r.binding(o.name, null, false); };
+        r.globals = try r.newSlots(); try r.setGlobal("FS", Value.string(" ")); try r.setGlobal("OFS", Value.string(" ")); try r.setGlobal("ORS", Value.string("\n")); try r.setGlobal("SUBSEP", Value.string("\x1c")); try r.setGlobal("NR", Value.number(0)); try r.setGlobal("FNR", Value.number(0)); try r.setGlobal("FILENAME", Value.string(""));
+    }
+    fn newSlots(r: *Runtime) ![]Slot { const slots = try r.a.alloc(Slot, r.bindings.items.len); for (slots) |*s| { const array = try r.a.create(Array); array.* = .empty; s.* = .{ .array = array }; } return slots; }
+    fn globalIndex(r: *Runtime, name: Text) usize { for (r.bindings.items, 0..) |b, i| if (b.scope == null and vals.eq(b.name, name)) return i; unreachable; }
+    fn global(r: *Runtime, name: Text) Value { return if (vals.eq(name, "NF")) Value.number(@intCast(r.record.fields.items.len)) else r.globals[r.globalIndex(name)].value; }
+    fn setGlobal(r: *Runtime, name: Text, value: Value) !void { const index = r.globalIndex(name); r.bindings.items[index].visible = true; r.globals[index].value = value; }
+    fn slot(r: *Runtime, index: usize) *Slot { return if (r.bindings.items[index].scope == null) &r.globals[index] else &r.locals.?[index]; }
+    fn failure(r: *Runtime, pos: lex.Position, message: Text) error{Runtime} { r.issue = .{ .position = pos, .message = message }; return error.Runtime; }
+    const Location = struct { binding: ?usize = null, subscript: ?Text = null, field: ?usize = null };
+    fn location(r: *Runtime, n: *Node) !Location {
+        if (n.is("field")) { const index = (try r.eval(n.x.?)).num(); if (index < 0) return r.failure(n.token.position, "negative field index"); return .{ .field = @intCast(index) }; }
+        return .{ .binding = n.binding.?, .subscript = if (n.is("array")) try r.key(n.args) else null };
+    }
+    fn get(r: *Runtime, loc: Location) !Value {
+        if (loc.field) |k| return r.record.get(k); const index = loc.binding.?;
+        if (loc.subscript) |subscript| { const array = r.slot(index).array; const entry = try array.getOrPut(r.a, subscript); if (!entry.found_existing) entry.value_ptr.* = .{}; return entry.value_ptr.*; }
+        if (r.bindings.items[index].scope == null and vals.eq(r.bindings.items[index].name, "NF")) return r.global("NF"); return r.slot(index).value;
+    }
+    fn put(r: *Runtime, loc: Location, value: Value, pos: lex.Position) !Value {
+        if (loc.field) |k| { if (k == 0) try r.record.set(r.a, try value.text(r.a), try r.global("FS").text(r.a)) else { if (k > r.record.fields.items.len) try r.record.resize(r.a, k); r.record.fields.items[k - 1] = value; try r.record.rebuild(r.a, try r.global("OFS").text(r.a)); } return r.record.get(k); }
+        const index = loc.binding.?; if (loc.subscript) |subscript| { try r.slot(index).array.put(r.a, subscript, value); return value; }
+        if (r.bindings.items[index].scope == null and vals.eq(r.bindings.items[index].name, "NF")) { const n = value.num(); if (n < 0) return r.failure(pos, "negative NF"); try r.record.resize(r.a, @intCast(n)); try r.record.rebuild(r.a, try r.global("OFS").text(r.a)); return r.global("NF"); }
+        r.slot(index).value = value; return value;
+    }
+    fn arithmetic(r: *Runtime, op: Text, a: i64, b: i64, pos: lex.Position) !Value {
+        if (n.is("increment")) { const loc = try r.location(n.x.?); const old = (try r.get(loc)).num(); _ = try r.put(loc, Value.number(old + n.delta), n.token.position); return Value.number(if (n.flag) old + n.delta else old); }
+        if (n.is("conditional")) return r.eval(if ((try r.eval(n.x.?)).truth()) n.y.? else n.z.?);
+        if (n.is("unary")) { const value = try r.eval(n.x.?); return Value.number(if (vals.eq(n.op, "!")) @intFromBool(!value.truth()) else if (vals.eq(n.op, "-")) -value.num() else value.num()); }
+        if (n.is("block")) { for (n.args) |child| try r.statement(child); return; } if (n.is("empty")) return; r.counts[n.token.position.line] += 1;
+        if (n.is("expression_statement")) { _ = try r.eval(n.x.?); return; }
+        if (n.is("if")) { if ((try r.eval(n.x.?)).truth()) try r.statement(n.y.?) else if (n.z) |other| try r.statement(other); return; }
+        if (n.is("print") or n.is("printf")) {
+            var args: std.ArrayList(Value) = .empty; for (n.args) |arg| try args.append(r.a, try r.eval(arg)); var text: Text = "";
+            if (n.is("printf")) text = try r.formatted(args.items, n.token.position)
+            else { if (args.items.len == 0) try args.append(r.a, r.record.zero); var parts: std.ArrayList(Text) = .empty; for (args.items) |value| try parts.append(r.a, try value.text(r.a)); text = try std.mem.concat(r.a, u8, &.{try std.mem.join(r.a, try r.global("OFS").text(r.a), parts.items), try r.global("ORS").text(r.a)}); }
+            var name: ?Text = null; if (n.x) |filename| { name = try (try r.eval(filename)).text(r.a); if (!streams.valid(name.?) or vals.eq(name.?, "stdout.txt") or vals.eq(name.?, "stats.txt")) return r.failure(n.redir.?.position, "invalid output file name"); }
+            try r.streams.write(name, n.redir != null and vals.eq(n.redir.?.spelling, ">>"), text); return;
+        }
+    fn nextRecord(r: *Runtime) anyerror!?Text {
+        while (true) {
+            if (r.current_operand) |index| { if (r.current_line < r.current_lines.len) { const text = r.current_lines[r.current_line]; r.current_line += 1; r.arguments.operands[index].records += 1; try r.setGlobal("NR", Value.number(r.global("NR").num() + 1)); try r.setGlobal("FNR", Value.number(r.global("FNR").num() + 1)); return text; } r.current_operand = null; }
+            if (r.next_operand == r.arguments.operands.len) return null; const index = r.next_operand; r.next_operand += 1; const operand = r.arguments.operands[index];
+            if (operand.assignment) { try r.setGlobal(operand.name, Value.input(operand.value)); continue; }
+            r.current_operand = index; r.current_line = 0; r.current_lines = (try r.streams.readFile(operand.name)).?; try r.setGlobal("FILENAME", Value.string(operand.name)); try r.setGlobal("FNR", Value.number(0));
+        }
+    }
+    fn actions(r: *Runtime, phase: Text) !void { r.phase = phase; for (r.rules.items, 0..) |rule, i| if (vals.eq(rule.node.op, phase)) { r.rules.items[i].count += 1; try r.statement(rule.node.x.?); }; }
+    fn records(r: *Runtime) !void {
+        r.phase = "record";
+        while (try r.nextRecord()) |text| {
+            try r.record.set(r.a, text, try r.global("FS").text(r.a));
+            for (r.rules.items, 0..) |rule, ri| {
+                const n = rule.node; if (vals.eq(n.op, "BEGIN") or vals.eq(n.op, "END")) continue;
+                if (!matches) continue; r.rules.items[ri].count += 1;
+                if (n.x) |action| r.statement(action) catch |err| switch (err) { error.Next => break, else => return err }
+                else try r.streams.write(null, false, try std.mem.concat(r.a, u8, &.{try r.record.zero.text(r.a), try r.global("ORS").text(r.a)}));
+            }
+        }
+    }
+    fn execute(r: *Runtime) !void {
+        for (r.arguments.options) |option| try r.setGlobal(option.name, Value.input(option.value));
+        var exit = false; r.actions("BEGIN") catch |err| switch (err) { error.Exit => exit = true, else => return err };
+        if (!exit) { var has_records = false; for (r.rules.items) |rule| if (!vals.eq(rule.node.op, "BEGIN")) { has_records = true; }; if (has_records) r.records() catch |err| switch (err) { error.Exit => {}, else => return err }; }
+        r.actions("END") catch |err| switch (err) { error.Exit => {}, else => return err };
+    }
+    fn stats(r: *Runtime) !Text {
+        var b: Buffer = .{ .a = r.a };
+        if (r.issue) |issue| try b.print("status: runtime error at {d}:{d}: {s}\n", .{issue.position.line, issue.position.column, issue.message}) else try b.print("status: exit {d}\n", .{r.exit_status});
+        try b.add("[inputs]\n"); for (r.arguments.operands) |operand| if (!operand.assignment) { try b.print("{s} records={d}\n", .{operand.name, operand.records}); };
+        try b.add("[rules]\n"); for (r.rules.items) |rule| try b.print("{d}:{d} {s} count={d}\n", .{rule.node.token.position.line, rule.node.token.position.column, rule.node.op, rule.count});
+        try b.print("[outputs]\nstdout.txt writes={d} bytes={d}\n", .{r.streams.stdout.writes, r.streams.stdout.bytes.items.len}); for (r.streams.outputs.items) |out| try b.print("{s} writes={d} bytes={d}\n", .{out.name, out.writes, out.bytes.items.len});
+        try b.add("[lines]\n"); for (r.statement_lines, 0..) |present, line| if (present) { try b.print("{d} count={d}\n", .{line, r.counts[line]}); };
+        var names: std.ArrayList(Text) = .empty; for (r.bindings.items) |descriptor| if (descriptor.scope == null and descriptor.visible) { try names.append(r.a, descriptor.name); }; std.mem.sort(Text, names.items, {}, struct { fn less(_: void, a: Text, c: Text) bool { return std.mem.order(u8, a, c) == .lt; } }.less);
+        try b.add("[globals]\n"); for (names.items) |name| { const index = r.globalIndex(name); if (r.bindings.items[index].array) try b.print("{s} = array ({d})\n", .{name, r.globals[index].array.count()}) else try b.print("{s} = {s}\n", .{name, try vals.shown(r.a, r.global(name))}); } return b.data.items;
+    }
+};
+fn isStatement(n: *Node) bool { return lex.member(n.kind, "if while do for for_in print printf delete next break continue exit return expression_statement"); }
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(init.gpa); defer arena.deinit(); const a = arena.allocator(); var output: streams.Streams = .{ .a = a, .io = init.io };
+    const source = try std.Io.Dir.cwd().readFileAlloc(init.io, "input/program.awk", a, .unlimited); var lexer: lex.Lexer = .{ .a = a, .source = source };
+    const tokens = lexer.tokenize() catch |err| switch (err) { error.Syntax => { try output.save(try std.fmt.allocPrint(a, "status: syntax error at {d}:{d}\n", .{lexer.issue.line, lexer.issue.column})); return; }, else => return err };
+    var parsing: parser.Parser = .{ .a = a, .tokens = tokens }; const items = parsing.parse() catch |err| switch (err) { error.Syntax => { try output.save(try std.fmt.allocPrint(a, "status: syntax error at {d}:{d}\n", .{parsing.issue.line, parsing.issue.column})); return; }, else => return err };
+    var runtime: Runtime = .{ .a = a, .items = items, .arguments = try streams.args(a, try std.Io.Dir.cwd().readFileAlloc(init.io, "input/args.txt", a, .unlimited)), .streams = output };
+    try runtime.prepare(); if (runtime.static_issue) |issue| { try runtime.streams.save(try std.fmt.allocPrint(a, "status: error at {d}:{d}: {s}\n", .{issue.position.line, issue.position.column, issue.message})); return; }
+    runtime.execute() catch |err| switch (err) { error.Runtime => {}, else => return err }; try runtime.streams.save(try runtime.stats());
+}

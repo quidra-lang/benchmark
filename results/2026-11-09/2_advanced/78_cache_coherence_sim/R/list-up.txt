@@ -1,0 +1,96 @@
+handle_access <- function(state, event, issue, primary) {
+    config <- state$config
+    core <- event$core
+    block <- event$block
+    word <- event$word
+    operation <- event$operation
+    counters <- state$cores[[core + 1L]]
+    cache <- state$l1[[core + 1L]]
+    before <- list()
+    if (primary) for (watched in config$watch) before[[as.character(watched)]] <- line_states(state, watched)
+    old <- cache_state(cache, block)
+    hit <- old != "I"
+    add_count(counters$simple, "accesses")
+    add_count(counters$simple, if (operation == "R") "reads" else "writes")
+    add_count(counters$simple, if (hit) "hits" else "misses")
+    other_copy <- any(vapply(
+        seq_len(config$cores) - 1L,
+        function(k) k != core && cache_state(state$l1[[k + 1L]], block) != "I",
+        FALSE
+    ))
+    transition <- requester_transition(state$scenario$protocol, old, operation, other_copy)
+    kind <- transition$kind
+    miss_kind <- NULL
+    if (is.null(kind)) {
+        completion <- issue + config$t1
+        service <- "l1"
+    } else {
+        result <- run_bus_transaction(state, core, kind, block, word, issue + config$t1)
+        completion <- result$completion
+        tx <- result$transaction
+        service <- if (kind == "BusUpgr") "upgrade" else if (kind == "BusWr") "through" else if (tx$supplier >= 0L) "cache" else if (tx$l2 == "hit") "l2" else "memory"
+    }
+    if (old != "I") {
+        cache_change(cache, block, transition$state)
+    latency <- completion - issue
+    add_count(counters$service, service)
+    add_count(counters$simple, "latency", latency)
+    add_count(counters$simple, if (operation == "R") "read_latency" else "write_latency", latency)
+    if (operation == "R") {
+        state$ready[core + 1L] <- completion
+    } else {
+    counters$finish <- max(counters$finish, completion)
+    state$accesses[[length(state$accesses) + 1L]] <- list(
+        number = event$number,
+        issue = issue,
+        core = core,
+        operation = operation,
+        address = event$address,
+        block = block,
+        word = word,
+        latency = latency,
+        service = service,
+        miss_kind = miss_kind,
+        hit = hit
+    )
+    if (primary) render_watch(state, event, issue, before)
+}
+cache_touch_way <- function(cache, row, way, filling = FALSE) {
+    if (cache$replacement == "LRU" || (cache$replacement == "FIFO" && filling)) {
+        cache$clock <- cache$clock + 1L
+        cache$touched[row, way] <- cache$clock
+    } else if (cache$replacement == "PLRU") {
+        low <- 0L
+        high <- cache$ways
+        node <- 1L
+        while (high - low > 1L) {
+            middle <- (low + high) %/% 2L
+            if (way - 1L < middle) {
+                cache$bits[row, node] <- 1L
+                high <- middle
+                node <- node * 2L
+            } else {
+                cache$bits[row, node] <- 0L
+                low <- middle
+                node <- node * 2L + 1L
+            }
+        }
+    }
+}
+cache_touch <- function(cache, block) {
+    place <- cache_locate(cache, block)
+    if (!is.null(place)) cache_touch_way(cache, place[1L], place[2L])
+}
+requester_transition <- function(protocol, old, operation, other_copy) {
+    if (protocol == "VI") {
+        if (operation == "R") return(list(kind = if (old == "I") "BusRd" else NULL, state = "V"))
+        return(list(kind = "BusWr", state = if (old == "I") "I" else "V"))
+    }
+    if (old == "I") {
+        if (operation == "W") return(list(kind = "BusRdX", state = "M"))
+        return(list(kind = "BusRd", state = if (protocol == "MSI" || other_copy) "S" else "E"))
+    }
+    if (operation == "R") return(list(kind = NULL, state = old))
+    if (old %in% c("M", "E")) return(list(kind = NULL, state = "M"))
+    list(kind = "BusUpgr", state = "M")
+}

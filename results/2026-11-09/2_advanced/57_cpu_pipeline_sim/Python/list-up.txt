@@ -1,0 +1,230 @@
+REGISTER = re.compile(r"r(?:[0-9]|[12][0-9]|3[01])\Z")
+def parse_register(text):
+    return int(text[1:]) if REGISTER.fullmatch(text) else None
+def read_inputs():
+    trace = Path("input/trace.txt").read_text(encoding="ascii").splitlines()
+    config = {"predictors": [], "variants": []}
+    for line in Path("input/config.txt").read_text(encoding="ascii").splitlines():
+        key, *values = line.split(" ")
+        elif key == "VARIANT":
+            config["variants"].append({"name": values[0], "forwarding": values[1] == "ON",
+                                       "stage": values[2], "latency": int(values[3])})
+        elif key == "PRIMARY":
+            config["primary"] = tuple(values)
+        elif key == "WINDOW":
+            config["window"] = tuple(map(int, values))
+def dependencies(instructions):
+    last_writer = {}
+    sources = []
+    for index, instruction in enumerate(instructions):
+        current = []
+        for field in ("rs1", "rs2"):
+            register = instruction[field]
+            if register is not None and register != 0:
+                current.append({"field": field, "register": register,
+                                "producer": last_writer.get(register)})
+        sources.append(current)
+        destination = instruction["rd"]
+        if destination is not None and destination != 0:
+            last_writer[destination] = index
+    return sources
+def id_resolved(instruction, variant):
+    if instruction["class"] == "JUMP" and instruction["rs1"] is None:
+        return True
+    return instruction["class"] in ("BRANCH", "JUMP") and variant["stage"] == "ID"
+
+
+def ready_cycle(instruction, producer, producer_time, variant):
+    if not variant["forwarding"]:
+        return producer_time["W"] + 1
+    result = producer_time["W"] if producer["class"] == "LOAD" else producer_time["M"]
+    return result + int(id_resolved(instruction, variant))
+CAUSES = ("control", "structural", "load_use", "raw")
+STAGES = ("IF", "ID", "EX", "MEM", "WB")
+def simulate(instructions, sources, variant, mispredicted):
+    timings = []
+    records = []
+    delays = []
+    for index, instruction in enumerate(instructions):
+        execute = variant["latency"] if instruction["class"] == "MUL" else 1
+        if index == 0:
+            fetch, decode, start = 1, 2, 3
+        else:
+            previous = timings[-1]
+            if mispredicted[index - 1]:
+                fetch = previous["X"] + int(not id_resolved(instructions[index - 1], variant))
+            else:
+                fetch = previous["D"]
+            decode = max(fetch + 1, previous["X"])
+            ideal = previous["X"] + 1
+            load_ready = ideal
+            raw_ready = ideal
+            load_producer = None
+            raw_producer = None
+            for source in sources[index]:
+                producer = source["producer"]
+                if producer is None:
+                    continue
+                ready = ready_cycle(instruction, instructions[producer], timings[producer], variant)
+                if instructions[producer]["class"] == "LOAD":
+                    if ready > load_ready:
+                        load_ready, load_producer = ready, producer
+                elif ready > raw_ready:
+                    raw_ready, raw_producer = ready, producer
+            bounds = (decode + 1, previous["M"], load_ready, raw_ready)
+            start = ideal
+            for cause, bound, producer in zip(CAUSES, bounds, (None, None, load_producer, raw_producer)):
+                if bound > start:
+                    records.append({"cause": cause, "cycles": bound - start,
+                                    "responsible": index - 1 if cause in ("control", "structural") else index,
+                                    "waiting": index, "producer": producer})
+                    start = bound
+            delays.append(start - ideal)
+        timings.append({"F": fetch, "D": decode, "X": start,
+                        "M": start + execute, "W": start + execute + 1})
+    return {"timings": timings, "records": records, "delays": delays, "cycles": timings[-1]["W"]}
+    pc_text, kind, rd_text, rs1_text, rs2_text, outcome, target_text, address_text = tokens
+    register_texts = (rd_text, rs1_text, rs2_text)
+    registers = tuple(parse_register(text) for text in register_texts)
+    rd, rs1, rs2 = registers
+    instruction = {"pc": pc, "class": kind, "rd": rd, "rs1": rs1, "rs2": rs2,
+                   "outcome": outcome, "target": target, "address": address}
+    instruction["next_pc"] = target if outcome == "T" else pc + 4
+    return instruction, None
+def validate_trace(lines):
+    instructions = []
+    rejected = []
+    gaps = []
+    static = {}
+    for line_number, line in enumerate(lines, 1):
+        instruction, error = check_record(line, static)
+        if error is not None:
+            rejected.append((line_number, error))
+            continue
+        instruction["line"] = line_number
+        instruction["number"] = len(instructions) + 1
+        instructions.append(instruction)
+def stall_totals(records):
+    cycles = Counter()
+    events = Counter()
+    for record in records:
+        cycles[record["cause"]] += record["cycles"]
+        events[record["cause"]] += 1
+    return cycles, events
+
+
+def all_combinations(instructions, sources, predictions, config):
+    combinations = []
+    primary = None
+    for variant in config["variants"]:
+        for predictor in config["predictors"]:
+            result = simulate(instructions, sources, variant, predictions[predictor["name"]]["flags"])
+            cycles, counts = stall_totals(result["records"])
+            combinations.append({"variant": variant["name"], "predictor": predictor["name"],
+                                 "cycles": result["cycles"], "stalls": cycles})
+            if (variant["name"], predictor["name"]) == config["primary"]:
+                primary = {**result, "variant": variant, "predictor": predictor["name"],
+                           "stalls": cycles, "stall_events": counts}
+def correct_row(instruction, timing, annotation):
+    f, d, x, m, w = (timing[key] for key in ("F", "D", "X", "M", "W"))
+    return {"number": instruction["number"], "pc": instruction["pc"],
+            "class": instruction["class"], "annotation": annotation,
+            "characters": [(f, f, "F"), (f + 1, d - 1, "*"), (d, d, "D"),
+                           (d + 1, x - 1, "*"), (x, m - 1, "X"), (m, m, "M"), (w, w, "W")],
+            "stages": [("IF", f, d - 1), ("ID", d, x - 1), ("EX", x, m - 1),
+                       ("MEM", m, m), ("WB", w, w)]}
+def build_rows(instructions, primary, prediction):
+    annotations = defaultdict(list)
+    for record in primary["records"]:
+        if record["waiting"] is not None:
+            annotations[record["waiting"]].append(f" {record['cause']} {record['cycles']}")
+    rows = []
+    for index, (instruction, timing) in enumerate(zip(instructions, primary["timings"])):
+        annotation = "".join(annotations[index])
+        detail = prediction["details"][index]
+        if prediction["flags"][index]:
+            annotation += " mispredict " + detail["kind"]
+        rows.append(correct_row(instruction, timing, annotation))
+def pipeline_lines(rows, primary, config):
+    first, last = config["window"]
+    width = last - first + 1
+    lines = [f"pipeline variant={primary['variant']['name']} predictor={primary['predictor']} cycles {first}-{last}",
+             cycle_heading(first, last)]
+    contents = [["."] * len(STAGES) for _ in range(width)]
+    visible = 0
+    stalled = 0
+    flushed = 0
+    for row in rows:
+        characters = ["."] * width
+        for begin, end, symbol in row["characters"]:
+            for cycle in range(max(first, begin), min(last, end) + 1):
+                characters[cycle - first] = symbol
+        if any(symbol != "." for symbol in characters):
+            visible += 1
+            stalled += characters.count("*")
+            flushed += characters.count("x")
+            lines.append(diagram_row(row["number"], row["pc"], row["class"],
+                                     "".join(characters), row["annotation"]))
+def timing_part(primary, instruction_count, height, refetch_count):
+    variant = primary["variant"]
+    cycles = primary["cycles"]
+    stalls = primary["stalls"]
+    total_stalls = sum(stalls.values())
+    lengths = Counter(min(5, value) for value in primary["delays"] if value > 0)
+    cpi_causes = " ".join(f"{cause} {decimal(stalls[cause], instruction_count)}" for cause in CAUSES)
+    return [f"timing variant={variant['name']} predictor={primary['predictor']}",
+            f"forwarding {'on' if variant['forwarding'] else 'off'} branch_stage {variant['stage']} mul_latency {variant['latency']}",
+            f"cycles {cycles}", f"cpi {reduced_fraction(cycles, instruction_count)} {decimal(cycles, instruction_count)}",
+            f"ipc {decimal(instruction_count, cycles)}", f"stall_cycles total {total_stalls} {cause_values(stalls)}",
+            "stall_events " + cause_values(primary["stall_events"]), f"flushed {refetch_count}",
+            f"cycle_check {instruction_count} + 4 + {total_stalls} = {instruction_count + 4 + total_stalls}",
+            f"cpi_stack base 1.0000 fill {decimal(4, instruction_count)} {cpi_causes}",
+            "stall_lengths " + " ".join(f"{label} {lengths[i]}" for i, label in enumerate(("1", "2", "3", "4", "5+"), 1)),
+def segments_profile(instructions, timings, limit):
+    groups = {}
+    first = 0
+    for last, instruction in enumerate(instructions):
+        if instruction["class"] in CONTROLS or last == len(instructions) - 1:
+            pc = instructions[first]["pc"]
+            group = groups.setdefault(pc, {"instances": 0, "instructions": 0, "cycles": 0})
+            group["instances"] += 1
+            group["instructions"] += last - first + 1
+            group["cycles"] += timings[last]["W"] - (timings[first - 1]["W"] if first else 0)
+            first = last + 1
+    ranked = sorted(groups, key=lambda pc: (-groups[pc]["cycles"], pc))
+    lines = [f"segments total {len(groups)}"]
+    for rank, pc in enumerate(ranked[:limit], 1):
+        group = groups[pc]
+        lines.append(f"{rank} {hexadecimal(pc)} instances {group['instances']} instructions {group['instructions']} "
+                     f"cycles {group['cycles']} cpi {decimal(group['cycles'], group['instructions'])}")
+    return lines
+def static_profile(instructions, groups, records):
+    stalls = Counter()
+    for record in records:
+        stalls[instructions[record["responsible"]]["pc"]] += record["cycles"]
+    lines = ["instructions"]
+    for pc, indices in groups.items():
+        instruction = instructions[indices[0]]
+        operands = " ".join(register(instruction[key]) for key in ("rd", "rs1", "rs2"))
+        lines.append(f"{hexadecimal(pc)} {instruction['class']} {operands} executions {len(indices)} stall_cycles {stalls[pc]}")
+    return lines
+
+
+def profile_lines(instructions, groups, predictions, primary, config):
+    return join_parts([
+        branch_profile(instructions, groups, predictions, config),
+        loops_profile(instructions, groups), segments_profile(instructions, primary["timings"], config["top"]),
+        indirect_profile(instructions, groups), static_profile(instructions, groups, primary["records"]),
+def main():
+    lines, config = read_inputs()
+    trace = validate_trace(lines)
+    instructions = trace["instructions"]
+    sources = dependencies(instructions)
+    predictions = {definition["name"]: predict_trace(instructions, definition, config)
+                   for definition in config["predictors"]}
+    combinations, primary = all_combinations(instructions, sources, predictions, config)
+    rows = build_rows(instructions, primary, predictions[primary["predictor"]])
+    groups = group_executions(instructions)
+    write_lines("pipeline.txt", pipeline_lines(rows, primary, config))
+    write_lines("stats.txt", statistics_lines(trace, sources, predictions, combinations, primary, rows, config))
+    write_lines("profile.txt", profile_lines(instructions, groups, predictions, primary, config))

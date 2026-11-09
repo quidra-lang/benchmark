@@ -1,0 +1,191 @@
+const Strings = [][]const u8;
+fn unsigned(text: []const u8, limit: usize) ?i64 {
+    if (text.len == 0 or text.len > limit) return null;
+    for (text) |c| {
+        if (!std.ascii.isDigit(c)) return null;
+    }
+    return std.fmt.parseInt(i64, text, 10) catch null;
+fn timeValue(text: []const u8) ?i64 {
+    if (text.len != 12 or text[2] != ':' or text[5] != ':' or text[8] != ',') return null;
+    const h = unsigned(text[0..2], 2) orelse return null;
+    const m = unsigned(text[3..5], 2) orelse return null;
+    const s = unsigned(text[6..8], 2) orelse return null;
+    const ms = unsigned(text[9..12], 3) orelse return null;
+    if (m > 59 or s > 59) return null;
+    return h * 3600000 + m * 60000 + s * 1000 + ms;
+fn timeText(gpa: Allocator, value: i64, vtt: bool) Allocator.Error![]const u8 {
+    const t: u64 = @intCast(value);
+    return std.fmt.allocPrint(gpa, "{d:0>2}:{d:0>2}:{d:0>2}{c}{d:0>3}", .{
+        t / 3600000,                    t / 60000 % 60, t / 1000 % 60,
+        @as(u8, if (vtt) '.' else ','), t % 1000,
+    });
+fn split(gpa: Allocator, text: []const u8, delimiter: u8, skip_empty: bool) Allocator.Error!Strings {
+    var result: std.ArrayList([]const u8) = .empty;
+    var parts = std.mem.splitScalar(u8, text, delimiter);
+    while (parts.next()) |part| {
+        if (!skip_empty or part.len > 0) try result.append(gpa, part);
+    }
+    return result.items;
+fn words(gpa: Allocator, lines: []const []const u8) Allocator.Error!Strings {
+    var result: std.ArrayList([]const u8) = .empty;
+    for (lines) |line| try result.appendSlice(gpa, try split(gpa, line, ' ', true));
+    return result.items;
+fn wrap(gpa: Allocator, lines: []const []const u8, width: usize) Allocator.Error!Strings {
+    var result: std.ArrayList([]const u8) = .empty;
+    for (try words(gpa, lines)) |word| {
+        if (result.items.len > 0 and result.items[result.items.len - 1].len + 1 + word.len <= width) {
+            const last = result.items.len - 1;
+            result.items[last] = try std.fmt.allocPrint(gpa, "{s} {s}", .{ result.items[last], word });
+        } else try result.append(gpa, word);
+    }
+    return result.items;
+const Cue = struct {
+    index: i64,
+    start: i64,
+    end: i64,
+    text: Strings,
+    fn dialogue(self: Cue) bool {
+        for (self.text) |line| {
+            if (std.mem.startsWith(u8, line, "- ")) return true;
+        }
+        return false;
+const Op = enum {
+    PRINT,
+    MERGE,
+    number: i64 = 0,
+const Command = struct {
+    op: Op,
+    args: [4]Arg = .{ .{}, .{}, .{}, .{} },
+    count: usize = 0,
+    fn n(self: Command, i: usize) i64 {
+        return self.args[i].number;
+const Editor = struct {
+    gpa: Allocator,
+    cues: []Cue = &.{},
+    blocks: usize = 0,
+    bad: usize = 0,
+    error_buffer: [1024]u8 = undefined,
+    error_len: usize = 0,
+    fn fail(self: *Editor, message: []const u8) error{BadCommand} {
+        @memcpy(self.error_buffer[0..message.len], message);
+        self.error_len = message.len;
+        return error.BadCommand;
+    fn parseCommand(self: *Editor, line: []const u8) Error!Command {
+        const fields = try split(self.gpa, line, ' ', false);
+        const op = std.meta.stringToEnum(Op, fields[0]) orelse return self.fail("unknown command");
+        const schema: []const Kind = switch (op) {
+            .GAPS, .FIXOVERLAP, .MERGE => &.{.gap},
+            else => &.{},
+        };
+        const string_last = schema.len > 0 and switch (schema[schema.len - 1]) {
+            .string, .text, .replacement => true,
+            else => false,
+        };
+        if (fields.len < schema.len + 1 or (!string_last and fields.len != schema.len + 1))
+            return self.fail("bad arguments");
+        var command = Command{ .op = op, .count = schema.len };
+        for (schema, 0..) |kind, i| {
+            const raw = if (string_last and i == schema.len - 1)
+                try std.mem.join(self.gpa, " ", fields[i + 1 ..])
+            else
+                fields[i + 1];
+            var arg = Arg{};
+            switch (kind) {
+                else => {
+                    arg.number = if (kind == .time) timeValue(raw) orelse return self.fail("bad arguments") else if (kind == .signed and raw.len > 0 and raw[0] == '-')
+                        -(unsigned(raw[1..], 9) orelse return self.fail("bad arguments"))
+                    else
+                        unsigned(raw, 9) orelse return self.fail("bad arguments");
+                    const value = arg.number;
+                    if ((kind == .position and value < 1) or (kind == .gap and value > 60000) or
+                        (kind == .minimum and (value < 1 or value > 60000)) or
+                        (kind == .width and (value < 10 or value > 80)) or
+                        (kind == .scale and (value < 1 or value > 100000))) return self.fail("bad arguments");
+                },
+            }
+            command.args[i] = arg;
+        }
+        return command;
+    fn load(self: *Editor, block: []const []const u8, out: *std.Io.Writer) Error!void {
+        if (block.len == 0) return;
+        self.blocks += 1;
+        const index = unsigned(block[0], 6);
+        var start: ?i64 = null;
+        var end: ?i64 = null;
+        var load_problem: ?[]const u8 = null;
+        if (index == null) load_problem = "index" else if (block.len < 2 or block[1].len != 29 or
+            !std.mem.eql(u8, block[1][12..17], " --> ")) load_problem = "time" else {
+            start = timeValue(block[1][0..12]);
+            end = timeValue(block[1][17..]);
+            if (start == null or end == null) load_problem = "time" else if (block.len < 3) load_problem = "no text";
+        }
+        if (load_problem) |message| {
+            self.bad += 1;
+            try out.print("BAD CUE {d}: {s}\n", .{ self.blocks, message });
+        } else {
+            const cues = try self.gpa.alloc(Cue, self.cues.len + 1);
+            @memcpy(cues[0..self.cues.len], self.cues);
+            cues[self.cues.len] = .{ .index = index.?, .start = start.?, .end = end.?, .text = try self.gpa.dupe([]const u8, block[2..]) };
+            self.cues = cues;
+        }
+    fn execute(self: *Editor, line: []const u8, out: *std.Io.Writer) Error!void {
+        const command = try self.parseCommand(line);
+        const op = command.op;
+        switch (op) {
+            .PRINT => for (self.cues) |c| {
+                try out.print("{d}\n{s} --> {s}\n", .{ c.index, try timeText(self.gpa, c.start, false), try timeText(self.gpa, c.end, false) });
+                for (c.text) |text| try out.print("{s}\n", .{text});
+                try out.writeByte('\n');
+            },
+            .MERGE => {
+                var result: std.ArrayList(Cue) = .empty;
+                var merged: usize = 0;
+                for (self.cues) |b| {
+                    if (result.items.len > 0) {
+                        const a = &result.items[result.items.len - 1];
+                        const combined = try std.mem.concat(self.gpa, []const u8, &.{ a.text, b.text });
+                        const wrapped = try wrap(self.gpa, combined, 42);
+                        if (b.start - a.end < command.n(0) and !a.dialogue() and !b.dialogue() and wrapped.len <= 2) {
+                            a.end = @max(a.end, b.end);
+                            a.text = wrapped;
+                            merged += 1;
+                            continue;
+                        }
+                    }
+                    try result.append(self.gpa, b);
+                }
+                self.cues = result.items;
+                try out.print("MERGE merged={d} cues={d}\n", .{ merged, self.cues.len });
+            },
+        }
+    var input = std.Io.File.stdin().readerStreaming(init.io, &input_buffer);
+    var output = std.Io.File.stdout().writerStreaming(init.io, &output_buffer);
+    const out = &output.interface;
+    var editor = Editor{ .gpa = gpa };
+    var block: std.ArrayList([]const u8) = .empty;
+    while (true) {
+        const line = try gpa.dupe(u8, (try input.interface.takeDelimiter('\n')).?);
+        if (std.mem.eql(u8, line, "###")) {
+            try editor.load(block.items, out);
+            break;
+        }
+        if (line.len == 0) {
+            try editor.load(block.items, out);
+            block = .empty;
+        } else try block.append(gpa, line);
+    }
+    try out.print("LOAD cues={d} bad={d}\n", .{ editor.cues.len, editor.bad });
+    const count: usize = @intCast(unsigned((try input.interface.takeDelimiter('\n')).?, 9).?);
+    for (0..count) |_| {
+        const line = try gpa.dupe(u8, (try input.interface.takeDelimiter('\n')).?);
+        var draft: std.Io.Writer.Allocating = .init(gpa);
+        editor.execute(line, &draft.writer) catch |err| {
+            if (err == error.BadCommand) {
+                try out.print("ERROR {s}\n", .{editor.error_buffer[0..editor.error_len]});
+                continue;
+            }
+            return err;
+        };
+        try out.writeAll(draft.writer.buffered());
+    }
+    try out.flush();

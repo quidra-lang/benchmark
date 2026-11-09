@@ -1,0 +1,162 @@
+NOTE_LETTERS = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+CHANNEL_TYPES = (
+    "NOTE_OFF", "NOTE_ON", "POLY_PRESSURE", "CONTROL",
+    "PROGRAM", "CHANNEL_PRESSURE", "PITCH_BEND",
+)
+NOTE_TYPES = ("NOTE_OFF", "NOTE_ON", "POLY_PRESSURE")
+META_NAMES = {
+    0x00: "SEQUENCE_NUMBER", 0x01: "TEXT_EVENT", 0x02: "COPYRIGHT",
+    0x03: "TRACK_NAME", 0x04: "INSTRUMENT_NAME", 0x05: "LYRIC",
+    0x06: "MARKER", 0x07: "CUE_POINT", 0x20: "CHANNEL_PREFIX",
+    0x2F: "END_OF_TRACK", 0x51: "TEMPO", 0x54: "SMPTE_OFFSET",
+    0x58: "TIME_SIGNATURE", 0x59: "KEY_SIGNATURE", 0x7F: "SEQUENCER_SPECIFIC",
+}
+SYSEX_STATUS = 0xF0
+ESCAPE_STATUS = 0xF7
+META_STATUS = 0xFF
+def note_name(pitch):
+    return NOTE_LETTERS[pitch % 12] + str(pitch // 12 - 1)
+def argument(text, low, high):
+    value = int(text)
+    if not low <= value <= high:
+        raise CommandError("bad argument")
+    return value
+class Event:
+    def __init__(self, tick, status, data, meta_type=None):
+        self.tick = tick
+        self.status = status
+        self.data = data
+        self.meta_type = meta_type
+    def is_channel(self):
+        return self.status < SYSEX_STATUS
+
+    def channel(self):
+        return self.status % 16 + 1
+
+    def type_name(self):
+        if self.is_channel():
+            return CHANNEL_TYPES[self.status // 16 - 8]
+        if self.status == SYSEX_STATUS:
+            return "SYSEX"
+        if self.status == ESCAPE_STATUS:
+            return "SYSEX_ESCAPE"
+        return META_NAMES.get(self.meta_type, "META")
+def event_fields(event):
+    name = event.type_name()
+    data = event.data
+    if event.is_channel():
+        fields = [str(event.channel())]
+        if name == "PITCH_BEND":
+            fields.append(str(data[0] + 128 * data[1] - 8192))
+        elif name in NOTE_TYPES:
+            fields += [note_name(data[0]), str(data[1])]
+        else:
+            fields += [str(value) for value in data]
+        return fields
+def event_line(event, track):
+    return " ".join([str(event.tick), str(track), event.type_name()] + event_fields(event))
+def quantity_bytes(value):
+    groups = [value % 128]
+    value //= 128
+    while value > 0:
+        groups.append(value % 128 + 0x80)
+        value //= 128
+    return bytes(reversed(groups))
+
+
+def encode_track(track, running_status, zero_note_off):
+    body = bytearray()
+    previous_tick = 0
+    previous_status = None
+    for event in track:
+        body += quantity_bytes(event.tick - previous_tick)
+        previous_tick = event.tick
+        if event.is_channel():
+            status = event.status
+            data = event.data
+            if zero_note_off and event.type_name() == "NOTE_OFF":
+                status += 0x10
+                data = [data[0], 0]
+            if not running_status or status != previous_status:
+                body.append(status)
+            body += bytes(data)
+            previous_status = status
+        else:
+            previous_status = None
+            body.append(event.status)
+            if event.status == META_STATUS:
+                body.append(event.meta_type)
+            body += quantity_bytes(len(event.data))
+            body += bytes(event.data)
+    return body
+
+
+def encode_song(song, running_status, zero_note_off):
+    data = bytearray(b"MThd") + (6).to_bytes(4, "big")
+    for value in (song.format, len(song.tracks), song.division):
+        data += value.to_bytes(2, "big")
+    for track in song.tracks:
+        body = encode_track(track, running_status, zero_note_off)
+        data += b"MTrk" + len(body).to_bytes(4, "big") + body
+    return data
+        self.handlers = {
+            "DECODE": self.decode,
+            "ENCODE": self.encode,
+            "TRANSPOSE": self.transpose,
+    def emit(self, *parts):
+        self.output.append(" ".join(str(part) for part in parts))
+
+    def song(self, name):
+        if name not in self.songs:
+            raise CommandError(f"no song {name}")
+        return self.songs[name]
+    def decode(self, arguments):
+        song = self.song(arguments[0])
+        self.emit("HEADER", song.format, len(song.tracks), song.division)
+        for number, track in enumerate(song.tracks):
+            for event in track:
+                self.emit(event_line(event, number))
+
+    def encode(self, arguments):
+        song = self.song(arguments[0])
+        data = encode_song(song, self.running_status, self.zero_note_off)
+        for offset in range(0, len(data), 16):
+            row = " ".join(f"{byte:02X}" for byte in data[offset:offset + 16])
+            self.emit(f"{offset:04X}: {row}")
+        self.emit(len(data), "bytes")
+    def transpose(self, arguments):
+        song = self.song(arguments[0])
+        shift = argument(arguments[1], -127, 127)
+        channel = argument(arguments[2], 1, 16) if len(arguments) == 3 else None
+        kept = 0
+        dropped = []
+        tracks = []
+        for number, track in enumerate(song.tracks):
+            remaining = []
+            for event in track:
+                selected = channel is None or event.channel() == channel
+                if event.type_name() in NOTE_TYPES and selected:
+                    pitch = event.data[0] + shift
+                    if not 0 <= pitch <= 127:
+                        dropped.append((number, event))
+                        continue
+                    event.data[0] = pitch
+                    kept += 1
+                remaining.append(event)
+            tracks.append(remaining)
+        song.tracks = tracks
+        self.emit("transposed", kept, "dropped", len(dropped))
+        for number, event in dropped:
+            self.emit(
+                "dropped", event.tick, number, event.type_name(),
+                event.channel(), note_name(event.data[0]),
+            )
+    def execute(self, words, lines):
+        command, arguments = words[0], words[1:]
+        try:
+            elif command in self.handlers:
+                self.handlers[command](arguments)
+            else:
+                raise CommandError("unknown command")
+        except CommandError as error:
+            self.emit("error:", error)

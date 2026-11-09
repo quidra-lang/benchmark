@@ -1,0 +1,313 @@
+func lines(path string) []string {
+	b, e := os.ReadFile(path)
+	if e != nil {
+		panic(e)
+	}
+	return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+}
+func integer(s string) int {
+	v, e := strconv.Atoi(s)
+	if e != nil {
+		panic(e)
+	}
+	return v
+}
+func number(s string) float64 {
+	v, e := strconv.ParseFloat(s, 64)
+	if e != nil {
+		panic(e)
+	}
+	return v
+}
+func readExamples(path string) []Example {
+	out := []Example{}
+	for _, line := range lines(path)[1:] {
+		a := strings.Split(line, ",")
+		out = append(out, Example{a[0], Point{number(a[1]), number(a[2])}, integer(a[3])})
+	}
+	return out
+}
+func readParams() Params {
+	p := Params{}
+	for _, line := range lines("input/params.txt") {
+		a := strings.Fields(line)
+		switch a[0] {
+		case "C_GRID":
+			for _, s := range a[1:] {
+				p.Cs = append(p.Cs, number(s))
+			}
+		case "KERNEL":
+			k := Kernel{Name: a[1], Kind: a[2]}
+			if k.Kind == "poly" {
+				k.Degree, k.Gamma, k.Coef = integer(a[3]), number(a[4]), number(a[5])
+			} else if k.Kind == "rbf" {
+				k.Gamma = number(a[3])
+			}
+			p.Kernels = append(p.Kernels, k)
+		case "TOLERANCE":
+			p.Tolerance = number(a[1])
+		case "EPS":
+			p.Epsilon = number(a[1])
+		case "MAX_PASSES":
+			p.MaxPasses = integer(a[1])
+		case "FOLDS":
+			p.Folds = integer(a[1])
+		}
+	}
+	return p
+}
+type Kernel struct {
+	Name, Kind  string
+	Degree      int
+	Gamma, Coef float64
+}
+
+func (k Kernel) value(a, b Point) float64 {
+	if k.Kind == "rbf" {
+		e1, e2 := a[0]-b[0], a[1]-b[1]
+		return math.Exp(-k.Gamma * (e1*e1 + e2*e2))
+	}
+	v := a[0]*b[0] + a[1]*b[1]
+	if k.Kind == "linear" {
+		return v
+	}
+	s := k.Gamma*v + k.Coef
+	v = 1
+	for d := 0; d < k.Degree; d++ {
+		v *= s
+	}
+	return v
+}
+func kernelMatrix(a []Example, k Kernel) [][]float64 {
+	q := make([][]float64, len(a))
+	for i, x := range a {
+		q[i] = make([]float64, len(a))
+		for j, y := range a {
+			q[i][j] = k.value(x.Point, y.Point)
+		}
+	}
+	return q
+}
+func subset(a []Example, q [][]float64, indices []int) ([]Example, [][]float64) {
+	data := make([]Example, len(indices))
+	matrix := make([][]float64, len(indices))
+	for i, p := range indices {
+		data[i] = a[p]
+		matrix[i] = make([]float64, len(indices))
+		for j, r := range indices {
+			matrix[i][j] = q[p][r]
+		}
+	}
+	return data, matrix
+}
+func sign(v float64) int {
+	if v > 0 {
+		return 1
+	}
+	return -1
+}
+func folds(n, k, fold int) ([]int, []int) {
+	train, test := []int{}, []int{}
+	for i := 0; i < n; i++ {
+		if i%k == fold {
+			test = append(test, i)
+		} else {
+			train = append(train, i)
+		}
+	}
+	return train, test
+}
+func train(data []Example, q [][]float64, k Kernel, c float64, params Params) *Model {
+	m := &Model{Data: data, Q: q, Kernel: k, C: c, Alpha: make([]float64, len(data)), Errors: make([]float64,
+		len(data)), Tolerance: params.Tolerance, Epsilon: params.Epsilon}
+	return m
+}
+func (m *Model) decision(z Point) float64 {
+	s := 0.0
+	for j, a := range m.Alpha {
+		if a > 0 {
+			s += a * float64(m.Data[j].Label) * m.Kernel.value(m.Data[j].Point, z)
+		}
+	}
+	return s - m.B
+}
+func (m *Model) counts() (int, int, int) {
+	total, bound := 0, 0
+	for _, a := range m.Alpha {
+		if a > 0 {
+			total++
+			if a == m.C {
+				bound++
+			}
+		}
+	}
+	return total, bound, total - bound
+}
+type FoldResult struct {
+	Train, Test, Correct, Support, Passes, Steps int
+	Converged                                    bool
+}
+type CV struct {
+	Kernel, CIndex, Correct, Support, Passes, Steps int
+	C                                               float64
+	Values                                          []float64
+	Folds                                           []FoldResult
+}
+type Application struct {
+	Train, Test             []Example
+	Params                  Params
+	Matrices                [][][]float64
+	Grid                    [][]CV
+	Best                    []int
+	Selected                int
+	Models                  []*Model
+	TrainValues, TestValues [][]float64
+}
+
+func decisions(m *Model, data []Example) []float64 {
+	a := make([]float64, len(data))
+	for i, e := range data {
+		a[i] = m.decision(e.Point)
+	}
+	return a
+}
+func (a *Application) prepare() {
+	n := len(a.Train)
+	p := a.Params
+	a.Best = make([]int, len(p.Kernels))
+	a.Selected = 0
+	for ki, k := range p.Kernels {
+		q := kernelMatrix(a.Train, k)
+		a.Matrices = append(a.Matrices, q)
+		row := []CV{}
+		for ci, c := range p.Cs {
+			cv := CV{Kernel: ki, CIndex: ci, C: c, Values: make([]float64, n)}
+			for fold := 0; fold < p.Folds; fold++ {
+				training, validation := folds(n, p.Folds, fold)
+				data, matrix := subset(a.Train, q, training)
+				m := train(data, matrix, k, c, p)
+				count := 0
+				for _, i := range validation {
+					v := m.decision(a.Train[i].Point)
+					cv.Values[i] = v
+					if sign(v) == a.Train[i].Label {
+						count++
+					}
+				}
+				support, _, _ := m.counts()
+				cv.Folds = append(cv.Folds, FoldResult{len(training), len(validation), count, support, len(m.Passes), m.Steps, m.Converged})
+				cv.Correct += count
+				cv.Support += support
+				cv.Passes += len(m.Passes)
+				cv.Steps += m.Steps
+			}
+			row = append(row, cv)
+			if ci == 0 || cv.Correct > row[a.Best[ki]].Correct {
+				a.Best[ki] = ci
+			}
+		}
+		a.Grid = append(a.Grid, row)
+		chosen := a.Grid[ki][a.Best[ki]]
+		current := a.Grid[a.Selected][a.Best[a.Selected]]
+		if chosen.Correct > current.Correct || (chosen.Correct == current.Correct && chosen.C < current.C) {
+			a.Selected = ki
+		}
+		m := train(a.Train, q, k, chosen.C, p)
+		a.Models = append(a.Models, m)
+		a.TrainValues = append(a.TrainValues, m.trainingValues())
+		a.TestValues = append(a.TestValues, decisions(m, a.Test))
+	}
+}
+func (a *Application) cvOutput() []string {
+	n, p := len(a.Train), a.Params
+	out := []string{fmt.Sprintf("cross_validation folds %d examples %d", p.Folds, n)}
+	ranked := []CV{}
+	header := []string{"kernel", "C"}
+	for i := 1; i <= p.Folds; i++ {
+		header = append(header, fmt.Sprint("fold", i))
+	}
+	header = append(header, "correct", "accuracy", "support_vectors", "passes", "steps")
+	csv := []string{strings.Join(header, ",")}
+	for ki, k := range p.Kernels {
+		best := a.Grid[ki][a.Best[ki]]
+		out = append(out, fmt.Sprintf("best %s C %s correct %d/%d accuracy %s", k.Name, fixed(best.C, 4), best.Correct, n, ratio(best.Correct, n)))
+		for _, cv := range a.Grid[ki] {
+			ranked = append(ranked, cv)
+			row := []string{k.Name, fixed(cv.C, 4)}
+			for _, fold := range cv.Folds {
+				row = append(row, fmt.Sprint(fold.Correct))
+			}
+			row = append(row, fmt.Sprint(cv.Correct), ratio(cv.Correct, n), fmt.Sprint(cv.Support), fmt.Sprint(cv.Passes), fmt.Sprint(cv.Steps))
+			csv = append(csv, strings.Join(row, ","))
+		}
+	}
+	selected := a.Grid[a.Selected][a.Best[a.Selected]]
+	name := p.Kernels[a.Selected].Name
+	out = append(out, fmt.Sprintf("selected %s C %s", name, fixed(selected.C, 4)), "ranking")
+	sort.Slice(ranked, func(i, j int) bool {
+		x, y := ranked[i], ranked[j]
+		if x.Correct != y.Correct {
+			return x.Correct > y.Correct
+		}
+		if x.C != y.C {
+			return x.C < y.C
+		}
+		return x.Kernel < y.Kernel
+	})
+	for i, cv := range ranked {
+		out = append(out, fmt.Sprintf("%d %s C %s correct %d/%d", i+1, p.Kernels[cv.Kernel].Name, fixed(cv.C, 4), cv.Correct, n))
+	}
+	out = append(out, fmt.Sprintf("cv_detail %s C %s", name, fixed(selected.C, 4)))
+	for i, fold := range selected.Folds {
+		out = append(out, fmt.Sprintf("fold %d train %d test %d correct %d support_vectors %d passes %d steps %d converged %s",
+			i+1, fold.Train, fold.Test, fold.Correct, fold.Support, fold.Passes, fold.Steps, yes(fold.Converged)))
+	}
+	writeLines("cv_grid.csv", csv)
+	return out
+}
+func (a *Application) modelOutput(ki int) []string {
+	m := a.Models[ki]
+	q := a.Matrices[ki]
+	trainF, testF := a.TrainValues[ki], a.TestValues[ki]
+	out := []string{"model " + m.Kernel.Name, "kernel " + m.Kernel.description(), "C " + fixed(m.C, 4),
+func (a *Application) calibrate() Calibration {
+	selected := a.Models[a.Selected]
+	values := a.Grid[a.Selected][a.Best[a.Selected]].Values
+	for j, e := range a.Test {
+		p := probability(a.TestValues[a.Selected][j], out.A, out.B)
+		out.Probabilities = append(out.Probabilities, p)
+func (a *Application) predictionsOutput(cal Calibration, peg Pegasos) {
+	header := []string{"id", "label"}
+	for _, k := range a.Params.Kernels {
+		header = append(header, k.Name)
+	}
+	header = append(header, "pegasos", "predicted", "probability")
+	out := []string{strings.Join(header, ",")}
+	for i, e := range a.Test {
+		row := []string{e.ID, fmt.Sprint(e.Label)}
+		for _, values := range a.TestValues {
+			row = append(row, fixed(values[i], 4))
+		}
+		row = append(row, fixed(peg.Values[i], 4), fmt.Sprint(sign(a.TestValues[a.Selected][i])), fixed(cal.Probabilities[i], 4))
+		out = append(out, strings.Join(row, ","))
+	}
+	writeLines("predictions.csv", out)
+}
+func main() {
+	a := Application{Train: readExamples("input/train.csv"), Test: readExamples("input/test.csv"), Params: readParams()}
+	a.prepare()
+	parts := [][]string{a.cvOutput()}
+	for i := range a.Params.Kernels {
+		parts = append(parts, a.modelOutput(i))
+	}
+	parts = append(parts, a.progressOutput(), a.pathOutput(), a.learningOutput())
+	cal := a.calibrate()
+	out := []string{}
+	for i, part := range parts {
+		if i > 0 {
+			out = append(out, "")
+		}
+		out = append(out, part...)
+	}
+	writeLines("model.txt", out)
+	a.predictionsOutput(cal, peg)

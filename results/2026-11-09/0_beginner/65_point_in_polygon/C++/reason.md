@@ -1,0 +1,5 @@
+Retain a crossing count initialized zero per point instead of only toggled parity. The closed edge sequence uses next=(i+1)%8; strict opposite y tests select six edges for y=8, and real intersections are 89/7,11,43/5,17/3,7/2,12/5. Exactly the first four exceed px=4, so N=4 and even parity means outside. Increment under the existing intersection>px guard and classify from count%2; append ` crossings=4` for this point, yielding `(4, 8): outside crossings=4` plus LF. Coordinates, closure, strict tests, real conversion and existing line construction are all retained.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

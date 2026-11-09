@@ -1,0 +1,555 @@
+import math
+import mesh = "./mesh.qui"
+import materials = "./materials.qui"
+import transient = "./transient.qui"
+import steady = "./steady.qui"
+import report = "./report.qui"
+
+real64 absolute(real64 value)
+    return if value < 0.0 then -value else value
+
+real64 minimum(real64 first, real64 second)
+    return if first < second then first else second
+
+real64 maximum(real64 first, real64 second)
+    return if first > second then first else second
+
+string verdict(bool value)
+    return if value then "ok" else "failed"
+
+string yes(bool value)
+    return if value then "yes" else "no"
+
+class Segment(string name, string edge, string kind, int[][] faces, real64 h, real64 theta)
+class Source(string name, int[] cells, real64 power, int[][] intervals)
+    weight := power / real64(#cells)
+
+    bool operating(int when)
+        for interval := intervals[]
+            if interval[0] <= when and when < interval[1]
+                return true
+        return false
+
+    real64 duty(int end_at)
+        duration := 0
+        for interval := intervals[]
+            duration += (if interval[1] < end_at then interval[1] else end_at) - (if interval[0] < end_at then interval[0] else end_at)
+        return real64(duration) / real64(end_at)
+
+class Boundary(Segment[] segments, Source[] sources)
+
+Boundary read_boundary(mesh.Mesh plate)
+    Segment[] segments := []
+    Source[] sources := []
+    for row := mesh.lines("input/boundary.txt")[]
+        fields := row.split(" ")
+        if fields[0] == "segment"
+            kind := fields[5]
+            h := if kind == "convective" then mesh.number(fields[6]) else 0.0
+            theta := if kind == "fixed" then mesh.number(fields[6]) elif kind == "convective" then mesh.number(fields[7]) else 0.0
+            faces := mesh.segment_faces(plate.width, plate.height, fields[2], mesh.integer(fields[3]), mesh.integer(fields[4]))
+            segments = segments.append(Segment(fields[1], fields[2], kind, faces, h, theta))
+        else
+            cells := mesh.source_cells(plate.width, mesh.integer(fields[2]), mesh.integer(fields[3]), mesh.integer(fields[4]), mesh.integer(fields[5]))
+            int[][] intervals := []
+            for: 7 <= i < int(#fields) step 2
+                intervals = intervals.append([mesh.integer(fields[i]), mesh.integer(fields[i + 1])])
+            sources = sources.append(Source(fields[1], cells, mesh.number(fields[6]), intervals))
+    return Boundary(segments, sources)
+
+class Probe(string name, int point)
+class Run(string name, string method, int step)
+    dt := real64(step) / 1000.0
+
+class Params(real64 initial, int end_time, int[] snapshots, int probe_every, Probe[] probes, Run[] runs, string reference, real64 tolerance, int max_iterations, real64 omega, real64[] bands, real64 alarm, real64 limit)
+
+Params read_parameters(int width)
+    real64 initial := 0.0
+    end_time := 0
+    int[] snapshots := []
+    probe_every := 0
+    Probe[] probes := []
+    Run[] runs := []
+    reference := ""
+    real64 tolerance := 0.0
+    max_iterations := 0
+    real64 omega := 0.0
+    real64[] bands := []
+    real64 alarm := 0.0
+    real64 limit := 0.0
+    for row := mesh.lines("input/params.txt")[]
+        fields := row.split(" ")
+        key := fields[0]
+        if key == "initial"
+            initial = mesh.number(fields[1])
+        elif key == "end_time"
+            end_time = mesh.integer(fields[1])
+        elif key == "snapshots"
+            snapshots = [for value := fields[1:<int(#fields)][] then mesh.integer(value)]
+        elif key == "probe_every"
+            probe_every = mesh.integer(fields[1])
+        elif key == "probe"
+            probes = probes.append(Probe(fields[1], mesh.cell(width, mesh.integer(fields[2]), mesh.integer(fields[3]))))
+        elif key == "run"
+            runs = runs.append(Run(fields[1], fields[2], mesh.integer(fields[3])))
+        elif key == "reference"
+            reference = fields[1]
+        elif key == "tolerance"
+            tolerance = mesh.number(fields[1])
+        elif key == "max_iterations"
+            max_iterations = mesh.integer(fields[1])
+        elif key == "omega"
+            omega = mesh.number(fields[1])
+        elif key == "bands"
+            bands = [for value := fields[1:<int(#fields)][] then mesh.number(value)]
+        elif key == "alarm"
+            alarm = mesh.number(fields[1])
+        else
+            limit = mesh.number(fields[1])
+    return Params(initial, end_time, snapshots, probe_every, probes, runs, reference, tolerance, max_iterations, omega, bands, alarm, limit)
+
+class FieldPower(real64[] field, real64 power)
+
+FieldPower source_terms(Source[] sources, int count, int when)
+    real64[] field := [for p := (0:<int(count))[] then 0.0]
+    real64[] powers := []
+    for source := sources[]
+        if when < 0 or source.operating(when)
+            powers = powers.append(source.power)
+            for point := source.cells[]
+                field[point] += source.weight
+    return FieldPower(field, transient.sum(powers))
+
+class System(mesh.Mesh plate, materials.Material[] material_list, Segment[] segments, Source[] sources, int[] cell_material, int[][] material_cells, real64[] capacity, real64[][] g, real64[][] theta, bool[][] boundary, real64[] diagonal, real64[] beta, real64[] source_all, real64 total_power, real64 dt_max)
+
+System build_system(mesh.Mesh plate, materials.Material[] material_list, Boundary data)
+    int[] cell_material := []
+    int[][] material_cells := [for material := material_list[] then []]
+    real64[] capacity := []
+    real64[][] g := []
+    real64[][] theta := [for p := (0:<int(plate.count))[] then [0.0, 0.0, 0.0, 0.0]]
+    boundary := [for p := (0:<int(plate.count))[] then [false, false, false, false]]
+    for: p < plate.count
+        index := -1
+        for: i < int(#material_list)
+            if material_list[i].code == plate.codes[p]
+                index = i
+        cell_material = cell_material.append(index)
+        material_cells[index] = material_cells[index].append(p)
+        capacity = capacity.append(materials.capacity(material_list[index], plate.dx, plate.thickness))
+    for: p < plate.count
+        real64[] faces := []
+        for: direction < 4
+            neighbor := plate.neighbors[p][direction]
+            conductance := if neighbor < 0 then 0.0 else materials.interior(material_list[cell_material[p]].k, material_list[cell_material[neighbor]].k, plate.thickness)
+            faces = faces.append(conductance)
+        g = g.append(faces)
+    for segment := data.segments[]
+        for face := segment.faces[]
+            p := face[0]
+            direction := face[1]
+            k := material_list[cell_material[p]].k
+            if segment.kind == "fixed"
+                g[p][direction] = materials.fixed(k, plate.thickness)
+            elif segment.kind == "convective"
+                g[p][direction] = materials.convective(k, segment.h, plate.dx, plate.thickness)
+            boundary[p][direction] = segment.kind != "insulated"
+            theta[p][direction] = segment.theta
+    real64[] diagonal := []
+    real64[] beta := []
+    real64 dt_max := 0.0
+    for: p < plate.count
+        a := transient.sum(g[p])
+        diagonal = diagonal.append(a)
+        real64[] terms := []
+        for: direction < 4
+            if boundary[p][direction]
+                terms = terms.append(g[p][direction] * theta[p][direction])
+        beta = beta.append(transient.sum(terms))
+        step := capacity[p] / a
+        if p == 0 or step < dt_max
+            dt_max = step
+    all := source_terms(data.sources, plate.count, -1)
+    return System(plate, material_list, data.segments, data.sources, cell_material, material_cells, capacity, g, theta, boundary, diagonal, beta, all.field, all.power, dt_max)
+
+int hottest(real64[] field)
+    point := 0
+    for: p < int(#field)
+        if field[p] > field[point]
+            point = p
+    return point
+
+string cell_text(int width, int point)
+    return "{point / width} {point % width}"
+
+string summary(string prefix, System system, real64[] field)
+    point := hottest(field)
+    low := field[0]
+    for value := field[]
+        low = minimum(low, value)
+    return prefix + " max " + report.real_text(field[point], 2) + " at " + cell_text(system.plate.width, point) + " min " + report.real_text(low, 2) + " mean " + report.real_text(transient.sum(field) / real64(system.plate.count), 2)
+
+real64 stored_heat(System system, real64[] field, real64 initial, int[] cells)
+    return transient.sum([for p := cells[] then system.capacity[p] * (field[p] - initial)])
+
+real64 segment_flow(System system, Segment segment, real64[] field)
+    if segment.kind == "insulated"
+        return 0.0
+    return transient.sum([for face := segment.faces[] then system.g[face[0]][face[1]] * (segment.theta - field[face[0]])])
+
+string status(Run definition, System system, Params params)
+    int[] times := [params.end_time, params.probe_every].concat(params.snapshots)
+    for source := system.sources[]
+        for interval := source.intervals[]
+            times = times.concat(interval)
+    for when := times[]
+        if when % definition.step != 0
+            return "step"
+    if definition.method == "ftcs" and definition.dt > system.dt_max
+        return "unstable"
+    return "accepted"
+
+real64 step_energy(System system, Segment segment, Run definition, real64[] previous, real64[] updated, real64[] intermediate)
+    if segment.kind == "insulated"
+        return 0.0
+    real64[] terms := []
+    for face := segment.faces[]
+        p := face[0]
+        temperature := previous[p]
+        if definition.method != "ftcs"
+            if segment.edge == "left" or segment.edge == "right"
+                temperature = intermediate[p]
+            elif definition.method == "backward_euler"
+                temperature = updated[p]
+            else
+                temperature = (previous[p] + updated[p]) / 2.0
+        terms = terms.append(system.g[p][face[1]] * (segment.theta - temperature))
+    return definition.dt * transient.sum(terms)
+
+class Snapshot(int recorded_at, real64[] field, real64 stored, real64 boundary, real64 generated)
+class Sample(int recorded_at, real64[] values)
+class RunResult(Run definition, string state)
+    steps := 0
+    real64[] segment_energy := []
+    real64 generated := 0.0
+    Snapshot[] snapshots := []
+    Sample[] samples := []
+    above := 0
+    peak_set := false
+    real64 peak_temperature := 0.0
+    peak_time := 0
+    peak_cell := 0
+    alarm_time := -1
+    alarm_cell := 0
+    real64[] final := []
+    real64 stored := 0.0
+    real64 boundary := 0.0
+    balanced := false
+
+void observe(RunResult &result, System system, Params params, int when, real64[] field)
+    point := hottest(field)
+    temperature := field[point]
+    if not result.peak_set or temperature > result.peak_temperature
+        result.peak_set = true
+        result.peak_temperature = temperature
+        result.peak_time = when
+        result.peak_cell = point
+    if temperature >= params.alarm
+        if result.alarm_time < 0
+            result.alarm_time = when
+            result.alarm_cell = point
+        if when > 0
+            result.above += result.definition.step
+    if when % params.probe_every == 0
+        result.samples = result.samples.append(Sample(when, [for probe := params.probes[] then field[probe.point]]))
+    for snapshot_time := params.snapshots[]
+        if when == snapshot_time
+            cells := [for p := (0:<int(system.plate.count))[] then p]
+            result.snapshots = result.snapshots.append(Snapshot(when, field, stored_heat(system, field, params.initial, cells), transient.sum(result.segment_energy), result.generated))
+
+RunResult simulate(Run definition, System system, Params params)
+    result := RunResult(definition, status(definition, system, params))
+    if result.state != "accepted"
+        return result
+    result.steps = params.end_time / definition.step
+    result.segment_energy = [for segment := system.segments[] then 0.0]
+    field := [for p := (0:<int(system.plate.count))[] then params.initial]
+    observe(&result, system, params, 0, field)
+    for: step < result.steps
+        sources := source_terms(system.sources, system.plate.count, step * definition.step)
+        next := transient.advance(definition.method, system.plate.width, system.plate.height, system.plate.neighbors, system.g, system.theta, system.boundary, system.capacity, field, sources.field, definition.dt)
+        for: i < int(#system.segments)
+            result.segment_energy[i] += step_energy(system, system.segments[i], definition, field, next[0], next[1])
+        result.generated += definition.dt * sources.power
+        field = next[0]
+        observe(&result, system, params, (step + 1) * definition.step, field)
+    result.final = field
+    result.stored = stored_heat(system, field, params.initial, [for p := (0:<int(system.plate.count))[] then p])
+    result.boundary = transient.sum(result.segment_energy)
+    result.balanced = absolute(result.stored - result.boundary - result.generated) <= 0.000001 * (absolute(result.stored) + absolute(result.boundary) + absolute(result.generated))
+    return result
+
+class Iterative(steady.Iteration iteration, real64 rate, string[] milestones, real64 max_error, real64 residual)
+class SteadyResult(real64[] rhs, real64[] solution, real64[] base, real64[][] responses, Iterative[] iterations, real64 rho, real64 omega_opt)
+
+SteadyResult solve_steady(System system, Params params)
+    rhs := system.beta + system.source_all
+    vectors := [rhs, system.beta]
+    for source := system.sources[]
+        real64[] vector := [for p := (0:<int(system.plate.count))[] then 0.0]
+        for p := source.cells[]
+            vector[p] = 1.0 / real64(#source.cells)
+        vectors = vectors.append(vector)
+    fields := steady.band_solve(system.plate.width, system.plate.neighbors, system.g, system.diagonal, vectors)
+    solution := fields[0]
+    base := fields[1]
+    responses := fields[2:<int(#fields)]
+    jacobi := steady.iterate(system.plate.neighbors, system.g, system.theta, system.boundary, system.diagonal, system.source_all, params.initial, params.tolerance, params.max_iterations, "jacobi", 1.0)
+    count := int(#jacobi.changes)
+    rho := math.sqrt(jacobi.changes[count - 1] / jacobi.changes[count - 3])
+    real64 omega_opt := 2.0 / (1.0 + math.sqrt(1.0 - rho * rho))
+    iterations := [jacobi]
+    for method := ["gauss_seidel", "sor", "sor_estimated"][]
+        iterations = iterations.append(steady.iterate(system.plate.neighbors, system.g, system.theta, system.boundary, system.diagonal, system.source_all, params.initial, params.tolerance, params.max_iterations, method, (if method == "sor_estimated" then omega_opt else params.omega)))
+    Iterative[] results := []
+    for iteration := iterations[]
+        k := int(#iteration.changes)
+        rate := math.sqrt(iteration.changes[k - 1] / iteration.changes[k - 3])
+        string[] milestones := []
+        for factor := [1000, 100, 10, 1][]
+            milestone := "never"
+            for: i < k
+                if iteration.changes[i] < params.tolerance * real64(factor)
+                    milestone = string(i + 1)
+                    break
+            milestones = milestones.append(milestone)
+        real64 difference := 0.0
+        for: p < system.plate.count
+            difference = maximum(difference, absolute(iteration.field[p] - solution[p]))
+        residual := steady.residual(system.plate.neighbors, system.g, system.diagonal, iteration.field, rhs)
+        results = results.append(Iterative(iteration, rate, milestones, difference, residual))
+    return SteadyResult(rhs, solution, base, responses, results, rho, omega_opt)
+
+real64[] selected(real64[] field, int[] cells)
+    return [for p := cells[] then field[p]]
+
+real64[] extrema(real64[] values)
+    low := values[0]
+    high := values[0]
+    for value := values[]
+        low = minimum(low, value)
+        high = maximum(high, value)
+    return [low, high]
+
+string[] steady_lines(System system, Params params, SteadyResult result)
+    solution := result.solution
+    count := system.plate.count
+    string[] lines := [summary("steady", system, solution)].concat(report.temperatures(system.plate.width, system.plate.height, solution))
+    for: i < int(#system.material_list)
+        material := system.material_list[i]
+        values := selected(solution, system.material_cells[i])
+        ends := extrema(values)
+        lines = lines.append("material {material.code} {material.name} cells {#values} min " + report.real_text(ends[0], 2) + " max " + report.real_text(ends[1], 2) + " mean " + report.real_text(transient.sum(values) / real64(#values), 2))
+    real64[] duties := []
+    for source := system.sources[]
+        duty := source.duty(params.end_time)
+        duties = duties.append(duty)
+        values := selected(solution, source.cells)
+        ends := extrema(values)
+        lines = lines.append("source {source.name} power " + report.real_text(source.power, 4) + " duty " + report.real_text(duty, 4) + " mean " + report.real_text(transient.sum(values) / real64(#values), 2) + " max " + report.real_text(ends[1], 2))
+    for source := system.sources[]
+        for: i < int(#system.sources)
+            coefficient := transient.sum(selected(result.responses[i], source.cells)) / real64(#source.cells)
+            lines = lines.append("influence {source.name} {system.sources[i].name} " + report.real_text(coefficient, 4))
+    real64 maximum_error := 0.0
+    real64[] duty_field := []
+    for: p < count
+        value := result.base[p]
+        average := value
+        for: i < int(#system.sources)
+            value += system.sources[i].power * result.responses[i][p]
+            average += (duties[i] * system.sources[i].power) * result.responses[i][p]
+        maximum_error = maximum(maximum_error, absolute(value - solution[p]))
+        duty_field = duty_field.append(average)
+    lines = lines.append("superposition " + verdict(maximum_error <= 0.000001))
+    for: i < int(#system.sources)
+        for segment := system.segments[]
+            real64[] terms := []
+            if segment.kind != "insulated"
+                for face := segment.faces[]
+                    terms = terms.append(system.g[face[0]][face[1]] * result.responses[i][face[0]])
+            lines = lines.append("path {system.sources[i].name} {segment.name} " + report.real_text(transient.sum(terms), 4))
+    lines = lines.append(summary("duty_steady", system, duty_field))
+    for: i < int(#system.sources)
+        source := system.sources[i]
+        real64 limiting := 0.0
+        selected_cell := 0
+        for: p < count
+            power := (params.limit - (solution[p] - source.power * result.responses[i][p])) / result.responses[i][p]
+            if p == 0 or power < limiting
+                limiting = power
+                selected_cell = p
+        lines = lines.append("headroom {source.name} max_power " + report.real_text(limiting, 4) + " at " + cell_text(system.plate.width, selected_cell))
+    material_count := int(#system.material_list)
+    faces_count := [for i := (0:<int(material_count))[] then [for j := (0:<int(material_count))[] then 0]]
+    real64[][] forward := [for i := (0:<int(material_count))[] then [for j := (0:<int(material_count))[] then 0.0]]
+    backward := forward
+    real64 gradient := -1.0
+    first_point := 0
+    second_point := 0
+    for: p < count
+        for direction := [1, 3][]
+            q := system.plate.neighbors[p][direction]
+            if q >= 0
+                current_gradient := absolute(solution[p] - solution[q]) / system.plate.dx
+                if current_gradient > gradient
+                    gradient = current_gradient
+                    first_point = p
+                    second_point = q
+                a := system.cell_material[p]
+                b := system.cell_material[q]
+                if a != b
+                    flow := system.g[p][direction] * (solution[p] - solution[q])
+                    if a > b
+                        temporary := a
+                        a = b
+                        b = temporary
+                        flow = -flow
+                    faces_count[a][b] += 1
+                    if flow > 0.0
+                        forward[a][b] += flow
+                    elif flow < 0.0
+                        backward[a][b] += absolute(flow)
+    for: a < material_count
+        for: a + 1 <= b < material_count
+            if faces_count[a][b] > 0
+                lines = lines.append("interface {system.material_list[a].code} {system.material_list[b].code} faces {faces_count[a][b]} forward " + report.real_text(forward[a][b], 4) + " backward " + report.real_text(backward[a][b], 4))
+    real64[] flows := []
+    real64[] absolute_flows := []
+    for segment := system.segments[]
+        flow := segment_flow(system, segment, solution)
+        flows = flows.append(flow)
+        absolute_flows = absolute_flows.append(absolute(flow))
+        lines = lines.append("segment {segment.name} {segment.edge} {segment.kind} flow " + report.real_text(flow, 4))
+    balanced := absolute(transient.sum(flows) + system.total_power) <= 0.000001 * (transient.sum(absolute_flows) + system.total_power)
+    lines = lines.concat(["sources " + report.real_text(system.total_power, 4), "balance " + verdict(balanced), "max_gradient " + report.real_text(gradient, 2) + " between " + cell_text(system.plate.width, first_point) + " and " + cell_text(system.plate.width, second_point)])
+    for iteration := result.iterations[]
+        solver := iteration.iteration
+        prefix := "solver {solver.method}"
+        if solver.method == "sor" or solver.method == "sor_estimated"
+            prefix += " omega " + report.real_text(solver.omega, 4)
+        lines = lines.append(prefix + " iterations {#solver.changes} converged " + yes(solver.converged) + " rate " + report.real_text(iteration.rate, 6) + " milestones " + iteration.milestones.join(" "))
+    return lines
+
+string rejected(RunResult result, bool with_maximum, real64 dt_max)
+    definition := result.definition
+    line := "run {definition.name} {definition.method} dt " + report.time_text(definition.step) + " rejected {result.state}"
+    if with_maximum and result.state == "unstable"
+        line += " max_dt " + report.real_text(dt_max, 4)
+    return line
+
+string[] snapshot_lines(System system, Params params, RunResult[] results)
+    string[] lines := []
+    for result := results[]
+        if result.state != "accepted"
+            lines = lines.append(rejected(result, true, system.dt_max))
+        else
+            definition := result.definition
+            for snapshot := result.snapshots[]
+                prefix := "run {definition.name} {definition.method} dt " + report.time_text(definition.step) + " time " + report.time_text(snapshot.recorded_at)
+                lines = lines.append(summary(prefix, system, snapshot.field))
+                lines = lines.concat(report.temperatures(system.plate.width, system.plate.height, snapshot.field))
+    return lines
+
+string[] probe_lines(Params params, RunResult[] results)
+    lines := ["run,time,probe,temperature"]
+    for result := results[]
+        if result.state == "accepted"
+            for sample := result.samples[]
+                for: i < int(#params.probes)
+                    lines = lines.append(result.definition.name + "," + report.time_text(sample.recorded_at) + "," + params.probes[i].name + "," + report.real_text(sample.values[i], 3))
+    return lines
+
+string[] comparison_lines(System system, Params params, RunResult[] results, int reference, SteadyResult solved)
+    lines := ["ftcs_max_dt " + report.real_text(system.dt_max, 4)]
+    for: index < int(#results)
+        result := results[index]
+        definition := result.definition
+        if result.state != "accepted"
+            lines = lines.append(rejected(result, false, system.dt_max))
+        else
+            alarm := if result.alarm_time < 0 then "never" else report.time_text(result.alarm_time) + " at " + cell_text(system.plate.width, result.alarm_cell)
+            lines = lines.append("run {definition.name} {definition.method} dt " + report.time_text(definition.step) + " steps {result.steps} peak " + report.real_text(result.peak_temperature, 2) + " time " + report.time_text(result.peak_time) + " at " + cell_text(system.plate.width, result.peak_cell) + " alarm {alarm} above " + report.time_text(result.above))
+            lines = lines.append("energy {definition.name} stored " + report.real_text(result.stored, 2) + " boundary " + report.real_text(result.boundary, 2) + " source " + report.real_text(result.generated, 2) + " balance " + verdict(result.balanced))
+            for snapshot := result.snapshots[]
+                lines = lines.append("energy_at {definition.name} time " + report.time_text(snapshot.recorded_at) + " stored " + report.real_text(snapshot.stored, 2) + " boundary " + report.real_text(snapshot.boundary, 2) + " source " + report.real_text(snapshot.generated, 2))
+            for: i < int(#system.material_list)
+                value := stored_heat(system, result.final, params.initial, system.material_cells[i])
+                lines = lines.append("energy_material {definition.name} {system.material_list[i].code} " + report.real_text(value, 2))
+            for: i < int(#system.segments)
+                lines = lines.append("energy_segment {definition.name} {system.segments[i].name} " + report.real_text(result.segment_energy[i], 2))
+            for: i < int(#params.probes)
+                low := result.samples[0].values[i]
+                high := low
+                low_time := result.samples[0].recorded_at
+                high_time := low_time
+                for: 1 <= j < int(#result.samples)
+                    sample := result.samples[j]
+                    if sample.values[i] > high
+                        high = sample.values[i]
+                        high_time = sample.recorded_at
+                    if sample.values[i] < low
+                        low = sample.values[i]
+                        low_time = sample.recorded_at
+                lines = lines.append("probe_summary {definition.name} {params.probes[i].name} max " + report.real_text(high, 3) + " time " + report.time_text(high_time) + " min " + report.real_text(low, 3) + " time " + report.time_text(low_time))
+            if index != reference
+                for: i < int(#result.snapshots)
+                    field := result.snapshots[i].field
+                    reference_field := results[reference].snapshots[i].field
+                    real64[] squares := []
+                    real64 maximum_error := 0.0
+                    for: p < system.plate.count
+                        difference := absolute(field[p] - reference_field[p])
+                        squares = squares.append(difference * difference)
+                        maximum_error = maximum(maximum_error, difference)
+                    rms := math.sqrt(transient.sum(squares) / real64(system.plate.count))
+                    lines = lines.append("compare {definition.name} {params.reference} time " + report.time_text(result.snapshots[i].recorded_at) + " max_diff " + report.real_text(maximum_error, 6) + " rms_diff " + report.real_text(rms, 6))
+            real64 difference := 0.0
+            for: p < system.plate.count
+                difference = maximum(difference, absolute(result.final[p] - solved.solution[p]))
+            lines = lines.append("final {definition.name} steady_max_diff " + report.real_text(difference, 6))
+    residual := steady.residual(system.plate.neighbors, system.g, system.diagonal, solved.solution, solved.rhs)
+    lines = lines.append("steady direct max_residual " + report.real_text(residual, 6))
+    for iteration := solved.iterations[]
+        lines = lines.append("steady {iteration.iteration.method} iterations {#iteration.iteration.changes} max_diff " + report.real_text(iteration.max_error, 6) + " max_residual " + report.real_text(iteration.residual, 6))
+    return lines.concat(["jacobi_spectral_radius " + report.real_text(solved.rho, 6) + " squared " + report.real_text(solved.rho * solved.rho, 6), "omega_estimated " + report.real_text(solved.omega_opt, 4)])
+
+string[] isotherm_lines(System system, Params params, SteadyResult solved, RunResult reference)
+    map_result := report.isotherms(system.plate.width, system.plate.height, solved.solution, params.bands)
+    string[] lines := ["isotherms steady counts " + [for count := map_result.counts[] then string(count)].join(" ")].concat(map_result.rows)
+    for snapshot := reference.snapshots[]
+        map_result = report.isotherms(system.plate.width, system.plate.height, snapshot.field, params.bands)
+        lines = lines.append("isotherms {params.reference} time " + report.time_text(snapshot.recorded_at) + " counts " + [for count := map_result.counts[] then string(count)].join(" "))
+        lines = lines.concat(map_result.rows)
+    return lines
+
+void run()
+    plate := mesh.read_plate()
+    materials.Material[] material_list := materials.read_materials()
+    data := read_boundary(plate)
+    params := read_parameters(plate.width)
+    system := build_system(plate, material_list, data)
+    solved := solve_steady(system, params)
+    RunResult[] results := []
+    reference := -1
+    for: i < int(#params.runs)
+        results = results.append(simulate(params.runs[i], system, params))
+        if params.runs[i].name == params.reference
+            reference = i
+    report.write("snapshots.txt", snapshot_lines(system, params, results))
+    report.write("probes.csv", probe_lines(params, results))
+    report.write("steady_state.txt", steady_lines(system, params, solved))
+    report.write("solver_comparison.txt", comparison_lines(system, params, results, reference, solved))
+    report.write("isotherms.txt", isotherm_lines(system, params, solved, results[reference]))
+
+run()

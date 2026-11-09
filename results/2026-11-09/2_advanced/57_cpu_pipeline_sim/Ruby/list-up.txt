@@ -1,0 +1,225 @@
+  def parse_register(text)
+    text.match?(/\Ar(?:[0-9]|[12][0-9]|3[01])\z/) ? text[1..].to_i : nil
+  def read_inputs
+    trace = File.readlines('input/trace.txt', chomp: true)
+    config = { predictors: [], variants: [] }
+    File.foreach('input/config.txt', chomp: true) do |line|
+      key, *values = line.split
+      when 'VARIANT'
+        config[:variants] << { name: values[0], forwarding: values[1] == 'ON', stage: values[2], latency: values[3].to_i }
+      when 'PRIMARY' then config[:primary] = values
+      when 'WINDOW' then config[:window] = values.map(&:to_i)
+    [trace, config]
+  def dependencies(instructions)
+    last_writer = {}
+    instructions.each_with_index.map do |instruction, index|
+      current = %i[rs1 rs2].filter_map do |field|
+        register = instruction[field]
+        { field: field, register: register, producer: last_writer[register] } if register && !register.zero?
+      end
+      destination = instruction[:rd]
+      last_writer[destination] = index if destination && !destination.zero?
+      current
+    end
+  end
+
+  def id_resolved(instruction, variant)
+    (instruction[:class] == 'JUMP' && instruction[:rs1].nil?) ||
+      (%w[BRANCH JUMP].include?(instruction[:class]) && variant[:stage] == 'ID')
+  end
+
+  def ready_cycle(instruction, producer, producer_time, variant)
+    return producer_time[:W] + 1 unless variant[:forwarding]
+    result = producer[:class] == 'LOAD' ? producer_time[:W] : producer_time[:M]
+    result + (id_resolved(instruction, variant) ? 1 : 0)
+  end
+  CAUSES = %w[control structural load_use raw].freeze
+  STAGES = %w[IF ID EX MEM WB].freeze
+
+  def simulate(instructions, sources, variant, mispredicted)
+    timings, records, delays = [], [], []
+    instructions.each_with_index do |instruction, index|
+      execute = instruction[:class] == 'MUL' ? variant[:latency] : 1
+      if index.zero?
+        fetch, decode, start = 1, 2, 3
+      else
+        previous = timings[-1]
+        fetch = if mispredicted[index - 1]
+                  previous[:X] + (id_resolved(instructions[index - 1], variant) ? 0 : 1)
+                else previous[:D]
+                end
+        decode = [fetch + 1, previous[:X]].max
+        ideal = previous[:X] + 1
+        load_ready = raw_ready = ideal
+        load_producer = raw_producer = nil
+        sources[index].each do |source|
+          producer = source[:producer]
+          next if producer.nil?
+          ready = ready_cycle(instruction, instructions[producer], timings[producer], variant)
+          if instructions[producer][:class] == 'LOAD'
+            load_ready, load_producer = ready, producer if ready > load_ready
+          elsif ready > raw_ready
+            raw_ready, raw_producer = ready, producer
+          end
+        end
+        bounds = [decode + 1, previous[:M], load_ready, raw_ready]
+        producers = [nil, nil, load_producer, raw_producer]
+        start = ideal
+        CAUSES.each_with_index do |cause, position|
+          bound = bounds[position]
+          next unless bound > start
+          records << { cause: cause, cycles: bound - start,
+                       responsible: %w[control structural].include?(cause) ? index - 1 : index,
+                       waiting: index, producer: producers[position] }
+          start = bound
+        end
+        delays << start - ideal
+      end
+      timings << { F: fetch, D: decode, X: start, M: start + execute, W: start + execute + 1 }
+    end
+    { timings: timings, records: records, delays: delays, cycles: timings[-1][:W] }
+  end
+  def check_record(line)
+    tokens = line.split(/ /, -1)
+    pc_text, kind, rd_text, rs1_text, rs2_text, outcome, target_text, address_text = tokens
+    pc = parse_hex(pc_text)
+    register_texts = [rd_text, rs1_text, rs2_text]
+    registers = register_texts.map { |text| parse_register(text) }
+    rd, rs1, rs2 = registers
+    instruction = { pc: pc, class: kind, rd: rd, rs1: rs1, rs2: rs2,
+                    outcome: outcome, target: target, address: address }
+    instruction[:next_pc] = outcome == 'T' ? target : pc + 4
+    [instruction, nil]
+  def validate_trace(lines)
+    @line_count = lines.length
+    @instructions, @rejected, @gaps, @static = [], [], [], {}
+    lines.each_with_index do |line, index|
+      instruction, error = check_record(line)
+      if error
+        @rejected << [index + 1, error]
+        next
+      end
+      instruction[:line] = index + 1
+      instruction[:number] = @instructions.length + 1
+      @instructions << instruction
+      @static[instruction[:pc]] ||= instruction
+  def stall_totals(records)
+    cycles, events = Hash.new(0), Hash.new(0)
+    records.each do |record|
+      cycles[record[:cause]] += record[:cycles]
+      events[record[:cause]] += 1
+    end
+    [cycles, events]
+  end
+
+  def all_combinations
+    @combinations = []
+    @config[:variants].each do |variant|
+      @config[:predictors].each do |predictor|
+        result = simulate(@instructions, @sources, variant, @predictions[predictor[:name]][:flags])
+        cycles, events = stall_totals(result[:records])
+        @combinations << { variant: variant[:name], predictor: predictor[:name], cycles: result[:cycles], stalls: cycles }
+        if [variant[:name], predictor[:name]] == @config[:primary]
+          @primary = result.merge(variant: variant, predictor: predictor[:name], stalls: cycles, stall_events: events)
+        end
+      end
+    end
+  def stall_aggregates
+    @class_stalls = Hash.new(0)
+    @by_pc = Hash.new { |hash, key| hash[key] = Hash.new(0) }
+    @pairs = Hash.new { |hash, key| hash[key] = { cycles: 0, events: 0 } }
+    @primary[:records].each do |record|
+      instruction = @instructions[record[:responsible]]
+      cause, cycles = record.values_at(:cause, :cycles)
+      @class_stalls[instruction[:class]] += cycles
+      @by_pc[instruction[:pc]][cause] += cycles
+      next unless %w[load_use raw].include?(cause)
+      key = [@instructions[record[:producer]][:pc], @instructions[record[:waiting]][:pc], cause]
+      @pairs[key][:cycles] += cycles
+      @pairs[key][:events] += 1
+  def correct_row(instruction, timing, annotation)
+    f, d, x, m, w = timing.values_at(:F, :D, :X, :M, :W)
+    { number: instruction[:number], pc: instruction[:pc], class: instruction[:class], annotation: annotation,
+      characters: [[f, f, 'F'], [f + 1, d - 1, '*'], [d, d, 'D'], [d + 1, x - 1, '*'],
+                   [x, m - 1, 'X'], [m, m, 'M'], [w, w, 'W']],
+      stages: [['IF', f, d - 1], ['ID', d, x - 1], ['EX', x, m - 1], ['MEM', m, m], ['WB', w, w]] }
+  end
+  def build_rows
+    annotations = Hash.new { |hash, key| hash[key] = [] }
+    @primary[:records].each do |record|
+      annotations[record[:waiting]] << " #{record[:cause]} #{record[:cycles]}" unless record[:waiting].nil?
+    end
+    @rows = []
+    prediction = @predictions[@primary[:predictor]]
+    @instructions.zip(@primary[:timings]).each_with_index do |(instruction, timing), index|
+      annotation = annotations[index].join
+      detail = prediction[:details][index]
+      annotation += " mispredict #{detail[:kind]}" if prediction[:flags][index]
+      @rows << correct_row(instruction, timing, annotation)
+
+  def occupancy
+    counts = STAGES.to_h { |stage| [stage, Hash.new(0)] }
+    @rows.each do |row|
+      kind = row[:number].nil? ? :wrong : :correct
+      row[:stages].each { |stage, first, last| counts[stage][kind] += last - first + 1 }
+    end
+    counts
+  end
+
+  def pipeline_lines
+    first, last = @config[:window]
+    width = last - first + 1
+    lines = ["pipeline variant=#{@primary[:variant][:name]} predictor=#{@primary[:predictor]} cycles #{first}-#{last}", cycle_heading(first, last)]
+    contents = Array.new(width) { Array.new(STAGES.length, '.') }
+    visible = stalled = flushed = 0
+    @rows.each do |row|
+      characters = Array.new(width, '.')
+      row[:characters].each do |start, finish, symbol|
+        ([first, start].max..[last, finish].min).each { |cycle| characters[cycle - first] = symbol }
+  def timing_part
+    variant, cycles, stalls = @primary.values_at(:variant, :cycles, :stalls)
+    n = @instructions.length
+    total = stalls.values.sum
+    ["timing variant=#{variant[:name]} predictor=#{@primary[:predictor]}",
+     "forwarding #{variant[:forwarding] ? 'on' : 'off'} branch_stage #{variant[:stage]} mul_latency #{variant[:latency]}",
+     "cycles #{cycles}", "cpi #{reduced_fraction(cycles, n)} #{decimal(cycles, n)}", "ipc #{decimal(n, cycles)}",
+     "stall_cycles total #{total} #{cause_values(stalls)}", "stall_events #{cause_values(@primary[:stall_events])}",
+  def segments_profile
+    groups = Hash.new { |hash, key| hash[key] = { instances: 0, instructions: 0, cycles: 0 } }
+    first = 0
+    timings = @primary[:timings]
+    @instructions.each_with_index do |instruction, last|
+      next unless CONTROLS.include?(instruction[:class]) || last == @instructions.length - 1
+      group = groups[@instructions[first][:pc]]
+      group[:instances] += 1
+      group[:instructions] += last - first + 1
+      group[:cycles] += timings[last][:W] - (first.zero? ? 0 : timings[first - 1][:W])
+      first = last + 1
+    end
+    ranked = groups.keys.sort_by { |pc| [-groups[pc][:cycles], pc] }.take(@config[:top])
+    ["segments total #{groups.length}"] + (ranked.each_with_index.map do |pc, index|
+      group = groups[pc]
+      "#{index + 1} #{hexadecimal(pc)} instances #{group[:instances]} instructions #{group[:instructions]} cycles #{group[:cycles]} cpi #{decimal(group[:cycles], group[:instructions])}"
+    end)
+  end
+  def static_profile
+    ['instructions'] + (@groups.map do |pc, indices|
+      instruction = @instructions[indices[0]]
+      operands = %i[rd rs1 rs2].map { |key| register(instruction[key]) }.join(' ')
+      "#{hexadecimal(pc)} #{instruction[:class]} #{operands} executions #{indices.length} stall_cycles #{@by_pc[pc].values.sum}"
+    end)
+  end
+  def run
+    lines, @config = read_inputs
+    validate_trace(lines)
+    @sources = dependencies(@instructions)
+    all_combinations
+    stall_aggregates
+    build_rows
+    @groups = Hash.new { |hash, key| hash[key] = [] }
+    @instructions.each_with_index { |instruction, index| @groups[instruction[:pc]] << index }
+    @groups = @groups.sort.to_h
+    write_lines('pipeline.txt', pipeline_lines)
+    write_lines('stats.txt', statistics_lines)
+    write_lines('profile.txt', join_parts([branch_profile, loops_profile, segments_profile, indirect_profile, static_profile]))
+  end

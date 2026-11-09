@@ -1,0 +1,1270 @@
+typedef struct {
+    int *data;
+    int count, capacity;
+} IntList;
+typedef struct {
+    char **data;
+    int count, capacity;
+} TextLines;
+typedef struct {
+    IntList rows[600];
+    int count;
+} Orders;
+typedef enum { DIR_TB, DIR_BT, DIR_LR, DIR_RL } Direction;
+typedef struct {
+    bool coffman, promotion, median, sifting, reduce;
+    int width, sweeps, node_sep, dummy_sep, layer_gap, restarts;
+    int64_t seed;
+    Direction direction;
+} Settings;
+typedef struct {
+    int id;
+    char label[13];
+} NodeData;
+typedef struct {
+    int from, to;
+} RawEdge;
+typedef struct {
+    char name[21];
+    Settings settings;
+    NodeData nodes[40];
+    int node_count;
+    RawEdge edges[150];
+    int edge_count;
+    bool has_path;
+    int path_from, path_to, self_loops, duplicates, error_line;
+    const char *error;
+} Block;
+typedef struct {
+    int from, to, upper, lower;
+    bool reversed, transitive;
+    IntList chain, segments;
+    int span, crossings, bends, length;
+    CellList route;
+} Edge;
+typedef struct {
+    char name[16];
+    int layer, width, left, right, x;
+    IntList upper, lower;
+} Vertex;
+typedef struct {
+    int upper, lower, edge, gap, offset;
+} Segment;
+typedef struct {
+    int run, number, moved, swaps, crossings;
+} Sweep;
+typedef struct {
+    int round, moves, crossings;
+} Sift;
+typedef struct {
+    int root[600], aligned[600], blocks, width, low, high;
+} BKVariant;
+typedef struct {
+    unsigned char *marked;
+    int conflicts;
+    BKVariant variants[4];
+    int smallest;
+} Coordinates;
+typedef struct {
+    const Block *block;
+    int nodes, vertex_count, edge_count, segment_count;
+    Vertex vertices[600];
+    Edge edges[120];
+    Segment segments[720];
+    Orders gaps, orders, scc;
+    IntList acyclic;
+    LayeringResult layering;
+    Coordinates coordinates;
+    Sweep sweeps[510];
+    int sweep_count;
+    Sift *sifts;
+    int sift_count, sift_capacity;
+    int best_run, best_sweep, initial_crossings, adopted_crossings, final_crossings, brute;
+    int sources, sinks, isolated, components;
+    int tracks[599], gap_widths[599], band_starts[600], thickness[600];
+    int main_length, secondary_length;
+    Canvas canvas;
+    IntList path;
+} Layout;
+void *allocate(size_t size) {
+    void *data = calloc(1, size ? size : 1);
+    if (!data)
+        exit(EXIT_FAILURE);
+    return data;
+}
+bool int_has(const IntList *list, int value) {
+    for (int i = 0; i < list->count; ++i)
+        if (list->data[i] == value)
+            return true;
+    return false;
+}
+void int_add(IntList *list, int value) {
+    if (!int_has(list, value))
+        int_push(list, value);
+}
+IntList int_copy(const IntList *list) {
+    IntList out = {0};
+    if (list->count) {
+        out.count = out.capacity = list->count;
+        out.data = allocate((size_t)out.count * sizeof *out.data);
+        memcpy(out.data, list->data, (size_t)out.count * sizeof *out.data);
+    }
+    return out;
+}
+void int_free(IntList *list) {
+    free(list->data);
+    *list = (IntList){0};
+}
+TextLines read_lines(const char *path) {
+    FILE *input = fopen(path, "rb");
+    if (!input)
+        exit(EXIT_FAILURE);
+    TextLines out = {0};
+    char *line = NULL;
+    size_t length = 0, capacity = 0;
+    int c;
+    while ((c = fgetc(input)) != EOF) {
+        if (c == '\n') {
+            if (!line)
+                line = allocate(1);
+            line[length] = 0;
+            lines_push(&out, line);
+            line = NULL;
+            length = capacity = 0;
+        } else {
+            if (length + 1 >= capacity) {
+                capacity = capacity ? capacity * 2 : 128;
+                line = resize(line, capacity);
+            }
+            line[length++] = (char)c;
+        }
+    }
+    if (ferror(input))
+        exit(EXIT_FAILURE);
+    if (length) {
+        line[length] = 0;
+        lines_push(&out, line);
+    } else
+        free(line);
+    fclose(input);
+    return out;
+}
+const char *setting_names[13] = {"layering", "width",     "promotion", "heuristic", "sweeps",
+                                 "node_sep", "dummy_sep", "layer_gap", "direction", "sifting",
+                                 "reduce",   "restarts",  "seed"};
+const char *direction_name(Direction direction) {
+    static const char *names[] = {"TB", "BT", "LR", "RL"};
+    return names[direction];
+}
+bool vertical(Direction direction) { return direction == DIR_TB || direction == DIR_BT; }
+TextLines split_words(const char *text) {
+    TextLines out = {0};
+    const char *at = text;
+    while (*at) {
+        while (*at == ' ')
+            ++at;
+        if (!*at)
+            break;
+        const char *start = at;
+        while (*at && *at != ' ')
+            ++at;
+        size_t length = (size_t)(at - start);
+        char *word = allocate(length + 1);
+        memcpy(word, start, length);
+        word[length] = 0;
+        lines_push(&out, word);
+    }
+    return out;
+}
+static Settings defaults(void) {
+    return (Settings){false, false, false, false, false, 4, 12, 2, 1, 3, 0, 1, DIR_TB};
+}
+TextLines settings_values(Settings settings) {
+    TextLines out = {0};
+    lines_add(&out, settings.coffman ? "coffman" : "longest");
+    lines_push(&out, format_text("%d", settings.width));
+    lines_add(&out, settings.promotion ? "on" : "off");
+    lines_add(&out, settings.median ? "median" : "barycenter");
+    lines_push(&out, format_text("%d", settings.sweeps));
+    lines_push(&out, format_text("%d", settings.node_sep));
+    lines_push(&out, format_text("%d", settings.dummy_sep));
+    lines_push(&out, format_text("%d", settings.layer_gap));
+    lines_add(&out, direction_name(settings.direction));
+    lines_add(&out, settings.sifting ? "on" : "off");
+    lines_add(&out, settings.reduce ? "on" : "off");
+    lines_push(&out, format_text("%d", settings.restarts));
+    lines_push(&out, format_text("%lld", (long long)settings.seed));
+    return out;
+}
+static bool set_setting(Settings *settings, const char *name, const char *value) {
+    if (!strcmp(name, "layering")) {
+        if (strcmp(value, "longest") && strcmp(value, "coffman"))
+            return false;
+        settings->coffman = !strcmp(value, "coffman");
+        return true;
+    }
+    if (!strcmp(name, "heuristic")) {
+        if (strcmp(value, "barycenter") && strcmp(value, "median"))
+            return false;
+        settings->median = !strcmp(value, "median");
+        return true;
+    }
+    if (!strcmp(name, "direction")) {
+        for (int i = 0; i < 4; ++i)
+            if (!strcmp(value, direction_name((Direction)i))) {
+                settings->direction = (Direction)i;
+                return true;
+            }
+        return false;
+    }
+    if (!strcmp(name, "promotion") || !strcmp(name, "sifting") || !strcmp(name, "reduce")) {
+        if (strcmp(value, "on") && strcmp(value, "off"))
+            return false;
+        bool enabled = !strcmp(value, "on");
+        if (!strcmp(name, "promotion"))
+            settings->promotion = enabled;
+        else if (!strcmp(name, "sifting"))
+            settings->sifting = enabled;
+        else
+            settings->reduce = enabled;
+        return true;
+    }
+    int index = -1;
+    for (int i = 0; i < 13; ++i)
+        if (!strcmp(name, setting_names[i])) {
+            index = i;
+            break;
+        }
+    if (index < 0 || !*value || strlen(value) > 10)
+        return false;
+    int64_t number = 0;
+    for (const char *at = value; *at; ++at) {
+        if (*at < '0' || *at > '9')
+            return false;
+        number = number * 10 + (*at - '0');
+    }
+    static const int64_t low[] = {0, 1, 0, 0, 0, 1, 1, 2, 0, 0, 0, 0, 1};
+    static const int64_t high[] = {0, 40, 0, 0, 50, 9, 9, 9, 0, 0, 0, 9, 2147483646};
+    if (number < low[index] || number > high[index])
+        return false;
+    if (index == 1)
+        settings->width = (int)number;
+    else if (index == 4)
+        settings->sweeps = (int)number;
+    else if (index == 5)
+        settings->node_sep = (int)number;
+    else if (index == 6)
+        settings->dummy_sep = (int)number;
+    else if (index == 7)
+        settings->layer_gap = (int)number;
+    else if (index == 11)
+        settings->restarts = (int)number;
+    else if (index == 12)
+        settings->seed = number;
+    else
+        return false;
+    return true;
+}
+static int compare_nodes(const void *left, const void *right) {
+    const NodeData *a = left, *b = right;
+    return (a->id > b->id) - (a->id < b->id);
+}
+Block *read_blocks(int *count) {
+    Settings settings = defaults();
+    TextLines params = read_lines("input/params.txt");
+    for (int i = 0; i < params.count; ++i) {
+        if (!params.data[i][0] || params.data[i][0] == '#')
+            continue;
+        TextLines words = split_words(params.data[i]);
+        set_setting(&settings, words.data[0], words.data[1]);
+        lines_free(&words);
+    }
+    lines_free(&params);
+    TextLines lines = read_lines("input/graphs.txt");
+    Block *blocks = allocate(30 * sizeof *blocks);
+    *count = 0;
+    bool declared[1000] = {0};
+    Block *block = NULL;
+    for (int i = 0; i < lines.count; ++i) {
+        if (!lines.data[i][0] || lines.data[i][0] == '#')
+            continue;
+        TextLines words = split_words(lines.data[i]);
+        const char *kind = words.data[0];
+        if (!strcmp(kind, "GRAPH")) {
+            block = &blocks[(*count)++];
+            strcpy(block->name, words.data[1]);
+            block->settings = settings;
+            memset(declared, 0, sizeof declared);
+            lines_free(&words);
+            continue;
+        }
+        if (block->error) {
+            lines_free(&words);
+            continue;
+        }
+        const char *reason = NULL;
+        if (!strcmp(kind, "OPTION")) {
+            if (!set_setting(&block->settings, words.data[1], words.data[2]))
+                reason = "bad_option";
+        } else if (!strcmp(kind, "NODE")) {
+            int id = atoi(words.data[1]);
+            if (declared[id])
+                reason = "duplicate_node";
+            else if (block->node_count == 40)
+                reason = "too_many_nodes";
+            else {
+                declared[id] = true;
+                NodeData *node = &block->nodes[block->node_count++];
+                node->id = id;
+                strcpy(node->label, words.data[2]);
+            }
+        } else if (!strcmp(kind, "EDGE") || !strcmp(kind, "PATH")) {
+            int from = atoi(words.data[1]), to = atoi(words.data[2]);
+            if (!declared[from] || !declared[to])
+                reason = "unknown_node";
+            else if (!strcmp(kind, "PATH")) {
+                block->path_to = to;
+            } else if (from == to)
+                ++block->self_loops;
+            else {
+                bool duplicate = false;
+                for (int j = 0; j < block->edge_count; ++j)
+                    if (block->edges[j].from == from && block->edges[j].to == to)
+                        duplicate = true;
+                if (duplicate)
+                    ++block->duplicates;
+                else
+                    block->edges[block->edge_count++] = (RawEdge){from, to};
+            }
+        } else if (!strcmp(kind, "END") && !block->node_count)
+            reason = "no_nodes";
+        if (reason) {
+            block->error = reason;
+            block->error_line = i + 1;
+        }
+        lines_free(&words);
+    }
+    lines_free(&lines);
+    for (int i = 0; i < *count; ++i)
+        qsort(blocks[i].nodes, (size_t)blocks[i].node_count, sizeof *blocks[i].nodes,
+              compare_nodes);
+    return blocks;
+}
+IntList acyclic(int nodes, const Edge *edges, int edge_count) {
+    bool remaining[40] = {0};
+    for (int i = 0; i < nodes; ++i)
+        remaining[i] = true;
+    IntList head = {0}, tail = {0};
+    for (int count = 0; count < nodes; ++count) {
+        int incoming[40] = {0}, outgoing[40] = {0};
+        for (int i = 0; i < edge_count; ++i)
+            if (remaining[edges[i].from] && remaining[edges[i].to]) {
+                ++outgoing[edges[i].from];
+                ++incoming[edges[i].to];
+            }
+        int chosen = -1;
+        bool to_tail = false;
+        for (int v = 0; v < nodes; ++v)
+            if (remaining[v] && !outgoing[v]) {
+                chosen = v;
+                to_tail = true;
+                break;
+            }
+        if (chosen < 0)
+            for (int v = 0; v < nodes; ++v)
+                if (remaining[v] && !incoming[v]) {
+                    chosen = v;
+                    break;
+                }
+        if (chosen < 0)
+            for (int v = 0; v < nodes; ++v)
+                if (remaining[v] &&
+                    (chosen < 0 || outgoing[v] - incoming[v] > outgoing[chosen] - incoming[chosen]))
+                    chosen = v;
+        remaining[chosen] = false;
+        if (to_tail)
+            int_push(&tail, chosen);
+        else
+            int_push(&head, chosen);
+    }
+    for (int i = tail.count - 1; i >= 0; --i)
+        int_push(&head, tail.data[i]);
+    int_free(&tail);
+    return head;
+}
+static int longest_height(int node, const Orders *successors, int *height, bool *known) {
+    if (known[node])
+        return height[node];
+    const IntList *next = &successors->rows[node];
+    for (int i = 0; i < next->count; ++i) {
+        int value = longest_height(next->data[i], successors, height, known) + 1;
+        if (value > height[node])
+            height[node] = value;
+    }
+    known[node] = true;
+    return height[node];
+}
+LayeringResult assign_layers(const Orders *predecessors, const Orders *successors,
+                             Settings settings) {
+    LayeringResult out = {0};
+    int nodes = predecessors->count;
+    if (!settings.coffman) {
+        bool known[40] = {0};
+        for (int i = 0; i < nodes; ++i)
+            longest_height(i, successors, out.height, known);
+    } else {
+    }
+    if (settings.promotion)
+        for (;;) {
+        }
+    return out;
+}
+static int maximum(int a, int b) { return a > b ? a : b; }
+static int minimum(int a, int b) { return a < b ? a : b; }
+static int compare_ints(const void *left, const void *right) {
+    int a = *(const int *)left, b = *(const int *)right;
+    return (a > b) - (a < b);
+}
+void orders_free(Orders *orders) {
+    for (int i = 0; i < orders->count; ++i)
+        int_free(&orders->rows[i]);
+    *orders = (Orders){0};
+}
+Orders orders_copy(const Orders *orders) {
+    Orders out = {0};
+    out.count = orders->count;
+    for (int i = 0; i < out.count; ++i)
+        out.rows[i] = int_copy(&orders->rows[i]);
+    return out;
+}
+static bool orders_equal(const Orders *a, const Orders *b) {
+    if (a->count != b->count)
+        return false;
+    for (int i = 0; i < a->count; ++i)
+        if (a->rows[i].count != b->rows[i].count ||
+            (a->rows[i].count && memcmp(a->rows[i].data, b->rows[i].data,
+                                        (size_t)a->rows[i].count * sizeof *a->rows[i].data)))
+            return false;
+    return true;
+}
+static int node_index(const Block *block, int id) {
+    for (int i = 0; i < block->node_count; ++i)
+        if (block->nodes[i].id == id)
+            return i;
+    return -1;
+}
+static int index_of(const IntList *list, int value) {
+    for (int i = 0; i < list->count; ++i)
+        if (list->data[i] == value)
+            return i;
+    return -1;
+}
+static void visit(Layout *layout, int vertex, bool *visited) {
+    if (visited[vertex])
+        return;
+    visited[vertex] = true;
+    int_push(&layout->orders.rows[layout->vertices[vertex].layer], vertex);
+    const IntList *next = &layout->vertices[vertex].lower;
+    for (int i = 0; i < next->count; ++i)
+        visit(layout, next->data[i], visited);
+}
+static Layout *initialize(const Block *block) {
+    Layout *out = allocate(sizeof *out);
+    out->block = block;
+    out->nodes = out->vertex_count = block->node_count;
+    out->edge_count = block->edge_count;
+    for (int i = 0; i < out->nodes; ++i) {
+        Vertex *vertex = &out->vertices[i];
+        snprintf(vertex->name, sizeof vertex->name, "%d", block->nodes[i].id);
+        vertex->width = (int)strlen(block->nodes[i].label) + 2;
+        if (vertical(block->settings.direction)) {
+            vertex->left = (vertex->width - 1) / 2;
+            vertex->right = vertex->width - 1 - vertex->left;
+        }
+    }
+    for (int i = 0; i < out->edge_count; ++i) {
+        out->edges[i].from = node_index(block, block->edges[i].from);
+        out->edges[i].to = node_index(block, block->edges[i].to);
+    }
+    out->acyclic = acyclic(out->nodes, out->edges, out->edge_count);
+    int rank[40] = {0};
+    for (int i = 0; i < out->nodes; ++i)
+        rank[out->acyclic.data[i]] = i;
+    Orders all_successors = {0};
+    all_successors.count = out->nodes;
+    for (int i = 0; i < out->edge_count; ++i) {
+        Edge *edge = &out->edges[i];
+        edge->reversed = rank[edge->from] > rank[edge->to];
+        edge->upper = edge->reversed ? edge->to : edge->from;
+        edge->lower = edge->reversed ? edge->from : edge->to;
+        int_push(&all_successors.rows[edge->upper], edge->lower);
+        reach[edge->upper][edge->lower] = true;
+    }
+    if (block->settings.reduce)
+        for (int i = 0; i < out->edge_count; ++i) {
+        }
+    Orders pre = {0}, succ = {0};
+    pre.count = succ.count = out->nodes;
+    for (int i = 0; i < out->edge_count; ++i) {
+        const Edge *edge = &out->edges[i];
+        if (!edge->transitive) {
+            int_push(&pre.rows[edge->lower], edge->upper);
+            int_push(&succ.rows[edge->upper], edge->lower);
+        }
+    }
+    for (int i = 0; i < out->nodes; ++i) {
+        if (pre.rows[i].count > 1)
+            qsort(pre.rows[i].data, (size_t)pre.rows[i].count, sizeof *pre.rows[i].data,
+                  compare_ints);
+        if (succ.rows[i].count > 1)
+            qsort(succ.rows[i].data, (size_t)succ.rows[i].count, sizeof *succ.rows[i].data,
+                  compare_ints);
+    }
+    out->layering = assign_layers(&pre, &succ, block->settings);
+    orders_free(&pre);
+    orders_free(&succ);
+    orders_free(&all_successors);
+    int highest = 0;
+    for (int i = 0; i < out->nodes; ++i)
+        highest = maximum(highest, out->layering.height[i]);
+    IntList levels = {0};
+    for (int i = 0; i < out->nodes; ++i)
+        int_add(&levels, highest - out->layering.height[i]);
+    for (int i = 0; i < out->edge_count; ++i) {
+        const Edge *edge = &out->edges[i];
+        if (!edge->transitive)
+            for (int level = highest - out->layering.height[edge->upper] + 1;
+                 level < highest - out->layering.height[edge->lower]; ++level)
+                int_add(&levels, level);
+    }
+    if (levels.count > 1)
+        qsort(levels.data, (size_t)levels.count, sizeof *levels.data, compare_ints);
+    out->orders.count = levels.count;
+    out->gaps.count = levels.count - 1;
+    for (int i = 0; i < out->nodes; ++i)
+        out->vertices[i].layer = index_of(&levels, highest - out->layering.height[i]);
+    int_free(&levels);
+    for (int index = 0; index < out->edge_count; ++index) {
+        Edge *edge = &out->edges[index];
+        if (edge->transitive)
+            continue;
+        int upper = out->vertices[edge->upper].layer, lower = out->vertices[edge->lower].layer;
+        edge->span = lower - upper;
+        int_push(&edge->chain, edge->upper);
+        for (int layer = upper + 1; layer < lower; ++layer) {
+            int number = out->vertex_count++;
+            Vertex *vertex = &out->vertices[number];
+            snprintf(vertex->name, sizeof vertex->name, "d%d", number - out->nodes + 1);
+            vertex->width = 1;
+            vertex->layer = layer;
+            int_push(&edge->chain, number);
+        }
+        int_push(&edge->chain, edge->lower);
+        for (int i = 0; i + 1 < edge->chain.count; ++i) {
+            int u = edge->chain.data[i], v = edge->chain.data[i + 1], gap = out->vertices[u].layer,
+                number = out->segment_count++;
+            out->segments[number] = (Segment){u, v, index, gap, 0};
+            int_push(&edge->segments, number);
+            int_push(&out->gaps.rows[gap], number);
+            int_push(&out->vertices[u].lower, v);
+            int_push(&out->vertices[v].upper, u);
+        }
+    }
+    bool visited[600] = {0};
+    for (int v = 0; v < out->nodes; ++v)
+        visit(out, v, visited);
+    return out;
+}
+static void reorder_layer(const Layout *layout, Orders *orders, int layer, bool down) {
+    int pos[600] = {0}, numerator[600] = {0}, denominator[600] = {0};
+    positions(orders, pos);
+    IntList slots = {0}, vertices = {0};
+    const IntList *row = &orders->rows[layer];
+    for (int i = 0; i < row->count; ++i) {
+        int v = row->data[i];
+        const IntList *reference = down ? &layout->vertices[v].upper : &layout->vertices[v].lower;
+        if (!reference->count)
+            continue;
+        int_push(&slots, i);
+        int_push(&vertices, v);
+        IntList values = {0};
+        int sum = 0;
+        for (int j = 0; j < reference->count; ++j) {
+            int value = pos[reference->data[j]];
+            int_push(&values, value);
+            sum += value;
+        }
+        numerator[v] = sum;
+        denominator[v] = reference->count;
+        if (layout->block->settings.median) {
+            if (values.count > 1)
+                qsort(values.data, (size_t)values.count, sizeof *values.data, compare_ints);
+            numerator[v] = values.data[(values.count - 1) / 2] + values.data[values.count / 2];
+            denominator[v] = 1;
+        }
+        int_free(&values);
+    }
+    for (int i = 1; i < vertices.count; ++i) {
+        int value = vertices.data[i], j = i;
+        while (j && numerator[value] * denominator[vertices.data[j - 1]] <
+                        numerator[vertices.data[j - 1]] * denominator[value]) {
+            vertices.data[j] = vertices.data[j - 1];
+            --j;
+        }
+        vertices.data[j] = value;
+    }
+    for (int i = 0; i < slots.count; ++i)
+        orders->rows[layer].data[slots.data[i]] = vertices.data[i];
+    int_free(&slots);
+    int_free(&vertices);
+}
+static int adjacent_exchanges(const Layout *layout, Orders *orders) {
+    int swaps = 0, pos[600] = {0};
+    positions(orders, pos);
+    for (;;) {
+        bool changed = false;
+        for (int layer = 0; layer < orders->count; ++layer) {
+            IntList *row = &orders->rows[layer];
+            for (int j = 0; j + 1 < row->count; ++j) {
+                int v = row->data[j], w = row->data[j + 1];
+                if (adjacent_cost(layout, v, w, pos) > adjacent_cost(layout, w, v, pos)) {
+                    row->data[j] = w;
+                    row->data[j + 1] = v;
+                    pos[v] = j + 1;
+                    pos[w] = j;
+                    ++swaps;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed)
+            return swaps;
+    }
+}
+static IntList inserted(const IntList *row, int at, int vertex) {
+    IntList out = {0};
+    for (int i = 0; i <= row->count; ++i) {
+        if (i == at)
+            int_push(&out, vertex);
+        if (i < row->count)
+            int_push(&out, row->data[i]);
+    }
+    return out;
+}
+static void sift_push(Layout *layout, Sift value) {
+    if (layout->sift_count == layout->sift_capacity) {
+        layout->sift_capacity = layout->sift_capacity ? layout->sift_capacity * 2 : 8;
+        layout->sifts =
+            resize(layout->sifts, (size_t)layout->sift_capacity * sizeof *layout->sifts);
+    }
+    layout->sifts[layout->sift_count++] = value;
+}
+static void reduce_crossings(Layout *layout) {
+    Orders initial = orders_copy(&layout->orders), adopted = {0};
+    int64_t random = layout->block->settings.seed;
+    int best_crossings = -1;
+    for (int run = 0; run <= layout->block->settings.restarts; ++run) {
+        Orders orders = orders_copy(&initial);
+        if (run)
+            for (int layer = 0; layer < orders.count; ++layer) {
+                IntList *row = &orders.rows[layer];
+                for (int j = row->count - 1; j >= 1; --j) {
+                    random = 48271 * random % 2147483647;
+                    int k = (int)(random % (j + 1)), value = row->data[j];
+                    row->data[j] = row->data[k];
+                    row->data[k] = value;
+                }
+            }
+        int crossings = total_crossings(layout, &orders), run_best = crossings, run_sweep = 0;
+        layout->sweeps[layout->sweep_count++] = (Sweep){run, 0, 0, 0, crossings};
+        if (!run)
+            layout->initial_crossings = crossings;
+        Orders run_order = orders_copy(&orders), history[3] = {0};
+        history[0] = orders_copy(&orders);
+        for (int sweep = 1;; ++sweep) {
+            if (!crossings || sweep - 1 == layout->block->settings.sweeps ||
+                (sweep - 1 >= 2 && orders_equal(&orders, &history[(sweep - 3) % 3])))
+                break;
+            int old_pos[600] = {0}, new_pos[600] = {0};
+            positions(&orders, old_pos);
+            bool down = sweep % 2;
+            if (down) {
+                for (int layer = 1; layer < orders.count; ++layer)
+                    reorder_layer(layout, &orders, layer, true);
+            } else {
+                for (int layer = orders.count - 2; layer >= 0; --layer)
+                    reorder_layer(layout, &orders, layer, false);
+            }
+            positions(&orders, new_pos);
+            int moved = 0;
+            for (int v = 0; v < layout->vertex_count; ++v)
+                if (old_pos[v] != new_pos[v])
+                    ++moved;
+            int swaps = adjacent_exchanges(layout, &orders);
+            crossings = total_crossings(layout, &orders);
+            layout->sweeps[layout->sweep_count++] = (Sweep){run, sweep, moved, swaps, crossings};
+            orders_free(&history[sweep % 3]);
+            history[sweep % 3] = orders_copy(&orders);
+            if (crossings < run_best) {
+                run_best = crossings;
+                run_sweep = sweep;
+                orders_free(&run_order);
+                run_order = orders_copy(&orders);
+            }
+        }
+        for (int i = 0; i < 3; ++i)
+            orders_free(&history[i]);
+        orders_free(&orders);
+        if (best_crossings < 0 || run_best < best_crossings) {
+            best_crossings = run_best;
+            layout->best_run = run;
+            layout->best_sweep = run_sweep;
+            orders_free(&adopted);
+            adopted = run_order;
+            run_order = (Orders){0};
+        }
+        orders_free(&run_order);
+    }
+    orders_free(&initial);
+    orders_free(&layout->orders);
+    layout->orders = adopted;
+    layout->adopted_crossings = best_crossings;
+    if (layout->block->settings.sifting)
+        for (int round = 1;; ++round) {
+            int moves = 0;
+            for (int v = 0; v < layout->vertex_count; ++v) {
+                int layer = layout->vertices[v].layer,
+                    original = index_of(&layout->orders.rows[layer], v);
+                IntList without = {0};
+                const IntList *row = &layout->orders.rows[layer];
+                for (int i = 0; i < row->count; ++i)
+                    if (i != original)
+                        int_push(&without, row->data[i]);
+                int best = 0, minimum_cost = INT_MAX, original_cost = 0;
+                for (int at = 0; at <= without.count; ++at) {
+                    IntList candidate = inserted(&without, at, v);
+                    Orders trial = layout->orders;
+                    trial.rows[layer] = candidate;
+                    int pos[600] = {0}, cost = 0;
+                    positions(&trial, pos);
+                    if (layer)
+                        cost += gap_crossings(layout->segments, &layout->gaps.rows[layer - 1], pos,
+                                              trial.rows[layer].count);
+                    if (layer + 1 < trial.count)
+                        cost += gap_crossings(layout->segments, &layout->gaps.rows[layer], pos,
+                                              trial.rows[layer + 1].count);
+                    if (at == original)
+                        original_cost = cost;
+                    if (cost < minimum_cost) {
+                        minimum_cost = cost;
+                        best = at;
+                    }
+                    int_free(&candidate);
+                }
+                if (original_cost == minimum_cost)
+                    best = original;
+                int_free(&layout->orders.rows[layer]);
+                layout->orders.rows[layer] = inserted(&without, best, v);
+                int_free(&without);
+                if (best != original)
+                    ++moves;
+            }
+            sift_push(layout, (Sift){round, moves, total_crossings(layout, &layout->orders)});
+            if (!moves)
+                break;
+        }
+    layout->final_crossings = total_crossings(layout, &layout->orders);
+    layout->brute = brute_crossings(layout, &layout->orders, true);
+}
+static void geometry(Layout *layout) {
+    int layers = layout->orders.count;
+    bool is_vertical = vertical(layout->block->settings.direction);
+    for (int i = 0; i < layers; ++i) {
+        layout->thickness[i] = 1;
+        if (!is_vertical)
+            for (int j = 0; j < layout->orders.rows[i].count; ++j)
+                layout->thickness[i] = maximum(
+                    layout->thickness[i], layout->vertices[layout->orders.rows[i].data[j]].width);
+        if (i)
+            layout->band_starts[i] =
+                layout->band_starts[i - 1] + layout->thickness[i - 1] + layout->gap_widths[i - 1];
+    }
+    layout->main_length = layout->band_starts[layers - 1] + layout->thickness[layers - 1];
+    for (int i = 0; i < layout->vertex_count; ++i)
+        layout->secondary_length = maximum(layout->secondary_length,
+                                           layout->vertices[i].x + layout->vertices[i].right + 1);
+    layout->canvas = canvas_create(layout->main_length, layout->secondary_length,
+                                   layout->block->settings.direction);
+    for (int i = 0; i < layout->edge_count; ++i) {
+        Edge *edge = &layout->edges[i];
+        if (edge->transitive)
+            continue;
+        const Vertex *upper = &layout->vertices[edge->upper],
+                     *lower = &layout->vertices[edge->lower];
+        cell_push(&edge->route,
+                  canvas_map(&layout->canvas,
+                             layout->band_starts[upper->layer] + (is_vertical ? 1 : upper->width),
+                             upper->x));
+        for (int j = 0; j < edge->segments.count; ++j) {
+            const Segment *segment = &layout->segments[edge->segments.data[j]];
+            int x = layout->vertices[segment->upper].x, y = layout->vertices[segment->lower].x;
+            if (x != y) {
+                int main = layout->band_starts[segment->gap] + layout->thickness[segment->gap] +
+                           segment->offset;
+                cell_push(&edge->route, canvas_map(&layout->canvas, main, x));
+                cell_push(&edge->route, canvas_map(&layout->canvas, main, y));
+                edge->bends += 2;
+            }
+        }
+        cell_push(&edge->route,
+                  canvas_map(&layout->canvas, layout->band_starts[lower->layer] - 1, lower->x));
+        if (edge->reversed)
+            for (int j = 0; j < edge->route.count / 2; ++j) {
+                Cell value = edge->route.data[j];
+                edge->route.data[j] = edge->route.data[edge->route.count - 1 - j];
+                edge->route.data[edge->route.count - 1 - j] = value;
+            }
+        edge->length = 1;
+        for (int j = 0; j + 1 < edge->route.count; ++j)
+            edge->length += abs(edge->route.data[j].row - edge->route.data[j + 1].row) +
+                            abs(edge->route.data[j].column - edge->route.data[j + 1].column);
+    }
+    if (layout->block->has_path) {
+    }
+}
+static void draw(Layout *layout) {
+    Canvas *canvas = &layout->canvas;
+    for (int i = 0; i < layout->vertex_count; ++i) {
+        const Vertex *vertex = &layout->vertices[i];
+        if (i >= layout->nodes) {
+            for (int j = 0; j < layout->thickness[vertex->layer]; ++j)
+                canvas_main_line(canvas, layout->band_starts[vertex->layer] + j, vertex->x);
+        } else if (!vertical(canvas->direction) && vertex->lower.count) {
+            for (int j = vertex->width; j < layout->thickness[vertex->layer]; ++j)
+                canvas_main_line(canvas, layout->band_starts[vertex->layer] + j, vertex->x);
+        }
+    }
+    for (int i = 0; i < layout->segment_count; ++i) {
+        const Segment *segment = &layout->segments[i];
+        canvas_segment(canvas, layout->band_starts[segment->gap] + layout->thickness[segment->gap],
+                       layout->gap_widths[segment->gap], layout->vertices[segment->upper].x,
+                       layout->vertices[segment->lower].x, segment->offset);
+    }
+    static const char arrows[4][2] = {{'v', '^'}, {'^', 'v'}, {'>', '<'}, {'<', '>'}};
+    for (int i = 0; i < layout->edge_count; ++i) {
+        const Edge *edge = &layout->edges[i];
+        if (!edge->transitive)
+            canvas_at(canvas, edge->route.data[edge->route.count - 1])->arrow =
+                arrows[canvas->direction][edge->reversed ? 1 : 0];
+    }
+    bool path_nodes[40] = {0}, path_edges[40][40] = {0};
+    for (int i = 0; i < layout->path.count; ++i) {
+        path_nodes[layout->path.data[i]] = true;
+        if (i)
+            path_edges[layout->path.data[i - 1]][layout->path.data[i]] = true;
+    }
+    for (int i = 0; i < layout->nodes; ++i) {
+        const Vertex *vertex = &layout->vertices[i];
+        char *box = format_text("%c%s%c", path_nodes[i] ? '{' : '[', layout->block->nodes[i].label,
+                                path_nodes[i] ? '}' : ']');
+        Cell start;
+        if (vertical(canvas->direction))
+            start =
+                canvas_map(canvas, layout->band_starts[vertex->layer], vertex->x - vertex->left);
+        for (int j = 0; box[j]; ++j)
+            canvas_at(canvas, (Cell){start.row, start.column + j})->box = box[j];
+        free(box);
+    }
+}
+static char *display_names(const Layout *layout, const IntList *vertices) {
+    TextLines names = {0};
+    for (int i = 0; i < vertices->count; ++i)
+        lines_add(&names, layout->vertices[vertices->data[i]].name);
+    char *out = join_texts(&names, " ");
+    lines_free(&names);
+    return out;
+}
+static char *edge_name(const Layout *layout, const Edge *edge) {
+    return format_text("%s->%s", layout->vertices[edge->from].name,
+                       layout->vertices[edge->to].name);
+}
+static TextLines layout_lines(const Layout *layout) {
+    const Block *block = layout->block;
+    TextLines out = {0}, settings = {0}, values = settings_values(block->settings);
+    for (int i = 0; i < 13; ++i)
+        lines_push(&settings, format_text("%s=%s", setting_names[i], values.data[i]));
+    char *joined = join_texts(&settings, " "), *names = display_names(layout, &layout->acyclic);
+    lines_push(&out, format_text("graph %s", block->name));
+    lines_push(&out, format_text("settings %s", joined));
+    lines_push(&out, format_text("acyclic %s", names));
+    free(joined);
+    free(names);
+    lines_free(&settings);
+    lines_free(&values);
+    for (int i = 0; i < layout->sweep_count; ++i) {
+        const Sweep *sweep = &layout->sweeps[i];
+        if (!sweep->number)
+            lines_push(
+                &out, format_text("sweep %d 0 initial crossings %d", sweep->run, sweep->crossings));
+        else
+            lines_push(&out,
+                       format_text("sweep %d %d %s moved %d swaps %d crossings %d", sweep->run,
+                                   sweep->number, sweep->number % 2 ? "down" : "up", sweep->moved,
+                                   sweep->swaps, sweep->crossings));
+    }
+    lines_push(&out, format_text("best run %d sweep %d crossings %d", layout->best_run,
+                                 layout->best_sweep, layout->adopted_crossings));
+    for (int i = 0; i < layout->sift_count; ++i)
+        lines_push(&out, format_text("sift %d moves %d crossings %d", layout->sifts[i].round,
+                                     layout->sifts[i].moves, layout->sifts[i].crossings));
+    for (int layer = 0; layer < layout->orders.count; ++layer) {
+        int start = layout->band_starts[layer], end = start + layout->thickness[layer] - 1;
+        if (block->settings.direction == DIR_BT || block->settings.direction == DIR_RL) {
+            int old = start;
+            start = layout->main_length - 1 - end;
+            end = layout->main_length - 1 - old;
+        }
+        TextLines vertices = {0};
+        int low = 0, high = 0;
+        const IntList *row = &layout->orders.rows[layer];
+        for (int i = 0; i < row->count; ++i) {
+            const Vertex *vertex = &layout->vertices[row->data[i]];
+            if (!i || vertex->x - vertex->left < low)
+                low = vertex->x - vertex->left;
+            if (!i || vertex->x + vertex->right > high)
+                high = vertex->x + vertex->right;
+            lines_push(&vertices, format_text("%s@%d", vertex->name, vertex->x));
+        }
+        joined = join_texts(&vertices, " ");
+        lines_push(&out, format_text("layer %d band %d %d extent %d %d : %s", layer, start, end,
+                                     low, high, joined));
+        free(joined);
+        lines_free(&vertices);
+    }
+    int pos[600] = {0};
+    positions(&layout->orders, pos);
+    for (int gap = 0; gap < layout->gaps.count; ++gap)
+        lines_push(&out, format_text("between %d %d segments %d crossings %d tracks %d gap %d", gap,
+                                     gap + 1, layout->gaps.rows[gap].count,
+                                     gap_crossings(layout->segments, &layout->gaps.rows[gap], pos,
+                                                   layout->orders.rows[gap + 1].count),
+                                     layout->tracks[gap], layout->gap_widths[gap]));
+    TextLines variants = {0};
+    for (int i = 0; i < 4; ++i)
+        lines_push(&variants,
+                   format_text("%s=%d/%d", variant_names[i], layout->coordinates.variants[i].blocks,
+                               layout->coordinates.variants[i].width));
+    joined = join_texts(&variants, " ");
+    lines_push(&out, format_text("bk conflicts %d %s smallest %s", layout->coordinates.conflicts,
+                                 joined, variant_names[layout->coordinates.smallest]));
+    free(joined);
+    lines_free(&variants);
+    for (int layer = 0; layer < layout->orders.count; ++layer)
+        for (int at = 0; at < layout->orders.rows[layer].count; ++at) {
+            int v = layout->orders.rows[layer].data[at];
+            const BKVariant *variants = layout->coordinates.variants;
+            lines_push(&out,
+                       format_text("vertex %s layer %d pos %d ul %d ur %d dl %d dr %d x %d",
+                                   layout->vertices[v].name, layer, at, variants[0].aligned[v],
+                                   variants[1].aligned[v], variants[2].aligned[v],
+                                   variants[3].aligned[v], layout->vertices[v].x));
+        }
+    for (int i = 0; i < layout->edge_count; ++i) {
+        const Edge *edge = &layout->edges[i];
+        char *prefix = format_text("edge %s %s%s", layout->vertices[edge->from].name,
+                                   layout->vertices[edge->to].name,
+                                   edge->reversed && !edge->transitive ? " reversed" : "");
+        if (edge->transitive) {
+            lines_push(&out, format_text("%s transitive", prefix));
+            free(prefix);
+            continue;
+        }
+        TextLines chain = {0}, route = {0};
+        for (int at = 0; at < edge->chain.count; ++at) {
+            int index = edge->chain.data[edge->reversed ? edge->chain.count - 1 - at : at];
+            lines_push(&chain, format_text("%d", layout->vertices[index].x));
+        }
+        for (int at = 0; at < edge->route.count; ++at)
+            lines_push(&route,
+                       format_text("%d,%d", edge->route.data[at].row, edge->route.data[at].column));
+        char *path = join_texts(&chain, " "), *points = join_texts(&route, " ");
+        lines_push(&out, format_text("%s span %d crossings %d bends %d path %s route %s", prefix,
+                                     edge->span, edge->crossings, edge->bends, path, points));
+        free(prefix);
+        free(path);
+        free(points);
+        lines_free(&chain);
+        lines_free(&route);
+    }
+    lines_add(&out, "end");
+    return out;
+}
+static TextLines stats_lines(const Layout *layout) {
+    const Block *block = layout->block;
+    TextLines out = {0};
+    lines_push(&out, format_text("graph %s", block->name));
+    lines_push(&out, format_text("nodes %d edges %d self_loops %d duplicates %d", layout->nodes,
+                                 layout->edge_count, block->self_loops, block->duplicates));
+    int span_counts[600] = {0}, span_total = 0, span_max = 0, long_edges = 0, vertical_edges = 0,
+        route_length = 0, bends = 0, longest = -1;
+    for (int i = 0; i < layout->edge_count; ++i) {
+        const Edge *edge = &layout->edges[i];
+        if (edge->transitive) {
+            lines_push(&transitive, edge_name(layout, edge));
+            continue;
+        }
+        route_length += edge->length;
+        bends += edge->bends;
+        if (longest < 0 || edge->length > layout->edges[longest].length)
+            longest = i;
+    }
+    lines_push(
+        &out,
+        format_text("crossings initial %d swept %d best_run %d best_sweep %d final %d brute %d",
+                    layout->initial_crossings, layout->adopted_crossings, layout->best_run,
+                    layout->best_sweep, layout->final_crossings, layout->brute));
+    int straight = 0, offset = 0;
+    for (int i = 0; i < layout->segment_count; ++i) {
+        int a = layout->vertices[layout->segments[i].upper].x,
+            b = layout->vertices[layout->segments[i].lower].x;
+        if (a == b)
+            ++straight;
+        offset += abs(a - b);
+    }
+    lines_push(&out, format_text("segments %d straight %d bent %d offset %d", layout->segment_count,
+                                 straight, layout->segment_count - straight, offset));
+    if (longest >= 0) {
+        char *name = edge_name(layout, &layout->edges[longest]);
+        lines_push(&out, format_text("routes length %d bends %d longest %s %d", route_length, bends,
+                                     name, layout->edges[longest].length));
+        free(name);
+    } else
+        lines_push(&out, format_text("routes length %d bends %d", route_length, bends));
+    lines_push(&out,
+               format_text("canvas width %d height %d crossing_cells %d", layout->canvas.columns,
+                           layout->canvas.rows, canvas_crossing_cells(&layout->canvas)));
+    lines_add(&out, "end");
+    return out;
+}
+int main(void) {
+    int block_count;
+    Block *blocks = read_blocks(&block_count);
+    TextLines layout = {0}, stats = {0}, drawings = {0}, crossings = {0};
+    lines_add(&crossings, "graph,run,sweep,crossings");
+    int laid_out = 0, errors = 0, nodes = 0, edges = 0, dummies = 0, initial = 0, final = 0;
+    for (int i = 0; i < block_count; ++i) {
+        const Block *block = &blocks[i];
+        if (block->error) {
+            continue;
+        }
+        Layout *current = initialize(block);
+        reduce_crossings(current);
+        current->coordinates = coordinates(current);
+        geometry(current);
+        draw(current);
+        TextLines details = layout_lines(current);
+        append_owned(&layout, &details);
+        details = stats_lines(current);
+        append_owned(&stats, &details);
+        details = canvas_drawing(&current->canvas, block->name);
+        append_owned(&drawings, &details);
+        for (int j = 0; j < current->sweep_count; ++j)
+            lines_push(&crossings,
+                       format_text("%s,%d,%d,%d", block->name, current->sweeps[j].run,
+                                   current->sweeps[j].number, current->sweeps[j].crossings));
+        initial += current->initial_crossings;
+        final += current->final_crossings;
+    }
+    mkdir("output", 0755);
+    write_lines("layout.txt", &layout);
+    write_lines("stats.txt", &stats);
+    write_lines("crossings.csv", &crossings);
+    write_lines("drawings.txt", &drawings);
+void positions(const Orders *orders, int *out) {
+    for (int i = 0; i < orders->count; ++i)
+        for (int j = 0; j < orders->rows[i].count; ++j)
+            out[orders->rows[i].data[j]] = j;
+}
+typedef struct {
+    int upper, lower;
+} PositionPair;
+static int compare_pairs(const void *left, const void *right) {
+    const PositionPair *a = left, *b = right;
+    if (a->upper != b->upper)
+        return (a->upper > b->upper) - (a->upper < b->upper);
+    return (a->lower > b->lower) - (a->lower < b->lower);
+}
+int gap_crossings(const Segment *segments, const IntList *indices, const int *pos, int width) {
+    PositionPair pairs[120];
+    for (int i = 0; i < indices->count; ++i) {
+        const Segment *segment = &segments[indices->data[i]];
+        pairs[i] = (PositionPair){pos[segment->upper], pos[segment->lower]};
+    }
+    if (indices->count > 1)
+        qsort(pairs, (size_t)indices->count, sizeof *pairs, compare_pairs);
+    int capacity = 1;
+    while (capacity < width)
+        capacity *= 2;
+    int tree[2047] = {0}, out = 0;
+    for (int i = 0; i < indices->count; ++i) {
+        int at = pairs[i].lower + capacity - 1;
+        ++tree[at];
+        while (at) {
+            if (at % 2)
+                out += tree[at + 1];
+            at = (at - 1) / 2;
+            ++tree[at];
+        }
+    }
+    return out;
+}
+int total_crossings(const Layout *layout, const Orders *orders) {
+    int pos[600] = {0}, out = 0;
+    positions(orders, pos);
+    for (int i = 0; i < layout->gaps.count; ++i)
+        out +=
+            gap_crossings(layout->segments, &layout->gaps.rows[i], pos, orders->rows[i + 1].count);
+    return out;
+}
+int brute_crossings(Layout *layout, const Orders *orders, bool count_edges) {
+    int pos[600] = {0}, out = 0;
+    positions(orders, pos);
+    for (int gap = 0; gap < layout->gaps.count; ++gap) {
+        const IntList *indices = &layout->gaps.rows[gap];
+        for (int i = 0; i < indices->count; ++i)
+            for (int j = i + 1; j < indices->count; ++j) {
+                const Segment *a = &layout->segments[indices->data[i]],
+                              *b = &layout->segments[indices->data[j]];
+                if ((pos[a->upper] - pos[b->upper]) * (pos[a->lower] - pos[b->lower]) < 0) {
+                    ++out;
+                    if (count_edges) {
+                        ++layout->edges[a->edge].crossings;
+                        ++layout->edges[b->edge].crossings;
+                    }
+                }
+            }
+    }
+    return out;
+}
+int adjacent_cost(const Layout *layout, int left, int right, const int *pos) {
+    int out = 0;
+    const Vertex *a = &layout->vertices[left], *b = &layout->vertices[right];
+    for (int i = 0; i < a->upper.count; ++i)
+        for (int j = 0; j < b->upper.count; ++j)
+            if (pos[a->upper.data[i]] > pos[b->upper.data[j]])
+                ++out;
+    for (int i = 0; i < a->lower.count; ++i)
+        for (int j = 0; j < b->lower.count; ++j)
+            if (pos[a->lower.data[i]] > pos[b->lower.data[j]])
+                ++out;
+    return out;
+}
+Coordinates coordinates(Layout *layout) {
+    Coordinates out = {0};
+    int count = layout->vertex_count, pos[600] = {0};
+    positions(&layout->orders, pos);
+    int minimum = 0;
+    for (int v = 0; v < count; ++v) {
+        int values[4];
+        for (int i = 0; i < 4; ++i)
+            values[i] = out.variants[i].aligned[v];
+        qsort(values, 4, sizeof *values, compare_ints);
+        layout->vertices[v].x = floor_div(values[1] + values[2], 2);
+        int low = layout->vertices[v].x - layout->vertices[v].left;
+        if (!v || low < minimum)
+            minimum = low;
+    }
+    for (int v = 0; v < count; ++v)
+        layout->vertices[v].x -= minimum;
+    return out;
+}
+Canvas canvas_create(int main_length, int secondary_length, Direction direction) {
+    Canvas out = {main_length,
+                  secondary_length,
+                  vertical(direction) ? main_length : secondary_length,
+                  vertical(direction) ? secondary_length : main_length,
+                  direction,
+                  NULL};
+    out.cells = allocate((size_t)out.rows * (size_t)out.columns * sizeof *out.cells);
+    return out;
+}
+Cell canvas_map(const Canvas *canvas, int main, int secondary) {
+    if (canvas->direction == DIR_BT || canvas->direction == DIR_RL)
+        main = canvas->main_length - 1 - main;
+    return vertical(canvas->direction) ? (Cell){main, secondary} : (Cell){secondary, main};
+}
+Pixel *canvas_at(Canvas *canvas, Cell cell) {
+    return &canvas->cells[(size_t)cell.row * (size_t)canvas->columns + (size_t)cell.column];
+static const Pixel *canvas_get(const Canvas *canvas, Cell cell) {
+    return &canvas->cells[(size_t)cell.row * (size_t)canvas->columns + (size_t)cell.column];
+}
+void canvas_line(Canvas *canvas, int main, int secondary, unsigned char kind) {
+    canvas_at(canvas, canvas_map(canvas, main, secondary))->lines |= kind;
+}
+void canvas_main_line(Canvas *canvas, int main, int secondary) {
+    canvas_line(canvas, main, secondary, vertical(canvas->direction) ? 1 : 2);
+}
+static void secondary_line(Canvas *canvas, int main, int secondary) {
+    canvas_line(canvas, main, secondary, vertical(canvas->direction) ? 2 : 1);
+}
+void canvas_segment(Canvas *canvas, int start, int gap, int upper, int lower, int offset) {
+    if (upper == lower) {
+        for (int i = 0; i < gap; ++i)
+            canvas_main_line(canvas, start + i, upper);
+        return;
+    }
+    for (int i = 0; i < offset; ++i)
+        canvas_main_line(canvas, start + i, upper);
+    canvas_line(canvas, start + offset, upper, 4);
+    canvas_line(canvas, start + offset, lower, 4);
+    int low = upper < lower ? upper : lower, high = upper > lower ? upper : lower;
+    for (int x = low + 1; x < high; ++x)
+        secondary_line(canvas, start + offset, x);
+    for (int i = offset + 1; i < gap; ++i)
+        canvas_main_line(canvas, start + i, lower);
+}
+int canvas_crossing_cells(const Canvas *canvas) {
+    int out = 0;
+    for (int i = 0; i < canvas->rows * canvas->columns; ++i)
+        if ((canvas->cells[i].lines & 3) == 3)
+            ++out;
+    return out;
+}
+static char character(const Canvas *canvas, Cell cell) {
+    const Pixel *pixel = canvas_get(canvas, cell);
+    if (pixel->box)
+        return pixel->box;
+    if (pixel->arrow)
+        return pixel->arrow;
+    if (pixel->highlighted)
+        return '#';
+    if (!pixel->lines)
+        return ' ';
+    if (pixel->lines == 1)
+        return '|';
+    if (pixel->lines == 2)
+        return '-';
+    return '+';
+}
+TextLines canvas_drawing(const Canvas *canvas, const char *name) {
+    TextLines out = {0};
+    lines_push(&out, format_text("graph %s %dx%d", name, canvas->columns, canvas->rows));
+    char *ruler = allocate((size_t)canvas->columns + 5);
+    memcpy(ruler, "    ", 4);
+    for (int c = 0; c < canvas->columns; ++c)
+        ruler[c + 4] = (char)('0' + c % 10);
+    ruler[canvas->columns + 4] = 0;
+    lines_push(&out, ruler);
+    for (int r = 0; r < canvas->rows; ++r) {
+        char *line = allocate((size_t)canvas->columns + 5);
+        snprintf(line, 5, "%3d ", r);
+        for (int c = 0; c < canvas->columns; ++c)
+            line[c + 4] = character(canvas, (Cell){r, c});
+        int length = canvas->columns + 4;
+        while (length && line[length - 1] == ' ')
+            --length;
+        line[length] = 0;
+        lines_push(&out, line);
+    }
+    return out;
+}

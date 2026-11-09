@@ -1,0 +1,308 @@
+typedef struct { char **data; int count,capacity; } Strings;
+typedef struct { char *data; size_t length,capacity; } Text;
+typedef struct { int line,code,order; char *message; } Diagnostic;
+typedef struct { char *source; Strings replacement; int line; } Substitution;
+typedef struct { char *name; Strings members; int line; } Group;
+typedef enum { REASM,GOTO,NEWKEY,RESTATE } ItemKind;
+typedef struct { ItemKind kind; char *text; Strings args; int line,index; } Item;
+typedef struct { bool memory; Strings pattern; int line,index,count; Item *items[12]; } Rule;
+typedef struct { char *word; int rank,line,index,memory_count,decomp_count; Rule *memories[20],*decomps[20]; } Keyword;
+typedef struct {
+    Strings lines,texts[5],quit,stop;
+    int memsize;
+    bool persist_cycles,persist_memory;
+    Substitution pres[600],posts[600]; int pre_count,post_count;
+    Group groups[600]; int group_count;
+    Keyword *keywords[100]; int keyword_count;
+    Rule *rules[600]; int rule_count;
+    Item *items[600]; int item_count;
+    Diagnostic *diagnostics; int diagnostic_count,diagnostic_capacity;
+} Script;
+typedef struct { bool matched; Strings data[8]; int count; } Bindings;
+typedef struct { int capacity; Strings texts,log; } Memory;
+enum { D_INITIAL,D_FINAL,D_DEFAULT,D_QUESTION,D_REPEAT,D_QUIT,D_STOP,D_MEMSIZE,D_PERSIST,D_POST,D_PRE,D_SYNON,D_KEY,D_DECOMP,D_MEMORY,D_REASM,D_GOTO,D_NEWKEY,D_RESTATE,D_COUNT };
+void *allocate(size_t size) { void *result=calloc(1,size ? size : 1); if (!result) exit(EXIT_FAILURE); return result; }
+void *resize(void *pointer,size_t size) { void *result=realloc(pointer,size ? size : 1); if (!result) exit(EXIT_FAILURE); return result; }
+char *copy_text(const char *text) { char *result=allocate(strlen(text)+1); strcpy(result,text); return result; }
+char *format(const char *pattern,...) {
+    va_list args,copy; va_start(args,pattern); va_copy(copy,args); int length=vsnprintf(NULL,0,pattern,args); va_end(args);
+    char *result=allocate((size_t)length+1); vsnprintf(result,(size_t)length+1,pattern,copy); va_end(copy); return result;
+}
+void text_append(Text *text,const char *part) {
+    size_t length=strlen(part),needed=text->length+length+1;
+    if (needed>text->capacity) { size_t capacity=text->capacity ? text->capacity : 64; while (capacity<needed) capacity*=2; text->data=resize(text->data,capacity); text->capacity=capacity; }
+    memcpy(text->data+text->length,part,length+1); text->length+=length;
+}
+void strings_add(Strings *strings,const char *text) { if (strings->count==strings->capacity) { strings->capacity=strings->capacity ? strings->capacity*2 : 8; strings->data=resize(strings->data,(size_t)strings->capacity*sizeof(*strings->data)); } strings->data[strings->count++]=copy_text(text); }
+bool strings_contains(Strings strings,const char *word) { for (int i=0;i<strings.count;i++) if (!strcmp(strings.data[i],word)) return true; return false; }
+Strings strings_split(const char *text) {
+    Strings result={0}; const char *p=text;
+    while (*p) { while (*p==' ') p++; if (!*p) break; const char *start=p; while (*p && *p!=' ') p++; char *word=allocate((size_t)(p-start)+1); memcpy(word,start,(size_t)(p-start)); strings_add(&result,word); }
+    return result;
+}
+Strings strings_copy(Strings source) { Strings result={0}; if (source.count) { result.data=allocate((size_t)source.count*sizeof(*result.data)); memcpy(result.data,source.data,(size_t)source.count*sizeof(*result.data)); result.count=result.capacity=source.count; } return result; }
+char *strings_join(Strings strings,const char *separator) { Text result={0}; for (int i=0;i<strings.count;i++) { if (i) text_append(&result,separator); text_append(&result,strings.data[i]); } return result.data ? result.data : copy_text(""); }
+Strings read_lines(const char *path) {
+    FILE *file=fopen(path,"r"); if (!file) exit(EXIT_FAILURE); Strings lines={0}; Text line={0}; int c;
+    while ((c=fgetc(file))!=EOF) { if (c=='\n') { strings_add(&lines,line.data ? line.data : ""); line.length=0; if (line.data) line.data[0]='\0'; } else { char part[2]={(char)c,0}; text_append(&line,part); } }
+    if (ferror(file)) exit(EXIT_FAILURE); fclose(file); free(line.data); return lines;
+}
+bool is_word(const char *text) { size_t length=strlen(text); if (!length || text[0]=='\'' || text[length-1]=='\'') return false; for (;*text;text++) if (!(*text>='a' && *text<='z') && !(*text>='0' && *text<='9') && *text!='\'') return false; return true; }
+bool is_reference(const char *text) { return strlen(text)==3 && text[0]=='(' && text[1]>='0' && text[1]<='9' && text[2]==')'; }
+Keyword *find_keyword(Script *s,const char *word) { for (int i=0;i<s->keyword_count;i++) if (!strcmp(s->keywords[i]->word,word)) return s->keywords[i]; return NULL; }
+Group *find_group(Script *s,const char *word) { for (int i=0;i<s->group_count;i++) if (!strcmp(s->groups[i].name,word)) return &s->groups[i]; return NULL; }
+Substitution *find_substitution(Substitution *entries,int count,const char *word) { for (int i=0;i<count;i++) if (!strcmp(entries[i].source,word)) return &entries[i]; return NULL; }
+static int name_index(const char *name,const char *const *names,int count) { for (int i=0;i<count;i++) if (!strcmp(name,names[i])) return i; return -1; }
+static bool number(const char *text) { size_t n=strlen(text); return n>=1 && n<=2 && text[0]>='0' && text[0]<='9' && (n==1 || (text[1]>='0' && text[1]<='9')); }
+static bool formed(int directive,Strings args) {
+    int n=args.count;
+    if (directive<D_QUIT || directive==D_REASM) return n>=1;
+    if (directive==D_PRE || directive==D_SYNON) { if (n<2) return false; }
+    else if (directive==D_QUIT || directive==D_STOP || directive==D_DECOMP || directive==D_MEMORY) { if (n<1) return false; }
+    else if (directive==D_MEMSIZE) return n==1 && number(args.data[0]) && atoi(args.data[0])>=1 && atoi(args.data[0])<=20;
+    else if (directive==D_PERSIST) return n==1 && (!strcmp(args.data[0],"cycles") || !strcmp(args.data[0],"memory"));
+    else if (directive==D_POST) return n>=2 && is_word(args.data[0]);
+    else if (directive==D_KEY) return n==2 && is_word(args.data[0]) && number(args.data[1]);
+    else if (directive==D_GOTO) return n==1 && is_word(args.data[0]);
+    else if (directive==D_NEWKEY) return n==0;
+    else if (directive==D_RESTATE) { if (n<2 || !is_word(args.data[0])) return false; for (int i=1;i<n;i++) if (!is_word(args.data[i]) && !is_reference(args.data[i])) return false; return true; }
+    for (int i=0;i<n;i++) {
+        char *arg=args.data[i];
+        if (directive==D_DECOMP || directive==D_MEMORY) { if (strcmp(arg,"*") && strcmp(arg,"#") && !(arg[0]=='@' && is_word(arg+1)) && !is_word(arg)) return false; }
+        else if (!is_word(arg)) return false;
+    }
+    return true;
+}
+Script *load_script(const char *path) {
+    static const char *const names[]={"INITIAL","FINAL","DEFAULT","QUESTION","REPEAT","QUIT","STOP","MEMSIZE","PERSIST","POST","PRE","SYNON","KEY","DECOMP","MEMORY","REASM","GOTO","NEWKEY","RESTATE"};
+    Script *s=allocate(sizeof(*s)); s->lines=read_lines(path); s->memsize=3;
+    Keyword *keyword=NULL; Rule *rule=NULL; bool ignoring=false; Strings definitions={0}; int definition_lines[600];
+    for (int line=0;line<s->lines.count;line++) {
+        char *raw=s->lines.data[line]; if (!*raw || *raw=='#') continue;
+        Strings words=strings_split(raw); char *name=words.data[0]; char *space=strchr(raw,' '); char *text=space ? space+1 : ""; Strings args=strings_split(text);
+        int directive=name_index(name,names,D_COUNT);
+        if ((directive>=0 && directive<=D_KEY)) { keyword=NULL; rule=NULL; ignoring=false; }
+        else if (directive>=D_DECOMP) { if (ignoring) continue; if (directive==D_DECOMP || directive==D_MEMORY) rule=NULL; }
+        char *definition=NULL;
+        if (directive==D_MEMSIZE) definition="MEMSIZE";
+        else if (directive==D_PERSIST || directive==D_POST || directive==D_PRE || directive==D_SYNON || directive==D_KEY) { if (args.count) definition=format("%s %s",name,args.data[0]); }
+        int code=-1; char *message=NULL; int duplicate=-1;
+        if (definition) for (int i=0;i<definitions.count;i++) if (!strcmp(definition,definitions.data[i])) { duplicate=i; break; }
+        if (directive<0) { code=0; message=format("unknown directive %s",name); }
+        else if (!formed(directive,args)) { code=0; message=format("bad arguments for %s",name); }
+        else if ((directive==D_DECOMP || directive==D_MEMORY) && !keyword) { code=1; message=format("%s without KEY",name); }
+        else if (directive==D_REASM && !rule) { code=1; message="REASM without DECOMP or MEMORY"; }
+        else if (directive>=D_GOTO && (!rule || rule->memory)) { code=1; message=format("%s without DECOMP",name); }
+        else if (duplicate>=0) { code=2; message=format("%s first defined at line %d",definition,definition_lines[duplicate]); if (directive==D_KEY) ignoring=true; }
+        if (code>=0) { add_diagnostic(s,line+1,code,message); continue; }
+        if (definition) { definition_lines[definitions.count]=line+1; strings_add(&definitions,definition); }
+        if (directive<D_QUIT) strings_add(&s->texts[directive],text);
+        else if (directive==D_QUIT || directive==D_STOP) { Strings *set=directive==D_QUIT ? &s->quit : &s->stop; for (int i=0;i<args.count;i++) if (!strings_contains(*set,args.data[i])) strings_add(set,args.data[i]); }
+        else if (directive==D_KEY) { keyword=allocate(sizeof(*keyword)); keyword->word=args.data[0]; keyword->rank=atoi(args.data[1]); keyword->line=line+1; keyword->index=s->keyword_count; s->keywords[s->keyword_count++]=keyword; }
+        else if (directive==D_DECOMP || directive==D_MEMORY) { rule=allocate(sizeof(*rule)); rule->memory=directive==D_MEMORY; rule->pattern=args; rule->line=line+1; rule->index=s->rule_count; s->rules[s->rule_count++]=rule; if (rule->memory) keyword->memories[keyword->memory_count++]=rule; else keyword->decomps[keyword->decomp_count++]=rule; }
+        else { Item *item=allocate(sizeof(*item)); item->kind=(ItemKind)(directive-D_REASM); item->text=text; item->args=args; item->line=line+1; item->index=s->item_count; s->items[s->item_count++]=item; rule->items[rule->count++]=item; }
+    }
+    return s;
+}
+static bool word_fits(const char *element,const char *word,Script *s) {
+    if (!strcmp(element,"#")) return true;
+    if (*element=='@') { Group *group=find_group(s,element+1); return group && strings_contains(group->members,word); }
+    return !strcmp(element,word);
+}
+static bool match_from(Strings pattern,Strings words,Script *s,int position,int start,int *ends) {
+    if (position==pattern.count) return start==words.count;
+    if (!strcmp(pattern.data[position],"*")) {
+        for (int end=start;end<=words.count;end++) { ends[position]=end; if (match_from(pattern,words,s,position+1,end,ends)) return true; }
+    } else if (start<words.count && word_fits(pattern.data[position],words.data[start],s)) { ends[position]=start+1; return match_from(pattern,words,s,position+1,start+1,ends); }
+    return false;
+}
+Bindings match_pattern(Strings pattern,Strings words,Script *s) {
+    Bindings result={0}; int ends[8]; result.matched=match_from(pattern,words,s,0,0,ends);
+    if (!result.matched) return result;
+    return result;
+}
+bool memory_store(Memory *memory,const char *prefix,const char *keyword,const char *text) {
+    if (strings_contains(memory->texts,text)) { strings_add(&memory->log,format("%s SKIP %s %s",prefix,keyword,text)); return false; }
+    if (memory->texts.count==memory->capacity) { strings_add(&memory->log,format("%s DROP %s",prefix,memory->texts.data[0])); memmove(memory->texts.data,memory->texts.data+1,(size_t)(--memory->texts.count)*sizeof(*memory->texts.data)); }
+    strings_add(&memory->texts,text); strings_add(&memory->log,format("%s STORE %s %s",prefix,keyword,text)); return true;
+}
+char *build_reply(const char *template,Bindings bindings,Script *s) {
+    Text text={0}; size_t length=strlen(template);
+    for (size_t i=0;i<length;) {
+        char chunk[4]={0}; if (i+3<=length) memcpy(chunk,template+i,3);
+        if (is_reference(chunk)) { text_append(&text,strings_join(reflect(bound(bindings,chunk[1]-'0'),s)," ")); i+=3; }
+        else { char part[2]={template[i++],0}; text_append(&text,part); }
+    }
+    char *reply=strings_join(strings_split(text.data ? text.data : "")," ");
+    if (*reply>='a' && *reply<='z') *reply=(char)(*reply-32);
+    return reply;
+}
+Strings eliza_lines(const char *text) {
+    Strings words=strings_split(text),lines={0}; char *line=format("ELIZA: %s",words.data[0]);
+    for (int i=1;i<words.count;i++) { if (strlen(line)+1+strlen(words.data[i])<=72) line=format("%s %s",line,words.data[i]); else { strings_add(&lines,line); line=format("       %s",words.data[i]); } }
+    strings_add(&lines,line); return lines;
+}
+typedef struct { Strings *data; int count,capacity; } Clauses;
+typedef struct { char *word; int count; } WordCount;
+typedef struct { WordCount *data; int count,capacity; } Counts;
+typedef struct { int *data; int count,capacity; } Integers;
+typedef struct State State;
+typedef struct {
+    char *name,*previous;
+    int turns,sources[5],stored,recalled;
+    Strings history,last_trace;
+    bool trace_on,has_trace;
+    Counts topics,words;
+    Integers unrecognized;
+    State *undo;
+} Session;
+struct State {
+    int positions[600],hits[600],item_uses[600],uses[100],replies[100],list_positions[3];
+    Memory memory;
+    Session session;
+};
+typedef struct { Script *script; State *state; Strings transcript; int sessions,total_turns,total_sources[5]; } Bot;
+static const char *const sources[]={"keyword","memory","question","default","repeat"};
+static void extend(Strings *destination,Strings source) { for (int i=0;i<source.count;i++) strings_add(destination,source.data[i]); }
+static void add_integer(Integers *numbers,int number) { if (numbers->count==numbers->capacity) { numbers->capacity=numbers->capacity ? numbers->capacity*2 : 8; numbers->data=resize(numbers->data,(size_t)numbers->capacity*sizeof(*numbers->data)); } numbers->data[numbers->count++]=number; }
+static void count_word(Counts *counts,const char *word) { for (int i=0;i<counts->count;i++) if (!strcmp(counts->data[i].word,word)) { counts->data[i].count++; return; } if (counts->count==counts->capacity) { counts->capacity=counts->capacity ? counts->capacity*2 : 16; counts->data=resize(counts->data,(size_t)counts->capacity*sizeof(*counts->data)); } counts->data[counts->count++]=(WordCount){copy_text(word),1}; }
+static Counts copy_counts(Counts source) { Counts result={0}; if (source.count) { result.data=allocate((size_t)source.count*sizeof(*result.data)); memcpy(result.data,source.data,(size_t)source.count*sizeof(*result.data)); result.count=result.capacity=source.count; } return result; }
+static State *clone_state(State *original) {
+    State *copy=allocate(sizeof(*copy)); *copy=*original;
+    copy->memory.texts=strings_copy(original->memory.texts); copy->memory.log=strings_copy(original->memory.log);
+    copy->session.history=strings_copy(original->session.history); copy->session.last_trace=strings_copy(original->session.last_trace);
+    copy->session.topics=copy_counts(original->session.topics); copy->session.words=copy_counts(original->session.words);
+    if (original->session.unrecognized.count) { int count=original->session.unrecognized.count; copy->session.unrecognized.data=allocate((size_t)count*sizeof(int)); memcpy(copy->session.unrecognized.data,original->session.unrecognized.data,(size_t)count*sizeof(int)); copy->session.unrecognized.capacity=count; }
+    return copy;
+}
+static void add_clause(Clauses *clauses,Strings words) { if (clauses->count==clauses->capacity) { clauses->capacity=clauses->capacity ? clauses->capacity*2 : 8; clauses->data=resize(clauses->data,(size_t)clauses->capacity*sizeof(*clauses->data)); } clauses->data[clauses->count++]=words; }
+static void finish_word(Strings *words,Text *word) {
+    if (!word->length) return;
+    size_t start=0,end=word->length; while (start<end && word->data[start]=='\'') start++; while (end>start && word->data[end-1]=='\'') end--;
+    if (end>start) { char *text=allocate(end-start+1); memcpy(text,word->data+start,end-start); strings_add(words,text); }
+    word->length=0; word->data[0]=0;
+}
+static Clauses normalize(const char *text) {
+    Clauses clauses={0}; Strings words={0}; Text word={0}; size_t length=strlen(text);
+    for (size_t i=0;i<=length;i++) {
+        char c=i<length ? text[i] : '.'; if (c>='A' && c<='Z') c=(char)(c+32);
+        if ((c>='a' && c<='z') || (c>='0' && c<='9') || c=='\'') { char part[2]={c,0}; text_append(&word,part); }
+        else { finish_word(&words,&word); if (strchr(",.?!;",c) && words.count) { add_clause(&clauses,words); words=(Strings){0}; } }
+    }
+    return clauses;
+}
+static Strings flatten(Clauses clauses) { Strings result={0}; for (int i=0;i<clauses.count;i++) extend(&result,clauses.data[i]); return result; }
+static char *clause_key(Clauses clauses) { Strings parts={0}; for (int i=0;i<clauses.count;i++) strings_add(&parts,strings_join(clauses.data[i]," ")); return strings_join(parts,"|"); }
+static Clauses prepared(Bot *bot,const char *text) {
+    Clauses clauses=normalize(text);
+    for (int i=0;i<clauses.count;i++) { Strings words={0}; for (int j=0;j<clauses.data[i].count;j++) { char *word=clauses.data[i].data[j]; Substitution *pre=find_substitution(bot->script->pres,bot->script->pre_count,word); if (pre) extend(&words,pre->replacement); else strings_add(&words,word); } clauses.data[i]=words; }
+    return clauses;
+}
+static bool is_quit(Bot *bot,const char *text) { Strings words=flatten(normalize(text)); return words.count==1 && strings_contains(bot->script->quit,words.data[0]); }
+static int selected(Bot *bot,Clauses clauses) { for (int i=0;i<clauses.count;i++) for (int j=0;j<clauses.data[i].count;j++) if (find_keyword(bot->script,clauses.data[i].data[j])) return i; return -1; }
+static int keyword_list(Bot *bot,Strings words,Keyword **keys) {
+    int count=0; bool seen[100]={false};
+    for (int i=0;i<words.count;i++) { Keyword *key=find_keyword(bot->script,words.data[i]); if (!key || seen[key->index]) continue; seen[key->index]=true; int position=count++; while (position>0 && keys[position-1]->rank<key->rank) { keys[position]=keys[position-1]; position--; } keys[position]=key; }
+    return count;
+}
+static Rule *find_rule(Bot *bot,Rule **rules,int count,Strings words,int *number,Bindings *bindings) { for (int i=0;i<count;i++) { *bindings=match_pattern(rules[i]->pattern,words,bot->script); if (bindings->matched) { *number=i+1; return rules[i]; } } return NULL; }
+static char *prefix(Bot *bot) { return format("%s %d",bot->state->session.name,bot->state->session.turns); }
+static Item *take_item(Bot *bot,Rule *rule,int *number) { int position=bot->state->positions[rule->index]; Item *item=rule->items[position]; bot->state->positions[rule->index]=(position+1)%rule->count; bot->state->item_uses[item->index]++; *number=position+1; return item; }
+static char *keyword_reply(Bot *bot,Clauses clauses,Strings *trace) {
+    int clause=selected(bot,clauses); if (clause<0) { strings_add(trace,"CLAUSE none"); return NULL; }
+    Strings words=clauses.data[clause]; strings_add(trace,format("CLAUSE %d %s",clause+1,strings_join(words," ")));
+    Keyword *keys[100]; int count=keyword_list(bot,words,keys); Strings names={0}; for (int i=0;i<count;i++) strings_add(&names,keys[i]->word); strings_add(trace,format("KEYS %s",strings_join(names," ")));
+    int number=0,item_number=0; Bindings bindings; Rule *rule=find_rule(bot,keys[0]->memories,keys[0]->memory_count,words,&number,&bindings);
+    if (rule) {
+        strings_add(trace,format("MEMORY %s %d",keys[0]->word,number)); bot->state->hits[rule->index]++;
+        if (rule->count) { Item *item=take_item(bot,rule,&item_number); char *text=build_reply(item->text,bindings,bot->script); if (memory_store(&bot->state->memory,prefix(bot),keys[0]->word,text)) bot->state->session.stored++; }
+    }
+    bool entered[100]={false};
+    for (int i=0;i<count;i++) {
+        if (entered[keys[i]->index]) continue; strings_add(trace,format("ENTER %s",keys[i]->word)); Keyword *key=keys[i]; Strings current=words;
+        while (true) {
+            entered[key->index]=true; bot->state->uses[key->index]++;
+            rule=find_rule(bot,key->decomps,key->decomp_count,current,&number,&bindings);
+            if (!rule) { strings_add(trace,format("NOMATCH %s",key->word)); break; }
+            bot->state->hits[rule->index]++;
+            if (!rule->count) { strings_add(trace,format("DECOMP %s %d 0",key->word,number)); break; }
+            Item *item=take_item(bot,rule,&item_number); strings_add(trace,format("DECOMP %s %d %d",key->word,number,item_number));
+            if (item->kind==REASM) { bot->state->replies[key->index]++; count_word(&bot->state->session.topics,key->word); return build_reply(item->text,bindings,bot->script); }
+        }
+    }
+    return NULL;
+}
+static char *decide(Bot *bot,const char *text,Strings *trace) {
+    Session *session=&bot->state->session; Clauses clauses=normalize(text); char *reply=NULL; int source=0; char *key=clause_key(clauses);
+    if (bot->script->texts[4].count && clauses.count && session->previous && !strcmp(session->previous,key)) { strings_add(trace,"REPEAT"); reply=take_text(bot,4); source=4; }
+    else {
+        reply=keyword_reply(bot,prepared(bot,text),trace);
+        if (!reply) {
+            if (bot->state->memory.texts.count) { reply=memory_recall(&bot->state->memory,prefix(bot)); source=1; session->recalled++; }
+            else if (*text && text[strlen(text)-1]=='?' && bot->script->texts[3].count) { reply=take_text(bot,3); source=2; }
+            else { reply=take_text(bot,2); source=3; }
+        }
+    }
+    strings_add(trace,format("REPLY %s",sources[source])); session->previous=key; session->sources[source]++;
+    if (source==2 || source==3) add_integer(&session->unrecognized,session->turns);
+    return reply;
+}
+static char *source_line(int turns,const int *counts) { return format("turns=%d keyword=%d memory=%d question=%d default=%d repeat=%d",turns,counts[0],counts[1],counts[2],counts[3],counts[4]); }
+static int compare_counts(const void *left,const void *right) { const WordCount *a=left,*b=right; if (a->count!=b->count) return a->count>b->count ? -1 : 1; return strcmp(a->word,b->word); }
+static char *ranked_counts(Counts original) { Counts counts=copy_counts(original); if (!counts.count) return "none"; qsort(counts.data,(size_t)counts.count,sizeof(*counts.data),compare_counts); Strings values={0}; for (int i=0;i<counts.count && i<5;i++) strings_add(&values,format("%s %d",counts.data[i].word,counts.data[i].count)); return strings_join(values,", "); }
+static Strings command(Bot *bot,const char *line) {
+    char *space=strchr(line,' '); const char *text=space ? space+1 : ""; Strings words=strings_split(line),args=strings_split(text),result={0}; char *name=words.data[0]; Session *session=&bot->state->session;
+    const char *const commands[]={":prepare",":test",":reflect",":keys",":groups",":find",":script",":why",":trace",":history",":memory",":forget",":cycles",":coverage",":reset",":unused",":stats",":say",":explain",":undo"};
+    int kind=-1; for (int i=0;i<20;i++) if (!strcmp(name,commands[i])) kind=i;
+    if (kind<0) { strings_add(&result,format("unknown command %s",name)); return result; }
+    bool no_args=kind==3 || kind==7 || (kind>=9 && kind<=11) || (kind>=14 && kind<=16) || kind==19;
+    bool one_arg=kind==4 || kind==5 || kind==6 || kind==12 || kind==13;
+    bool free_text=kind==0 || kind==2 || kind==17 || kind==18;
+    if ((no_args && args.count) || (one_arg && args.count!=1) || (free_text && !*text) || (kind==1 && args.count<2) || (kind==8 && (args.count!=1 || (strcmp(args.data[0],"on") && strcmp(args.data[0],"off"))))) { strings_add(&result,"bad arguments"); return result; }
+    Keyword *keyword=NULL;
+    if (kind==1 || kind==6 || kind==12 || kind==13) { keyword=find_keyword(bot->script,args.data[0]); if (!keyword) { strings_add(&result,format("unknown keyword %s",args.data[0])); return result; } }
+    switch (kind) {
+    case 17: case 18:
+        if (is_quit(bot,text)) strings_add(&result,"would quit"); else { State *saved=clone_state(bot->state); Strings trace={0}; char *reply=decide(bot,text,&trace); bot->state=saved; if (kind==17) strings_add(&result,reply); else result=trace; } break;
+    case 19: if (!session->undo) strings_add(&result,"nothing to undo"); else { bot->state=session->undo; strings_add(&result,format("undone turn %d",bot->state->session.turns+1)); } break;
+    }
+    return result;
+}
+static void indented(Bot *bot,Strings lines) { for (int i=0;i<lines.count;i++) strings_add(&bot->transcript,format("  %s",lines.data[i])); }
+static void notes(Bot *bot) {
+    Session *session=&bot->state->session; strings_add(&bot->transcript,format("NOTES %s",session->name)); Strings lines={0},unrecognized={0};
+    strings_add(&lines,source_line(session->turns,session->sources)); strings_add(&lines,format("topics: %s",ranked_counts(session->topics))); strings_add(&lines,format("words: %s",ranked_counts(session->words)));
+    strings_add(&lines,format("memory: stored=%d recalled=%d pending=%d",session->stored,session->recalled,bot->state->memory.texts.count)); for (int i=0;i<session->unrecognized.count;i++) strings_add(&unrecognized,format("%d",session->unrecognized.data[i])); strings_add(&lines,format("unrecognized: %s",unrecognized.count ? strings_join(unrecognized," ") : "none")); indented(bot,lines);
+    bot->total_turns+=session->turns; for (int i=0;i<5;i++) bot->total_sources[i]+=session->sources[i];
+}
+static void run_dialogue(Bot *bot,Strings lines) {
+    for (int i=0;i<lines.count;i++) {
+        char *line=lines.data[i];
+        if (!strncmp(line,"SESSION ",8)) {
+            bot->sessions++; char *name=line+8;
+            bot->state->session=(Session){0}; bot->state->session.name=name;
+            strings_add(&bot->transcript,line); Strings initial=bot->script->texts[0]; extend(&bot->transcript,eliza_lines(initial.data[(bot->sessions-1)%initial.count]));
+        } else if (*line==':') { strings_add(&bot->transcript,line); indented(bot,command(bot,line)); }
+        else {
+            strings_add(&bot->transcript,format("YOU: %s",line));
+            if (is_quit(bot,line)) { Strings final=bot->script->texts[1]; extend(&bot->transcript,eliza_lines(final.data[(bot->sessions-1)%final.count])); notes(bot); continue; }
+            State *snapshot=clone_state(bot->state); snapshot->session.undo=NULL; Session *session=&bot->state->session; session->undo=snapshot; session->turns++;
+            Strings words=flatten(normalize(line)); for (int j=0;j<words.count;j++) if (!strings_contains(bot->script->stop,words.data[j])) count_word(&session->words,words.data[j]); strings_add(&session->history,format("%d: %s",session->turns,line));
+            Strings trace={0}; char *reply=decide(bot,line,&trace); extend(&bot->transcript,eliza_lines(reply)); session->last_trace=trace; session->has_trace=true; if (session->trace_on) indented(bot,trace);
+        }
+    }
+    strings_add(&bot->transcript,""); strings_add(&bot->transcript,format("SUMMARY sessions=%d %s",bot->sessions,source_line(bot->total_turns,bot->total_sources)));
+}
+static Strings statistics(Bot *bot) {
+    Keyword *keys[100]; int count=bot->script->keyword_count;
+    for (int i=0;i<count;i++) { Keyword *key=bot->script->keywords[i]; int j=i; while (j>0 && (bot->state->uses[keys[j-1]->index]<bot->state->uses[key->index] || (bot->state->uses[keys[j-1]->index]==bot->state->uses[key->index] && strcmp(keys[j-1]->word,key->word)>0))) { keys[j]=keys[j-1]; j--; } keys[j]=key; }
+    Strings lines={0}; strings_add(&lines,"keyword,rank,uses,replies,decomposition_hits");
+    for (int i=0;i<count;i++) { Keyword *key=keys[i]; Strings hits={0}; for (int j=0;j<key->decomp_count;j++) strings_add(&hits,format("%d",bot->state->hits[key->decomps[j]->index])); strings_add(&lines,format("%s,%d,%d,%d,%s",key->word,key->rank,bot->state->uses[key->index],bot->state->replies[key->index],hits.count ? strings_join(hits,"/") : "-")); }
+    return lines;
+}
+static void write_lines(const char *path,Strings lines) { FILE *file=fopen(path,"w"); if (!file) exit(EXIT_FAILURE); for (int i=0;i<lines.count;i++) if (fprintf(file,"%s\n",lines.data[i])<0) exit(EXIT_FAILURE); if (fclose(file)) exit(EXIT_FAILURE); }
+int main(void) {
+    Script *script=load_script("input/script.txt"); if (mkdir("output",0777) && errno!=EEXIST) return EXIT_FAILURE;
+    write_lines("output/lint.txt",lint_script(script)); Bot bot={0}; bot.script=script; bot.state=allocate(sizeof(*bot.state)); bot.state->memory.capacity=script->memsize;
+    run_dialogue(&bot,read_lines("input/dialogue.txt")); write_lines("output/transcript.txt",bot.transcript); write_lines("output/keyword_stats.csv",statistics(&bot)); write_lines("output/memory_log.txt",bot.state->memory.log); return EXIT_SUCCESS;
+}

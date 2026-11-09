@@ -1,0 +1,190 @@
+function read_ecg()
+    [parse(Int,split(line,',')[2]) for line in readlines("input/ecg.csv")[2:end]]
+end
+function read_annotations()
+    [(sample=parse(Int,words[1]),label=String(words[2]))
+     for words in split.(readlines("input/annotations.csv")[2:end],',')]
+end
+function read_params()
+    Dict(String(words[1])=>parse(Int,words[2])
+         for words in split.(readlines("input/params.txt")))
+end
+function build_beats(registered,band,params)
+    beats = Beat[]
+    for (k,peak) in enumerate(registered)
+        sample = max(0,peak.r-21)
+        rr = k==1 ? nothing : 5*(sample-beats[end].sample)
+        width = width_ms(band,peak.r)
+        label = "N"
+        if k >= 10 && 800rr < params["premature_percent"]*sum(beats[j].rr for j in k-8:k-1)
+            label = width > params["qrs_width_ms"] ? "V" : "A"
+        end
+        push!(beats,Beat(sample,rr,isnothing(rr) ? nothing : rdiv(6000000,rr),width,label,
+                         peak.kind=="qrs" ? "threshold" : "searchback",0,0))
+    end
+    beats
+end
+function match_annotations!(beats,annotations,tolerance)
+    matched = zeros(Int,length(annotations))
+    for (k,beat) in enumerate(beats)
+        candidates = [j for j in eachindex(annotations) if matched[j]==0
+                      && abs(annotations[j].sample-beat.sample)<=tolerance]
+        isempty(candidates) && continue
+        j = candidates[argmin([abs(annotations[j].sample-beat.sample) for j in candidates])]
+        matched[j] = k
+        beat.annotation = j
+        beat.offset = 5*(beat.sample-annotations[j].sample)
+    end
+    matched
+end
+function segments_for(beats,annotations,matched,peaks,n,params)
+    step = params["segment_ms"]÷5
+    segments = NamedTuple[]
+    for start in 0:step:n-1
+        stop = min(start+step,n)
+        refs = [j for j in eachindex(annotations) if start<=annotations[j].sample<stop]
+        selected = [b for b in beats if start<=b.sample<stop]
+        tp = count(j->matched[j]>0,refs)
+        push!(segments,(start=5start,stop=5stop,refs=length(refs),tp=tp,fn=length(refs)-tp,
+            fp=count(b->b.annotation==0,selected),beats=length(selected),
+            noise=count(p->p.kind=="noise" && start<=p.time<stop,peaks),
+            rr=[b.rr for b in selected if !isnothing(b.rr)]))
+    end
+    segments
+end
+function csv_outputs(ecg,signals,peaks,beats,annotations,matched,params)
+    lines = ["beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label"]
+    for (k,b) in enumerate(beats)
+        ref = b.annotation==0 ? nothing : annotations[b.annotation]
+        push!(lines,join((k,b.sample,5b.sample,missing_dash(b.rr),isnothing(b.hr) ? "-" : two(b.hr),
+             b.width,b.label,b.method,isnothing(ref) ? "-" : ref.sample,isnothing(ref) ? "-" : ref.label),','))
+    end
+    write_lines("beats.csv",lines)
+    records = Tuple{Int,Int,String}[]
+    for (j,ref) in enumerate(annotations)
+        k = matched[j]
+        row = if k==0
+            (ref.sample,ref.label,"-","-","-","-","FN","-")
+        else
+            b = beats[k]
+            (ref.sample,ref.label,k,b.sample,b.label,b.offset,"TP",ref.label==b.label ? "yes" : "no")
+        end
+        push!(records,(ref.sample,0,join(row,',')))
+    end
+    for (k,b) in enumerate(beats)
+        b.annotation>0 && continue
+        push!(records,(b.sample,1,join(("-","-",k,b.sample,b.label,"-","FP","-"),',')))
+    end
+    sort!(records;by=r->(r[1],r[2]))
+    write_lines(
+        "matching.csv",
+        vcat(
+            ["ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree"],
+            [r[3] for r in records]
+        )
+    )
+function performance_lines(beats,annotations,matched,peaks,detection,segments,params,n)
+    counts = Dict(c=>count(p->p.kind==c,peaks) for c in CLASSES)
+    refs = Dict(c=>count(r->r.label==c,annotations) for c in LABELS)
+    detected = Dict(c=>count(b->b.label==c,beats) for c in LABELS)
+    tp = count(>(0),matched)
+    fn,fp = length(annotations)-tp,length(beats)-tp
+        "MATCHING","tolerance_ms $(params["match_ms"])",
+        "references $(length(annotations)) "*join(("$c=$(refs[c])" for c in LABELS)," "),
+        "detections $(length(beats)) "*join(("$c=$(detected[c])" for c in LABELS)," "),
+        "true_positives $tp","false_positives $fp","false_negatives $fn",
+        "sensitivity "*ratio(tp,tp+fn),"positive_predictivity "*ratio(tp,tp+fp),
+        "detection_error_rate "*ratio(fp+fn,length(annotations))]
+    methods = String[]
+    for method in ("threshold","searchback")
+        selected = [b for b in beats if b.method==method]
+        push!(methods,"$method=$(count(b->b.annotation>0,selected))/$(length(selected))")
+    end
+    push!(lines,"by_method "*join(methods," "))
+    offsets = [b.offset for b in beats if b.annotation>0]
+    push!(lines,isempty(offsets) ? "offset_ms none" :
+        "offset_ms mean=$(two(rdiv(100sum(offsets),tp))) mean_abs=$(two(rdiv(100sum(abs,offsets),tp))) max_abs=$(maximum(abs,offsets))")
+    confusion = Dict{Tuple{String,String},Int}()
+    for (j,ref) in enumerate(annotations)
+        label = matched[j]==0 ? "miss" : beats[matched[j]].label
+        key = (ref.label,label)
+        confusion[key] = get(confusion,key,0)+1
+    end
+    for b in beats
+        b.annotation>0 && continue
+        key = ("extra",b.label)
+        confusion[key] = get(confusion,key,0)+1
+    end
+    cell(a,b) = get(confusion,(a,b),0)
+    push!(lines,"CONFUSION","ref  "*join(lpad(c,6) for c in LABELS)*"  miss")
+    for c in LABELS
+        push!(lines,c*"    "*join(lpad(cell(c,e),6) for e in (LABELS...,"miss")))
+    end
+    push!(lines,"extra"*join(lpad(cell("extra",e),6) for e in LABELS))
+    for (c,prefix) in (("V","veb"),("A","sveb"))
+        push!(lines,prefix*"_sensitivity "*ratio(cell(c,c),refs[c]),
+                    prefix*"_positive_predictivity "*ratio(cell(c,c),detected[c]))
+    end
+    push!(lines,"SEGMENTS segment_ms=$(params["segment_ms"]) segments=$(length(segments))")
+    for s in segments
+        push!(
+            lines,
+            "$(lpad(s.start,6))-$(lpad(s.stop,6)) refs=$(s.refs) tp=$(s.tp) fp=$(s.fp) fn=$(s.fn) noise_peaks=$(s.noise)"
+        )
+    end
+    errors = Tuple{Int,Int,String}[]
+    for (k,b) in enumerate(beats)
+        b.annotation>0 && continue
+        push!(
+            errors,
+            (b.sample,0,"false_positive beat=$k sample=$(b.sample) time_ms=$(5b.sample) label=$(b.label)")
+        )
+    end
+    for (j,ref) in enumerate(annotations)
+        matched[j]>0 && continue
+        push!(
+            errors,
+            (ref.sample,1,"false_negative sample=$(ref.sample) time_ms=$(5ref.sample) label=$(ref.label)")
+        )
+    end
+    sort!(errors;by=e->(e[1],e[2]))
+    push!(lines,"ERRORS count=$(fp+fn)")
+    append!(lines,[e[3] for e in errors])
+    lines
+end
+function rhythm_lines(ecg,beats,annotations,params)
+    start = params["strip_start_ms"]÷5
+    n = params["strip_ms"]÷5
+    columns,height = n÷10,params["strip_rows"]
+    beat_marks,ref_marks = fill(" ",columns),fill(" ",columns)
+    for b in beats
+        start<=b.sample<start+n && (beat_marks[fld(b.sample-start,10)+1]=b.label)
+    end
+    for ref in annotations
+        start<=ref.sample<start+n && (ref_marks[fld(ref.sample-start,10)+1]=ref.label)
+    end
+    push!(lines," beats |"*join(beat_marks)*"|","  refs |"*join(ref_marks)*"|")
+    lines
+end
+    ecg,annotations,params = read_ecg(),read_annotations(),read_params()
+    signals = filter_ecg(ecg)
+    peaks = find_peaks(signals)
+    detection = detect_beats(peaks,signals,params)
+    beats = build_beats(detection.registered,signals.bandpass,params)
+    matched = match_annotations!(beats,annotations,params["match_ms"]÷5)
+    segments = segments_for(beats,annotations,matched,peaks,length(ecg),params)
+    csv_outputs(ecg,signals,peaks,beats,annotations,matched,params)
+    write_lines(
+        "performance.txt",
+        performance_lines(beats,annotations,matched,peaks,detection,segments,params,length(ecg))
+    )
+    write_lines("rhythm_strip.txt",rhythm_lines(ecg,beats,annotations,params))
+rdiv(a,b) = fld(2a+b,2b)
+function two(value)
+    string(value < 0 ? "-" : "",abs(value)÷100,".",lpad(abs(value)%100,2,'0'))
+end
+function fraction(a,b)
+    divisor = gcd(a,b)
+    string(a÷divisor,"/",b÷divisor)
+end
+ratio(a,b) = b == 0 ? "$a/0 none" : "$a/$b reduced=$(fraction(a,b)) percent=$(two(rdiv(10000a,b)))"

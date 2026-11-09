@@ -1,0 +1,7 @@
+## Answer and source evidence
+
+ASCII characters are read in groups of three, zero-filled to a 24-bit value, and four six-bit indices address the Base64 alphabet. Hello, World! has 13 bytes: four complete groups encode SGVsbG8sIFdvcmxk and the final ! byte (33) plus zero fill gives IQ==. Keep zero-fill/index calculation and the two meaningful symbols IQ, but omit the two emitted = characters, producing "Hello, World!" -> "SGVsbG8sIFdvcmxkIQ". In JS/TS remove only the = repetition concatenation; in PHP skip output for indices beyond remaining+1 instead of appending =. Man has a complete group TWFu and empty input never enters the group loop, so both retain their content. The alphabet, packing, partial-group logic and quoted output are required.
+
+## Selection and minimization
+
+The excerpt contains the complete original source lines listed in their original order. TypeScript preserves the JavaScript runtime operations; inferred number types alone do not enforce integer-only values. Blank lines, closing delimiters whose structural role is already determined, and unrelated calculations/output are omitted. Each retained data declaration, binding, operation, condition, or output argument supplies one of the facts above; replacing the selected operations with their callers would conceal those facts, while selecting the entire routine would add unrelated evidence. No Task B modification is implemented.

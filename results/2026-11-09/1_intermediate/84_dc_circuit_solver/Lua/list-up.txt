@@ -1,0 +1,456 @@
+local function gcd(a, b)
+    a = math.abs(a)
+    while b ~= 0 do
+        a, b = b, a % b
+    end
+    return a
+end
+local Rational = {}
+Rational.__index = Rational
+local function fraction(n, d)
+    if d < 0 then
+        n, d = -n, -d
+    end
+    local common = gcd(n, d)
+    return setmetatable({n = n // common, d = d // common}, Rational)
+end
+local zero, one = fraction(0, 1), fraction(1, 1)
+function Rational:add(b)
+    return fraction(self.n * b.d + b.n * self.d, self.d * b.d)
+end
+function Rational:sub(b)
+    return fraction(self.n * b.d - b.n * self.d, self.d * b.d)
+end
+function Rational:mul(b)
+    return fraction(self.n * b.n, self.d * b.d)
+end
+function Rational:div(b)
+    return fraction(self.n * b.d, self.d * b.n)
+end
+function Rational:neg()
+    return fraction(-self.n, self.d)
+end
+function Rational:compare(b)
+    local x, y = self.n * b.d, b.n * self.d
+    return x < y and -1 or x > y and 1 or 0
+end
+function Rational:text()
+    return self.d == 1 and tostring(self.n) or self.n .. "/" .. self.d
+end
+function Rational:value()
+    local scaled = math.abs(self.n) * 1000000 // self.d
+    return string.format(
+        "%s (%s%d.%06d)",
+        self:text(),
+        self.n < 0 and "-" or "",
+        scaled // 1000000,
+        scaled % 1000000
+    )
+end
+local function parse_number(text)
+    local multiplier = one
+    if text:sub(-3) == "meg" then
+        multiplier, text = fraction(1000000, 1), text:sub(1, -4)
+    elseif text:sub(-1) == "k" then
+        multiplier, text = fraction(1000, 1), text:sub(1, -2)
+    elseif text:sub(-1) == "m" then
+        multiplier, text = fraction(1, 1000), text:sub(1, -2)
+    elseif text:sub(-1) == "u" then
+        multiplier, text = fraction(1, 1000000), text:sub(1, -2)
+    end
+    local negative = text:sub(1, 1) == "-"
+    if negative then
+        text = text:sub(2)
+    end
+    local result
+    if text:match("^%d+$") then
+        result = fraction(tonumber(text), 1)
+    else
+        local a, b = text:match("^(%d+)%.(%d+)$")
+        if a then
+            local denominator = 1
+            for _ = 1, #b do
+                denominator = denominator * 10
+            end
+            result = fraction(tonumber(a) * denominator + tonumber(b), denominator)
+        else
+            a, b = text:match("^(%d+)/(%d+)$")
+            if not a or tonumber(b) == 0 then
+                return nil
+            end
+            result = fraction(tonumber(a), tonumber(b))
+        end
+    end
+    result = result:mul(multiplier)
+    return negative and result:neg() or result
+end
+local function fail(format, ...)
+    error({reason = string.format(format, ...)}, 0)
+end
+local function number(text)
+    local result = parse_number(text)
+    if not result then
+        fail("invalid value %s", text)
+    end
+    return result
+end
+local function valid_node(name)
+    return name == "0" or #name >= 1 and #name <= 8 and name:match("^[a-z][a-z0-9]*$") ~= nil
+end
+local function keys(set)
+    local list = {}
+    for name in pairs(set) do
+        list[#list + 1] = name
+    end
+    table.sort(list)
+    return list
+end
+local function words(text)
+    local list = {}
+    for word in text:gmatch("%S+") do
+        list[#list + 1] = word
+    end
+    return list
+end
+local function voltage_source(e)
+    return e.kind == "V" or e.kind == "E" or e.kind == "H"
+end
+local function element_terminals(e)
+    if e.kind == "E" or e.kind == "G" then
+        return {e.n1, e.n2, e.c1, e.c2}
+    end
+    return {e.n1, e.n2}
+end
+local function zero_vector(n)
+    local result = {}
+    for i = 1, n do
+        result[i] = zero
+    end
+    return result
+end
+local function zero_matrix(n)
+    local result = {}
+    for i = 1, n do
+        result[i] = zero_vector(n)
+    end
+    return result
+end
+local Union = {}
+Union.__index = Union
+function Union.new(nodes)
+    local self = setmetatable({parent = {["0"] = "0"}}, Union)
+    for _, node in ipairs(nodes) do
+        self.parent[node] = node
+    end
+    return self
+end
+function Union:root(name)
+    if self.parent[name] ~= name then
+        self.parent[name] = self:root(self.parent[name])
+    end
+    return self.parent[name]
+end
+function Union:join(a, b)
+    a, b = self:root(a), self:root(b)
+    if a > b then
+        a, b = b, a
+    end
+    self.parent[b] = a
+end
+local Circuit = {}
+Circuit.__index = Circuit
+function Circuit:nodes(include_ground)
+    local set = {}
+    for _, e in ipairs(self.elements) do
+        for _, node in ipairs(element_terminals(e)) do
+            if include_ground or node ~= "0" then
+                set[node] = true
+            end
+        end
+    end
+    return keys(set)
+end
+function Circuit:node(name)
+    if name == "0" then
+        return
+    end
+    for _, node in ipairs(self:nodes(false)) do
+        if node == name then
+            return
+        end
+    end
+    fail("unknown node %s", name)
+end
+function Circuit:index(name)
+    for i, e in ipairs(self.elements) do
+        if e.name == name then
+            return i
+        end
+    end
+    fail("unknown element %s", name)
+end
+function Circuit:add(fields)
+    local name, kind, expected = fields[1], fields[1]:sub(1, 1), 4
+    if kind == "E" or kind == "G" then
+        expected = 6
+    elseif kind == "F" or kind == "H" then
+        expected = 5
+    end
+    if not ("RVIEGFH"):find(kind, 1, true) then
+        fail("unknown element type %s", name)
+    end
+    if #fields ~= expected then
+        fail("wrong field count for %s", name)
+    end
+    for _, e in ipairs(self.elements) do
+        if e.name == name then
+            fail("duplicate element %s", name)
+        end
+    end
+    local count = (kind == "E" or kind == "G") and 4 or 2
+    for i = 2, count + 1 do
+        if not valid_node(fields[i]) then
+            fail("invalid node %s", fields[i])
+        end
+    end
+    local e = {name = name, kind = kind, n1 = fields[2], n2 = fields[3]}
+    if kind == "E" or kind == "G" then
+        e.c1, e.c2 = fields[4], fields[5]
+    end
+    e.value = number(fields[#fields])
+    if kind == "R" and e.value.n <= 0 then
+        fail("nonpositive resistance %s", name)
+    end
+    self.elements[#self.elements + 1] = e
+end
+function Circuit:floating()
+    local groups, result = Union.new(self:nodes(false)), {}
+    for _, e in ipairs(self.elements) do
+        if e.kind == "R" or voltage_source(e) then
+            groups:join(e.n1, e.n2)
+        end
+    end
+    for _, node in ipairs(self:nodes(false)) do
+        if groups:root(node) ~= groups:root("0") then
+            result[#result + 1] = node
+        end
+    end
+    return result
+end
+function Circuit:source_loops()
+    local groups, result = Union.new(self:nodes(false)), {}
+    for _, e in ipairs(self.elements) do
+        if voltage_source(e) then
+            if groups:root(e.n1) == groups:root(e.n2) then
+                result[#result + 1] = e.name
+            end
+            groups:join(e.n1, e.n2)
+        end
+    end
+    return result
+end
+function Circuit:structure()
+    if #self:nodes(false) == 0 then
+        fail("no nodes")
+    end
+    local floating = self:floating()
+    if #floating > 0 then
+        fail("floating node %s", floating[1])
+    end
+    local loops = self:source_loops()
+    if #loops > 0 then
+        fail("voltage source loop at %s", loops[1])
+    end
+end
+local Equations = {}
+Equations.__index = Equations
+function Equations:add(row, column, value)
+    if row ~= "0" and column ~= "0" then
+        local i, j = self.indices[row], self.indices[column]
+        self.a[i][j] = self.a[i][j]:add(value)
+    end
+end
+function Equations:rhs(vector, row, value)
+    if row ~= "0" then
+        local i = self.indices[row]
+        vector[i] = vector[i]:add(value)
+    end
+end
+function Circuit:build()
+    local m =
+        setmetatable(
+        {nodes = self:nodes(false), names = {}, labels = {}, sources = {}, indices = {}},
+        Equations
+    )
+    for _, node in ipairs(m.nodes) do
+        m.names[#m.names + 1] = "V(" .. node .. ")"
+        m.indices[node] = #m.names
+        m.labels[#m.labels + 1] = node
+    end
+    for _, e in ipairs(self.elements) do
+        if voltage_source(e) then
+            m.names[#m.names + 1] = "I(" .. e.name .. ")"
+            m.indices[e.name] = #m.names
+            m.sources[#m.sources + 1] = e.name
+            m.labels[#m.labels + 1] = e.name
+        end
+    end
+    m.a, m.b = zero_matrix(#m.names), zero_vector(#m.names)
+    for _, e in ipairs(self.elements) do
+        local w = e.value
+        if e.kind == "R" then
+            local g = one:div(w)
+            m:add(e.n1, e.n1, g)
+            m:add(e.n2, e.n2, g)
+            m:add(e.n1, e.n2, g:neg())
+            m:add(e.n2, e.n1, g:neg())
+        elseif e.kind == "I" then
+            m:rhs(m.b, e.n1, w:neg())
+            m:rhs(m.b, e.n2, w)
+        elseif e.kind == "G" then
+            m:add(e.n1, e.c1, w)
+            m:add(e.n2, e.c2, w)
+            m:add(e.n1, e.c2, w:neg())
+            m:add(e.n2, e.c1, w:neg())
+        end
+    end
+    return m
+end
+local function solve(a, b)
+    local n, rows = #b, {}
+    for i = 1, n do
+        rows[i] = {}
+        for j = 1, n do
+            rows[i][j] = a[i][j]
+        end
+        rows[i][n + 1] = b[i]
+    end
+    for k = 1, n do
+        local pivot = k
+        while pivot <= n and rows[pivot][k].n == 0 do
+            pivot = pivot + 1
+        end
+        if pivot > n then
+            return nil
+        end
+        rows[k], rows[pivot] = rows[pivot], rows[k]
+        local divisor = rows[k][k]
+        for j = 1, n + 1 do
+            rows[k][j] = rows[k][j]:div(divisor)
+        end
+        for i = 1, n do
+            if i ~= k then
+                local factor = rows[i][k]
+                if factor.n ~= 0 then
+                    for j = 1, n + 1 do
+                        rows[i][j] = rows[i][j]:sub(factor:mul(rows[k][j]))
+                    end
+                end
+            end
+        end
+    end
+    local result = {}
+    for i = 1, n do
+        result[i] = rows[i][n + 1]
+    end
+    return result
+end
+function Equations:potential(solution, node)
+    return node == "0" and zero or solution[self.indices[node]]
+end
+local argument_counts = {
+    [".SWEEP"] = 5,
+}
+function Circuit:command(fields)
+    local name = table.remove(fields, 1)
+    local args, lines = fields, {}
+    local function emit(format, ...)
+        lines[#lines + 1] = string.format(format, ...)
+    end
+    if argument_counts[name] == nil then
+        fail("unknown command %s", name)
+    end
+    if #args ~= argument_counts[name] then
+        fail("wrong argument count for %s", name)
+    end
+    if name == ".ALTER" then
+    elseif name == ".SWEEP" then
+        local index = self:index(args[1])
+        local from = number(args[2])
+        local to = number(args[3])
+        local step = number(args[4])
+        self:node(args[5])
+        if step.n <= 0 then
+            fail("invalid sweep step")
+        end
+        if from:compare(to) > 0 then
+            fail("invalid sweep range")
+        end
+        local ratio = to:sub(from):div(step)
+        local points = ratio.n // ratio.d + 1
+        if points > 20 then
+            fail("too many sweep points")
+        end
+        if self.elements[index].kind == "R" and from.n <= 0 then
+            fail("nonpositive resistance %s", args[1])
+        end
+        self:structure()
+        local temporary = setmetatable({elements = {}}, Circuit)
+        for i, e in ipairs(self.elements) do
+            local item = {}
+            for key, value in pairs(e) do
+                item[key] = value
+            end
+            temporary.elements[i] = item
+        end
+        for k = 0, points - 1 do
+            local value = from:add(step:mul(fraction(k, 1)))
+            temporary.elements[index].value = value
+            local m = temporary:build()
+            local solution = solve(m.a, m.b)
+            if solution then
+                emit(
+                    "%s = %s: V(%s) = %s",
+                    args[1],
+                    value:text(),
+                    args[5],
+                    m:potential(solution, args[5]):value()
+                )
+            else
+                emit("%s = %s: singular matrix", args[1], value:text())
+            end
+        end
+        return lines
+    end
+end
+local circuit = setmetatable({elements = {}}, Circuit)
+local line_number = 0
+for line in io.lines() do
+    line_number = line_number + 1
+    if line == ".END" then
+        break
+    end
+    if line:sub(1, 1) ~= "*" then
+        local ok, result =
+            pcall(
+            function()
+                if line:sub(1, 1) == "." then
+                    return circuit:command(words(line))
+                else
+                    circuit:add(words(line))
+                    return {}
+                end
+            end
+        )
+        if ok then
+            for _, text in ipairs(result) do
+                io.write(text, "\n")
+            end
+        else
+            if type(result) ~= "table" or not result.reason then
+                error(result, 0)
+            end
+            io.write(string.format("error: line %d: %s\n", line_number, result.reason))
+        end
+    end
+end

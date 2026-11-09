@@ -1,0 +1,13 @@
+void main() {
+  var count = 0;
+  void hanoi(int n, String source, String target, String auxiliary) {
+    if (n == 0) return;
+    hanoi(n - 1, source, auxiliary, target);
+    print('move disk $n from $source to $target');
+    count++;
+    hanoi(n - 1, auxiliary, target, source);
+  }
+
+  hanoi(4, 'A', 'C', 'B');
+  print('total moves: $count');
+}

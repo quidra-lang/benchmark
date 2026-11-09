@@ -1,0 +1,5 @@
+Decode each key/value before equality checking: plus becomes space and %32 becomes the decoded string 2. Before push_back(value), search values[key] for the decoded value and append only if absent. The map still supplies sorted keys and each vector preserves first appearances. Appending &page=%32 to query 2 must therefore keep page values `"2", "3"`, not add another 2. Empty/no-equals values decode to the empty string and are retained once per key. Other distinct later values remain; output joining need not change.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

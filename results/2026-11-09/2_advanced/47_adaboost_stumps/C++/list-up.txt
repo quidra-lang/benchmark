@@ -1,0 +1,159 @@
+static double sum(const Vector &values) {
+    double out = 0;
+    for (double value : values)
+        out += value;
+    return out;
+}
+Model discrete(const Rows &rows, const Params &p, int maximum, double shrinkage, Vector weights) {
+    if (weights.empty())
+        weights = Vector(rows.size(), 1.0 / rows.size());
+    const Search search = prepare(rows, 0);
+    Model out;
+    out.variant = "discrete";
+    double bound = 1;
+    for (int t = 0; t < maximum; ++t) {
+        const Candidate candidate = discrete_stump(rows, search, weights);
+        const double e = candidate.error;
+        if (e >= 0.5) {
+            out.stop = "weak";
+            break;
+        }
+        const double alpha = e <= 0.0000000001 ? 1 : shrinkage * (0.5 * std::log((1 - e) / e));
+        Round round;
+        round.stump = candidate.stump;
+        for (double &value : round.stump.values)
+            value *= alpha;
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const int decision = candidate.stump.output(rows[i].values);
+            weights[i] = weights[i] * std::exp(decision == rows[i].label ? -alpha : alpha);
+        }
+        round.z = sum(weights);
+        for (double &weight : weights)
+            weight /= round.z;
+        out.rounds.push_back(std::move(round));
+        if (e <= 0.0000000001) {
+            out.stop = "perfect";
+            break;
+        }
+    }
+    return out;
+}
+Search prepare(const Rows &rows, int bins) {
+    Search out;
+    for (std::size_t j = 0; j < rows[0].values.size(); ++j) {
+        Feature feature;
+        feature.order.resize(rows.size());
+        std::iota(feature.order.begin(), feature.order.end(), 0);
+        std::stable_sort(feature.order.begin(), feature.order.end(),
+                         [&](int a, int b) { return rows[a].values[j] < rows[b].values[j]; });
+        feature.thresholds.push_back(rows[feature.order[0]].values[j] - 1);
+        feature.ends.push_back(0);
+        for (std::size_t i = 1; i < feature.order.size(); ++i) {
+            const double left = rows[feature.order[i - 1]].values[j],
+                         right = rows[feature.order[i]].values[j];
+            if (left != right) {
+                feature.thresholds.push_back((left + right) / 2);
+                feature.ends.push_back(i);
+            }
+        }
+        out.features.push_back(std::move(feature));
+    }
+    return out;
+}
+Candidate discrete_stump(const Rows &rows, const Search &search, const Vector &weights) {
+    double positive = 0, negative = 0;
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        if (rows[i].label == 1)
+            positive += weights[i];
+        else
+            negative += weights[i];
+    std::vector<Candidate> candidates;
+    for (std::size_t j = 0; j < search.features.size(); ++j) {
+        const Feature &feature = search.features[j];
+        int position = 0;
+        double lp = 0, ln = 0;
+        for (std::size_t k = 0; k < feature.thresholds.size(); ++k) {
+            while (position < feature.ends[k]) {
+                const int i = feature.order[position++];
+                if (rows[i].label == 1)
+                    lp += weights[i];
+                else
+                    ln += weights[i];
+            }
+            for (int polarity : Ints{1, -1})
+                candidates.push_back(
+                    {{int(j), {feature.thresholds[k]}, {double(-polarity), double(polarity)}},
+                     polarity == 1 ? lp + (negative - ln) : ln + (positive - lp),
+                     polarity});
+        }
+    }
+    return choose(candidates);
+}
+int prediction(double score) {
+    return score > 0 ? 1 : -1;
+}
+static Vector scores(const Model &model, const Rows &rows, int count = -1) {
+    if (count < 0)
+        count = model.rounds.size();
+    count = std::min(count, int(model.rounds.size()));
+    Vector out(rows.size());
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        for (int t = 0; t < count; ++t)
+            out[i] += model.rounds[t].stump.output(rows[i].values);
+    return out;
+}
+static Curve curve(const Model &model, const Rows &train, const Rows &test) {
+    Curve out;
+    for (std::size_t t = 1; t <= model.rounds.size(); ++t) {
+        const Vector a = scores(model, train, t), b = scores(model, test, t);
+        out.train.push_back(error_count(train, a));
+        out.test.push_back(error_count(test, b));
+    }
+    return out;
+}
+static int first_minimum(const Ints &values) {
+    return std::min_element(values.begin(), values.end()) - values.begin();
+}
+    std::vector<Model> folds;
+    std::vector<Ints> fold_errors;
+    Ints cv(p.rounds);
+    for (int fold = 0; fold < p.folds; ++fold) {
+        int validation = 0;
+        for (int i = 0; i < n; ++i)
+            validation += i % p.folds == fold;
+        Vector weights(n);
+        for (int i = 0; i < n; ++i)
+            if (i % p.folds != fold)
+                weights[i] = 1.0 / (n - validation);
+        folds.push_back(discrete(train, p, p.rounds, 1, weights));
+        Ints errors(p.rounds);
+        for (int t = 1; t <= p.rounds; ++t) {
+            const Vector values = scores(folds.back(), train, t);
+            for (int i = 0; i < n; ++i)
+                if (i % p.folds == fold)
+                    errors[t - 1] += prediction(values[i]) != train[i].label;
+            cv[t - 1] += errors[t - 1];
+        }
+        fold_errors.push_back(std::move(errors));
+    }
+    const int selected = first_minimum(cv) + 1;
+    Vector oof(n);
+    for (int fold = 0; fold < p.folds; ++fold) {
+        const Vector values = scores(folds[fold], train, selected);
+        for (int i = 0; i < n; ++i)
+            if (i % p.folds == fold)
+                oof[i] = values[i];
+    }
+    for (int v = 0; v < variants; ++v) {
+        const std::string &variant = p.variants[v];
+        full.push_back(variant_train(train, p, variant));
+        Model model = full.back();
+        if (variant == "discrete" && int(model.rounds.size()) > selected)
+            model.rounds.resize(selected);
+        final.push_back(std::move(model));
+        curves.push_back(curve(full.back(), train, test));
+        train_scores.push_back(scores(final.back(), train));
+        test_scores.push_back(scores(final.back(), test));
+    for (int v = 0; v < variants; ++v) {
+        metrics(summary, "train", p.variants[v], final[v].rounds.size(), train, train_scores[v]);
+        metrics(summary, "test", p.variants[v], final[v].rounds.size(), test, test_scores[v]);

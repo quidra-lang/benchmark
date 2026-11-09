@@ -1,0 +1,9 @@
+The current question asks: Explain the logical operation that generates the requested Fibonacci sequence and its total, from the term-count value 30 to the sequence and sum made available for output. Identify the initial terms, the next-term update, the count boundary and the total update, using F(3) as a concrete check. Explain from the actual declarations or operations whether terms and totals remain exact integer quantities, distinguishing value behavior from any static guarantee. Do not list all thirty terms.
+
+Answer and source evidence: Thirty iterations start with a=b=1. Each emits/appends a, then updates (a,b) simultaneously to (b,a+b), so F(3)=2. Each term contributes once to the named total, either incrementally or by reducing the completed terms. The integer bindings/Int collection and integer + preserve exact integer quantities for these small thirty terms; no fractional conversion occurs.
+
+Selection: `main.swift` lines 1, 2, 3, 4, 5, 6, 8. The count bound, initial terms, recurrence, sequence exposure and total formation/exposure are necessary. Space-printing details and Swift's sequence-to-text conversion are outside the requested generation operation.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

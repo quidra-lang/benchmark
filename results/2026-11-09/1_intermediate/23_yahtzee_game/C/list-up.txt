@@ -1,0 +1,291 @@
+enum { DICE = 5, FACES = 6, CATEGORIES = 13, MAX_PLAYERS = 6, MAX_ENTRIES = 78, CODES = 46656 };
+typedef enum { FORCED, FREE, OFF } JokerRule;
+static const char *categories[] = {
+    "ONES", "TWOS", "THREES", "FOURS", "FIVES", "SIXES", "THREEKIND",
+    "FOURKIND", "FULLHOUSE", "SMALL", "LARGE", "YAHTZEE", "CHANCE"
+static char error_message[128];
+static bool fail(const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(error_message, sizeof error_message, format, arguments);
+    va_end(arguments);
+    return false;
+typedef struct { char text[64]; } Text;
+static bool held(int mask, int die) { return (mask & (1 << (4 - die))) != 0; }
+static Text pattern_text(int mask) {
+    Text text;
+    for (int i = 0; i < DICE; i++) text.text[i] = held(mask, i) ? '1' : '0';
+    text.text[DICE] = '\0';
+    return text;
+}
+static Text face_text(const int *faces, int mask) {
+    Text text = {""};
+    int length = 0;
+    if (faces) for (int i = 0; i < DICE; i++) if (held(mask, i)) {
+        if (length) text.text[length++] = ' ';
+        text.text[length++] = (char)('0' + faces[i]);
+    }
+    if (!length) text.text[length++] = '-';
+    text.text[length] = '\0';
+    return text;
+}
+static void face_counts(const int faces[DICE], int counts[FACES]) {
+    memset(counts, 0, FACES * sizeof *counts);
+    for (int i = 0; i < DICE; i++) counts[faces[i] - 1]++;
+static int normal_score(int category, const int counts[FACES]) {
+    if (category < 6) return (category + 1) * counts[category];
+typedef struct {
+    char name[9];
+    Strategy strategy;
+    int scores[CATEGORIES], yahtzee_bonus;
+} Player;
+static int upper_subtotal(const Player *player) {
+    int total = 0;
+    for (int i = 0; i < 6; i++) if (player->scores[i] >= 0) total += player->scores[i];
+    return total;
+}
+static int upper_bonus(const Player *player) { return upper_subtotal(player) >= 63 ? 35 : 0; }
+static int player_total(const Player *player) {
+    int total = player->yahtzee_bonus + upper_bonus(player);
+    for (int i = 0; i < CATEGORIES; i++) if (player->scores[i] >= 0) total += player->scores[i];
+    return total;
+}
+static int player_round(const Player *player) {
+    int round = 1;
+    for (int i = 0; i < CATEGORIES; i++) round += player->scores[i] >= 0;
+    return round;
+}
+typedef struct { int points[CATEGORIES], allowed, best, yahtzee_face; bool joker; } Candidates;
+static Candidates evaluate(const Player *player, const int counts[FACES], JokerRule rule) {
+    Candidates result = {.best = -1, .yahtzee_face = -1};
+    for (int i = 0; i < FACES; i++) if (counts[i] == 5) result.yahtzee_face = i;
+    for (int c = 0; c < CATEGORIES; c++) if (player->scores[c] < 0) result.allowed |= 1 << c;
+    result.joker = rule != OFF && result.yahtzee_face >= 0 && player->scores[11] >= 0;
+    if (result.joker && rule == FORCED) {
+    for (int c = 0; c < CATEGORIES; c++) {
+        int points = player->scores[c] >= 0 ? -1 : !(result.allowed & (1 << c)) ? 0
+            : result.joker && c >= 8 && c <= 10 ? c == 8 ? 25 : c == 9 ? 30 : 40 : normal_score(c, counts);
+        result.points[c] = points;
+        if (points >= 0 && (result.best < 0 || points > result.points[result.best])) result.best = c;
+    }
+    return result;
+typedef struct {
+    int seat, rolls, faces[DICE], hold;
+    bool finished;
+} Turn;
+typedef struct { Turn before; int category, points, bonus; bool joker; } ScoreEntry;
+typedef struct { Turn after; ScoreEntry entry; } RedoEntry;
+typedef struct {
+    Player players[MAX_PLAYERS];
+    int player_count, max_rolls;
+    JokerRule joker;
+    int64_t random_state, face_counts[FACES];
+    int loaded[8000], loaded_head, loaded_tail;
+    ScoreEntry entries[MAX_ENTRIES];
+    int entry_count;
+    RedoEntry redo[MAX_ENTRIES];
+    int redo_count;
+    Turn turn;
+    bool verbose;
+} Game;
+static Game *new_game(int64_t seed, int count, char *const *names, int rolls, JokerRule joker, bool verbose) {
+    Game *game = calloc(1, sizeof *game);
+    if (!game) exit(EXIT_FAILURE);
+    game->player_count = count;
+    game->random_state = seed;
+    game->max_rolls = rolls;
+    game->joker = joker;
+    game->verbose = verbose;
+    for (int i = 0; i < count; i++) {
+        strcpy(game->players[i].name, names[i]);
+        for (int c = 0; c < CATEGORIES; c++) game->players[i].scores[c] = -1;
+    }
+    return game;
+}
+static bool check_game(const Game *game) { return game ? true : fail("no game"); }
+static bool check_turn(const Game *game) {
+    if (!check_game(game)) return false;
+    return !game->turn.finished || fail("game over");
+}
+static bool check_rolled(const Game *game) {
+    if (!check_turn(game)) return false;
+    return game->turn.rolls != 0 || fail("not rolled");
+}
+static bool check_rolls_left(const Game *game) {
+    if (!check_rolled(game)) return false;
+    return game->turn.rolls < game->max_rolls || fail("no rolls left");
+}
+static bool roll(Game *game) {
+    if (!check_turn(game)) return false;
+    Turn *turn = &game->turn;
+    if (turn->rolls == game->max_rolls) return fail("no rolls left");
+    if (turn->hold == 31) return fail("all dice held");
+    game->redo_count = 0;
+    for (int i = 0; i < DICE; i++) {
+        if (turn->rolls && held(turn->hold, i)) continue;
+        if (game->loaded_head < game->loaded_tail) turn->faces[i] = game->loaded[game->loaded_head++];
+        else {
+            game->random_state = 48271 * game->random_state % 2147483647;
+            turn->faces[i] = (int)(game->random_state % 6) + 1;
+        }
+        game->face_counts[turn->faces[i] - 1]++;
+    }
+    turn->rolls++;
+    if (game->verbose) printf("%s roll %d: %s\n", game->players[turn->seat].name, turn->rolls, face_text(turn->faces, 31).text);
+    return true;
+}
+static bool hold(Game *game, int mask) {
+    if (!check_rolls_left(game)) return false;
+    game->redo_count = 0;
+    game->turn.hold = mask;
+    if (game->verbose) printf("%s holds %s: %s\n", game->players[game->turn.seat].name, pattern_text(mask).text, face_text(game->turn.faces, mask).text);
+    return true;
+static bool score(Game *game, int category, bool preview) {
+    if (!check_rolled(game)) return false;
+    Player *player = &game->players[game->turn.seat];
+    if (player->scores[category] >= 0) return fail("%s already used", categories[category]);
+    int counts[FACES];
+    face_counts(game->turn.faces, counts);
+    Candidates candidates = evaluate(player, counts, game->joker);
+    if (!(candidates.allowed & (1 << category))) {
+        return fail("joker requires %s", player->scores[candidates.yahtzee_face] < 0 ? categories[candidates.yahtzee_face] : "lower box");
+    }
+    int points = candidates.points[category];
+    int bonus = candidates.yahtzee_face >= 0 && player->scores[11] == 50 ? 100 : 0;
+    int upper = upper_subtotal(player);
+    int gained_upper = category < 6 && upper < 63 && upper + points >= 63 ? 35 : 0;
+    int total = player_total(player) + points + bonus + gained_upper;
+    if (game->verbose) {
+        printf("%s %s %d in %s", player->name, preview ? "would score" : "scores", points, categories[category]);
+        if (candidates.joker) printf(" joker");
+        if (bonus) printf(" ybonus 100");
+        if (gained_upper) printf(" ubonus 35");
+        printf(" total %d\n", total);
+    }
+    if (preview) return true;
+    game->redo_count = 0;
+    game->entries[game->entry_count++] = (ScoreEntry){game->turn, category, points, bonus, candidates.joker};
+    player->scores[category] = points;
+    player->yahtzee_bonus += bonus;
+    if (game->entry_count == CATEGORIES * game->player_count) game->turn = (Turn){.finished = true};
+    else game->turn = (Turn){.seat = (game->turn.seat + 1) % game->player_count};
+    if (game->verbose) {
+        if (game->turn.finished) puts("game over");
+        else {
+            Player *next = &game->players[game->turn.seat];
+            printf("turn %d %s\n", player_round(next), next->name);
+        }
+    }
+    return true;
+}
+static bool undo(Game *game) {
+    if (!check_game(game)) return false;
+    if (!game->entry_count) return fail("nothing to undo");
+    ScoreEntry entry = game->entries[--game->entry_count];
+    game->redo[game->redo_count++] = (RedoEntry){game->turn, entry};
+    Player *player = &game->players[entry.before.seat];
+    player->scores[entry.category] = -1;
+    player->yahtzee_bonus -= entry.bonus;
+    game->turn = entry.before;
+    printf("undo %s %s %d\n", player->name, categories[entry.category], entry.points);
+    return true;
+}
+static bool redo(Game *game) {
+    if (!check_game(game)) return false;
+    if (!game->redo_count) return fail("nothing to redo");
+    RedoEntry saved = game->redo[--game->redo_count];
+    ScoreEntry entry = saved.entry;
+    Player *player = &game->players[entry.before.seat];
+    player->scores[entry.category] = entry.points;
+    player->yahtzee_bonus += entry.bonus;
+    game->entries[game->entry_count++] = entry;
+    game->turn = saved.after;
+    printf("redo %s %s %d\n", player->name, categories[entry.category], entry.points);
+    return true;
+typedef struct {
+    Game *game;
+    int rolls;
+    JokerRule joker;
+} Table;
+static bool positive(const char *word, int64_t maximum, int64_t *result) {
+    if (word[0] < '1' || word[0] > '9') return fail("bad value %s", word);
+    for (const char *p = word; *p; p++) if (*p < '0' || *p > '9') return fail("bad value %s", word);
+    int64_t value = strtoll(word, NULL, 10);
+    if (value > maximum) return fail("bad value %s", word);
+    *result = value;
+    return true;
+}
+static bool valid_name(const char *word) {
+    if (strlen(word) > 8) return fail("bad name %s", word);
+    for (const char *p = word; *p; p++) if (*p < 'A' || *p > 'Z') return fail("bad name %s", word);
+    return true;
+}
+static bool parse_pattern(const char *word, int *result) {
+    if (strlen(word) != DICE) return fail("bad pattern %s", word);
+    int mask = 0;
+    for (int i = 0; i < DICE; i++) {
+        if (word[i] != '0' && word[i] != '1') return fail("bad pattern %s", word);
+        mask = mask * 2 + word[i] - '0';
+    }
+    *result = mask;
+    return true;
+}
+static int category_index(const char *word) {
+    for (int i = 0; i < CATEGORIES; i++) if (strcmp(categories[i], word) == 0) return i;
+    return -1;
+static bool execute(Table *table, char **words, int count) {
+    const char *command = words[0];
+    Game *game = table->game;
+    if (strcmp(command, "RULE") == 0) {
+    } else if (strcmp(command, "GAME") == 0) {
+        int64_t seed;
+        if (!positive(words[1], 2147483646, &seed)) return false;
+        for (int i = 2; i < count; i++) if (!valid_name(words[i])) return false;
+        if (count - 2 > MAX_PLAYERS) return fail("too many players");
+        if (game) return fail("game in progress");
+        for (int i = 2; i < count; i++) for (int j = 2; j < i; j++) if (strcmp(words[i], words[j]) == 0) return fail("duplicate name %s", words[i]);
+        table->game = new_game(seed, count - 2, words + 2, table->rolls, table->joker, true);
+        printf("game seed %" PRId64 " players", seed);
+        for (int i = 2; i < count; i++) printf(" %s", words[i]);
+        printf("\nturn 1 %s\n", words[2]);
+    } else if (strcmp(command, "LOAD") == 0 || strcmp(command, "KEEP") == 0) {
+        int values[20];
+        for (int i = 1; i < count; i++) {
+            int64_t value;
+            if (!positive(words[i], 6, &value)) return false;
+            values[i - 1] = (int)value;
+        }
+        if (!check_game(game)) return false;
+        if (strcmp(command, "KEEP") == 0) return keep(game, values, count - 1);
+        for (int i = 0; i < count - 1; i++) game->loaded[game->loaded_tail++] = values[i];
+        printf("loaded %d\n", game->loaded_tail - game->loaded_head);
+    } else if (strcmp(command, "ROLL") == 0) return roll(game);
+    else if (strcmp(command, "HOLD") == 0 || strcmp(command, "ODDS") == 0) {
+        int mask;
+        if (!parse_pattern(words[1], &mask)) return false;
+        return strcmp(command, "HOLD") == 0 ? hold(game, mask) : odds(game, mask);
+    } else if (strcmp(command, "SCORE") == 0 || strcmp(command, "WHATIF") == 0) {
+        int category = category_index(words[1]);
+        if (category < 0) return fail("bad category %s", words[1]);
+        return score(game, category, strcmp(command, "WHATIF") == 0);
+    } else if (strcmp(command, "UNDO") == 0) return undo(game);
+    else if (strcmp(command, "REDO") == 0) return redo(game);
+    } else return fail("unknown command %s", command);
+    return true;
+int main(void) {
+    for (int size = 0; size <= DICE; size++) make_outcomes(size, 0, size, 0, 1);
+    Table *table = calloc(1, sizeof *table);
+    if (!table) return EXIT_FAILURE;
+    table->rolls = 3;
+    char line[512];
+    if (!fgets(line, sizeof line, stdin)) { free(table); return 0; }
+    int commands = atoi(line);
+    for (int i = 0; i < commands && fgets(line, sizeof line, stdin); i++) {
+        char *words[24];
+        int count = 0;
+        for (char *word = strtok(line, " \r\n"); word; word = strtok(NULL, " \r\n")) words[count++] = word;
+        if (!execute(table, words, count)) printf("error: %s\n", error_message);
+    }
+    free(table->game);
+    free(table);
+    return 0;

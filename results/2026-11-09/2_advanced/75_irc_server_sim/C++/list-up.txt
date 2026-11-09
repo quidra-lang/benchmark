@@ -1,0 +1,310 @@
+    void read_inputs() {
+        std::map<std::string, std::string> values;
+        std::ifstream server("input/server.txt");
+        std::string text;
+        while (std::getline(server, text)) {
+            auto space = text.find(' ');
+            std::string key = text.substr(0, space), value = text.substr(space + 1);
+            if (key == "MOTD")
+                settings.motd.push_back(value);
+            else
+                values[key] = value;
+        }
+        settings.name = values["NAME"];
+        settings.version = values["VERSION"];
+        settings.created = values["CREATED"];
+        settings.description = values["DESCRIPTION"];
+        settings.nicklen = std::stoi(values["NICKLEN"]);
+        settings.channellen = std::stoi(values["CHANNELLEN"]);
+        settings.topiclen = std::stoi(values["TOPICLEN"]);
+        settings.maxchannels = std::stoi(values["MAXCHANNELS"]);
+        settings.bucket = std::stoi(values["BUCKET"]);
+        settings.refill = std::stoi(values["REFILL"]);
+        settings.queue = std::stoi(values["QUEUE"]);
+        settings.pingfreq = std::stoi(values["PINGFREQ"]);
+        settings.timeout = std::stoi(values["TIMEOUT"]);
+        std::ifstream input("input/traffic.txt");
+        while (std::getline(input, text)) {
+            auto first = text.find(' '), second = text.find(' ', first + 1);
+            Traffic record{std::stoi(text.substr(0, first)),
+                           text.substr(first + 1, second - first - 1), text.substr(second + 1),
+                           TrafficKind::Message};
+            if (record.body == "DISCONNECT")
+                record.kind = TrafficKind::Disconnect;
+            else if (record.body.rfind("CONNECT ", 0) == 0) {
+                std::string host = record.body.substr(8);
+                bool valid = !host.empty() && host.size() <= 63;
+                for (char c : host)
+                    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '.' || c == '-'))
+                        valid = false;
+                if (valid)
+                    record.kind = TrafficKind::Connect;
+            }
+            ++line_counts[int(record.kind)];
+            traffic.push_back(record);
+        }
+        end = traffic.back().time;
+    }
+    void send(Client &client, const std::string &text) {
+        line(sent, time, " ", client.identifier, " ", text);
+        ++client.sent;
+    }
+    void disconnect(Client &client, const std::string &reason, DisconnectKind kind) {
+        if (kind != DisconnectKind::Closed) {
+            send(client, "ERROR :Closing Link: " + client.addressee() + "[" + client.hostname +
+                             "] (" + reason + ")");
+            ++statistics.errors;
+        }
+        if (client.registered)
+            send_peers(client, ":" + client.prefix() + " QUIT :" + reason);
+        auto joined = client.channels;
+        for (Channel *channel : joined)
+            remove_member(client, *channel);
+        statistics.discarded += int(client.queue.size());
+        client.queue.clear();
+        by_id.erase(client.identifier);
+        client.active = false;
+        gone.push_back({time, client.identifier, client.addressee(), reason});
+        ++disconnections[int(kind)];
+    }
+    void process(Client &client, const std::string &raw) {
+        ++statistics.processed;
+        Parsed parsed = parse(raw);
+        const std::string &command = parsed.command;
+        const Names &p = parsed.parameters;
+        if (command.empty()) {
+            ++statistics.empty;
+            return;
+        }
+        ++commands[command];
+        if (!client.registered && command != "NICK" && command != "USER" && command != "PING" &&
+            command != "PONG" && command != "QUIT") {
+            error(client, 451);
+            return;
+        }
+        if (command == "NICK")
+            nick(client, p);
+        else if (command == "USER")
+            user(client, p);
+        else if (command == "PING") {
+            if (p.empty() || p[0].empty())
+                error(client, 409);
+            else
+                send(client, ":" + settings.name + " PONG " + settings.name + " :" + p[0]);
+        } else if (command == "PONG")
+            return;
+        else if (command == "QUIT")
+            disconnect(client, p.empty() || p[0].empty() ? "Client Quit" : "Quit: " + p[0],
+                       DisconnectKind::Quit);
+        else if (command == "JOIN")
+            join_channels(client, p);
+        else if (command == "PART")
+            part(client, p);
+        else if (command == "PRIVMSG" || command == "NOTICE")
+            message(client, p, command);
+        else if (command == "TOPIC")
+            topic(client, p);
+        else if (command == "NAMES")
+            names(client, p);
+        else if (command == "WHOIS")
+            whois(client, p);
+        else if (command == "AWAY") {
+            client.away = p.empty() ? "" : p[0];
+            numeric(client, client.away.empty() ? 305 : 306,
+                    client.away.empty() ? ":You are no longer marked as being away"
+                                        : ":You have been marked as being away");
+        } else if (command == "INVITE")
+            invite(client, p);
+        else if (command == "KICK")
+            kick(client, p);
+        else if (command == "MODE") {
+            if (require(client, p, 1, "MODE")) {
+                if (!p[0].empty() && p[0][0] == '#')
+                    channel_mode(client, p);
+                else
+                    user_mode(client, p);
+            }
+        } else
+            error(client, 421, command);
+    }
+    void arrival(const Traffic &record) {
+        if (record.kind == TrafficKind::Connect) {
+            clients.emplace_back(record.identifier, record.body.substr(8), time, settings.bucket);
+            by_id[record.identifier] = &clients.back();
+            int count = int(by_id.size());
+            if (count > peak_connections.first)
+                peak_connections = {count, time};
+            return;
+        }
+        auto found = by_id.find(record.identifier);
+        Client *client = found == by_id.end() ? nullptr : found->second;
+        if (record.kind == TrafficKind::Disconnect) {
+            if (client)
+                disconnect(*client, "Remote host closed the connection", DisconnectKind::Closed);
+            return;
+        }
+        if (!client) {
+            ++statistics.dropped;
+            return;
+        }
+        ++client->received;
+        client->last_received = time;
+        client->ping_sent.reset();
+        if (client->queue.empty() && client->tokens >= 1) {
+            client->use_token(time, settings.bucket, settings.refill);
+            process(*client, record.body);
+        } else if (client->queue.size() >= std::size_t(settings.queue)) {
+            ++statistics.discarded;
+            disconnect(*client, "Excess Flood", DisconnectKind::Flood);
+        } else {
+            client->queue.push_back(record.body);
+            ++statistics.queued;
+        }
+    }
+    Lines client_report() const {
+        Lines out;
+        int count = 0, registered = 0, invisible = 0, away = 0;
+        for (const Client &client : clients)
+            if (client.active) {
+                ++count;
+                registered += client.registered;
+                invisible += client.invisible;
+                away += !client.away.empty();
+                std::string joined = joined_channels(client, ",");
+                Names invites;
+                for (const Channel *channel : client.invites)
+                    invites.push_back(channel->name);
+                line(out, "CLIENT ", client.identifier, " ", client.addressee(), " ",
+                     client.username.value_or("*"), " ", client.hostname, " ", client.mode(),
+                     " connected ", client.connection_time, " signon ",
+                     client.registered ? std::to_string(*client.registration_time) : "-",
+                     " received ", client.received, " sent ", client.sent, " tokens ",
+                     client.tokens, " queue ", client.queue.size(), " channels ",
+                     joined.empty() ? "none" : joined, " invites ",
+                     invites.empty() ? "none" : join(invites, ","));
+                if (!client.away.empty())
+                    line(out, "AWAY ", client.identifier, " ", client.away);
+            }
+        line(out, "TOTAL clients ", count, " registered ", registered, " invisible ", invisible,
+             " away ", away);
+        return out;
+    }
+    Lines statistics_report() const {
+        Lines out;
+        int pending = 0;
+        for (const Client &client : clients)
+            if (client.active)
+                pending += int(client.queue.size());
+        int numerics = 0;
+        for (const auto &entry : numeric_counts)
+            numerics += entry.second;
+        line(out, "END ", end);
+        line(out, "LINES total ", traffic.size(), " connect ", line_counts[0], " disconnect ",
+             line_counts[1], " messages ", line_counts[2]);
+        line(out, "MESSAGES dropped ", statistics.dropped, " queued ", statistics.queued,
+             " processed ", statistics.processed, " discarded ", statistics.discarded, " pending ",
+             pending, " empty ", statistics.empty);
+        line(out, "SENT lines ", sent.size(), " numerics ", numerics, " pings ", statistics.pings,
+             " errors ", statistics.errors);
+        for (const auto &entry : commands)
+            line(out, "COMMAND ", entry.first, " ", entry.second);
+        for (const auto &entry : numeric_counts)
+            line(out, "NUMERIC ", number3(entry.first), " ", entry.second);
+        line(out, "PEAK connections ", peak_connections.first, " at ", peak_connections.second);
+        line(out, "PEAK registered ", peak_registered.first, " at ", peak_registered.second);
+        line(out, "DISCONNECTS quit ", disconnections[0], " closed ", disconnections[1], " flood ",
+             disconnections[2], " timeout ", disconnections[3]);
+        for (const Gone &record : gone)
+            line(out, "GONE ", record.time, " ", record.identifier, " ", record.addressee, " ",
+                 record.reason);
+        return out;
+    }
+    void run() {
+        read_inputs();
+        std::size_t position = 0;
+        for (time = 0; time <= end; ++time) {
+            for (Client *client : active_clients()) {
+                client->refill(time, settings.bucket, settings.refill);
+                while (client->active && !client->queue.empty() && client->tokens >= 1) {
+                    client->use_token(time, settings.bucket, settings.refill);
+                    std::string raw = client->queue.front();
+                    client->queue.pop_front();
+                    process(*client, raw);
+                }
+            }
+            while (position < traffic.size() && traffic[position].time == time)
+                arrival(traffic[position++]);
+            for (Client *client : active_clients()) {
+                if (client->ping_sent) {
+                    if (time - *client->ping_sent >= settings.timeout)
+                        disconnect(*client,
+                                   "Ping timeout: " + std::to_string(time - client->last_received) +
+                                       " seconds",
+                                   DisconnectKind::Timeout);
+                } else if (time - client->last_received >= settings.pingfreq) {
+                    send(*client, "PING :" + settings.name);
+                    ++statistics.pings;
+                    client->ping_sent = time;
+                }
+            }
+        }
+        std::filesystem::create_directories("output");
+        write("sent.txt", sent);
+        write("channels.txt", channel_report());
+        write("clients.txt", client_report());
+        write("stats.txt", statistics_report());
+    }
+void Client::use_token(int time, int capacity, int interval) {
+    if (tokens == capacity)
+        refill_time = time + interval;
+    --tokens;
+}
+void Client::refill(int time, int capacity, int interval) {
+    if (refill_time == time) {
+        ++tokens;
+        if (tokens < capacity)
+            refill_time = time + interval;
+        else
+            refill_time.reset();
+    }
+}
+Parsed parse(const std::string &raw) {
+    Parsed out;
+    std::size_t position = 0;
+    if (!raw.empty() && raw[0] == ':') {
+        position = raw.find(' ');
+        if (position == std::string::npos)
+            return out;
+    }
+    while (position < raw.size() && raw[position] == ' ')
+        ++position;
+    std::size_t start = position;
+    while (position < raw.size() && raw[position] != ' ')
+        ++position;
+    out.command = raw.substr(start, position - start);
+    for (char &c : out.command)
+        if (c >= 'a' && c <= 'z')
+            c = char(c - 'a' + 'A');
+    if (out.command.empty())
+        return out;
+    while (position < raw.size()) {
+        while (position < raw.size() && raw[position] == ' ')
+            ++position;
+        if (position == raw.size())
+            break;
+        if (raw[position] == ':') {
+            out.parameters.push_back(raw.substr(position + 1));
+            break;
+        }
+        if (out.parameters.size() == 14) {
+            out.parameters.push_back(raw.substr(position));
+            break;
+        }
+        start = position;
+        while (position < raw.size() && raw[position] != ' ')
+            ++position;
+        out.parameters.push_back(raw.substr(start, position - start));
+    }
+    return out;
+}

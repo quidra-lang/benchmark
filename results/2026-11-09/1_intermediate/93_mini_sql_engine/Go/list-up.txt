@@ -1,0 +1,224 @@
+type sqlError string
+func fail(s string) {
+	panic(sqlError(s))
+}
+type column struct {
+	name, kind string
+	primary    int
+	notNull    bool
+}
+	} else if p.accept("UPDATE") {
+		c.kind = "update"
+		c.name = p.name()
+		p.expect("SET")
+		for {
+			n := p.name()
+			p.expect("=")
+			c.assignments = append(c.assignments, assignment{n, p.expression(0)})
+			if !p.accept(",") {
+				break
+			}
+		}
+		c.where = p.clause("WHERE")
+type row []any
+type table struct {
+	name    string
+	columns []column
+	key     int
+	rows    []row
+}
+func (t *table) column(n string) int {
+	for i, c := range t.columns {
+		if c.name == n {
+			return i
+		}
+	}
+	return -1
+}
+type entry struct {
+	name   string
+	table  *table
+	offset int
+}
+type scope struct {
+	entries []entry
+	width   int
+}
+func (s *scope) add(n string, t *table) {
+	for _, e := range s.entries {
+		if e.name == n {
+			fail("duplicate table name " + n)
+		}
+	}
+	s.entries = append(s.entries, entry{n, t, s.width})
+	s.width += len(t.columns)
+}
+func (s *scope) resolve(e *expr) string {
+	found := -1
+	kind := ""
+	seen := false
+	for _, p := range s.entries {
+		if e.table == "" || e.table == p.name {
+			seen = true
+			i := p.table.column(e.column)
+			if i >= 0 {
+				if found >= 0 {
+					fail("ambiguous column " + e.column)
+				}
+				found = p.offset + i
+				kind = p.table.columns[i].kind
+			}
+		}
+	}
+	if e.table != "" && !seen {
+		fail("unknown table " + e.table)
+	}
+	if found < 0 {
+		fail("unknown column " + e.text)
+	}
+	e.index = found
+	return kind
+}
+func compatible(a, b string) bool {
+	return a == b || a == "NULL" || b == "NULL"
+}
+func require(a, b, op string) {
+	if !compatible(a, b) {
+		fail("type mismatch for " + op)
+	}
+}
+func check(e *expr, s *scope, allow bool, grouped []int, inside bool) string {
+	if e.kind == "literal" {
+		if e.value == nil {
+			return "NULL"
+		}
+		if _, ok := e.value.(int64); ok {
+			return "INT"
+		}
+		return "TEXT"
+	}
+	if e.kind == "ref" {
+		t := s.resolve(e)
+		if grouped != nil && !inside {
+			ok := false
+			for _, i := range grouped {
+				if i == e.index {
+					ok = true
+				}
+			}
+			if !ok {
+				fail("column " + e.text + " is not grouped")
+			}
+		}
+		return t
+	}
+	if e.kind == "aggregate" {
+		if !allow || inside {
+			fail("misuse of aggregate " + e.op)
+		}
+func condition(e *expr, s *scope, name string, allow bool, grouped []int) {
+	if e != nil {
+		require(check(e, s, allow, grouped, false), "INT", name)
+	}
+}
+func truth(v any) bool {
+	return v != nil && v.(int64) != 0
+}
+func evaluate(e *expr, r row, group []row) any {
+	if e.kind == "literal" {
+		return e.value
+	}
+	if e.kind == "ref" {
+		return r[e.index]
+	}
+func satisfies(e *expr, r row, g []row) bool {
+	return e == nil || truth(evaluate(e, r, g))
+}
+func countRows(n int) string {
+	if n == 1 {
+		return "1 row"
+	}
+	return fmt.Sprintf("%d rows", n)
+}
+func written(v any) string {
+	if v == nil {
+		return "NULL"
+	}
+	return fmt.Sprint(v)
+}
+func (db *database) table(n string) *table {
+	t, ok := db.tables[n]
+	if !ok {
+		fail("unknown table " + n)
+	}
+	return t
+}
+func targets(t *table, names []string) []int {
+	a := []int{}
+	seen := map[int]bool{}
+	for _, n := range names {
+		i := t.column(n)
+		if i < 0 {
+			fail("unknown column " + n)
+		}
+		if seen[i] {
+			fail("duplicate column " + n)
+		}
+		seen[i] = true
+		a = append(a, i)
+	}
+	return a
+}
+func constraints(t *table, rows []row, checked []int) {
+	for _, i := range checked {
+		for j, c := range t.columns {
+			if c.notNull && rows[i][j] == nil {
+				fail("NULL value in column " + c.name)
+			}
+		}
+		if t.key >= 0 {
+			for j, r := range rows {
+				if i != j && rows[i][t.key] == r[t.key] {
+					fail("duplicate primary key " + written(r[t.key]))
+				}
+			}
+		}
+	}
+	t := db.table(c.name)
+	rows := []row{}
+	checked := []int{}
+	count := 0
+	} else if c.kind == "update" {
+		names := []string{}
+		for _, a := range c.assignments {
+			names = append(names, a.name)
+		}
+		target := targets(t, names)
+		s := &scope{}
+		s.add(t.name, t)
+		for i, a := range c.assignments {
+			col := t.columns[target[i]]
+			require(check(a.expr, s, false, nil, false), col.kind, "column "+col.name)
+		}
+		condition(c.where, s, "WHERE", false, nil)
+		for i, r := range t.rows {
+			next := r
+			if satisfies(c.where, r, nil) {
+				next = append(row{}, r...)
+				for j, a := range c.assignments {
+					next[target[j]] = evaluate(a.expr, r, nil)
+				}
+				checked = append(checked, i)
+				count++
+			}
+			rows = append(rows, next)
+		}
+		constraints(t, rows, checked)
+	t.rows = rows
+	verb := " deleted."
+	if c.kind == "insert" {
+		verb = " inserted."
+	} else if c.kind == "update" {
+		verb = " updated."
+	}
+	fmt.Println(countRows(count) + verb)

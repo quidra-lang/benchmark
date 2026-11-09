@@ -1,0 +1,5 @@
+Each selection starts best=-1 and considers only untaken zero-indegree vertices, choosing the alphabetically smallest. If none exists, best stays negative and the break occurs before indexing/removing any candidate. Untaken cyclic courses can therefore remain. In the cycle-output block, eligibility drops the indegree test, repeatedly choosing the smallest untaken name and marking it taken, so remaining names print alphabetically. If everything was taken, this scan also finds none and emits no course names. No empty candidate collection is ever popped.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

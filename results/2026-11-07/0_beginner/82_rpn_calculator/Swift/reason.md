@@ -1,0 +1,9 @@
+The current question asks: Explain the RPN-expression evaluation operation from tokens to one result or an error. Use expression 2 to trace pushes, the two-operand pop order, result pushes and truncating negative division. Identify the entry/reset state and the guards for underflow, zero divisor and leftover operands, showing how an error stops further stack updates. Ground the behavior in the source's actual storage changes; do not trace all seven expressions.
+
+Answer and source evidence: Each expression starts with an empty operand stack and no error. For expression2, pushes -17 and5; division pops b=5 then a=-17 and truncates a/b to -3. Push4 and-3, multiply to -12, then subtract (-3)-(-12)=9. Operator recognition excludes signed integer tokens; underflow checks before pops, zero-divisor checks before division, and breaks stop later updates. After tokens, a no-error stack must have exactly one item or reports leftover operands. Result9 or the error is emitted from that state.
+
+Selection: `main.swift` lines 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31. The selected expression, reset, complete token evaluator and final guards are necessary; separately stored other expressions and wrappers are omitted.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

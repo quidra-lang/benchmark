@@ -1,0 +1,132 @@
+    void startThrow(Point *point, char position) {
+        point->moving = true;
+        point->target = position;
+        point->completion = time + throwTime;
+        write("MOVE " + point->name + " " + position + " until " +
+              std::to_string(point->completion));
+    }
+    void addRequest(Route *route, const std::string &requester) {
+        ++totalRequests;
+        queue.push_back({totalRequests, route, time});
+        ++route->requests;
+        write("REQUEST q" + std::to_string(totalRequests) + " " + route->name + " " + requester);
+    }
+    void cancel(Route *route) {
+        std::vector<Request> remaining;
+        bool removed = false;
+        for (const Request &request : queue) {
+            if (request.route == route) {
+                write("DROP q" + std::to_string(request.number) + " " + route->name);
+                ++dropped;
+                removed = true;
+            } else
+                remaining.push_back(request);
+        }
+        queue = std::move(remaining);
+        if (removed)
+            return;
+        if (route->state == RouteState::Locked) {
+            ++route->cancels;
+            if (route->start->aspect != Aspect::Red && route->start->section->occupied()) {
+                route->state = RouteState::Approach;
+                route->releaseTime = time + route->approach;
+                write("CANCEL " + route->name + " approach until " +
+                      std::to_string(route->releaseTime));
+            } else {
+                interlocking.release(route);
+                write("CANCEL " + route->name + " released");
+            }
+        } else
+            write("CANCEL " + route->name +
+                  (route->state == RouteState::None ? " none" : " refused"));
+    }
+    std::string reason(Route *route) const {
+        if (route->state != RouteState::None)
+            return "busy";
+        for (const Route *conflict : route->conflicts)
+            if (conflict->state == RouteState::Locked || conflict->state == RouteState::Approach)
+                return "conflict " + conflict->name;
+        for (Section *section : route->sections) {
+            if (section->occupied())
+                return "occupied " + section->name;
+            bool locked = section->route != nullptr;
+            for (const Route *overlap : section->overlaps)
+                locked = locked || overlap->direction != route->direction;
+            if (locked)
+                return "locked " + section->name;
+        }
+        for (Section *section : route->overlap) {
+            if (section->occupied())
+                return "occupied " + section->name;
+            bool locked = section->route && section->route->direction != route->direction;
+            for (const Route *overlap : section->overlaps)
+                locked = locked || overlap->direction != route->direction;
+            if (locked)
+                return "locked " + section->name;
+        }
+        for (const Requirement &requirement : route->requirements()) {
+            Point *point = requirement.point;
+            for (const PointLock &lock : point->locks)
+                if (lock.position != requirement.position)
+                    return "point " + point->name + " locked";
+            if (!point->moving && point->position == requirement.position ||
+                point->moving && point->target == requirement.position)
+                continue;
+            if (point->failed)
+                return "point " + point->name + " failed";
+            if (point->moving)
+                return "point " + point->name + " moving";
+            if (point->common->occupied())
+                return "point " + point->name + " occupied";
+        }
+        return "";
+    }
+    void judge() {
+        std::vector<Request> pending;
+        for (Request &request : queue) {
+            Route *route = request.route;
+            std::string failure = reason(route);
+            if (!failure.empty()) {
+                if (failure != request.lastReason) {
+                    write("WAIT q" + std::to_string(request.number) + " " + route->name + " " +
+                          failure);
+                    request.lastReason = failure;
+                }
+                pending.push_back(request);
+                continue;
+            }
+            interlocking.lock(route);
+            int wait = time - request.time;
+            ++granted;
+            ++route->grants;
+            route->wait += wait;
+            route->maxwait = std::max(route->maxwait, wait);
+            write("GRANT q" + std::to_string(request.number) + " " + route->name + " wait " +
+                  std::to_string(wait));
+            for (const Requirement &requirement : route->requirements())
+                if (!requirement.point->moving &&
+                    requirement.point->position != requirement.position)
+                    startThrow(requirement.point, requirement.position);
+        }
+        queue = std::move(pending);
+    }
+            for (const TrainRequest &request : planned)
+                if (request.time == time)
+                    addRequest(request.route, request.train->name);
+            for (const Event &instruction : events)
+                if (instruction.time == time)
+                    event(instruction);
+            judge();
+void Interlocking::lock(Route *route) {
+    route->state = RouteState::Locked;
+    route->passed.clear();
+    for (Section *section : route->sections)
+        section->route = route;
+    for (Section *section : route->overlap)
+        section->overlaps.insert(route);
+    for (const Requirement &requirement : route->requirements())
+        requirement.point->locks.push_back({route, requirement.position});
+    route->overlapLocked = true;
+    route->overlapCounter = 0;
+    route->releaseTime = -1;
+}

@@ -1,0 +1,517 @@
+    fun best(candidates:List<Route>,routerIds:Map<Int,Long>):Selection {
+        var remaining=candidates.toList();
+        if(remaining.size==1)return Selection(remaining.first(),"ONLY");
+        for(reason in listOf("LOCALPREF","ASPATH","ORIGIN","MED","ROUTERID","LINK")) {
+            if(reason=="MED") {
+                val minima=remaining.groupBy {
+                    it.neighbor
+                }.mapValues {
+                    (_,routes)->routes.minOf {
+                        it.med
+                    }
+                };
+                remaining=remaining.filter {
+                    it.med==minima.getValue(it.neighbor)
+                }
+            }else {
+                val key:(Route)->Long=when(reason) {
+                    "LOCALPREF"-> {
+                        route->-route.localPref!!.toLong()
+                    };
+                    "ASPATH"-> {
+                        route->route.path.size.toLong()
+                    };
+                    "ORIGIN"-> {
+                        route->when(route.origin) {
+                            "IGP"->0L;
+                            "EGP"->1L;
+                            else->2L
+                        }
+                    };
+                    "ROUTERID"-> {
+                        route->routerIds.getValue(route.neighbor)
+                    };
+                    else-> {
+                        route->route.link!!.number.toLong()
+                    }
+                };
+                val minimum=remaining.minOf(key);
+                remaining=remaining.filter {
+                    key(it)==minimum
+                }
+            }
+            if(remaining.size==1)return Selection(remaining.first(),reason)
+        }
+        error("No best route")
+    }
+    fun importRoute(session:Session,prefix:Topology.Prefix,attribute:Decision.Attribute):Imported {
+        val rule=policies.applied("IMPORT",session.owner,session.link,prefix,attribute.path,attribute.communities);
+        var localPref=defaults.getValue(session.link.role(session.owner));
+        if(rule!=null&&rule.has("DENY"))return Imported(null,rule);
+        var med=attribute.med;
+        var communities=attribute.communities;
+        if(rule!=null) {
+            localPref=rule.value("LOCALPREF",localPref);
+            med=rule.value("MED",med);
+            communities=Policy.edit(communities,rule)
+        }
+        return Imported(Decision.Route(attribute.path,attribute.origin,med,communities,localPref,session.link),rule)
+    }
+    fun candidates(owner:Int,prefix:Topology.Prefix):MutableList<Decision.Route> {
+        val routes=mutableListOf<Decision.Route>();
+        for(session in routers.getValue(owner).sessions) {
+            val attribute=session.incoming[prefix]?:continue;
+            val route=importRoute(session,prefix,attribute).route;
+            if(route!=null)routes.add(route)
+        }
+        return routes
+    }
+    fun advertised(session:Session,prefix:Topology.Prefix):Advertised {
+        val owner=session.owner;
+        val link=session.link;
+        val route=routers.getValue(owner).rib[prefix]?:return Advertised(null,null);
+        if(!route.local&&route.neighbor==link.other(owner)||Policy.NO_EXPORT in route.communities)return Advertised(null,
+            null);
+        val rule=policies.applied("EXPORT",owner,link,prefix,route.path,route.communities);
+        if(rule!=null&&rule.has("DENY"))return Advertised(null,rule);
+        val allowed=rule!=null&&rule.has("ALLOW");
+        if(!allowed&&!route.local&&route.link!!.role(owner)!="customer"&&link.role(owner)!="customer")return Advertised(null,
+            rule);
+        val prepend=rule?.value("PREPEND",0)?:0;
+        val med=rule?.value("MED",0)?:0;
+        val communities=if(rule==null)route.communities else Policy.edit(route.communities,rule);
+        val path=List(1+prepend) {
+            owner
+        }+route.path;
+        return Advertised(Decision.Attribute(path,route.origin,med,communities),rule)
+    }
+    fun redecide(owner:Int,prefix:Topology.Prefix) {
+        val router=routers.getValue(owner);
+        val route=router.origination[prefix]?:candidates(owner,prefix).let {
+            if(it.isEmpty())null else Decision.best(it,network.routerIds).route
+        };
+        if(router.rib[prefix]==route)return;
+        if(route==null)router.rib.remove(prefix) else router.rib[prefix]=route;
+        log("BEST $owner $prefix ${Report.route(route)}");
+        router.changes++;
+        period.bestChanges++;
+        val key=OwnerPrefix(owner,prefix);
+        period.exploration[key]=period.exploration.getOrDefault(key,0)+1;
+        period.bestLines.add(BestLine(time,owner,prefix,route));
+        changedPrefixes.add(prefix);
+        for(session in router.sessions)if(session.link.up) {
+            session.pending.add(prefix);
+            if(session.timer==null)processPending(session)
+        }
+    }
+    fun processPending(session:Session) {
+        var sent=0;
+        for(prefix in session.pending) {
+            val advertised=advertised(session,prefix);
+            val content=advertised.content;
+            if(session.outgoing[prefix]==content)continue;
+            if(content==null)session.outgoing.remove(prefix) else session.outgoing[prefix]=content;
+            val message=messages.send(time,session.owner,session.link.other(session.owner),session.link,prefix,content);
+            val suffix=if(content==null)"WITHDRAW" else "ANNOUNCE "+Report.attribute(content);
+            log("SEND ${messageText(message)} $suffix");
+            session.sent++;
+            sent++;
+            period.updates++;
+            if(content==null)period.withdrawals++;
+            advertised.rule?.let {
+                it.hits++
+            }
+        }
+        session.pending.clear();
+        session.timer=if(sent>0&&session.link.mrai>=1)time+session.link.mrai else null
+    }
+    fun receive(message:Simulator.Message) {
+        val session=bySession.getValue(SessionKey(message.receiver,message.link.number));
+        val prefix=message.prefix;
+        val content=message.content;
+        session.received++;
+        period.convergenceTime=time-period.event.time;
+        val result=if(content==null) {
+            session.incoming.remove(prefix);
+            "WITHDRAW"
+        }else if(message.receiver in content.path) {
+            session.incoming.remove(prefix);
+            "ANNOUNCE loop"
+        }else {
+            session.incoming[prefix]=content;
+            val imported=importRoute(session,prefix,content);
+            val rule=imported.rule;
+            rule?.let {
+                it.hits++
+            };
+            if(imported.route==null)"ANNOUNCE deny ${rule!!.name}" else if(rule==null)"ANNOUNCE accept" else "ANNOUNCE accept ${rule.name}"
+        };
+        log("RECV ${messageText(message)} $result");
+        redecide(message.receiver,prefix)
+    }
+    fun originate(owner:Int,prefix:Topology.Prefix,origin:String,communities:List<Policy.Community>) {
+        routers.getValue(owner).origination[prefix]=Decision.Route.originated(origin,communities);
+        redecide(owner,prefix)
+    }
+    fun executeEvent(event:Simulator.Event) {
+        log("EVENT ${period.number} ${event.text}");
+        val f=event.fields;
+        when(event.kind) {
+            "INITIAL"->for(initial in network.initial)originate(initial.owner,initial.prefix,initial.origin,
+                initial.communities);
+            "ANNOUNCE"->originate(f[1].toInt(),Topology.prefix(f[2]),f[3],Policy.communities(f.drop(4)));
+            "WITHDRAW"-> {
+                val owner=f[1].toInt();
+                val prefix=Topology.prefix(f[2]);
+                routers.getValue(owner).origination.remove(prefix);
+                redecide(owner,prefix)
+            };
+            "LINK_DOWN"->linkDown(network.byName.getValue(f[2]));
+            "LINK_UP"->linkUp(network.byName.getValue(f[2]));
+            else->changePolicy(policies.byName.getValue(f[2]),event.kind=="POLICY_ON")
+        }
+    }
+    fun runPeriod(number:Int,event:Simulator.Event,boundary:Int?) {
+        period=Period(number,event,routers);
+        periods.add(period);
+        time=event.time;
+        changedPrefixes.clear();
+        executeEvent(event);
+        var quietNow:Boolean;
+        while(true) {
+            var delivered=false;
+            while(messages.nextTime()==time) {
+                receive(messages.take());
+                delivered=true
+            }
+            for(session in sessions)if(session.timer==time) {
+                session.timer=null;
+                if(session.pending.isNotEmpty())processPending(session)
+            }
+            if(changedPrefixes.isNotEmpty())forwardingChecks();
+            if(delivered) {
+                period.deliveryTimes++;
+                detectDivergence()
+            }
+            quietNow=quiet();
+            if(boundary==null) {
+                if(quietNow||period.divergence!=null||period.deliveryTimes>=stepcap)break
+            }else if(time==boundary)break;
+            time=nextMoment(boundary);
+            changedPrefixes.clear()
+        }
+        period.status=if(period.divergence!=null)"DIVERGENT" else if(quietNow)"CONVERGED" else if(boundary==null)"CAPPED" else "UNSETTLED";
+        period.finish(routers);
+        period.states.clear()
+    }
+    fun forwardPath(source:Int,address:Long):Forwarding {
+        val visits=mutableListOf(source);
+        val visited=mutableSetOf(source);
+        val hops=mutableListOf<Hop>();
+        var owner=source;
+        while(true) {
+            val selected=routers.getValue(owner).rib.keys.filter {
+                it.contains(address)
+            }.maxByOrNull {
+                it.length
+            }?:return Forwarding(if(hops.isEmpty())"UNREACHABLE" else "BLACKHOLE",visits,hops);
+            val route=routers.getValue(owner).rib.getValue(selected);
+            hops.add(Hop(owner,selected,route.link));
+            if(route.local)return Forwarding("DELIVERED",visits,hops);
+            owner=route.link!!.other(owner);
+            visits.add(owner);
+            if(!visited.add(owner))return Forwarding("LOOP",visits,hops)
+        }
+    }
+    fun forwardingChecks() {
+        for(prefix in changedPrefixes) {
+            val loops=prefixLoops(prefix);
+            val iterator=ongoingRings.iterator();
+            while(iterator.hasNext()) {
+                val entry=iterator.next();
+                if(entry.key.prefix==prefix&&entry.key.path !in loops) {
+                    entry.value.end=time;
+                    iterator.remove()
+                }
+            }
+            for(loop in loops.sortedBy {
+                it.first()
+            }) {
+                val key=RingKey(prefix,loop);
+                if(key !in ongoingRings) {
+                    val record=RingRecord(prefix,loop,time);
+                    ringRecords.add(record);
+                    ongoingRings[key]=record
+                }
+            }
+        }
+        for((index,trace) in traces.withIndex()) {
+            val path=forwardPath(trace.source,trace.value);
+            val status=if(path.result in listOf("LOOP","BLACKHOLE"))TraceStatus(path.result,path.visits.toList()) else null;
+            val record=ongoingTraces[index];
+            if(record!=null&&record.status!=status) {
+                record.end=time;
+                ongoingTraces.remove(index)
+            }
+            if(status!=null&&index !in ongoingTraces) {
+                val created=TraceRecord(index,time,status);
+                traceRecords.add(created);
+                ongoingTraces[index]=created
+            }
+        }
+    }
+    fun ribLines():List<String> {
+        val lines=mutableListOf<String>();
+        for(router in routers.values) {
+            val local=router.rib.values.count {
+                it.local
+            };
+            val sent=router.sessions.sumOf {
+                it.sent
+            };
+            val received=router.sessions.sumOf {
+                it.received
+            };
+            lines.add("AS ${router.owner} routes ${router.rib.size} local $local sent $sent received $received changes ${router.changes}");
+            for(session in router.sessions) {
+                val accepted=session.incoming.count {
+                    (prefix,attribute)->importRoute(session,prefix,attribute).route!=null
+                };
+                val link=session.link;
+                lines.add("SESSION ${link.name} ${link.other(router.owner)} ${link.role(router.owner)} ${if(link.up)"UP" else "DOWN"} in ${session.incoming.size} accepted $accepted out ${session.outgoing.size} sent ${session.sent} received ${session.received} flaps ${link.downCount}")
+            }
+            for((prefix,route) in router.rib) {
+                val candidates=candidates(router.owner,prefix);
+                var line="$prefix ${Report.route(route)} candidates ${candidates.size}";
+                if(!route.local)line+=" reason "+Decision.best(candidates,network.routerIds).reason;
+                lines.add(line);
+                candidates.removeAll {
+                    it==route
+                };
+                while(candidates.isNotEmpty()) {
+                    val alternate=Decision.best(candidates,network.routerIds).route;
+                    lines.add("ALT "+Report.route(alternate));
+                    candidates.remove(alternate)
+                }
+            }
+        }
+        return lines
+    }
+    fun pathLines():List<String> {
+        val lines=mutableListOf<String>();
+        for(trace in traces)lines.addAll(traceLines(trace));
+        val prefixes=routers.values.flatMap {
+            it.origination.keys
+        }.toSortedSet();
+        val names=prefixes.joinToString(",");
+        lines.add("PREFIXES"+if(names.isEmpty())"" else " $names");
+        for(source in network.routerIds.keys) {
+            val symbols=StringBuilder();
+            for(prefix in prefixes) {
+                val path=forwardPath(source,prefix.address);
+                val symbol=if(path.result=="DELIVERED") {
+                    if(path.count==0)'*' else if(prefix in routers.getValue(path.arrival).origination)'+' else 'X'
+                }else when(path.result) {
+                    "LOOP"->'L';
+                    "BLACKHOLE"->'B';
+                    else->'U'
+                };
+                symbols.append(symbol)
+            }
+            lines.add("REACH $source"+if(symbols.isEmpty())"" else " $symbols")
+        }
+        return lines
+    }
+    fun auditLines():List<String> {
+        val lines=mutableListOf<String>();
+        var loops=0;
+        var blackholes=0;
+        for(record in traceRecords.sortedWith(compareBy<TraceRecord> {
+            it.start
+        }.thenBy {
+            it.index
+        })) {
+            val trace=traces[record.index];
+            val result=record.status.result;
+            val visits=record.status.visits;
+            if(result=="LOOP")loops++ else blackholes++;
+            var line="$result ${trace.source} ${trace.address} from ${record.start} to ${record.end?:"END"}";
+            if(result=="BLACKHOLE")line+=" at ${visits.last()}";
+            lines.add(line+" path "+Report.path(visits))
+        }
+        for(record in ringRecords.sortedWith(compareBy<RingRecord> {
+            it.start
+        }.thenBy {
+            it.prefix
+        }.thenBy {
+            it.path.first()
+        }))lines.add("RING ${record.prefix} from ${record.start} to ${record.end?:"END"} path ${Report.path(record.path)}");
+        var routes=0;
+        var valleys=0;
+        for(router in routers.values)for((prefix,route) in router.rib) {
+            if(route.local)continue;
+            routes++;
+            val path=collapse(listOf(router.owner)+route.path);
+            val pattern=path.zipWithNext().joinToString("") {
+                (first,second)->network.connecting(first,second).direction(first).toString()
+            };
+            val violation=valleyPosition(pattern);
+            if(violation!=pattern.length) {
+                valleys++;
+                lines.add("VALLEY ${router.owner} $prefix path ${Report.path(route.path)} pattern $pattern leaker ${path[violation]}")
+            }
+        }
+        for(rule in policies.rules)lines.add("RULE ${rule.name} ${rule.direction} ${if(rule.active)"ON" else "OFF"} hits ${rule.hits}");
+        var divergent=0;
+        for(period in periods) {
+            val divergence=period.divergence?:continue;
+            divergent++;
+            lines.add("DIVERGENT event ${period.number} first ${divergence.first} repeat ${divergence.repeat} period ${divergence.repeat-divergence.first}");
+            val oscillations=sortedMapOf<OwnerPrefix,Int>();
+            for(line in divergence.cycle) {
+                lines.add("CYCLE ${line.time} ${line.owner} ${line.prefix} ${Report.route(line.route)}");
+                val key=OwnerPrefix(line.owner,line.prefix);
+                oscillations[key]=oscillations.getOrDefault(key,0)+1
+            }
+            for((key,count) in oscillations)lines.add("OSCILLATE ${key.owner} ${key.prefix} changes $count")
+        }
+        lines.add("SUMMARY loops $loops blackholes $blackholes rings ${ringRecords.size} routes $routes valleys $valleys divergent $divergent end $time");
+        return lines
+    }
+    fun writeOutputs() {
+        Report.write("updates.txt",logs);
+        Report.write("convergence.csv",listOf(HEADER)+periods.map {
+            it.csv()
+        });
+        Report.write("ribs.txt",ribLines());
+        Report.write("paths.txt",pathLines());
+        Report.write("audit.txt",auditLines())
+    }
+fun main() {
+    val network=Topology();
+    val policies=Policy();
+    val simulation=Simulation(network,policies,Simulator.params());
+    simulation.run(Simulator.events());
+    simulation.writeOutputs()
+}
+    init {
+        for(line in File("input/topology.txt").readLines(Charsets.US_ASCII)) {
+            val f=line.split(' ');
+            when(f[0]) {
+                "AS"->routerIds[f[1].toInt()]=addressValue(f[2]);
+                "LINK"-> {
+                    val link=Link(links.size,f);
+                    links.add(link);
+                    byName[link.name]=link
+                };
+                else->initial.add(Initial(f[1].toInt(),prefix(f[2]),f[3],Policy.communities(f.drop(4))))
+            }
+        }
+        for(owner in routerIds.keys)atAs[owner]=mutableListOf();
+        for(link in links) {
+            atAs.getValue(link.first).add(link);
+            atAs.getValue(link.second).add(link)
+        }
+    }
+    init {
+        for(line in File("input/policies.txt").readLines(Charsets.US_ASCII)) {
+            val f=line.split(' ');
+            if(f[0]=="PLIST") {
+                val p=Topology.prefix(f[3]);
+                var low=p.length;
+                var high=p.length;
+                for(i in 4 until f.size step 2)if(f[i]=="GE") {
+                    low=f[i+1].toInt();
+                    high=32
+                };
+                for(i in 4 until f.size step 2)if(f[i]=="LE")high=f[i+1].toInt();
+                lists.getOrPut(f[1]) {
+                    mutableListOf()
+                }.add(Entry(f[2]=="PERMIT",p,low,high));
+                continue
+            }
+            val separator=f.indexOf("THEN");
+            val conditions=mutableListOf<Condition>();
+            for(i in 6 until separator step 2) {
+                val kind=f[i];
+                val value=f[i+1];
+                val condition=when(kind) {
+                    "CONTAINS","ORIGINAS"->Condition(kind,value,value.toInt());
+                    "LENGTH"-> {
+                        val bounds=value.split('-');
+                        Condition(kind,value,bounds[0].toInt(),bounds[1].toInt())
+                    };
+                    "COMMUNITY"->Condition(kind,value,community=community(value));
+                    else->Condition(kind,value)
+                };
+                conditions.add(condition)
+            }
+            val actions=mutableListOf<Action>();
+            var i=separator+1;
+            while(i<f.size) {
+                val kind=f[i++];
+                actions.add(when(kind) {
+                    "DENY","ALLOW"->Action(kind);
+                    "ADD","REMOVE"->Action(kind,community=community(f[i++]));
+                    else->Action(kind,f[i++].toInt())
+                })
+            }
+            val rule=Rule(f,conditions,actions);
+            rules.add(rule);
+            byName[rule.name]=rule
+        }
+    }
+    fun permitted(name:String,prefix:Topology.Prefix):Boolean {
+        for(entry in lists.getValue(name))if(prefix.length in entry.low..entry.high&&entry.base.contains(prefix.address))return entry.permit;
+        return false
+    }
+    fun matches(rule:Rule,owner:Int,link:Topology.Link,prefix:Topology.Prefix,path:List<Int>,communities:List<Community>):Boolean {
+        if(!rule.active||rule.owner!=owner)return false;
+        if(rule.target!="*"&&rule.target!=link.other(owner).toString()&&rule.target!=link.name)return false;
+        for(c in rule.conditions) {
+            val match=when(c.kind) {
+                "PREFIX"->permitted(c.text,prefix);
+                "CONTAINS"->c.low in path;
+                "ORIGINAS"->(path.lastOrNull()?:owner)==c.low;
+                "LENGTH"->path.size in c.low..c.high;
+                else->c.community in communities
+            };
+            if(!match)return false
+        };
+        return true
+    }
+    fun applied(direction:String,owner:Int,link:Topology.Link,prefix:Topology.Prefix,path:List<Int>,communities:List<Community>)=rules.firstOrNull {
+        it.direction==direction&&matches(it,owner,link,prefix,path,communities)
+    }
+        fun edit(communities:List<Community>,rule:Rule):List<Community> {
+            val result=communities.toSortedSet();
+            for(action in rule.actions)when(action.kind) {
+                "ADD"->result.add(action.community!!);
+                "REMOVE"->result.remove(action.community!!)
+            };
+            return result.toList()
+        }
+        fun send(time:Int,sender:Int,receiver:Int,link:Topology.Link,prefix:Topology.Prefix,content:Decision.Attribute?):Message {
+            val message=Message(++serial,sender,receiver,link,prefix,content,time+link.delay);
+            queue.add(message);
+            return message
+        }
+    fun events():List<Event> {
+        val events=mutableListOf(Event(0,"INITIAL"));
+        for(line in File("input/events.txt").readLines(Charsets.US_ASCII)) {
+            val separator=line.indexOf(' ');
+            events.add(Event(line.substring(0,separator).toInt(),line.substring(separator+1)))
+        }
+        return events
+    }
+    fun params():Params {
+        val lines=File("input/params.txt").readLines(Charsets.US_ASCII);
+        val f=lines[0].split(' ');
+        val defaults=mapOf("customer" to f[1].toInt(),"peer" to f[2].toInt(),"provider" to f[3].toInt());
+        val stepcap=lines[1].split(' ')[1].toInt();
+        val traces=lines.drop(2).map {
+            val t=it.split(' ');
+            Trace(t[1].toInt(),t[2],Topology.addressValue(t[2]))
+        };
+        return Params(defaults,stepcap,traces)
+    }

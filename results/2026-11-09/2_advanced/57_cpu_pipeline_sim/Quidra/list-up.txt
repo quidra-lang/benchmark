@@ -1,0 +1,289 @@
+int register(string text)
+    if #text < 2 or text[0] != "r" or #text > 3
+        return -1
+    digits := text[1:<int(#text)]
+    if #digits > 1 and digits[0] == "0"
+        return -1
+    result := 0
+    for: position < int(#digits)
+        character := digits[position]
+        digit := -1
+        for: i < 10
+            if string(i) == character
+                digit = i
+        if digit < 0
+            return -1
+        result = 10 * result + digit
+    return if result <= 31 then result else -1
+    for row := lines("input/config.txt")[]
+        fields := row.split(" ")
+        key := fields[0]
+        elif key == "PRIMARY"
+            primary = fields[1:<3]
+        elif key == "WINDOW"
+            window = [integer(fields[1]), integer(fields[2])]
+        elif key == "PREDICTOR"
+            parameters := [for text := fields[3:<int(#fields)][] then integer(text)]
+            predictors = predictors.append(Predictor(fields[1], fields[2], parameters))
+        else
+            variants = variants.append(Variant(fields[1], fields[2] == "ON", fields[3], integer(fields[4])))
+    return Config(btb, ras, predictors, variants, primary, window, top, interval)
+int[][][] dependencies(int[][] instructions)
+    last := [for i := (0:<32)[] then -1]
+    int[][][] result := []
+    for: i < int(#instructions)
+        int[][] operands := []
+        for: 3 <= field <= 4 step 1
+            source := instructions[i][field]
+            if source > 0
+                operands = operands.append([source, last[source]])
+        result = result.append(operands)
+        destination := instructions[i][2]
+        if destination > 0
+            last[destination] = i
+    return result
+
+bool id_resolved(int[] instruction, string stage)
+    return (instruction[1] == 5 and instruction[3] < 0) or ((instruction[1] == 4 or instruction[1] == 5) and stage == "ID")
+
+int ready(int[] instruction, int[] producer, int[] timing, bool forwarding, string stage)
+    if not forwarding
+        return timing[4] + 1
+    result := if producer[1] == 2 then timing[4] else timing[3]
+    return result + (if id_resolved(instruction, stage) then 1 else 0)
+int maximum(int a, int b)
+    return if a > b then a else b
+
+class Result(int[][] timings, int[][] records, int[] delays, int cycles)
+
+Result simulate(int[][] instructions, int[][][] sources, bool forwarding, string stage, int latency, bool[] missed)
+    int[][] timings := []
+    int[][] records := []
+    int[] delays := []
+    for: i < int(#instructions)
+        instruction := instructions[i]
+        length := if instruction[1] == 1 then latency else 1
+        fetch := 1
+        decode := 2
+        start := 3
+        if i > 0
+            previous := timings[i - 1]
+            fetch = previous[1]
+            if missed[i - 1]
+                fetch = previous[2] + (if hazards.id_resolved(instructions[i - 1], stage) then 0 else 1)
+            decode = maximum(fetch + 1, previous[2])
+            ideal := previous[2] + 1
+            available := [ideal, ideal]
+            producers := [-1, -1]
+            for source := sources[i][]
+                p := source[1]
+                if p >= 0
+                    cycle := hazards.ready(instruction, instructions[p], timings[p], forwarding, stage)
+                    slot := if instructions[p][1] == 2 then 0 else 1
+                    if cycle > available[slot]
+                        available[slot] = cycle
+                        producers[slot] = p
+            bounds := [decode + 1, previous[3], available[0], available[1]]
+            start = ideal
+            for: cause < 4
+                if bounds[cause] > start
+                    records = records.append([cause, bounds[cause] - start, (if cause < 2 then i - 1 else i), i, (if cause < 2 then -1 else producers[cause - 2])])
+                    start = bounds[cause]
+            delays = delays.append(start - ideal)
+        timings = timings.append([fetch, decode, start, start + length, start + length + 1])
+    last := int(#instructions) - 1
+    if instructions[last][1] == 1 and latency >= 2
+        records = records.append([1, latency - 1, last, -1, -1])
+    return Result(timings, records, delays, timings[last][4])
+string[] instruction_classes()
+    return ["ALU", "MUL", "LOAD", "STORE", "BRANCH", "JUMP", "NOP"]
+string[] stall_causes()
+    return ["control", "structural", "load_use", "raw"]
+string[] pipeline_stages()
+    return ["IF", "ID", "EX", "MEM", "WB"]
+bool control(int[] instruction)
+    return instruction[1] == 4 or instruction[1] == 5
+
+int index_of(string[] values, string key)
+    for: i < int(#values)
+        if values[i] == key
+            return i
+    return -1
+
+int get(map<int, int> values, int key)
+    match values.get(key)
+        int result
+            return result
+        none
+            return 0
+
+int[] get_group(map<int, int[]> values, int key)
+    match values.get(key)
+        int[] result
+            return result
+        none
+            return []
+
+string cause_values(int[] values)
+    causes := stall_causes()
+    return [for i := (0:<4)[] then "{causes[i]} {values[i]}"].join(" ")
+Checked check(string line, map<int, int> first, int[][] instructions)
+    classes := instruction_classes()
+    fields := line.split(" ")
+    pc := trace_io.hexadecimal(fields[0])
+    kind := index_of(classes, fields[1])
+    registers := [for i := (0:<3)[] then trace_io.register(fields[i + 2])]
+    result := [pc, kind, registers[0], registers[1], registers[2], (if outcome == "T" then 1 elif outcome == "N" then 0 else -1), target, address, (if outcome == "T" then target else pc + 4)]
+    return Checked(result, "")
+Trace validate(string[] lines)
+    int[][] instructions := []
+    string[] rejected := []
+    string[] gaps := []
+    map<int, int> first
+    for: i < int(#lines)
+        result := check(lines[i], first, instructions)
+        if result.reason != ""
+            rejected = rejected.append("reject line {i + 1} {result.reason}")
+        else
+            instruction := result.instruction
+            if not first.has(instruction[0])
+                .first.set(instruction[0], int(#instructions))
+            instructions = instructions.append(instruction)
+    return Trace(int(#lines), instructions, rejected, gaps, first)
+int[][] totals(int[][] records)
+    int[][] result := [[0, 0, 0, 0], [0, 0, 0, 0]]
+    for record := records[]
+        result[0][record[0]] += record[1]
+        result[1][record[0]] += 1
+    return result
+
+class Combination(int variant, int predictor, pipeline.Result simulation, int[] stalls, int[] events)
+class Runs(Combination[] combinations, int primary)
+
+Runs all_combinations(int[][] instructions, int[][][] sources, Prediction[] predictions, trace_io.Config config)
+    Combination[] combinations := []
+    primary := -1
+    for: v < int(#config.variants)
+        trace_io.Variant variant := config.variants[v]
+        for: p < int(#predictions)
+            simulation := pipeline.simulate(instructions, sources, variant.forwarding, variant.stage, variant.latency, predictions[p].flags)
+            counts := totals(simulation.records)
+            combinations = combinations.append(Combination(v, p, simulation, counts[0], counts[1]))
+    combinations = [for i := order[] then combinations[i]]
+    for: i < int(#combinations)
+        combination := combinations[i]
+        if config.variants[combination.variant].name == config.primary[0] and config.predictors[combination.predictor].name == config.primary[1]
+            primary = i
+    return Runs(combinations, primary)
+
+class Row(int number, int pc, string kind, string annotation, int[][] characters, int[][] occupied)
+
+Row[] build_rows(int[][] instructions, Combination primary, Prediction prediction, trace_io.Config config)
+    classes := instruction_classes()
+    causes := stall_causes()
+    annotations := [for i := (0:<int(#instructions))[] then ""]
+    for record := primary.simulation.records[]
+        if record[3] >= 0
+            annotations[record[3]] += " {causes[record[0]]} {record[1]}"
+    Row[] rows := []
+    for: i < int(#instructions)
+        instruction := instructions[i]
+        t := primary.simulation.timings[i]
+        annotation := annotations[i]
+        rows = rows.append(Row(i + 1, instruction[0], classes[instruction[1]], annotation,
+            [[t[0], t[0], 0], [t[0] + 1, t[1] - 1, 1], [t[1], t[1], 2], [t[1] + 1, t[2] - 1, 1], [t[2], t[3] - 1, 3], [t[3], t[3], 4], [t[4], t[4], 5]],
+            [[0, t[0], t[1] - 1], [1, t[1], t[2] - 1], [2, t[2], t[3] - 1], [3, t[3], t[3]], [4, t[4], t[4]]]))
+    return rows
+string[] pipeline_lines(Row[] rows, Combination primary, trace_io.Config config)
+    first := config.window[0]
+    last := config.window[1]
+    width := last - first + 1
+    lines := ["pipeline variant={config.primary[0]} predictor={config.primary[1]} cycles {first}-{last}", report.heading(first, last)]
+    contents := [for i := (0:<int(width))[] then [".", ".", ".", ".", "."]]
+    symbols := ["F", "*", "D", "X", "M", "W", "x"]
+    for row := rows[]
+        characters := [for i := (0:<int(width))[] then "."]
+        for span := row.characters[]
+            for: maximum(first, span[0]) <= cycle <= minimum(last, span[1]) step 1
+                characters[cycle - first] = symbols[span[2]]
+        nonempty := false
+        for character := characters[]
+            if character != "."
+                nonempty = true
+            if character == "*"
+                stalled += 1
+            if character == "x"
+                flushed += 1
+        if nonempty
+            visible += 1
+            lines = lines.append(report.row(row.number, row.pc, row.kind, characters.join(""), row.annotation))
+        for span := row.occupied[]
+            for: maximum(first, span[1]) <= cycle <= minimum(last, span[2]) step 1
+                contents[cycle - first][span[0]] = if row.number < 0 then "w" else string(row.number)
+    for: first <= cycle <= last step 1
+        lines = lines.append(string(cycle) + " " + contents[cycle - first].join(" "))
+    return lines
+    instructions := trace.instructions
+    n := int(#instructions)
+    primary := runs.combinations[runs.primary]
+    trace_io.Variant variant := config.variants[primary.variant]
+    cycles := primary.simulation.cycles
+    stalls := sum(primary.stalls)
+    cpi_causes := [for i := (0:<4)[] then causes[i] + " " + report.decimal(primary.stalls[i], n)]
+    timing_part := ["timing variant={variant.name} predictor={config.primary[1]}",
+        "forwarding " + (if variant.forwarding then "on" else "off") + " branch_stage {variant.stage} mul_latency {variant.latency}",
+        "cycles {cycles}", "cpi " + report.fraction(cycles, n) + " " + report.decimal(cycles, n), "ipc " + report.decimal(n, cycles),
+        "stall_cycles total {stalls} " + cause_values(primary.stalls), "stall_events " + cause_values(primary.events), "flushed {flushed}",
+        "cycle_check {n} + 4 + {stalls} = {n + 4 + stalls}", "cpi_stack base 1.0000 fill " + report.decimal(4, n) + " " + cpi_causes.join(" "),
+        "stall_lengths " + [for i := (0:<5)[] then "{distance_labels[i]} {lengths[i]}"].join(" "), "dataflow height {height} ilp " + report.decimal(n, height)]
+string[] profile_lines(Trace trace, map<int, int[]> groups, Prediction[] predictions, Combination primary, trace_io.Config config)
+    classes := instruction_classes()
+    instructions := trace.instructions
+    branches := ["branches"]
+    loops := ["loops"]
+    indirect := ["indirect"]
+    static := ["instructions"]
+    map<int, int> stalled
+    for record := primary.simulation.records[]
+        pc := instructions[record[2]][0]
+        .stalled.set(pc, get(stalled, pc) + record[1])
+    for pc := groups.keys().sorted()[]
+        indices := get_group(groups, pc)
+        count := int(#indices)
+        instruction := instructions[indices[0]]
+        registers := [for field := (2:<5)[] then report.register(instruction[field])].join(" ")
+        static = static.append(report.hexadecimal(pc) + " {classes[instruction[1]]} {registers} executions {count} stall_cycles {get(stalled, pc)}")
+    map<int, int[]> segment_groups
+    first := 0
+    for: last < int(#instructions)
+        if control(instructions[last]) or last == int(#instructions) - 1
+            pc := instructions[first][0]
+            group := get_group(segment_groups, pc)
+            if #group == 0
+                group = [0, 0, 0]
+            group[0] += 1
+            group[1] += last - first + 1
+            group[2] += primary.simulation.timings[last][4] - (if first == 0 then 0 else primary.simulation.timings[first - 1][4])
+            .segment_groups.set(pc, group)
+            first = last + 1
+    int[][] ranked := []
+    for pc := segment_groups.keys()[]
+        group := get_group(segment_groups, pc)
+        ranked = ranked.append([-group[2], pc])
+    ranked = sort_rows(ranked)
+    segments := ["segments total {segment_groups.size()}"]
+    for: rank < minimum(config.top, int(#ranked))
+        pc := ranked[rank][1]
+        group := get_group(segment_groups, pc)
+        segments = segments.append("{rank + 1} " + report.hexadecimal(pc) + " instances {group[0]} instructions {group[1]} cycles {group[2]} cpi " + report.decimal(group[2], group[1]))
+    return report.join([branches, loops, segments, indirect, static])
+    config := trace_io.read_config()
+    trace := validate(trace_io.lines("input/trace.txt"))
+    sources := hazards.dependencies(trace.instructions)
+    runs := all_combinations(trace.instructions, sources, predictions, config)
+    primary := runs.combinations[runs.primary]
+    rows := build_rows(trace.instructions, primary, predictions[primary.predictor], config)
+    groups := group_instructions(trace.instructions)
+    report.write("pipeline.txt", pipeline_lines(rows, primary, config))
+    report.write("stats.txt", statistics_lines(trace, sources, predictions, runs, rows, config))
+    report.write("profile.txt", profile_lines(trace, groups, predictions, primary, config))

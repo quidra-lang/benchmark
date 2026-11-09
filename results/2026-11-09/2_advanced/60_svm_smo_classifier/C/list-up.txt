@@ -1,0 +1,281 @@
+static int read_data(const char *path, Example *data) {
+    Lines lines = read_lines(path);
+    int count = 0;
+    for (int i = 1; i < lines.count; ++i) {
+        Example *example = &data[count++];
+        sscanf(lines.data[i], "%8[^,],%lf,%lf,%d", example->id, &example->point[0],
+               &example->point[1], &example->label);
+    }
+    return count;
+}
+Input *load(void) {
+    Input *out = allocate(1, sizeof(Input));
+    out->train_count = read_data("input/train.csv", out->train);
+    out->test_count = read_data("input/test.csv", out->test);
+    Lines settings = read_lines("input/params.txt");
+    Params *p = &out->params;
+    for (int i = 0; i < settings.count; ++i) {
+        char key[20];
+        sscanf(settings.data[i], "%19s", key);
+        const char *value = settings.data[i] + strlen(key) + 1;
+        if (strcmp(key, "C_GRID") == 0) {
+            int offset = 0, used;
+            double c;
+            while (sscanf(value + offset, "%lf %n", &c, &used) == 1) {
+                p->c_grid[p->c_count++] = c;
+                offset += used;
+            }
+        } else if (strcmp(key, "KERNEL") == 0) {
+            Kernel *kernel = &p->kernels[p->kernel_count++];
+            sscanf(value, "%8s %6s", kernel->name, kernel->kind);
+            kernel->degree = 1;
+            if (strcmp(kernel->kind, "poly") == 0)
+                sscanf(value, "%*s %*s %d %lf %lf", &kernel->degree, &kernel->gamma,
+                       &kernel->coef0);
+            else if (strcmp(kernel->kind, "rbf") == 0)
+                sscanf(value, "%*s %*s %lf", &kernel->gamma);
+        } else if (strcmp(key, "TOLERANCE") == 0)
+            sscanf(value, "%lf", &p->tolerance);
+        else if (strcmp(key, "EPS") == 0)
+            sscanf(value, "%lf", &p->epsilon);
+        else if (strcmp(key, "MAX_PASSES") == 0)
+            sscanf(value, "%d", &p->max_passes);
+        else if (strcmp(key, "FOLDS") == 0)
+            sscanf(value, "%d", &p->folds);
+    }
+    return out;
+}
+double kernel_value(Kernel kernel, const double *first, const double *second) {
+    if (strcmp(kernel.kind, "linear") == 0)
+        return first[0] * second[0] + first[1] * second[1];
+    if (strcmp(kernel.kind, "poly") == 0) {
+        double s = kernel.gamma * (first[0] * second[0] + first[1] * second[1]) + kernel.coef0,
+               value = 1;
+        for (int i = 0; i < kernel.degree; ++i)
+            value *= s;
+        return value;
+    }
+    double e1 = first[0] - second[0], e2 = first[1] - second[1];
+    return exp(-kernel.gamma * (e1 * e1 + e2 * e2));
+}
+double *kernel_matrix(Kernel kernel, const Example *data, int count) {
+    double *out = allocate((size_t)count * count, sizeof(double));
+    for (int i = 0; i < count; ++i)
+        for (int j = 0; j < count; ++j)
+            out[i * count + j] = kernel_value(kernel, data[i].point, data[j].point);
+    return out;
+}
+void *allocate(size_t count, size_t size) {
+    void *pointer = calloc(count ? count : 1, size);
+    return pointer;
+}
+int sign(double value) { return value > 0 ? 1 : -1; }
+Fold *folds(int count, int k) {
+    Fold *out = allocate((size_t)k, sizeof(Fold));
+    for (int fold = 0; fold < k; ++fold)
+        for (int i = 0; i < count; ++i) {
+            if (i % k == fold)
+                out[fold].test[out[fold].test_count++] = i;
+            else
+                out[fold].train[out[fold].train_count++] = i;
+        }
+    return out;
+}
+Model train(const Example *data, int count, Kernel kernel, const double *matrix, double c,
+            const Params *params) {
+    Trainer trainer = {0};
+    trainer.params = params;
+    Model *model = &trainer.model;
+    model->data = data;
+    model->count = count;
+    model->kernel = kernel;
+    model->matrix = matrix;
+    model->c = c;
+    return trainer.model;
+}
+double decision(const Model *model, const double *point) {
+    double out = 0;
+    for (int i = 0; i < model->count; ++i)
+        if (model->alpha[i] > 0)
+            out += model->alpha[i] * model->data[i].label *
+                   kernel_value(model->kernel, model->data[i].point, point);
+    return out - model->b;
+}
+typedef struct {
+    int total, bound, free, by_bound[2], by_free[2];
+} Support;
+static Support support(const Model *model) {
+    Support out = {0};
+    for (int i = 0; i < model->count; ++i)
+        if (model->alpha[i] > 0) {
+            ++out.total;
+        }
+    return out;
+}
+static void decisions(const Model *model, const Example *data, int count, double *out) {
+    for (int i = 0; i < count; ++i)
+        out[i] = decision(model, data[i].point);
+}
+typedef struct {
+    int train, test, correct, sv, passes, steps;
+    bool converged;
+} FoldResult;
+typedef struct {
+    int kernel, candidate, correct, sv, passes, steps;
+    double decisions[200];
+    FoldResult folds[200];
+} CV;
+static CV cross_validate(const Input *input, int kernel, int candidate, const double *matrix) {
+    CV out = {0};
+    out.kernel = kernel;
+    out.candidate = candidate;
+    int n = input->train_count;
+    Fold *partitions = folds(n, input->params.folds);
+    Example data[200];
+    double selected[40000];
+    for (int f = 0; f < input->params.folds; ++f) {
+        Fold fold = partitions[f];
+        for (int i = 0; i < fold.train_count; ++i) {
+            data[i] = input->train[fold.train[i]];
+            for (int j = 0; j < fold.train_count; ++j)
+                selected[i * fold.train_count + j] = matrix[fold.train[i] * n + fold.train[j]];
+        }
+        Model model = train(data, fold.train_count, input->params.kernels[kernel], selected,
+                            input->params.c_grid[candidate], &input->params);
+        int correct = 0;
+        for (int j = 0; j < fold.test_count; ++j) {
+            int i = fold.test[j];
+            out.decisions[i] = decision(&model, input->train[i].point);
+            correct += sign(out.decisions[i]) == input->train[i].label;
+        }
+        int sv = support(&model).total;
+        out.correct += correct;
+        out.sv += sv;
+        out.passes += model.pass_count;
+        out.steps += model.steps;
+        out.folds[f] = (FoldResult){fold.train_count, fold.test_count, correct,        sv,
+                                    model.pass_count, model.steps,     model.converged};
+        free_model(&model);
+    }
+    return out;
+}
+static Metrics metrics(const Input *input, const Model *model) {
+    Metrics out = {0};
+    training_decisions(model, out.train);
+    decisions(model, input->test, input->test_count, out.test);
+static void model_report(Lines *out, const Input *input, const Model *model, const Metrics *m) {
+    int n = input->train_count, count = input->test_count;
+    Evaluation e = m->evaluation;
+    line(out, "model %s", model->kernel.name);
+    line(out, "kernel %s", kernel_description(model->kernel));
+    line(out, "C %s", real(model->c, 4));
+static const CV *sort_cv;
+static const Params *sort_params;
+static int compare_cv(const void *a, const void *b) {
+    const CV *x = &sort_cv[*(const int *)a], *y = &sort_cv[*(const int *)b];
+    if (x->correct != y->correct)
+        return x->correct > y->correct ? -1 : 1;
+    double first = sort_params->c_grid[x->candidate], second = sort_params->c_grid[y->candidate];
+    return first != second ? (first < second ? -1 : 1) : x->kernel - y->kernel;
+}
+    const Input *input = load();
+    const Params *p = &input->params;
+    int n = input->train_count, m = input->test_count;
+    double *matrices[4];
+    CV *cv = allocate((size_t)p->kernel_count * p->c_count, sizeof(CV));
+    int cv_count = 0, best[4];
+    for (int k = 0; k < p->kernel_count; ++k) {
+        matrices[k] = kernel_matrix(p->kernels[k], input->train, n);
+        best[k] = cv_count;
+        for (int c = 0; c < p->c_count; ++c) {
+            cv[cv_count] = cross_validate(input, k, c, matrices[k]);
+            if (cv[cv_count].correct > cv[best[k]].correct)
+                best[k] = cv_count;
+            ++cv_count;
+        }
+    }
+    int selected = 0;
+    for (int k = 1; k < p->kernel_count; ++k)
+        if (cv[best[k]].correct > cv[best[selected]].correct ||
+            (cv[best[k]].correct == cv[best[selected]].correct &&
+             p->c_grid[cv[best[k]].candidate] < p->c_grid[cv[best[selected]].candidate]))
+            selected = k;
+    double selected_c = p->c_grid[cv[best[selected]].candidate];
+    Model models[4];
+    Metrics evaluations[4];
+    int linear = 0, multi_kernel = 0;
+    bool found_linear = false;
+    for (int k = 0; k < p->kernel_count; ++k) {
+        models[k] =
+            train(input->train, n, p->kernels[k], matrices[k], p->c_grid[cv[best[k]].candidate], p);
+        evaluations[k] = metrics(input, &models[k]);
+    }
+    int ranking[24];
+    for (int i = 0; i < cv_count; ++i)
+        ranking[i] = i;
+    sort_cv = cv;
+    sort_params = p;
+    qsort(ranking, (size_t)cv_count, sizeof(int), compare_cv);
+    Lines report = {0};
+    line(&report, "cross_validation folds %d examples %d", p->folds, n);
+    for (int k = 0; k < p->kernel_count; ++k) {
+        CV *value = &cv[best[k]];
+        line(&report, "best %s C %s correct %d/%d accuracy %s", p->kernels[k].name,
+             real(p->c_grid[value->candidate], 4), value->correct, n, ratio(value->correct, n));
+    }
+    line(&report, "selected %s C %s", p->kernels[selected].name, real(selected_c, 4));
+    line(&report, "ranking");
+    for (int i = 0; i < cv_count; ++i) {
+        CV *value = &cv[ranking[i]];
+        line(&report, "%d %s C %s correct %d/%d", i + 1, p->kernels[value->kernel].name,
+             real(p->c_grid[value->candidate], 4), value->correct, n);
+    }
+    line(&report, "cv_detail %s C %s", p->kernels[selected].name, real(selected_c, 4));
+    for (int i = 0; i < p->folds; ++i) {
+        FoldResult f = cv[best[selected]].folds[i];
+        line(
+            &report,
+            "fold %d train %d test %d correct %d support_vectors %d passes %d steps %d converged %s",
+            i + 1, f.train, f.test, f.correct, f.sv, f.passes, f.steps, f.converged ? "yes" : "no");
+    }
+    for (int k = 0; k < p->kernel_count; ++k) {
+        line(&report, "");
+        model_report(&report, input, &models[k], &evaluations[k]);
+    }
+    const Model *model = &models[selected];
+    Calibration calibration =
+        calibrate(input, model, cv[best[selected]].decisions, evaluations[selected].test);
+    Lines grid = {0};
+    char *header = "kernel,C";
+    for (int i = 1; i <= p->folds; ++i)
+        header = joined(header, format(",fold%d", i));
+    header = joined(header, ",correct,accuracy,support_vectors,passes,steps");
+    line(&grid, "%s", header);
+    for (int i = 0; i < cv_count; ++i) {
+        CV *value = &cv[i];
+        char *row =
+            format("%s,%s", p->kernels[value->kernel].name, real(p->c_grid[value->candidate], 4));
+        for (int f = 0; f < p->folds; ++f)
+            row = joined(row, format(",%d", value->folds[f].correct));
+        row = joined(row, format(",%d,%s,%d,%d,%d", value->correct, ratio(value->correct, n),
+                                 value->sv, value->passes, value->steps));
+        line(&grid, "%s", row);
+    }
+    Lines predictions = {0};
+    header = "id,label";
+    for (int k = 0; k < p->kernel_count; ++k)
+        header = joined(header, format(",%s", p->kernels[k].name));
+    header = joined(header, ",pegasos,predicted,probability");
+    line(&predictions, "%s", header);
+    for (int i = 0; i < m; ++i) {
+        char *row = format("%s,%d", input->test[i].id, input->test[i].label);
+        for (int k = 0; k < p->kernel_count; ++k)
+            row = joined(row, format(",%s", real(evaluations[k].test[i], 4)));
+        row = joined(row,
+                     format(",%s,%d,%s", real(peg.test[i], 4), sign(evaluations[selected].test[i]),
+                            real(calibration.probabilities[i], 4)));
+        line(&predictions, "%s", row);
+    }
+    save("model.txt", report);
+    save("cv_grid.csv", grid);
+    save("predictions.csv", predictions);

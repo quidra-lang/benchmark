@@ -1,0 +1,211 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+enum PlaceKind { Nowhere, Room, Player, Inside }
+readonly record struct Place(PlaceKind Kind, int Index = 0);
+enum ContainerState { Open, Closed, Locked }
+enum EndStatus { None, Won, Dead }
+enum Verb { Go, Look, Examine, Take, Drop, Put, Inventory, Open, Close, Unlock, Lock, Use, Light, Extinguish, Wait, Score, Save, Restore, Verbose, Brief }
+abstract record Effect;
+sealed record Message(string Text) : Effect;
+sealed record MoveItem(int Item, Place Place) : Effect;
+sealed record Rule(string? Flag, bool Required, Effect Effect);
+sealed record UseRule(int First, int Second, Rule Rule);
+sealed class CommandFailure(string message) : Exception(message);
+sealed class Room(string id)
+    public string Id { get; } = id;
+    public string Name = "";
+    public bool Dark;
+sealed class Item(string id)
+    public string Id { get; } = id;
+    public string Name = "";
+    public int? Treasure, Capacity, Key;
+    public bool Light, Fixed;
+    public HashSet<string> Nouns { get; } = new(StringComparer.Ordinal) { id };
+    public HashSet<string> NameWords { get; } = new(StringComparer.Ordinal);
+sealed class GameState(int rooms, int items)
+    public int Room, Bonus, Moves, Darkness;
+    public EndStatus End;
+    public Place[] Places = new Place[items];
+    public ContainerState[] Containers = new ContainerState[items];
+    public int[] Fuel = new int[items];
+    public bool[] Lit = new bool[items], Visited = new bool[rooms];
+    public HashSet<string> Flags = new(StringComparer.Ordinal);
+sealed class Adventure
+    static readonly string[] Directions = ["north", "south", "east", "west", "up", "down"];
+    static readonly Dictionary<string, Verb> Verbs = MakeVerbs();
+    static readonly Place Player = new(PlaceKind.Player);
+    readonly Room[] rooms;
+    readonly Item[] items;
+    readonly List<UseRule> useRules = [];
+    readonly HashSet<string> vocabulary = new(StringComparer.Ordinal);
+    readonly int trophy, maxWeight;
+    GameState state;
+    List<string> output = [];
+    static Dictionary<string, Verb> MakeVerbs()
+        string[] groups = ["go walk run", "look l", "examine x inspect read", "take get grab", "drop discard",
+            "put insert place", "inventory inv i", "open", "close shut", "unlock", "lock", "use apply",
+            "light ignite", "extinguish douse snuff", "wait z", "score", "save", "restore load", "verbose", "brief"];
+        Dictionary<string, Verb> result = new(StringComparer.Ordinal);
+        for (int i = 0; i < groups.Length; i++)
+            foreach (string word in groups[i].Split(' ')) result[word] = (Verb)i;
+        return result;
+    static int? Direction(string word)
+        for (int i = 0; i < Directions.Length; i++)
+            if (word == Directions[i] || word == Directions[i][..1]) return i;
+        return null;
+    public Adventure(List<string[]> definitions)
+        rooms = definitions.Where(x => x[0] == "ROOM").Select(x => new Room(x[1])).ToArray();
+        items = definitions.Where(x => x[0] == "ITEM").Select(x => new Item(x[1]))
+            .OrderBy(x => x.Id, StringComparer.Ordinal).ToArray();
+        var roomIndex = rooms.Select((x, i) => (x.Id, i)).ToDictionary(x => x.Id, x => x.i, StringComparer.Ordinal);
+        var itemIndex = items.Select((x, i) => (x.Id, i)).ToDictionary(x => x.Id, x => x.i, StringComparer.Ordinal);
+        state = new(rooms.Length, items.Length);
+        Place InitialPlace(string text) => text switch
+            "PLAYER" => Player, "NOWHERE" => new(PlaceKind.Nowhere), _ => new(PlaceKind.Room, roomIndex[text])
+        Rule ParseRule(string[] words, int index)
+            string? flag = null;
+            bool required = true;
+            if (words[index] is "IF" or "UNLESS")
+                required = words[index] == "IF"; flag = words[index + 1]; index += 2;
+            Effect effect = words[index] switch
+                "MESSAGE" => new Message(string.Join(' ', words.Skip(index + 1))),
+                "ADD" => new MoveItem(itemIndex[words[index + 1]], new(PlaceKind.Room, roomIndex[words[index + 2]])),
+            return new(flag, required, effect);
+        foreach (string[] words in definitions)
+            switch (words[0])
+                case "ROOM":
+                    Room room = rooms[roomIndex[words[1]]];
+                    room.Dark = words[2] == "DARK";
+                    room.Name = string.Join(' ', words.Skip(room.Dark ? 3 : 2));
+                    break;
+                case "ITEM":
+                    int x = itemIndex[words[1]], index = 4;
+                    Item item = items[x];
+                    state.Places[x] = InitialPlace(words[2]); item.Weight = int.Parse(words[3]);
+                    if (words[index] == "TREASURE") { item.Treasure = int.Parse(words[index + 1]); index += 2; }
+                    if (words[index] == "LIGHT") { item.Light = true; state.Fuel[x] = int.Parse(words[index + 1]); index += 2; }
+                    item.Name = string.Join(' ', words.Skip(index)); item.NameWords.UnionWith(words.Skip(index));
+                    break;
+                case "RULE": useRules.Add(new(itemIndex[words[1]], itemIndex[words[2]], ParseRule(words, 3))); break;
+                case "TROPHY": trophy = roomIndex[words[1]]; break;
+                case "START": state.Room = roomIndex[words[1]]; break;
+        foreach (Item item in items) { vocabulary.UnionWith(item.Nouns); vocabulary.UnionWith(item.NameWords); }
+    static void Fail(string message) => throw new CommandFailure(message);
+    void Say(string text) => output.Add(text);
+    Place Floor => new(PlaceKind.Room, state.Room);
+    int[] Direct(Place place) => Enumerable.Range(0, items.Length).Where(x => state.Places[x] == place).ToArray();
+    HashSet<int> Reachable(Place place)
+        HashSet<int> result = [];
+        void Visit(Place source)
+            foreach (int x in Direct(source))
+                result.Add(x);
+                if (items[x].Capacity.HasValue && state.Containers[x] == ContainerState.Open) Visit(new(PlaceKind.Inside, x));
+        Visit(place);
+        return result;
+    HashSet<int> Carried() => Reachable(Player);
+    bool IsLit() => !rooms[state.Room].Dark || Reachable(Player).Concat(Reachable(Floor)).Any(x => state.Lit[x]);
+    HashSet<int> Visible()
+        HashSet<int> result = Carried();
+        if (IsLit()) result.UnionWith(Reachable(Floor));
+        return result;
+    bool Stored(int x)
+        while (state.Places[x].Kind == PlaceKind.Inside) x = state.Places[x].Index;
+        return state.Places[x] == new Place(PlaceKind.Room, trophy);
+    (int Points, int Stored, int Total) Treasures()
+        int points = 0, stored = 0, total = 0;
+        for (int x = 0; x < items.Length; x++) if (items[x].Treasure is int value)
+            total++;
+            if (Stored(x)) { points += value; stored++; }
+        return (points, stored, total);
+    int Score => Treasures().Points + state.Bonus;
+    int Resolve(string[] phrase)
+        HashSet<int> visible = Visible();
+        foreach (string word in phrase) if (!vocabulary.Contains(word)) Fail($"I don't know the word \"{word}\".");
+        int[] matches = Enumerable.Range(0, items.Length).Where(x => visible.Contains(x) && items[x].Nouns.Contains(phrase[^1]) &&
+            phrase.Take(phrase.Length - 1).All(items[x].NameWords.Contains)).ToArray();
+        if (matches.Length == 0) Fail("You can't see any such thing.");
+        if (matches.Length > 1) Fail("Which do you mean: " + string.Join(", ", matches.Select(x => items[x].Name)) + "?");
+        pronoun = matches[0];
+        return matches[0];
+    (int Executed, bool Message) RunRules(IEnumerable<Rule> rules)
+        int executed = 0;
+        bool message = false;
+        foreach (Rule rule in rules)
+            if (rule.Flag is not null && state.Flags.Contains(rule.Flag) != rule.Required) continue;
+            executed++;
+            switch (rule.Effect)
+                case Message effect: Say(effect.Text); message = true; break;
+                case MoveItem effect: state.Places[effect.Item] = effect.Place; break;
+        return (executed, message);
+    void Use(string[] first, string[] second)
+        int x = Resolve(first), y = Resolve(second);
+        if (!Carried().Contains(x)) Fail($"You aren't carrying the {items[x].Name}.");
+        var result = RunRules(useRules.Where(rule => rule.First == x && rule.Second == y).Select(rule => rule.Rule));
+        if (result.Executed == 0) Fail("Nothing happens.");
+        if (!result.Message) Say("Done.");
+    void Turn(bool baseline)
+        state.Moves++;
+        HashSet<int> reachable = Carried(); reachable.UnionWith(Reachable(Floor));
+        for (int x = 0; x < items.Length; x++) if (state.Lit[x])
+            state.Fuel[x]--;
+            if (state.Fuel[x] == 0)
+                state.Lit[x] = false;
+                if (reachable.Contains(x)) Say($"The {items[x].Name} goes out.");
+        bool lit = IsLit();
+        if (baseline && !lit) Say("It is now pitch dark.");
+        else if (!baseline && lit) Describe(true);
+        state.Darkness = lit ? 0 : state.Darkness + 1;
+        if (state.Darkness == 2) Say("You hear something moving in the dark.");
+        if (state.Darkness == 3) state.End = EndStatus.Dead;
+        var treasure = Treasures();
+        if (state.End == EndStatus.None && treasure.Total > 0 && treasure.Stored == treasure.Total) state.End = EndStatus.Won;
+        if (state.End != EndStatus.None)
+            Say(state.End == EndStatus.Dead ? "*** You have died ***" : "*** You have won ***");
+            Say($"You scored {treasure.Points + state.Bonus} points in {state.Moves} moves.");
+    void Run(Verb verb, string[] first, string[]? second = null, int direction = 0)
+        bool baseline = IsLit(), success = true;
+        switch (verb)
+            case Verb.Use: Use(first, second!); break;
+            case Verb.Score:
+                var treasure = Treasures();
+                Say($"You have scored {treasure.Points + state.Bonus} points (treasure {treasure.Points}, bonus {state.Bonus}) in {state.Moves} moves.");
+                Say($"Treasures stored: {treasure.Stored} of {treasure.Total}.");
+                break;
+        if (success && verb is Verb.Go or Verb.Take or Verb.Drop or Verb.Put or Verb.Open or Verb.Close or Verb.Unlock or Verb.Lock or Verb.Use or Verb.Light or Verb.Extinguish or Verb.Wait)
+            Turn(baseline);
+    static string[] Words(string line) => line.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries)
+        .Where(word => word is not ("the" or "a" or "an")).ToArray();
+    void Interpret(string[] words)
+        if (words.Length == 0) Fail("I beg your pardon?");
+        if (Direction(words[0]).HasValue) words = ["go", .. words];
+        if (!Verbs.TryGetValue(words[0], out Verb verb)) Fail($"I don't know the verb \"{words[0]}\".");
+        string[] rest = words[1..];
+        if (state.End != EndStatus.None && verb != Verb.Restore) Fail("The game is over.");
+        if (verb is Verb.Look or Verb.Inventory or Verb.Wait or Verb.Score or Verb.Save or Verb.Restore or Verb.Verbose or Verb.Brief)
+            if (rest.Length != 0) Fail("I don't understand that.");
+            Run(verb, rest); return;
+        if (rest.Length == 0) Fail(verb == Verb.Go ? "Which way do you want to go?" : $"What do you want to {verb.ToString().ToLowerInvariant()}?");
+        string[] prepositions = verb switch
+            Verb.Put => ["in", "into"], Verb.Use => ["on", "with"],
+            Verb.Take when rest.Contains("from") => ["from"], _ => []
+        if (prepositions.Length == 0) { Run(verb, rest); return; }
+        int split = Array.FindIndex(rest, prepositions.Contains);
+        if (split <= 0 || split == rest.Length - 1) Fail("I don't understand that.");
+        Run(verb, rest[..split], rest[(split + 1)..]);
+    public List<string> Process(string line)
+        output = []; Say("> " + line);
+        try
+            string[] words = Words(line);
+            Interpret(words);
+        catch (CommandFailure failure) { Say(failure.Message); }
+        return output;
+    public string FinalScore() => $"Final score: {Score} points in {state.Moves} moves.";
+static class Program
+    static void Main()
+        List<string[]> definitions = [];
+        for (string line = Console.ReadLine()!; line != "BEGIN"; line = Console.ReadLine()!) definitions.Add(line.Split(' '));
+        Adventure adventure = new(definitions);
+        for (string line = Console.ReadLine()!; line != "QUIT"; line = Console.ReadLine()!)
+            foreach (string row in adventure.Process(line)) Console.WriteLine(row);
+        Console.WriteLine(adventure.FinalScore());

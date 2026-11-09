@@ -1,0 +1,475 @@
+struct Action
+    kind::Symbol
+    name::String
+    delay::Int
+    text::String
+    expr::Union{Nothing,ExpressionNode}
+function actions(text)
+    result=Action[]
+    isempty(text) && return result
+    for item in split(text, "; ")
+        parts=split(item, ' '; limit = 2)
+        word=parts[1]
+        rest=parts[2]
+        elseif word=="log"
+            if startswith(rest, '"')
+                closing=findnext('"', rest, 2)
+                tail=closing<length(rest) ? rest[(closing+2):end] : ""
+                push!(
+                    result,
+                    Action(
+                        :log,
+                        "",
+                        0,
+                        rest[2:(closing-1)],
+                        isempty(tail) ? nothing : expression(tail),
+                    ),
+                )
+            end
+        end
+    end
+    result
+mutable struct ChartState
+    name::String
+    kind::String
+    parent::Int
+    depth::Int
+    children::Vector{Int}
+    initialname::String
+    defaultname::String
+    deep::Bool
+    entries::Vector{Vector{Action}}
+    exits::Vector{Vector{Action}}
+    transitions::Vector{Int}
+end
+ChartState(name, kind, parent, depth, initial = "", default = "", deep = false) = ChartState(
+    name,
+    kind,
+    parent,
+    depth,
+    Int[],
+    initial,
+    default,
+    deep,
+    Vector{Action}[],
+    Vector{Action}[],
+    Int[],
+)
+struct Transition
+    source::Int
+    kind::String
+    descriptors::Vector{String}
+    delay::Int
+    guard::Union{Nothing,ExpressionNode}
+    target::Int
+    localtarget::Bool
+    actions::Vector{Action}
+end
+struct Chart
+    states::Vector{ChartState}
+    names::Dict{String,Int}
+    variables::Dict{String,Int}
+    transitions::Vector{Transition}
+    order::Vector{Int}
+end
+childstates(c, s) = [x for x in c.states[s].children if c.states[x].kind!="history"]
+compound(c, s) = s==1 || (c.states[s].kind=="state" && !isempty(childstates(c, s)))
+parallelstate(c, s) = c.states[s].kind=="parallel" && !isempty(childstates(c, s))
+atomic(c, s) = c.states[s].kind!="history" && isempty(childstates(c, s))
+initial(c, s) =
+    isempty(c.states[s].initialname) ? childstates(c, s)[1] : c.names[c.states[s].initialname]
+function checkexpression(c, node)
+    node===nothing && return ""
+function checkactions(c, list)
+    for action in list
+        action.kind==:assign &&
+            !haskey(c.variables, action.name) &&
+            return "unknown variable $(action.name)"
+        error=checkexpression(c, action.expr)
+        !isempty(error) && return error
+    end
+    ""
+end
+function buildchart(definitions)
+    c=Chart(
+        [ChartState("", "root", 0, 0)],
+        Dict{String,Int}(),
+        Dict{String,Int}(),
+        Transition[],
+        Int[],
+    )
+    errors=Dict{Int,String}()
+    stateat=Dict{Int,Int}()
+    for (line, text) in definitions
+        fields=split(text, ' ')
+        kind=fields[1]
+        if kind in ("state", "parallel", "final", "history")
+            name=fields[2]
+            parentname=""
+            init=""
+            default=""
+            deep=false
+            if kind=="state"
+                at=3
+                if length(fields)>=3 && fields[3]!="initial"
+                    parentname=fields[3]
+                    at=4
+                end
+                at<=length(fields) && (init=fields[at+1])
+            end
+            if haskey(c.names, name)
+                errors[line]="duplicate state $name"
+            elseif !isempty(parentname) && !haskey(c.names, parentname)
+                errors[line]="unknown state $parentname"
+            elseif !isempty(parentname) &&
+                   c.states[c.names[parentname]].kind in ("final", "history")
+                errors[line]="$parentname cannot have children"
+            else
+                parent=isempty(parentname) ? 1 : c.names[parentname]
+                index=length(c.states)+1
+                push!(
+                    c.states,
+                    ChartState(name, kind, parent, c.states[parent].depth+1, init, default, deep),
+                )
+                c.names[name]=index
+                push!(c.states[parent].children, index)
+                stateat[line]=index
+            end
+        end
+    end
+    for (line, text) in definitions
+        haskey(errors, line) && continue
+        fields=split(text, ' ')
+        kind=fields[1]
+        error=""
+        if kind in ("state", "final", "history")
+            s=stateat[line]
+            state=c.states[s]
+            if kind=="state" && !isempty(state.initialname)
+            end
+        elseif kind=="on"
+            matched=match(
+                r"\Aon (\S+) (always|after ([0-9]+)|\S+)(?: \[(.*?)\])?(?: ([-~])> (\S+))?(?: / (.*))?\z",
+                text,
+            )
+            name, trigger, delay, guard, arrow, target, body=matched.captures
+            if !haskey(c.names, name)
+                error="unknown state $name"
+            elseif c.states[c.names[name]].kind in ("final", "history")
+                error="$name cannot have transitions"
+            else
+                guardnode=guard===nothing ? nothing : expression(guard)
+                list=body===nothing ? Action[] : actions(body)
+                error=checkexpression(c, guardnode)
+                isempty(error) &&
+                    target!==nothing &&
+                    !haskey(c.names, target) &&
+                    (error="unknown state $target")
+                isempty(error) && (error=checkactions(c, list))
+                if isempty(error)
+                    s=c.names[name]
+                    typ=trigger=="always" ? "always" :
+                        startswith(trigger, "after ") ? "timer" : "event"
+                    push!(
+                        c.transitions,
+                        Transition(
+                            s,
+                            typ,
+                            typ=="event" ? String.(split(trigger, '|')) : String[],
+                            delay===nothing ? 0 : parse(Int, delay),
+                            guardnode,
+                            target===nothing ? 0 : c.names[target],
+                            arrow=="~",
+                            list,
+                        ),
+                    )
+                    push!(c.states[s].transitions, length(c.transitions))
+                end
+            end
+        end
+        !isempty(error) && (errors[line]=error)
+    end
+    function visit(s)
+        push!(c.order, s)
+        for child in c.states[s].children
+            visit(child)
+        end
+    end
+    for s in c.states[1].children
+        visit(s)
+    end
+    c, errors
+struct ChartEvent
+    name::String
+    value::Int
+end
+struct Reservation
+    due::Int
+    number::Int
+    transition::Int
+    event::ChartEvent
+end
+mutable struct Engine
+    chart::Chart
+    config::Set{Int}
+    variables::Dict{String,Int}
+    data::Int
+    queue::Vector{ChartEvent}
+    reservations::Vector{Reservation}
+    serial::Int
+    histories::Dict{Int,Vector{Int}}
+    clock::Int
+    trace::Bool
+    halted::Bool
+    macros::Int
+    micros::Int
+    within::Int
+    entered::Vector{Int}
+    taken::Vector{Int}
+    dwell::Vector{Int}
+    entrytime::Vector{Int}
+end
+Engine(c) = Engine(
+    c,
+    Set{Int}(),
+    copy(c.variables),
+    0,
+    ChartEvent[],
+    Reservation[],
+    0,
+    Dict{Int,Vector{Int}}(),
+    0,
+    false,
+    false,
+    0,
+    0,
+    0,
+    zeros(Int, length(c.states)),
+    zeros(Int, length(c.states)),
+    zeros(Int, length(c.states)),
+    zeros(Int, length(c.states)),
+function performactions!(e, list)
+    try
+        for action in list
+            value=action.expr===nothing ? 0 : evaluate(e, action.expr)
+            if action.kind==:assign
+                e.variables[action.name]=value
+            elseif action.kind==:raise
+                push!(e.queue, ChartEvent(action.name, value))
+            elseif action.kind==:send
+                reserve!(e, action.delay, 0, ChartEvent(action.name, value))
+            elseif action.kind==:cancel
+                filter!(r->r.transition!=0 || r.event.name!=action.name, e.reservations)
+            elseif action.kind==:log
+                println(action.text, action.expr===nothing ? "" : string(value))
+            end
+        end
+    end
+function closedentries(c, seeds)
+    entering=Set(seeds)
+    changed=true
+    while changed
+        changed=false
+        for s in c.order
+            s in entering || continue
+            children=childstates(c, s)
+            extra=parallelstate(c, s) ? children :
+                  compound(c, s) && all(x->!(x in entering), children) ? [initial(c, s)] : Int[]
+            for child in extra
+                if !(child in entering)
+                    push!(entering, child)
+                    changed=true
+                end
+            end
+        end
+    end
+    entering
+function enterstates!(e, entering)
+    c=e.chart
+    for s in c.order
+        s in entering || continue
+        state=c.states[s]
+        push!(e.config, s)
+        e.entered[s]+=1
+        e.entrytime[s]=e.clock
+        for t in state.transitions
+            tr=c.transitions[t]
+            tr.kind=="timer" && reserve!(e, tr.delay, t, ChartEvent("", 0))
+        end
+        for list in state.entries
+            performactions!(e, list)
+        end
+        if state.kind=="final"
+            p=state.parent
+            push!(e.queue, ChartEvent("done.state.$(c.states[p].name)", 0))
+        end
+    end
+function scope(e, tr)
+    tr.target==0 && return 0
+exitset(e, tr) =
+    tr.target==0 ? Set{Int}() : Set(s for s in e.config if descendant(e.chart, s, scope(e, tr)))
+function matches(tr, kind, event, timer, index)
+    kind=="always" && return tr.kind=="always"
+    kind=="timer" && return index==timer
+    tr.kind=="event" &&
+        any(d->d=="*" || d==event.name || startswith(event.name, d*"."), tr.descriptors)
+end
+function selecttransitions!(e, kind, event, timer = 0)
+    c=e.chart
+    candidates=Int[]
+    for a in c.order
+        a in e.config && atomic(c, a) || continue
+        s=a
+        found=0
+        while s!=1 && found==0
+            for t in c.states[s].transitions
+                tr=c.transitions[t]
+                matches(tr, kind, event, timer, t) || continue
+                accepted=true
+                try
+                    accepted=tr.guard===nothing || evaluate(e, tr.guard)!=0
+                catch error
+                    error isa EvaluationError || rethrow()
+                    push!(e.queue, ChartEvent("error.execution", 0))
+                    accepted=false
+                end
+                if accepted
+                    found=t
+                    break
+                end
+            end
+            s=c.states[s].parent
+        end
+        found!=0 && !(found in candidates) && push!(candidates, found)
+    end
+    kept=Int[]
+    exiting=Set{Int}()
+    for t in candidates
+        exits=exitset(e, c.transitions[t])
+        if isempty(intersect(exiting, exits))
+            push!(kept, t)
+            union!(exiting, exits)
+        end
+    end
+    kept
+timername(c, t) = "after($(c.transitions[t].delay))@$(c.states[c.transitions[t].source].name)"
+eventname(event) = event.value==0 ? event.name : "$(event.name)=$(event.value)"
+function microstep!(e, selected, display)
+    if e.within==1000
+        println("LIVELOCK t=$(e.clock)")
+        e.halted=true
+        return
+    end
+    e.within+=1
+    e.micros+=1
+    c=e.chart
+    scopes=[scope(e, c.transitions[t]) for t in selected]
+    exiting=Set{Int}()
+    for bound in scopes
+        bound!=0 && union!(exiting, (s for s in e.config if descendant(c, s, bound)))
+    end
+    for s in c.order
+        s in exiting || continue
+    end
+    seeds=Int[]
+    for (t, bound) in zip(selected, scopes)
+        tr=c.transitions[t]
+        tr.target==0 && continue
+    end
+    entering=closedentries(c, seeds)
+    for s in Iterators.reverse(c.order)
+        s in exiting || continue
+        for list in c.states[s].exits
+            performactions!(e, list)
+        end
+        delete!(e.config, s)
+    end
+    for t in selected
+        tr=c.transitions[t]
+        performactions!(e, tr.actions)
+        e.taken[tr.source]+=1
+    end
+    enterstates!(e, entering)
+end
+function macrostep!(e, kind, event = ChartEvent("", 0), timer = 0)
+    e.macros+=1
+    e.within=0
+    e.data=event.value
+    if kind=="start"
+        enterstates!(e, closedentries(e.chart, [initial(e.chart, 1)]))
+    else
+        selected=selecttransitions!(e, kind, event, timer)
+        !isempty(selected) &&
+            microstep!(e, selected, kind=="timer" ? timername(e.chart, timer) : eventname(event))
+    end
+    while !e.halted
+        e.data=0
+        selected=selecttransitions!(e, "always", ChartEvent("", 0))
+        if !isempty(selected)
+            microstep!(e, selected, "always")
+            continue
+        end
+        isempty(e.queue) && break
+        queued=popfirst!(e.queue)
+        e.data=queued.value
+        selected=selecttransitions!(e, "event", queued)
+        !isempty(selected) && microstep!(e, selected, eventname(queued))
+    end
+function dumpstate(e)
+    c=e.chart
+    println("dump t=$(e.clock)")
+    for s in c.order
+        s in e.config && println(repeat(" ", 2*c.states[s].depth), c.states[s].name)
+    end
+function script!(e, text)
+    fields=split(text, ' ')
+    command=fields[1]
+    if command=="event"
+        macrostep!(e, "event", ChartEvent(fields[2], length(fields)==3 ? parse(Int, fields[3]) : 0))
+    elseif command=="tick"
+        finish=e.clock+parse(Int, fields[2])
+        while !e.halted && !isempty(e.reservations)
+            deleteat!(e.reservations, index)
+            e.clock=r.due
+            macrostep!(e, r.transition==0 ? "event" : "timer", r.event, r.transition)
+        end
+    elseif command=="dump"
+        dumpstate(e)
+    end
+function runchart(name, definitions, scripts)
+    println("chart $name")
+    c, errors=buildchart(definitions)
+    if !isempty(errors)
+        for line in sort(collect(keys(errors)))
+            println("error line $line: $(errors[line])")
+        end
+        return
+    end
+    e=Engine(c)
+    macrostep!(e, "start")
+    for text in scripts
+        e.halted && break
+        script!(e, text)
+    end
+function main()
+    lines=readlines()
+    position=2
+    for _ in 1:parse(Int, lines[1])
+        name=lines[position][7:end]
+        position+=1
+        definitions=Tuple{Int,String}[]
+        while lines[position]!="RUN"
+            push!(definitions, (position, lines[position]))
+            position+=1
+        end
+        position+=1
+        scripts=String[]
+        while lines[position]!="END"
+            push!(scripts, lines[position])
+            position+=1
+        end
+        position+=1
+        runchart(name, definitions, scripts)
+    end
+end
+main()

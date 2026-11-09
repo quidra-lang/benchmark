@@ -1,0 +1,290 @@
+struct Attribute
+    index::Int
+    name::String
+    integer::Bool
+    values::Vector{String}
+end
+struct Row
+    id::String
+    values::Vector{Union{Nothing,Int}}
+    label::Int
+end
+struct Settings
+    max_depth::Int
+    min_samples_split::Int
+    min_samples_leaf::Int
+    max_surrogates::Int
+function read_rows(path, attributes, classes)
+    rows = Row[]
+    for line in readlines(path)[2:end]
+        fields = split(line, ',')
+        values = Union{Nothing,Int}[]
+        for attribute in attributes
+            text = fields[attribute.index + 1]
+            value = text == "?" ? nothing : attribute.integer ? parse(Int, text) : findfirst(==(text), attribute.values)
+            push!(values, value)
+        end
+        push!(rows, Row(fields[1], values, findfirst(==(fields[end]), classes)))
+    end
+    rows
+end
+function load_dataset(directory)
+    attributes = Attribute[]
+    schema = readlines(joinpath(directory, "schema.txt"))
+    for line in schema[1:end-1]
+        fields = split(line)
+        push!(attributes, Attribute(length(attributes) + 1, fields[2], fields[3] == "INT", String.(fields[4:end])))
+    end
+    target_fields = split(schema[end])
+    target, classes = String(target_fields[2]), String.(target_fields[3:end])
+    settings = Dict(first(fields) => parse.(Int, fields[2:end]) for fields in split.(readlines(joinpath(directory, "params.txt"))))
+    options = Settings(settings["MAX_DEPTH"][1], settings["MIN_SAMPLES_SPLIT"][1], settings["MIN_SAMPLES_LEAF"][1],
+        settings["MAX_SURROGATES"][1], settings["FOLDS"][1], settings["CURVE"], settings["BAG_TREES"][1],
+        settings["BAG_SEED"][1], settings["PERMUTATION_REPEATS"][1], settings["PERMUTATION_SEED"][1])
+    Dataset(attributes, target, classes, read_rows(joinpath(directory, "train.csv"), attributes, classes),
+        read_rows(joinpath(directory, "validation.csv"), attributes, classes), read_rows(joinpath(directory, "test.csv"), attributes, classes), options)
+end
+function class_counts(rows, count)
+    result = zeros(Int, count)
+    for row in rows
+        result[row.label] += 1
+    end
+    result
+end
+square_sum(counts) = sum(count * count for count in counts)
+majority(counts) = findmax(counts)[2]
+error_count(counts) = sum(counts) - maximum(counts)
+evaluation_value(left, right) = (square_sum(left) * sum(right) + square_sum(right) * sum(left), sum(left) * sum(right))
+is_greater(first, second) = first[1] * second[2] > second[1] * first[2]
+improves(value, counts) = value[1] * sum(counts) > square_sum(counts) * value[2]
+struct Split
+    attribute::Attribute
+    point::Int
+end
+struct Surrogate
+    split::Split
+    left::Bool
+    score::Int
+end
+struct Candidate
+    split::Split
+    left::Vector{Int}
+    right::Vector{Int}
+end
+mutable struct Node
+    number::Int
+    depth::Int
+    counts::Vector{Int}
+    size::Int
+    prediction::Int
+    errors::Int
+    split::Union{Nothing,Split}
+    surrogates::Vector{Surrogate}
+    default_left::Bool
+    left::Union{Nothing,Node}
+    right::Union{Nothing,Node}
+end
+struct TreeBuilder
+    attributes::Vector{Attribute}
+    class_count::Int
+    settings::Settings
+end
+goes_left(split::Split, value) = split.attribute.integer ? 2 * value <= split.point : value == split.point
+candidate_value(candidate) = evaluation_value(candidate.left, candidate.right)
+function candidates(attribute, rows, labels, count)
+    groups = Dict{Int,Vector{Int}}()
+    total = zeros(Int, count)
+    for (row, label) in zip(rows, labels)
+        value = row.values[attribute.index]
+        get!(groups, value, zeros(Int, count))[label] += 1
+        total[label] += 1
+    end
+    result = Candidate[]
+    if attribute.integer
+        ordered = sort(collect(keys(groups)))
+        left = zeros(Int, count)
+        for index in 1:length(ordered)-1
+            left = left + groups[ordered[index]]
+            push!(result, Candidate(Split(attribute, ordered[index] + ordered[index + 1]), left, total - left))
+        end
+    elseif length(groups) > 1
+        for point in eachindex(attribute.values)
+            haskey(groups, point) && push!(result, Candidate(Split(attribute, point), groups[point], total - groups[point]))
+        end
+    end
+    result
+end
+function best_split(builder, rows, attributes=builder.attributes)
+    best = nothing
+    labels = [row.label for row in rows]
+    for attribute in attributes, candidate in candidates(attribute, rows, labels, builder.class_count)
+        min(sum(candidate.left), sum(candidate.right)) < builder.settings.min_samples_leaf && continue
+        if isnothing(best) || is_greater(candidate_value(candidate), candidate_value(best))
+            best = candidate
+        end
+    end
+    best
+end
+function find_surrogates(builder, rows, split)
+    directions = [goes_left(split, row.values[split.attribute.index]) ? 1 : 2 for row in rows]
+    size = length(rows)
+    largest = max(count(==(1), directions), count(==(2), directions))
+    chosen = Surrogate[]
+    for attribute in builder.attributes
+        attribute.index == split.attribute.index && continue
+        best = nothing
+        for candidate in candidates(attribute, rows, directions, 2)
+            agreement = candidate.left[1] + candidate.right[2]
+            surrogate = Surrogate(candidate.split, agreement >= size - agreement, max(agreement, size - agreement))
+            if isnothing(best) || surrogate.score > best.score
+                best = surrogate
+            end
+        end
+        !isnothing(best) && best.score > largest && push!(chosen, best)
+    end
+    sort!(chosen; by=s -> (-s.score, s.split.attribute.index))
+    chosen[1:min(end, builder.settings.max_surrogates)]
+end
+function grow(builder, rows, number=1, depth=0)
+    counts = class_counts(rows, builder.class_count)
+    node = Node(number, depth, counts, length(rows), majority(counts), error_count(counts), nothing, Surrogate[], true, nothing, nothing)
+    (maximum(counts) == node.size || depth == builder.settings.max_depth || node.size < builder.settings.min_samples_split) && return node
+    best = best_split(builder, rows)
+    (isnothing(best) || !improves(candidate_value(best), counts)) && return node
+    split = best.split
+    left = [row for row in rows if goes_left(split, row.values[split.attribute.index])]
+    right = [row for row in rows if !goes_left(split, row.values[split.attribute.index])]
+    node.split = split
+    node.surrogates = find_surrogates(builder, rows, split)
+    node.default_left = length(left) >= length(right)
+    node.left = grow(builder, left, 2 * number, depth + 1)
+    node.right = grow(builder, right, 2 * number + 1, depth + 1)
+    node
+end
+struct PrunedTree
+    root::Node
+    cut::Set{Int}
+end
+PrunedTree(root) = PrunedTree(root, Set{Int}())
+is_leaf(tree, node) = isnothing(node.split) || node.number in tree.cut
+function direction(node, row)
+    value = row.values[node.split.attribute.index]
+    !isnothing(value) && return (goes_left(node.split, value), 1)
+    for surrogate in node.surrogates
+        value = row.values[surrogate.split.attribute.index]
+        !isnothing(value) && return (goes_left(surrogate.split, value) == surrogate.left, 2)
+    end
+    node.default_left, 3
+end
+function route(tree, row)
+    node = tree.root
+    path, methods = [node], Int[]
+    while !is_leaf(tree, node)
+        left, method = direction(node, row)
+        node = left ? node.left : node.right
+        push!(path, node)
+        push!(methods, method)
+    end
+    path, methods
+end
+leaf_of(tree, row) = last(first(route(tree, row)))
+predict(tree, row) = leaf_of(tree, row).prediction
+correct_count(tree, rows) = count(row -> predict(tree, row) == row.label, rows)
+function classification_lines(title, classes, actual, predicted)
+    matrix = zeros(Int, length(classes), length(classes))
+    for (label, prediction) in zip(actual, predicted)
+        matrix[label, prediction] += 1
+    end
+    correct = sum(matrix[i, i] for i in eachindex(classes))
+    total = length(actual)
+    lines = ["confusion $title correct $correct/$total accuracy $(fraction_text(correct, total))", "actual\\predicted " * join(classes, " ")]
+    for (index, name) in enumerate(classes)
+        push!(lines, name * " " * join(matrix[index, :], " "))
+    end
+    values = Float64[]
+    for (index, name) in enumerate(classes)
+        hits = matrix[index, index]
+        predicted_total, support = sum(matrix[:, index]), sum(matrix[index, :])
+        predicted_total + support > 0 && push!(values, 2 * hits / (predicted_total + support))
+        push!(lines, "class $name precision $(fraction_text(hits, predicted_total)) recall $(fraction_text(hits, support)) f1 $(fraction_text(2 * hits, predicted_total + support)) support $support")
+    end
+    push!(lines, "macro_f1 $(real_text(foldl(+, values; init=0.0) / length(values)))")
+    lines
+end
+function reduced_error_pruning(root, rows)
+    reached = Dict{Int,Vector{Row}}()
+    for row in rows
+        for node in first(route(PrunedTree(root), row))
+            push!(get!(reached, node.number, Row[]), row)
+        end
+    end
+    decisions, cut = Decision[], Set{Int}()
+    function decide(node)
+        visiting = get(reached, node.number, Row[])
+        leaf_error = count(row -> row.label != node.prediction, visiting)
+        isnothing(node.split) && return leaf_error
+        subtree_error = decide(node.left) + decide(node.right)
+        pruned = leaf_error <= subtree_error
+        push!(decisions, Decision(node, length(visiting), leaf_error, subtree_error, pruned))
+        pruned && push!(cut, node.number)
+        pruned ? leaf_error : subtree_error
+    end
+    decide(root)
+    PrunedTree(root, cut), decisions
+end
+accuracy(tree, rows) = ratio_text(correct_count(tree, rows), length(rows))
+missing_count(row) = count(isnothing, row.values)
+function analyze(data)
+    builder = TreeBuilder(data.attributes, length(data.classes), data.settings)
+    grown = PrunedTree(grow(builder, data.train))
+    pruned, decisions = reduced_error_pruning(grown.root, data.validation)
+    models = Dict("grown" => grown, "pruned" => pruned, "depth" => selected_depth.tree, "cost_complexity" => sequence[selected_index].tree)
+    predictions = Dict(name => [predict(tree, row) for row in data.test] for (name, tree) in models)
+    predictions["bagging"] = majority.(test_votes)
+    (; data, builder, grown, pruned, decisions, rules, bounds, folds, fold_trees, depths, selected_depth, sequence, selected_index, bags, oob_votes, test_votes, predictions)
+end
+function predictions_file(a)
+    lines, classes = ["id,predicted,actual,grown,leaf,path,missing"], a.data.classes
+    for row in a.data.test
+        path, methods = route(a.pruned, row)
+        leaf = last(path)
+        push!(lines, join([row.id, classes[leaf.prediction], classes[row.label], classes[predict(a.grown, row)], string(leaf.number), join([node.number for node in path], '-'), string(count(!=(1), methods))], ','))
+    end
+    lines
+end
+model_evaluation(a, name) = classification_lines("$name test", a.data.classes, [row.label for row in a.data.test], a.predictions[name])
+function routing_lines(a)
+    internal = internal_nodes(a.pruned)
+    tallies = Dict(node.number => zeros(Int, 3) for node in internal)
+    for row in a.data.test
+        path, methods = route(a.pruned, row)
+        for (node, method) in zip(path, methods)
+            tallies[node.number][method] += 1
+        end
+    end
+    lines = ["routing pruned test"]
+    for node in internal
+        tally = tallies[node.number]
+        push!(lines, "node $(node.number) rows $(sum(tally)) primary $(tally[1]) surrogate $(tally[2]) default $(tally[3])")
+    end
+    for (name, complete) in (("complete", true), ("incomplete", false))
+        rows = [row for row in a.data.test if (missing_count(row) == 0) == complete]
+        push!(lines, "$name rows $(length(rows)) correct $(accuracy(a.pruned, rows))")
+    end
+    lines
+end
+function evaluation_file(a)
+    join_sections([data_lines(a), [summary_line(a, "grown", a.grown), summary_line(a, "pruned", a.pruned)],
+        model_evaluation(a, "grown"), model_evaluation(a, "pruned"), routing_lines(a), cross_validation_lines(a),
+        depth_lines(a), cost_complexity_lines(a), bagging_lines(a), mcnemar_lines(a), auc_lines(a), learning_curve_lines(a)])
+end
+    a = analyze(load_dataset("input"))
+    files = [("tree.txt", join_sections([root_candidate_lines(a), tree_lines(a, a.grown), surrogate_lines(a)])),
+        ("pruned_tree.txt", pruned_tree_file(a)), ("predictions.csv", predictions_file(a)), ("rules.txt", rules_file(a)),
+        ("evaluation.txt", evaluation_file(a)), ("importance.txt", join_sections([impurity_lines(a, "grown", a.grown), impurity_lines(a, "pruned", a.pruned), permutation_lines(a)]))]
+    for (name, lines) in files
+        open(joinpath("output", name), "w") do file
+            for line in lines
+                println(file, line)
+            end
+        end

@@ -1,0 +1,362 @@
+#include <algorithm>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+enum class Kind { Object, Array, String, Number, Boolean, Null };
+struct Value {
+    Kind kind = Kind::Null;
+    std::vector<std::string> keys;
+    std::vector<Value> items;
+    explicit Value(Kind kind = Kind::Null) : kind(kind) {}
+    int find(const std::string& key) const {
+        auto found = std::find(keys.begin(), keys.end(), key);
+        return found == keys.end() ? -1 : static_cast<int>(found - keys.begin());
+    int count() const {
+        int result = 1;
+        for (const Value& item : items) result += item.count();
+        return result;
+    int depth() const {
+        int result = 1;
+        for (const Value& item : items) result = std::max(result, 1 + item.depth());
+        return result;
+bool letter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+bool digit(char c) { return c >= '0' && c <= '9'; }
+bool identifier_start(char c) { return letter(c) || c == '_'; }
+bool identifier_char(char c) { return identifier_start(c) || digit(c); }
+bool identifier(const std::string& text) {
+    return !text.empty() && identifier_start(text[0]) &&
+           std::all_of(text.begin(), text.end(), identifier_char);
+std::string quote(const std::string& text, char mark = '"') {
+    std::string result(1, mark);
+    for (unsigned char c : text) {
+        if (c == static_cast<unsigned char>(mark) || c == '\\') {
+        }
+        else if (c < 32 || c == 127) {
+        } else result += static_cast<char>(c);
+    }
+    return result + mark;
+std::string compact(const Value& value) {
+    if (value.kind == Kind::Null) return "null";
+std::string pretty(const Value& value, const std::string& indent = "") {
+    if (value.items.empty()) return compact(value);
+    std::string inner = indent + "  ";
+    std::string result = value.kind == Kind::Object ? "{\n" : "[\n";
+    for (std::size_t i = 0; i < value.items.size(); ++i) {
+        if (i) result += ",\n";
+        result += inner;
+        if (value.kind == Kind::Object) result += quote(value.keys[i]) + ": ";
+        result += pretty(value.items[i], inner);
+    }
+    return result + "\n" + indent + (value.kind == Kind::Object ? "}" : "]");
+struct JsonError : std::runtime_error {
+    std::size_t position;
+    JsonError(const std::string& reason, std::size_t position) : std::runtime_error(reason), position(position) {}
+class JsonReader {
+    const std::string& text;
+    std::size_t position = 0;
+    char peek() const { return position < text.size() ? text[position] : '\0'; }
+    [[noreturn]] void fail(const std::string& reason) const { throw JsonError(reason, position); }
+    void whitespace() { while (peek() == ' ' || peek() == '\n') ++position; }
+    void require(char c, const std::string& reason) const {
+        if (position == text.size()) fail("unexpected end of input");
+        if (peek() != c) fail(reason);
+    std::string string() {
+        ++position;
+        std::string result;
+        while (true) {
+            char c = peek();
+            if (c == '\0' || c == '\n') fail("unterminated string");
+            if (c == '"') {
+                ++position;
+                return result;
+            }
+            if (c != '\\') {
+                result += c;
+                ++position;
+                continue;
+            }
+        }
+    bool end_container(char closing, const std::string& reason) {
+        whitespace();
+        if (peek() == closing) {
+            ++position;
+            return true;
+        }
+        require(',', reason);
+        ++position;
+        whitespace();
+        if (peek() == closing) fail("trailing comma");
+        return false;
+    Value object() {
+        ++position;
+        whitespace();
+        Value object(Kind::Object);
+        if (peek() == '}') {
+            ++position;
+            return object;
+        }
+        while (true) {
+            whitespace();
+            require('"', "expected key");
+            std::size_t key_start = position;
+            std::string key = string();
+            if (object.find(key) >= 0) throw JsonError("duplicate key " + quote(key), key_start);
+            whitespace();
+            require(':', "expected ':'");
+            ++position;
+            Value child = value();
+            object.keys.push_back(std::move(key));
+            object.items.push_back(std::move(child));
+            if (end_container('}', "expected ',' or '}'")) return object;
+        }
+    Value array() {
+        ++position;
+        whitespace();
+        Value array(Kind::Array);
+        if (peek() == ']') {
+            ++position;
+            return array;
+        }
+        while (true) {
+            array.items.push_back(value());
+            if (end_container(']', "expected ',' or ']'")) return array;
+        }
+    Value value() {
+        whitespace();
+        char c = peek();
+        if (c == '\0') fail("unexpected end of input");
+        if (c == '{') return object();
+        if (c == '[') return array();
+        if (letter(c)) {
+            std::size_t start = position;
+            while (letter(peek())) ++position;
+            std::string word = text.substr(start, position - start);
+            if (word == "null") return Value();
+        }
+public:
+    explicit JsonReader(const std::string& text) : text(text) {}
+    Value parse() {
+        Value result = value();
+        whitespace();
+        if (position != text.size()) fail("trailing characters");
+        return result;
+enum class SelectorKind { Key, Index, All, Slice };
+struct Selector {
+    SelectorKind kind = SelectorKind::Key;
+    bool descendant = false;
+    std::string key;
+class PathReader {
+    const std::string& text;
+    std::string reason;
+    std::size_t position = 0;
+    char peek() const { return position < text.size() ? text[position] : '\0'; }
+    [[noreturn]] void fail() const { throw std::runtime_error(reason); }
+    bool accept(char c) {
+        if (peek() != c) return false;
+        ++position;
+        return true;
+    void expect(char c) { if (!accept(c)) fail(); }
+    std::string name() {
+        if (!identifier_start(peek())) fail();
+        std::size_t start = position++;
+        while (identifier_char(peek())) ++position;
+        return text.substr(start, position - start);
+    Selector selection() {
+        Selector selector;
+        std::size_t end = text.find(']', position);
+        if (end == std::string::npos) fail();
+        std::string content = text.substr(position, end - position);
+        position = end + 1;
+        if (content == "*") {
+            selector.kind = SelectorKind::All;
+            return selector;
+        }
+public:
+    PathReader(const std::string& text, std::string reason) : text(text), reason(std::move(reason)) {}
+    std::vector<Selector> path(bool field = false) {
+        expect(field ? '@' : '$');
+        std::vector<Selector> selectors;
+        while (position != text.size()) {
+            Selector selector;
+            if (accept('[')) selector = selection();
+            else {
+                expect('.');
+                bool descendant = !field && accept('.');
+                if (!field && accept('*')) selector.kind = SelectorKind::All;
+                else if (descendant && accept('[')) selector = selection();
+                else selector.key = name();
+                selector.descendant = descendant;
+            }
+            if (field && selector.kind != SelectorKind::Key && selector.kind != SelectorKind::Index) fail();
+            selectors.push_back(std::move(selector));
+        }
+        return selectors;
+    std::string key() {
+        std::string result = peek() == '\'' ? quoted_key() : name();
+        if (position != text.size()) fail();
+        return result;
+struct Step {
+    std::optional<std::string> key;
+    int position;
+    std::string text() const {
+        if (!key) return "[" + std::to_string(position) + "]";
+        return identifier(*key) ? "." + *key : "[" + quote(*key, '\'') + "]";
+struct Match {
+    const Value* value;
+    std::vector<Step> steps;
+    Match child(int position) const {
+        Match result{&value->items[static_cast<std::size_t>(position)], steps};
+        result.steps.push_back({value->kind == Kind::Object ? std::optional<std::string>(value->keys[position]) : std::nullopt, position});
+        return result;
+    std::string location() const {
+        std::string result = "$";
+        for (const Step& step : steps) result += step.text();
+        return result;
+    std::vector<int> positions() const {
+        std::vector<int> result;
+        for (const Step& step : steps) result.push_back(step.position);
+        return result;
+int child_position(const Value& value, const Selector& selector) {
+    if (selector.kind == SelectorKind::Key) return value.kind == Kind::Object ? value.find(selector.key) : -1;
+void select(const Selector& selector, const Match& match, std::vector<Match>& output) {
+    const Value& value = *match.value;
+    if (selector.kind == SelectorKind::Key || selector.kind == SelectorKind::Index) {
+        int position = child_position(value, selector);
+        if (position >= 0) output.push_back(match.child(position));
+    } else if (selector.kind == SelectorKind::All) {
+        for (int i = 0; i < static_cast<int>(value.items.size()); ++i) output.push_back(match.child(i));
+    } else if (value.kind == Kind::Array) {
+    }
+std::vector<Match> apply(const Selector& selector, const std::vector<Match>& matches) {
+    std::vector<Match> result;
+    for (const Match& match : matches) {
+        if (selector.descendant) select_descendants(selector, match, result);
+        else select(selector, match, result);
+    }
+    return result;
+std::vector<Match> evaluate(const Value& root, const std::vector<Selector>& selectors) {
+    std::vector<Match> matches{{&root, {}}};
+    for (const Selector& selector : selectors) matches = apply(selector, matches);
+    return matches;
+std::vector<Match> targets(std::vector<Match> matches) {
+    std::sort(matches.begin(), matches.end(), [](const Match& a, const Match& b) { return a.positions() > b.positions(); });
+    matches.erase(std::unique(matches.begin(), matches.end(), [](const Match& a, const Match& b) {
+        return a.positions() == b.positions();
+    }), matches.end());
+    return matches;
+Value& resolve(Value& root, const Match& match, bool parent = false) {
+    Value* value = &root;
+    std::size_t count = match.steps.size() - (parent ? 1 : 0);
+    for (std::size_t i = 0; i < count; ++i) value = &value->items[static_cast<std::size_t>(match.steps[i].position)];
+    return *value;
+std::vector<std::string> split_arguments(const std::optional<std::string>& arguments, std::size_t maximum) {
+    std::vector<std::string> result;
+    if (!arguments) return result;
+    std::size_t position = 0;
+    while (result.size() + 1 < maximum) {
+        std::size_t space = arguments->find(' ', position);
+        if (space == std::string::npos) break;
+        result.push_back(arguments->substr(position, space - position));
+        position = space + 1;
+    }
+    result.push_back(arguments->substr(position));
+    return result;
+std::vector<std::string> words(const std::optional<std::string>& arguments, std::size_t minimum, std::size_t maximum) {
+    std::vector<std::string> result = split_arguments(arguments, std::string::npos);
+    if (result.size() < minimum || result.size() > maximum) throw std::runtime_error("bad arguments");
+    return result;
+class QueryTool {
+    Value document;
+    std::vector<Value> history;
+    void commit(Value value) {
+        history.push_back(std::move(document));
+        document = std::move(value);
+    void modify(const std::string& command, const std::optional<std::string>& arguments) {
+        std::vector<std::string> args;
+        if (command == "SET" || command == "MERGE" || command == "INSERT") {
+        } else args = words(arguments, command == "RENAME" ? 2 : 1, command == "SORT" ? 3 : command == "RENAME" ? 2 : 1);
+        std::vector<Selector> path = PathReader(args[0], "bad path").path();
+        std::string new_key;
+        if (command == "RENAME") new_key = PathReader(args[1], "bad key").key();
+        std::vector<Match> matches;
+        if (command == "SET") {
+        } else matches = evaluate(document, path);
+        if (command == "RENAME") {
+            for (const Match& match : matches)
+                if (match.steps.empty() || !match.steps.back().key)
+                    throw std::runtime_error("not a member at " + match.location());
+        }
+        std::vector<Match> selected = targets(std::move(matches));
+        Value updated = document;
+        for (const Match& target : selected) {
+            if (command == "SET" || command == "DELETE" || command == "RENAME") {
+                Value& parent = resolve(updated, target, true);
+                int position = target.steps.back().position;
+                if (command == "SET") {
+                } else if (command == "DELETE") {
+                } else {
+                    if (parent.keys[position] != new_key && parent.find(new_key) >= 0)
+                        throw std::runtime_error("key exists at " + target.location());
+                    parent.keys[position] = new_key;
+                }
+            } else {
+            }
+        }
+        commit(std::move(updated));
+        std::cout << command << ' ' << selected.size() << '\n';
+    void execute(const std::string& command, const std::optional<std::string>& arguments) {
+        static const std::set<std::string> modifying{"SET", "DELETE", "INSERT", "MERGE", "SORT", "RENAME"};
+        if (modifying.count(command)) {
+            modify(command, arguments);
+            return;
+        }
+        if (command == "UNDO") {
+            words(arguments, 0, 0);
+            if (history.empty()) throw std::runtime_error("nothing to undo");
+            document = std::move(history.back());
+            history.pop_back();
+            std::cout << "UNDO " << history.size() << '\n';
+            return;
+        }
+        bool optional = command == "COMPACT" || command == "PRETTY" || command == "FLATTEN";
+        std::vector<std::string> args = words(arguments, optional ? 0 : 1, 1);
+        std::vector<Match> matches = evaluate(document, PathReader(args.empty() ? "$" : args[0], "bad path").path());
+        if (matches.empty()) std::cout << "no match\n";
+        for (const Match& match : matches) {
+            if (command == "COMPACT") std::cout << compact(*match.value) << '\n';
+            else if (command == "PRETTY") std::cout << pretty(*match.value) << '\n';
+        }
+    void load(const std::vector<std::string>& lines) {
+        std::string text;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (i) text += '\n';
+            text += lines[i];
+        }
+        try {
+            Value value = JsonReader(text).parse();
+            int count = value.count(), depth = value.depth();
+            commit(std::move(value));
+            std::cout << "LOADED nodes=" << count << " depth=" << depth << '\n';
+        } catch (const JsonError& error) {
+        }
+    void command(const std::string& line) {
+        std::size_t space = line.find(' ');
+        std::optional<std::string> arguments;
+        if (space != std::string::npos) arguments = line.substr(space + 1);
+        try { execute(line.substr(0, space), arguments); }
+        catch (const std::runtime_error& error) { std::cout << "ERROR " << error.what() << '\n'; }
+std::vector<std::string> read_block() {
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(std::cin, line) && line != "%%") lines.push_back(line);
+    return lines;
+int main() {
+    QueryTool tool;
+    tool.load(read_block());
+    std::string line;
+    while (std::getline(std::cin, line) && line != "END") {
+        if (line == "LOAD") tool.load(read_block());
+        else tool.command(line);
+    }

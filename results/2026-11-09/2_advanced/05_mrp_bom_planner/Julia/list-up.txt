@@ -1,0 +1,424 @@
+struct Item
+    id::String
+    lead::Int
+    rule::String
+    first::Int
+    second::Int
+    safety::Int
+    onhand::Int
+    material::Int
+    labor::Int
+    description::String
+end
+function lotvalues(rule, text)
+    values = parse.(Int, split(text, '/'))
+    valid = rule == "LFL" ? length(values) == 1 && values[1] == 0 : rule == "MIN" ? length(values) == 2 && all(>=(1), values) : length(values) == 1 && values[1] >= 1
+    return valid ? values : nothing
+end
+function load(path, errors)
+    items = Dict{String,Item}()
+    for (number, line) in enumerate(readlines(path))
+        number == 1 && continue
+        fields = String.(split(line, ','))
+        id, rule, parameter = fields[1], fields[3], fields[4]
+        message = haskey(items, id) ? "duplicate item $id" : rule ∉ ("LFL", "FOQ", "POQ", "MIN") ? "unknown lot rule $rule" : isnothing(lotvalues(rule, parameter)) ? "bad lot parameter $parameter for $rule" : ""
+        if !isempty(message)
+            push!(errors, "items.csv line $number: $message")
+            continue
+        end
+        lot = lotvalues(rule, parameter)
+        items[id] = Item(id, parse(Int, fields[2]), rule, lot[1], length(lot) == 2 ? lot[2] : 0, parse(Int, fields[5]), parse(Int, fields[6]), parse(Int, fields[7]), parse(Int, fields[8]), fields[9])
+    end
+    return items
+end
+label(item) = item.rule == "MIN" ? "MIN $(item.first)/$(item.second)" : item.rule == "LFL" ? "LFL" : "$(item.rule) $(item.first)"
+struct Edge
+    parent::String
+    child::String
+    quantity::Int
+    scrap::Int
+end
+struct Graph
+    children::Dict{String,Vector{Edge}}
+    parents::Dict{String,Vector{Edge}}
+end
+need(edge, quantity) = (quantity * edge.quantity * (100 + edge.scrap) + 99) ÷ 100
+manufactured(graph, id) = !isempty(graph.children[id])
+function load(pathname, items, errors)
+    graph = Graph(Dict(id => Edge[] for id in keys(items)), Dict(id => Edge[] for id in keys(items)))
+    for (number, line) in enumerate(readlines(pathname))
+        number == 1 && continue
+        fields = String.(split(line, ','))
+        parent, child, quantity, scrap = fields[1], fields[2], parse(Int, fields[3]), parse(Int, fields[4])
+        message = if !haskey(items, parent)
+            "unknown item $parent"
+        elseif !haskey(items, child)
+            "unknown item $child"
+        elseif quantity < 1
+            "bad quantity $quantity"
+        elseif scrap > 50
+            "bad scrap $scrap"
+        elseif parent == child
+            "cycle $parent -> $parent"
+        elseif any(edge -> edge.child == child, graph.children[parent])
+            "duplicate $parent -> $child"
+        else
+            cycle = path(graph, child, parent, Set{String}())
+            isnothing(cycle) ? "" : "cycle $parent -> $(join(cycle, " -> "))"
+        end
+        if !isempty(message)
+            push!(errors, "bom.csv line $number: $message")
+            continue
+        end
+        edge = Edge(parent, child, quantity, scrap)
+        push!(graph.children[parent], edge)
+        sort!(graph.children[parent]; by=edge -> edge.child)
+        push!(graph.parents[child], edge)
+        sort!(graph.parents[child]; by=edge -> edge.parent)
+    end
+    return graph
+end
+function codes(graph, items)
+    result = Dict{String,Int}()
+    function visit(id)
+        return get!(result, id) do
+            isempty(graph.parents[id]) ? 0 : maximum(visit(edge.parent) + 1 for edge in graph.parents[id])
+        end
+    end
+    for id in keys(items)
+        visit(id)
+    end
+    return result
+end
+struct Center
+    id::String
+    minutes::Int
+    efficiency::Int
+    available::Int
+    description::String
+end
+struct Operation
+    number::Int
+    center::String
+    setup::Int
+    run::Int
+end
+minutes(operation, quantity) = operation.setup + quantity * operation.run
+operationweek(receipt, lead, index, count) = max(receipt - lead + index * lead ÷ count, 1)
+function centers(path, errors)
+    result = Dict{String,Center}()
+    for (number, line) in enumerate(readlines(path))
+        number == 1 && continue
+        fields = String.(split(line, ','))
+        id, time, efficiency = fields[1], parse(Int, fields[2]), parse(Int, fields[3])
+        message = haskey(result, id) ? "duplicate center $id" : !(50 <= efficiency <= 150) ? "bad efficiency $efficiency" : ""
+        if isempty(message)
+            result[id] = Center(id, time, efficiency, time * efficiency ÷ 100, fields[4])
+        else
+            push!(errors, "workcenters.csv line $number: $message")
+        end
+    end
+    return result
+end
+function routings(path, items, centers, graph, errors)
+    result = Dict(id => Operation[] for id in keys(items))
+    for (number, line) in enumerate(readlines(path))
+        number == 1 && continue
+        fields = String.(split(line, ','))
+        id, operation, center, setup, run = fields[1], parse(Int, fields[2]), fields[3], parse(Int, fields[4]), parse(Int, fields[5])
+        message = !haskey(items, id) ? "unknown item $id" : !haskey(centers, center) ? "unknown center $center" : !manufactured(graph, id) ? "purchased item $id" : run < 1 ? "bad run time $run" : any(entry -> entry.number == operation, result[id]) ? "duplicate $id operation $operation" : ""
+        if isempty(message)
+            push!(result[id], Operation(operation, center, setup, run))
+        else
+            push!(errors, "routings.csv line $number: $message")
+        end
+    end
+    for operations in values(result)
+        sort!(operations; by=operation -> operation.number)
+    end
+    return result
+end
+function quantity(item, week, projected, receipts, gross, horizon)
+    net = item.safety - projected
+    item.rule == "LFL" && return net
+struct ScheduleRow
+    item::String
+    week::Int
+    quantity::Int
+    line::Int
+end
+struct Inquiry
+    id::String
+    item::String
+    quantity::Int
+    week::Int
+    line::Int
+end
+struct Demand
+    item::String
+    kind::Symbol
+    week::Int
+    quantity::Int
+    orderid::String
+    line::Int
+    parent::String
+    parentnumber::Int
+end
+Demand(item, kind, week, quantity; orderid="", line=0, parent="", parentnumber=0) = Demand(item, kind, week, quantity, orderid, line, parent, parentnumber)
+struct PlannedOrder
+    item::String
+    number::Int
+    receipt::Int
+    quantity::Int
+    original::Int
+    release::Int
+end
+mutable struct ItemPlan
+    item::Items.Item
+    receipts::Vector{Int}
+    demands::Vector{Demand}
+    gross::Vector{Int}
+    onhand::Vector{Int}
+    net::Vector{Int}
+    plannedreceipts::Vector{Int}
+    plannedreleases::Vector{Int}
+    orders::Vector{PlannedOrder}
+    supplies::Vector{Supply}
+    ordersupplies::Vector{Supply}
+end
+ItemPlan(item, horizon, receipts) = ItemPlan(item, receipts, Demand[], zeros(Int, horizon), zeros(Int, horizon), zeros(Int, horizon), zeros(Int, horizon), zeros(Int, horizon), PlannedOrder[], Supply[], Supply[])
+pastdue(plan) = sum((order.quantity for order in plan.orders if order.original < 1); init=0)
+struct Plan
+    items::Dict{String,ItemPlan}
+    loads::Dict{String,Vector{Int}}
+    overloads::Dict{String,Vector{Int}}
+end
+mutable struct Promise
+    inquiry::Inquiry
+    week::Int
+    materialweek::Int
+    reason::String
+end
+rows(name) = [(number, String.(split(line, ','))) for (number, line) in enumerate(readlines(joinpath("input", name))) if number > 1]
+function scheduleerror(item, week, quantity, items, horizon)
+    !haskey(items, item) && return "unknown item $item"
+    !(1 <= week <= horizon) && return "week $week outside horizon"
+    quantity < 1 && return "bad quantity $quantity"
+    return ""
+end
+function readschedule(name, items, horizon, errors, uniqueweeks)
+    result = ScheduleRow[]
+    seen = Set{Tuple{String,Int}}()
+    for (number, fields) in rows(name)
+        item, week, quantity = fields[1], parse(Int, fields[2]), parse(Int, fields[3])
+        message = scheduleerror(item, week, quantity, items, horizon)
+        isempty(message) && uniqueweeks && (item, week) in seen && (message = "duplicate $item week $week")
+        if isempty(message)
+            push!(result, ScheduleRow(item, week, quantity, number))
+            push!(seen, (item, week))
+        else
+            push!(errors, "$name line $number: $message")
+        end
+    end
+    return result
+end
+function PlanningData()
+    horizon, treequantity, peg = 0, 0, String[]
+    for line in readlines("input/params.txt")
+        words = String.(split(line, ' '))
+        if words[1] == "horizon"
+            horizon = parse(Int, words[2])
+        elseif words[1] == "peg"
+            peg = words[2:end]
+        else
+            treequantity = parse(Int, words[2])
+        end
+    end
+    errors = String[]
+    items = Items.load("input/items.csv", errors)
+    graph = Bom.load("input/bom.csv", items, errors)
+    centers = Capacity.centers("input/workcenters.csv", errors)
+    routings = Capacity.routings("input/routings.csv", items, centers, graph, errors)
+    mpsrows = readschedule("mps.csv", items, horizon, errors, true)
+    receipts = readschedule("receipts.csv", items, horizon, errors, false)
+    inquiries = Inquiry[]
+    for (number, fields) in rows("orders.csv")
+        id, item, quantity, week = fields[1], fields[2], parse(Int, fields[3]), parse(Int, fields[4])
+        message = any(inquiry -> inquiry.id == id, inquiries) ? "duplicate order $id" : scheduleerror(item, week, quantity, items, horizon)
+        if isempty(message)
+            push!(inquiries, Inquiry(id, item, quantity, week, number))
+        else
+            push!(errors, "orders.csv line $number: $message")
+        end
+    end
+    codes = Bom.codes(graph, items)
+    cumulative = Bom.cumulative(graph, items)
+    order = sort!(collect(keys(items)); by=id -> (codes[id], id))
+    centerorder = sort!(collect(keys(centers)))
+    receiptmap = Dict(id => ScheduleRow[] for id in keys(items))
+    scheduled = Dict(id => zeros(Int, horizon) for id in keys(items))
+    for row in sort!(receipts; by=row -> (row.week, row.line))
+        push!(receiptmap[row.item], row)
+        scheduled[row.item][row.week] += row.quantity
+    end
+    mps = [Demand(row.item, :MPS, row.week, row.quantity) for row in mpsrows]
+    return PlanningData(horizon, peg, treequantity, items, graph, centers, routings, mps, receiptmap, scheduled, inquiries, codes, cumulative, order, centerorder, errors)
+end
+function runmrp(data, inquiries)
+    plans = Dict(id => ItemPlan(data.items[id], data.horizon, data.scheduled[id]) for id in data.order)
+    for demand in [data.mps; inquiries]
+        push!(plans[demand.item].demands, demand)
+    end
+    for id in data.order
+        plan, item = plans[id], data.items[id]
+        for demand in plan.demands
+            plan.gross[demand.week] += demand.quantity
+        end
+        projected = item.onhand
+        for week in 1:data.horizon
+            available = projected + plan.receipts[week] - plan.gross[week]
+            projected = available
+            if available < item.safety
+                quantity = LotSizing.quantity(item, week, available, plan.receipts, plan.gross, data.horizon)
+                release = week - item.lead
+                order = PlannedOrder(id, length(plan.orders) + 1, week, quantity, release, max(1, release))
+                push!(plan.orders, order)
+                plan.net[week] = item.safety - available
+                plan.plannedreceipts[week] = quantity
+                plan.plannedreleases[order.release] += quantity
+                projected += quantity
+            end
+            plan.onhand[week] = projected
+        end
+        for order in plan.orders, edge in data.graph.children[id]
+            push!(plans[edge.child].demands, Demand(edge.child, :DEPENDENT, order.release, Bom.need(edge, order.quantity); parent=id, parentnumber=order.number))
+        end
+    end
+    loads = Dict(id => zeros(Int, data.horizon) for id in data.centerorder)
+    for id in data.order
+        operations = data.routings[id]
+        for order in plans[id].orders, (index, operation) in enumerate(operations)
+            week = Capacity.operationweek(order.receipt, data.items[id].lead, index - 1, length(operations))
+            loads[operation.center][week] += Capacity.minutes(operation, order.quantity)
+        end
+    end
+    overloads = Dict(id => [max(0, load - data.centers[id].available) for load in loads[id]] for id in data.centerorder)
+    return Plan(plans, loads, overloads)
+end
+function capacityreason(data, current, trial)
+    for center in data.centerorder, week in 1:data.horizon
+        if trial.overloads[center][week] > current.overloads[center][week]
+            return "$center week $week"
+        end
+    end
+    return ""
+end
+function promiseinquiries(data, base)
+    current = base
+    promised, promises = Demand[], Promise[]
+    for inquiry in data.inquiries
+        promise = Promise(inquiry, 0, 0, "")
+        for week in inquiry.week:data.horizon
+            demand = Demand(inquiry.item, :ORDER, week, inquiry.quantity; orderid=inquiry.id, line=inquiry.line)
+            trial = runmrp(data, [promised; demand])
+            reason = ""
+            for id in data.order
+                if pastdue(trial.items[id]) > pastdue(current.items[id])
+                    reason = id
+                    break
+                end
+            end
+            if isempty(reason)
+                promise.materialweek == 0 && (promise.materialweek = week)
+                reason = capacityreason(data, current, trial)
+            end
+            if isempty(reason)
+                promise.week = week
+                push!(promised, demand)
+                current = trial
+                break
+            end
+            week == inquiry.week && (promise.reason = reason)
+        end
+        push!(promises, promise)
+    end
+    return promises, current
+end
+function gridlines(data, plan)
+    output = String[]
+    for id in data.order
+        itemplan, item = plan.items[id], data.items[id]
+        push!(output, "ITEM $id LLC $(data.codes[id]) LT $(item.lead) LOT $(Items.label(item)) SS $(item.safety) OH $(item.onhand) $(item.description)")
+        for (label, values) in (("WEEK", 1:data.horizon), ("GROSS", itemplan.gross), ("RECEIPTS", itemplan.receipts), ("ON_HAND", itemplan.onhand), ("NET", itemplan.net), ("PLAN_RCPT", itemplan.plannedreceipts), ("PLAN_REL", itemplan.plannedreleases))
+            push!(output, Report.table(label, values, 6))
+        end
+        push!(output, "TOTAL gross $(sum(itemplan.gross)) receipts $(sum(itemplan.receipts)) planned $(sum(itemplan.plannedreceipts)) orders $(length(itemplan.orders)) ending $(last(itemplan.onhand))")
+    end
+    return output
+end
+function capacitylines(data, plan)
+    output = String[]
+    totals = Dict(id => sum(plan.loads[id]) for id in data.centerorder)
+    for id in data.centerorder
+        center = data.centers[id]
+        loads, overloads = plan.loads[id], plan.overloads[id]
+        leveled = Capacity.level(loads, center.available)
+        peak = totals[id] > 0 ? argmax(loads) : 0
+        push!(output, "CENTER $id minutes $(center.minutes) efficiency $(center.efficiency) available $(center.available) $(center.description)")
+        for (label, values) in (("WEEK", 1:data.horizon), ("LOAD", loads), ("UTIL", [percent(load, center.available) for load in loads]), ("OVER", overloads), ("LEVELED", leveled))
+            push!(output, Report.table(label, values, 7))
+        end
+        push!(output, "TOTAL load $(totals[id]) available $(center.available * data.horizon) utilization $(percent(totals[id], center.available * data.horizon)) overloaded $(count(>(0), overloads)) peak $peak backlog $(max(0, leveled[1] - center.available))")
+    end
+    return output
+end
+function promiselines(data, promises, base, final)
+    output = String[]
+    ontime, late, rejected = 0, 0, 0
+    for promise in promises
+        inquiry = promise.inquiry
+        head = "ORDER $(inquiry.id) $(inquiry.item) quantity $(inquiry.quantity) requested $(inquiry.week)"
+        material = promise.materialweek == 0 ? "none" : string(promise.materialweek)
+        if promise.week == 0
+            rejected += 1
+            push!(output, "$head rejected material $material reason $(promise.reason)")
+            continue
+        elseif promise.week == inquiry.week
+            ontime += 1
+            push!(output, "$head promised $(promise.week)")
+        else
+            late += 1
+            push!(output, "$head promised $(promise.week) late $(promise.week - inquiry.week) material $material reason $(promise.reason)")
+        end
+        for id in data.order, supply in final.items[id].ordersupplies
+            if any(root -> root.kind == :ORDER && root.orderid == inquiry.id, supply.roots)
+                order = supply.order
+                push!(output, "  SUPPLY $id order $(order.number) receipt $(order.receipt) release $(order.release) quantity $(order.quantity)")
+            end
+        end
+    end
+    for id in data.order
+        before, after = base.items[id], final.items[id]
+        changed = findfirst(i -> before.plannedreceipts[i] != after.plannedreceipts[i], 1:data.horizon)
+        if !isnothing(changed)
+            push!(output, "CHANGE $id from $changed planned $(sum(before.plannedreceipts)) -> $(sum(after.plannedreceipts)) orders $(length(before.orders)) -> $(length(after.orders))")
+        end
+    end
+    push!(output, "SUMMARY orders $(length(promises)) on_time $ontime late $late rejected $rejected")
+    return output
+end
+    data = PlanningData()
+    base = runmrp(data, Demand[])
+    promises, final = promiseinquiries(data, base)
+    Report.writefile("mrp_grid.txt", gridlines(data, final))
+    Report.writefile("capacity.txt", capacitylines(data, final))
+    Report.writefile("promises.txt", promiselines(data, promises, base, final))
+table(label, values, width) = rpad(label, 10) * join((lpad(string(value), width) for value in values))
+function writefile(name, lines)
+    mkpath("output")
+    open(joinpath("output", name), "w") do file
+        for line in lines
+            println(file, line)
+        end
+    end
+end

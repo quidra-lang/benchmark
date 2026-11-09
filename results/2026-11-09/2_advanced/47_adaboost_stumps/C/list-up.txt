@@ -1,0 +1,175 @@
+static double sum(const double *values, int n) {
+    double out = 0;
+    for (int i = 0; i < n; ++i)
+        out += values[i];
+    return out;
+}
+Model *discrete(const Rows *rows, const Params *p, int maximum, double shrinkage,
+                const double *initial_weights) {
+    (void)p;
+    double weights[400];
+    for (int i = 0; i < rows->n; ++i)
+        weights[i] = initial_weights ? initial_weights[i] : 1.0 / rows->n;
+    Search *search = prepare(rows, 0);
+    Model *out = calloc(1, sizeof *out);
+    out->variant = "discrete";
+    out->stop = "completed";
+    double bound = 1;
+    for (int t = 0; t < maximum; ++t) {
+        const Candidate candidate = discrete_stump(rows, search, weights);
+        const double e = candidate.error;
+        if (e >= 0.5) {
+            out->stop = "weak";
+            break;
+        }
+        const double alpha = e <= 0.0000000001 ? 1 : shrinkage * (0.5 * log((1 - e) / e));
+        Round *round = &out->rounds[out->n++];
+        round->stump = candidate.stump;
+        for (int b = 0; b < 2; ++b)
+            round->stump.values[b] *= alpha;
+        for (int i = 0; i < rows->n; ++i) {
+            const int decision = (int)stump_output(&candidate.stump, rows->rows[i].values);
+            weights[i] = weights[i] * exp(decision == rows->rows[i].label ? -alpha : alpha);
+        }
+        round->z = sum(weights, rows->n);
+        for (int i = 0; i < rows->n; ++i)
+            weights[i] /= round->z;
+        if (e <= 0.0000000001) {
+            out->stop = "perfect";
+            break;
+        }
+    }
+    free(search);
+    return out;
+double stump_output(const Stump *stump, const double *values) {
+    int bin = 0;
+    for (int k = 0; k < stump->nthresholds; ++k)
+        bin += values[stump->feature] > stump->thresholds[k];
+    return stump->values[bin];
+}
+Search *prepare(const Rows *rows, int bins) {
+    Search *out = calloc(1, sizeof *out);
+    out->d = rows->d;
+    for (int j = 0; j < rows->d; ++j) {
+        Feature *f = &out->features[j];
+        for (int i = 0; i < rows->n; ++i) {
+            int position = i;
+            while (position > 0 && rows->rows[i].values[j] < rows->rows[f->order[position - 1]].values[j]) {
+                f->order[position] = f->order[position - 1];
+                --position;
+            }
+            f->order[position] = i;
+        }
+        f->thresholds[f->n] = rows->rows[f->order[0]].values[j] - 1;
+        f->ends[f->n++] = 0;
+        for (int i = 1; i < rows->n; ++i) {
+            const double left = rows->rows[f->order[i - 1]].values[j],
+                         right = rows->rows[f->order[i]].values[j];
+            if (left != right) {
+                f->thresholds[f->n] = (left + right) / 2;
+                f->ends[f->n++] = i;
+            }
+        }
+    }
+    return out;
+}
+Candidate discrete_stump(const Rows *rows, const Search *search, const double *weights) {
+    double positive = 0, negative = 0;
+    for (int i = 0; i < rows->n; ++i)
+        if (rows->rows[i].label == 1)
+            positive += weights[i];
+        else
+            negative += weights[i];
+    Candidate *candidates = malloc((size_t)rows->n * (size_t)rows->d * 2 * sizeof *candidates);
+    int count = 0;
+    for (int j = 0; j < search->d; ++j) {
+        const Feature *f = &search->features[j];
+        int position = 0;
+        double lp = 0, ln = 0;
+        for (int k = 0; k < f->n; ++k) {
+            while (position < f->ends[k]) {
+                const int i = f->order[position++];
+                if (rows->rows[i].label == 1)
+                    lp += weights[i];
+                else
+                    ln += weights[i];
+            }
+            for (int sign = 1; sign >= -1; sign -= 2)
+                candidates[count++] =
+                    (Candidate){single(j, f->thresholds[k], -sign, sign),
+                                sign == 1 ? lp + (negative - ln) : ln + (positive - lp), sign};
+        }
+    }
+    return choose(candidates, count);
+}
+int prediction(double score) {
+    return score > 0 ? 1 : -1;
+}
+static Vector scores(const Model *model, const Rows *rows, int count) {
+    if (count < 0 || count > model->n)
+        count = model->n;
+    Vector out = {.n = rows->n};
+    for (int i = 0; i < rows->n; ++i)
+        for (int t = 0; t < count; ++t)
+            out.v[i] += stump_output(&model->rounds[t].stump, rows->rows[i].values);
+    return out;
+}
+static Curve curve(const Model *model, const Rows *train, const Rows *test) {
+    Curve out = {0};
+    out.train.n = out.test.n = out.train_loss.n = out.test_loss.n = out.minimum.n = model->n;
+    for (int t = 1; t <= model->n; ++t) {
+        const Vector a = scores(model, train, t), b = scores(model, test, t);
+        out.train.v[t - 1] = error_count(train, a);
+        out.test.v[t - 1] = error_count(test, b);
+    }
+    return out;
+}
+static int first_minimum(Ints values) {
+    int out = 0;
+    for (int i = 1; i < values.n; ++i)
+        if (values.v[i] < values.v[out])
+            out = i;
+    return out;
+}
+    Model *folds[10];
+    Ints fold_errors[10];
+    Ints cv = {.n = p->rounds};
+    for (int fold = 0; fold < p->folds; ++fold) {
+        int validation = 0;
+        for (int i = 0; i < n; ++i)
+            validation += i % p->folds == fold;
+        double weights[400] = {0};
+        for (int i = 0; i < n; ++i)
+            if (i % p->folds != fold)
+                weights[i] = 1.0 / (n - validation);
+        folds[fold] = discrete(train, p, p->rounds, 1, weights);
+        fold_errors[fold] = (Ints){.n = p->rounds};
+        for (int t = 1; t <= p->rounds; ++t) {
+            const Vector values = scores(folds[fold], train, t);
+            for (int i = 0; i < n; ++i)
+                if (i % p->folds == fold)
+                    fold_errors[fold].v[t - 1] += prediction(values.v[i]) != train->rows[i].label;
+            cv.v[t - 1] += fold_errors[fold].v[t - 1];
+        }
+    }
+    const int selected = first_minimum(cv) + 1;
+    Vector oof = {.n = n};
+    for (int fold = 0; fold < p->folds; ++fold) {
+        const Vector values = scores(folds[fold], train, selected);
+        for (int i = 0; i < n; ++i)
+            if (i % p->folds == fold)
+                oof.v[i] = values.v[i];
+    }
+    for (int v = 0; v < nv; ++v) {
+        const char *variant = p->variants[v];
+        full[v] = variant_train(train, p, variant);
+        final[v] = malloc(sizeof *final[v]);
+        *final[v] = *full[v];
+        if (strcmp(variant, "discrete") == 0 && final[v]->n > selected)
+            final[v]->n = selected;
+        curves[v] = curve(full[v], train, test);
+        train_scores[v] = scores(final[v], train, -1);
+        test_scores[v] = scores(final[v], test, -1);
+    for (int v = 0; v < nv; ++v) {
+        metrics(&summary, "train", p->variants[v], final[v]->n, train, train_scores[v]);
+        metrics(&summary, "test", p->variants[v], final[v]->n, test, test_scores[v]);

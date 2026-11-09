@@ -1,0 +1,89 @@
+fn r4(value: f64) []const u8 {
+    return metrics.real(value, 4);
+}
+fn r6(value: f64) []const u8 {
+    return metrics.real(value, 6);
+}
+fn trained(data: d.Matrix, targets: []const usize, lambda: f64) []const f64 {
+    const trace = o.newton(data, targets, lambda);
+    return trace[trace.len - 1].weights;
+}
+const CrossValidation = struct { folds: [5]f64, probabilities: []f64, loss: f64 = 0, errors: usize = 0 };
+    selected: usize = 0,
+    one_se: usize = 0,
+    se: f64 = 0,
+    lambda: f64 = 0,
+    fn crossValidate(self: *const Study, coefficient: f64, count: usize) CrossValidation {
+        var result: CrossValidation = .{ .folds = undefined, .probabilities = d.alloc(f64, self.y.len) };
+        const losses = d.alloc(f64, self.y.len);
+        for (0..5) |fold| {
+            var training: std.ArrayList(usize) = .empty;
+            var validation: std.ArrayList(usize) = .empty;
+            for (0..self.y.len) |id| {
+                if (id % 5 == fold) d.append(usize, &validation, id) else d.append(usize, &training, id);
+            }
+            const raw = select([]f64, self.train_expanded, training.items);
+            const stats = d.statistics(raw, count);
+            const x = d.standardize(raw, stats, count);
+            const vx = d.standardize(select([]f64, self.train_expanded, validation.items), stats, count);
+            const targets = select(usize, self.y, training.items);
+            const weights = trained(x, targets, coefficient);
+            var total: f64 = 0;
+            for (validation.items, vx) |id, row| {
+                const score = l.score(weights, row);
+                losses[id] = l.loss(score, self.y[id]);
+                result.probabilities[id] = l.sigmoid(score);
+                total += losses[id];
+                if (@intFromBool(result.probabilities[id] >= self.params.threshold) != self.y[id]) result.errors += 1;
+            }
+            result.folds[fold] = total / d.f(validation.items.len);
+        }
+        var total: f64 = 0;
+        for (losses) |value| total += value;
+        result.loss = total / d.f(self.y.len);
+        return result;
+            out.add("model {s} lambda {s}", .{ model.name, r4(self.lambda) });
+        out.add("coefficients newton lambda {s}", .{r4(self.lambda)});
+        out.add("model {s} lambda {s}", .{ model.name, r4(self.lambda) });
+        out.add("cross_validation folds 5 newton_iterations 10", .{});
+        for (self.params.lambdas, self.validations) |lambda, cv| {
+            var losses: d.Text = .{};
+            for (cv.folds) |value| losses.add(" {s}", .{r6(value)});
+            out.add("lambda {s} fold_loss{s} cv_loss {s} errors {d}/{d}", .{ r4(lambda), losses.value(),
+                 r6(cv.loss), cv.errors, n });
+        }
+        out.add("selected lambda {s} cv_loss {s} se {s} lambda_1se {s}", .{ r4(self.lambda), r6(self.validations[self.selected].loss),
+             r6(self.se), r4(self.params.lambdas[self.one_se]) });
+        const c = metrics.confusion(self.validations[self.selected].probabilities, self.y, self.params.threshold);
+        out.add("out_of_fold tp {d} fp {d} tn {d} fn {d} accuracy {s} auc {s}", .{ c.tp, c.fp, c.tn,
+             c.fn_, ratio(c.tp + c.tn, n), metrics.auc(self.validations[self.selected].probabilities,
+             self.y).text() });
+        self.validations = d.alloc(CrossValidation, self.params.lambdas.len);
+        for (self.params.lambdas, self.validations) |lambda, *cv| cv.* = self.crossValidate(lambda, self.terms.len);
+        for (self.validations, 0..) |cv, index| if (cv.loss <= self.validations[self.selected].loss) {
+            self.selected = index;
+        };
+        self.lambda = self.params.lambdas[self.selected];
+        var mean: f64 = 0;
+        for (self.validations[self.selected].folds) |value| mean += value;
+        mean /= 5;
+        var squares: f64 = 0;
+        for (self.validations[self.selected].folds) |value| squares += (value - mean) * (value - mean);
+        self.se = @sqrt(squares / 4) / @sqrt(@as(f64, 5));
+        for (self.validations, 0..) |cv, index| if (cv.loss <= self.validations[self.selected].loss + self.se) {
+            self.one_se = index;
+        };
+        const traces = [_][]o.Checkpoint{ o.gradientDescent(self.x, self.y, self.lambda, self.params.gd_rate,
+             self.params.gd_iterations), o.stochastic(self.x, self.y, self.lambda, self.params), o.newton(self.x,
+             self.y, self.lambda) };
+        const names = [_][]const u8{ "gd", "sgd", "newton" };
+        for (&self.models, traces, names) |*model, trace, name| {
+            const weights = trace[trace.len - 1].weights;
+            model.* = .{ .name = name, .checkpoints = trace, .weights = weights, .train_probabilities = l.probabilities(weights,
+                 self.x), .test_probabilities = l.probabilities(weights, self.z) };
+        }
+        self.fit = influence(self.models[2].weights, self.x, self.y, self.lambda);
+pub fn real(value: f64, digits: usize) []const u8 {
+    const text = if (digits == 6) d.fmt("{d:.6}", .{value}) else d.fmt("{d:.4}", .{value});
+    return if (d.eq(text, "-0.0000")) "0.0000" else if (d.eq(text, "-0.000000")) "0.000000" else text;
+}

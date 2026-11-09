@@ -1,0 +1,163 @@
+using Strings = std::vector<std::string>;
+using Hash = std::map<std::string, std::string>;
+using Members = std::set<std::string>;
+using SortedSet = std::map<std::string, int>;
+using Value = std::variant<std::string, Strings, Hash, Members, SortedSet>;
+using Reply = std::vector<std::string>;
+struct Record { Value value; std::optional<int> expiry; };
+using Database = std::map<std::string, Record>;
+std::string upper(std::string value) {
+    for (char& c : value) if ('a' <= c && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    return value;
+int number(const std::string& word, const std::string& message = notInteger) {
+    if (word == "0") return 0;
+    if (word.empty()) fail(message);
+    std::size_t start = word[0] == '-' ? 1 : 0, digits = word.size() - start;
+    if (digits < 1 || digits > 9 || word[start] < '1' || word[start] > '9') fail(message);
+    int result = 0;
+    for (std::size_t index = start; index < word.size(); ++index) {
+        if (word[index] < '0' || word[index] > '9') fail(message);
+        result = result * 10 + word[index] - '0';
+    }
+    return start == 1 ? -result : result;
+std::string quote(const std::string& value) {
+    std::string result = "\"";
+    for (char c : value) { if (c == '"' || c == '\\') result += '\\'; result += c; }
+    return result + '"';
+}
+Reply status(const std::string& value) { return {value}; }
+Reply integer(long long value) { return {"(integer) " + std::to_string(value)}; }
+Reply stringReply(const std::optional<std::string>& value) { return {value ? quote(*value) : "(nil)"}; }
+std::optional<Strings> splitArguments(const std::string& line) {
+    Strings arguments;
+    std::size_t position = 0;
+    while (position < line.size()) {
+        if (line[position] == ' ') { ++position; continue; }
+        if (line[position] != '"') {
+            auto start = position;
+            while (position < line.size() && line[position] != ' ') ++position;
+            arguments.push_back(line.substr(start, position - start));
+            continue;
+        }
+    }
+    return arguments;
+const std::map<std::string, CommandSpec> commands = [] {
+    std::map<std::string, CommandSpec> result;
+    auto add = [&](Group group, const std::string& names, int minimum, int maximum, int parity = -1) {
+        std::istringstream words(names);
+        for (std::string word; words >> word;) result.emplace(word, CommandSpec{group, minimum, maximum, parity});
+    };
+    add(Group::Text, "SET", 2, -1);
+    add(Group::Text, "GET INCR DECR STRLEN", 1, 1);
+    add(Group::Keys, "TYPE KEYS TTL PERSIST TICK", 1, 1);
+    add(Group::Control, "BEGIN COMMIT ROLLBACK", 0, 0);
+    add(Group::Control, "SNAPSHOT RESTORE", 1, 1);
+    return result;
+    Database database;
+    int time = 0;
+    std::vector<Database> transactions;
+    std::map<std::string, Database> snapshots;
+    template<class T> T readValue(const std::string& key) const {
+        auto found = database.find(key);
+        if (found == database.end()) return T{};
+        auto value = std::get_if<T>(&found->second.value);
+        if (!value) fail(wrongType);
+        return *value;
+    void replace(const std::string& key, Value value, std::optional<int> expiry = std::nullopt) {
+        bool emptyCollection = std::visit([](const auto& content) {
+            using T = std::decay_t<decltype(content)>;
+            if constexpr (std::is_same_v<T, std::string>) return false;
+            else return content.empty();
+        }, value);
+        if (emptyCollection) database.erase(key);
+        else database.insert_or_assign(key, Record{std::move(value), expiry});
+    int purge() {
+        int removed = 0;
+        for (auto iterator = database.begin(); iterator != database.end();) {
+            if (iterator->second.expiry && *iterator->second.expiry <= time) {
+                iterator = database.erase(iterator); ++removed;
+            } else ++iterator;
+        }
+        return removed;
+    Reply textCommand(const std::string& command, const Strings& args) {
+        const auto& key = args[0];
+        if (command == "SET") {
+            Members options;
+            std::optional<std::string> secondsWord;
+            for (std::size_t index = 2; index < args.size(); ++index) {
+                auto option = upper(args[index]);
+                if (option != "NX" && option != "XX" && option != "EX" && option != "KEEPTTL" && option != "GET") fail(syntax);
+                if (!options.insert(option).second) fail(syntax);
+                if (option == "EX") {
+                    if (++index == args.size()) fail(syntax);
+                    secondsWord = args[index];
+                }
+            }
+            if ((options.count("NX") && options.count("XX")) || (options.count("EX") && options.count("KEEPTTL"))) fail(syntax);
+            std::optional<int> expiry;
+            if (secondsWord) {
+                int seconds = number(*secondsWord);
+                if (seconds <= 0) fail("ERR invalid expire time in 'set' command");
+                expiry = time + seconds;
+            }
+            auto found = database.find(key);
+            bool exists = found != database.end();
+            std::optional<std::string> old;
+            bool changed = !(options.count("NX") && exists) && !(options.count("XX") && !exists);
+            if (changed) replace(key, args[1], expiry);
+            if (options.count("GET")) return stringReply(old);
+            return changed ? status("OK") : stringReply(std::nullopt);
+        }
+        auto value = readValue<std::string>(key);
+        if (command == "GET") return stringReply(database.count(key) ? std::optional<std::string>(value) : std::nullopt);
+    Reply keyCommand(const std::string& command, const Strings& args) {
+        if (command == "TICK") {
+            int seconds = number(args[0]);
+            if (seconds <= 0) fail(positive);
+            time += seconds;
+            return integer(purge());
+        }
+    Reply controlCommand(const std::string& command, const Strings& args) {
+        if (command == "BEGIN") { transactions.push_back(database); return status("OK"); }
+        if (command == "COMMIT" || command == "ROLLBACK") {
+            if (transactions.empty()) fail("ERR no transaction");
+            if (command == "ROLLBACK") database = std::move(transactions.back());
+            transactions.pop_back();
+            if (command == "ROLLBACK") purge();
+            return status("OK");
+        }
+        if (command == "SNAPSHOT") { snapshots.insert_or_assign(args[0], database); return status("OK"); }
+        auto found = snapshots.find(args[0]);
+        if (found == snapshots.end()) fail("ERR no such snapshot");
+        database = found->second;
+        purge();
+        return status("OK");
+    Reply execute(const std::string& line) {
+        auto parsed = splitArguments(line);
+        if (!parsed || parsed->empty()) return status("Invalid argument(s)");
+        auto command = upper((*parsed)[0]);
+        auto found = commands.find(command);
+        if (found == commands.end()) fail("ERR unknown command '" + (*parsed)[0] + "'");
+        Strings args(parsed->begin() + 1, parsed->end());
+        const auto& specification = found->second;
+        int count = static_cast<int>(args.size());
+        if (count < specification.minimum || (specification.maximum >= 0 && count > specification.maximum)
+            || (specification.parity >= 0 && count % 2 != specification.parity)) {
+            fail("ERR wrong number of arguments for '" + lower(command) + "' command");
+        }
+        switch (specification.group) {
+            case Group::Text: return textCommand(command, args);
+            case Group::Keys: return keyCommand(command, args);
+            case Group::Control: return controlCommand(command, args);
+        }
+    std::string line;
+    if (!std::getline(std::cin, line)) return 0;
+    int count = std::stoi(line);
+    Store store;
+    for (int index = 0; index < count; ++index) {
+        std::getline(std::cin, line);
+        try {
+            for (const auto& output : store.execute(line)) std::cout << output << '\n';
+        } catch (const CommandError& error) {
+        }
+    }

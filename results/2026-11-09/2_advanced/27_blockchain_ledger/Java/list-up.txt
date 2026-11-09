@@ -1,0 +1,562 @@
+    record Entry(Transaction transaction, int fee, int arrival) {}
+        void refresh() {
+            mainChain = Chain.sequence(tip);
+            confirmed.clear();
+            for (BlockRecord record : mainChain)
+                for (Transaction transaction : record.block.transactions)
+                    confirmed.put(transaction.txid, record.block.height);
+        }
+        void log(String line) {
+            logs.add(now + " " + line);
+        }
+        int height() {
+            return tip.block.height + 1;
+        }
+        int reward(int height) {
+            return Chain.reward(height, params.value("REWARD"), params.value("REWARD", 1));
+        }
+        int difficulty(BlockRecord parent) {
+            return Chain.difficulty(parent, params.value("DIFFICULTY"), params.value("RETARGET"),
+                                    params.value("RETARGET", 1));
+        }
+        boolean mature(Coin coin) {
+            return coin.mature(height(), params.value("MATURITY"));
+        }
+        Set<Reference> locked() {
+            Set<Reference> references = new HashSet<>();
+            for (Entry entry : mempool)
+                references.addAll(entry.transaction.inputs);
+            return references;
+        }
+        List<Entry> ranked() {
+            List<Entry> entries = new ArrayList<>(mempool);
+            entries.sort((first, second) -> {
+                int rate = Integer.compare(second.fee * first.transaction.size(),
+                                           first.fee * second.transaction.size());
+                return rate != 0 ? rate : first.transaction.txid.compareTo(second.transaction.txid);
+            });
+            return entries;
+        }
+        Entry find(String txid) {
+            for (Entry entry : mempool)
+                if (entry.transaction.txid.equals(txid))
+                    return entry;
+            return null;
+        }
+        Acceptance acceptance(Transaction transaction) {
+            if (transaction.coinbase())
+                return new Acceptance("coinbase", 0, List.of());
+            if (confirmed.containsKey(transaction.txid) || find(transaction.txid) != null)
+                return new Acceptance("duplicate", 0, List.of());
+            Check check = Transactions.check(transaction, tip.utxo, Set.of(), height(), owners,
+                                             params.value("MATURITY"));
+            if (check.reason() != null)
+                return new Acceptance(check.reason(), 0, List.of());
+            int fee = check.fee(), size = transaction.size();
+            if (fee * 1000 < params.value("MINFEERATE") * size)
+                return new Acceptance("low-fee", 0, List.of());
+            Set<Reference> inputs = new HashSet<>(transaction.inputs);
+            List<Entry> conflicts = new ArrayList<>();
+            int fees = 0;
+            boolean higher = true;
+            for (Entry entry : mempool) {
+                if (Collections.disjoint(inputs, entry.transaction.inputs))
+                    continue;
+                conflicts.add(entry);
+                fees += entry.fee;
+                if (fee * entry.transaction.size() <= entry.fee * size)
+                    higher = false;
+            }
+            if (!conflicts.isEmpty() && (fee <= fees || !higher))
+                return new Acceptance("conflict", 0, List.of());
+            return new Acceptance(null, fee, conflicts);
+        }
+        void recordDrop(String txid, String reason) {
+            drops.put(txid, reason);
+            log("DROP " + Hashing.shortId(txid) + " " + reason);
+        }
+        void drop(Entry entry, String reason) {
+            mempool.remove(entry);
+            recordDrop(entry.transaction.txid, reason);
+        }
+        void register(Transaction transaction, Acceptance result, int arrival) {
+            for (Entry entry : result.conflicts)
+                drop(entry, "replaced");
+            mempool.add(new Entry(transaction, result.fee, arrival));
+            if (mempool.size() > params.value("MEMPOOL"))
+                drop(ranked().getLast(), "mempool-full");
+        }
+        void rebuild(List<Transaction> returned) {
+            List<Entry> previous = new ArrayList<>(mempool);
+            mempool.clear();
+            for (Transaction transaction : returned)
+                rebuildEntry(transaction, now, true);
+            for (Entry entry : previous)
+                rebuildEntry(entry.transaction, entry.arrival, false);
+        }
+        void rebuildEntry(Transaction transaction, int arrival, boolean returned) {
+            if (confirmed.containsKey(transaction.txid))
+                return;
+            Acceptance result = acceptance(transaction);
+            if (result.reason != null) {
+                recordDrop(transaction.txid, result.reason);
+                return;
+            }
+            if (returned)
+                log("RETURN " + Hashing.shortId(transaction.txid));
+            register(transaction, result, arrival);
+        }
+        void switchTip(BlockRecord target) {
+            BlockRecord old = tip, fork = Chain.fork(old, target);
+            int disconnected = old.block.height - fork.block.height,
+                connected = target.block.height - fork.block.height;
+            String targetText =
+                target.block.height + " " + Hashing.shortId(target.block.hash) + " work " + target.work;
+            if (disconnected > params.value("MAXREORG")) {
+                log("REFUSE " + targetText + " fork " + fork.block.height + " depth " + disconnected);
+                return;
+            }
+            List<Transaction> returned = new ArrayList<>();
+            for (BlockRecord record : mainChain.subList(fork.block.height + 1, mainChain.size()))
+                returned.addAll(record.block.transactions.subList(1, record.block.transactions.size()));
+            tip = target;
+            refresh();
+            if (disconnected == 0)
+                log("TIP " + targetText);
+            else {
+                log("REORG " + targetText + " fork " + fork.block.height + " disconnected " + disconnected +
+                    " connected " + connected);
+                reorganizations.add(new Reorganization(now, fork.block.height, disconnected, connected,
+                                                       old.block.hash, target.block.hash));
+            }
+            rebuild(returned);
+        }
+        void process(String[] fields, List<String> texts) {
+            now = Integer.parseInt(fields[0]);
+            for (Entry entry : new ArrayList<>(mempool))
+                if (now - entry.arrival >= params.value("EXPIRY"))
+                    drop(entry, "expired");
+            switch (fields[1]) {
+            default -> {
+                Peer peer = peers.computeIfAbsent(fields[2], Peer::new);
+                if (peer.score >= params.value("BAN")) {
+                    peer.ignored++;
+                    log("IGNORE " + peer.name + " " + fields[1]);
+                } else if (fields[1].equals("TX"))
+                    receiveTransaction(peer, Transactions.parse(fields[3]));
+                else
+                    receiveBlock(peer, Blocks.parse(fields, texts));
+            }
+            }
+        }
+        void receiveBlock(Peer peer, Block block) {
+            boolean orphaned = false;
+            for (Orphan orphan : orphans)
+                if (orphan.block.hash.equals(block.hash))
+                    orphaned = true;
+            if (records.containsKey(block.hash) || orphaned || rejected.contains(block.hash)) {
+                peer.rejectedBlocks++;
+                tally("block", "duplicate");
+                log("BLOCK " + peer.name + " " + block.height + " " + Hashing.shortId(block.hash) +
+                    " rejected duplicate");
+                return;
+            }
+            String reason = Blocks.error(block, params.value("MAXBLOCK"));
+            if (reason == null && rejected.contains(block.previous))
+                reason = "bad-parent";
+            if (reason != null) {
+                rejectBlock("BLOCK", block, peer, reason);
+                resolve(block.hash);
+                return;
+            }
+            if (!records.containsKey(block.previous)) {
+                orphans.add(new Orphan(block, peer));
+                peer.orphans++;
+                log("BLOCK " + peer.name + " " + block.height + " " + Hashing.shortId(block.hash) +
+                    " orphan parent " + Hashing.shortId(block.previous));
+                if (orphans.size() > params.value("ORPHANS"))
+                    log("EVICT " + Hashing.shortId(orphans.removeFirst().block.hash) + " orphan-limit");
+                return;
+            }
+            connect("BLOCK", block, peer);
+            resolve(block.hash);
+        }
+        Validation validate(Block block, BlockRecord parent) {
+            String reason = null;
+            if (block.height != parent.block.height + 1)
+                reason = "bad-height";
+            else if (block.difficulty != difficulty(parent))
+                reason = "bad-difficulty";
+            else if (block.timestamp <= Chain.median(parent))
+                reason = "time-too-old";
+            else if (block.timestamp > now + params.value("DRIFT"))
+                reason = "time-too-new";
+            if (reason != null)
+                return new Validation(reason, null, null);
+            Map<Reference, Coin> utxo = new HashMap<>(parent.utxo);
+            Set<Reference> spent = new HashSet<>();
+            List<Integer> fees = new ArrayList<>();
+            int total = 0;
+            for (int i = 1; i < block.transactions.size(); i++) {
+                Transaction transaction = block.transactions.get(i);
+                Check check = Transactions.check(transaction, utxo, spent, block.height, owners,
+                                                 params.value("MATURITY"));
+                if (check.reason() != null)
+                    return new Validation(check.reason() + " tx " + (i + 1), null, null);
+                spent.addAll(transaction.inputs);
+                Transactions.apply(utxo, transaction, block.height);
+                fees.add(check.fee());
+                total += check.fee();
+            }
+            Transaction coinbase = block.transactions.getFirst();
+            for (Payment output : coinbase.outputs)
+                if (!owners.containsKey(output.address()) || output.amount() == 0)
+                    return new Validation("bad-output tx 1", null, null);
+            if (coinbase.total() > reward(block.height) + total)
+                return new Validation("bad-coinbase", null, null);
+            Transactions.apply(utxo, coinbase, block.height);
+            return new Validation(null, utxo, fees);
+        }
+        void connect(String kind, Block block, Peer peer) {
+            BlockRecord parent = records.get(block.previous);
+            Validation result = validate(block, parent);
+            if (result.reason != null) {
+                rejectBlock(kind, block, peer, result.reason);
+                return;
+            }
+            BlockRecord record = new BlockRecord(block, parent, result.utxo, result.fees, peer.name);
+            records.put(block.hash, record);
+            peer.blocks++;
+            log(kind + " " + peer.name + " " + block.height + " " + Hashing.shortId(block.hash) +
+                " accepted work " + record.work);
+            if (record.work > tip.work)
+                switchTip(record);
+        }
+        void resolve(String start) {
+            Deque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String parent = queue.removeFirst();
+                List<Orphan> children = new ArrayList<>();
+                for (Orphan orphan : orphans)
+                    if (orphan.block.previous.equals(parent))
+                        children.add(orphan);
+                for (Orphan orphan : children) {
+                    orphans.remove(orphan);
+                    if (rejected.contains(parent))
+                        rejectBlock("UNORPHAN", orphan.block, orphan.peer, "bad-parent");
+                    else
+                        connect("UNORPHAN", orphan.block, orphan.peer);
+                    queue.addLast(orphan.block.hash);
+                }
+            }
+        }
+        List<String> chainLines() {
+            List<String> lines = new ArrayList<>();
+            lines.add("TIP " + tip.block.height + " " + tip.block.hash + " work " + tip.work + " stored " +
+                      records.size() + " orphans " + orphans.size());
+            Set<String> mainHashes = new HashSet<>();
+            for (BlockRecord record : mainChain) {
+                Block block = record.block;
+                mainHashes.add(block.hash);
+                String miner = block.height == 0 ? "-" : owners.get(miner(record)).name();
+                lines.add("BLOCK " + block.height + " " + block.hash + " prev " +
+                          Hashing.shortId(block.previous) + " time " + block.timestamp + " bits " +
+                          block.difficulty + " nonce " + block.nonce + " txs " + block.transactions.size() +
+                          " size " + block.size() + " fees " + record.fees + " miner " + miner +
+                          " source " + record.source + " work " + record.work);
+            }
+            List<BlockRecord> stale = new ArrayList<>();
+            for (BlockRecord record : records.values())
+                if (!mainHashes.contains(record.block.hash))
+                    stale.add(record);
+            stale.sort(Comparator.<BlockRecord>comparingInt(record -> record.block.height)
+                           .thenComparing(record -> record.block.hash));
+            for (BlockRecord record : stale)
+                lines.add("STALE " + record.block.height + " " + record.block.hash + " prev " +
+                          Hashing.shortId(record.block.previous) + " source " + record.source + " work " +
+                          record.work);
+            for (Reorganization entry : reorganizations)
+                lines.add("REORG " + entry.time + " fork " + entry.fork + " disconnected " +
+                          entry.disconnected + " connected " + entry.connected + " old " +
+                          Hashing.shortId(entry.oldHash) + " new " + Hashing.shortId(entry.newHash));
+            List<Entry> entries = ranked();
+            for (int i = 0; i < entries.size(); i++) {
+                Entry entry = entries.get(i);
+                lines.add("MEMPOOL " + (i + 1) + " " + entry.transaction.txid + " fee " + entry.fee +
+                          " size " + entry.transaction.size() + " time " + entry.arrival);
+            }
+            return lines;
+        }
+        List<String> balanceLines() {
+            List<String> lines =
+                new ArrayList<>(List.of("wallet,address,balance,immature,locked,incoming,utxos"));
+            Set<Reference> locked = locked();
+            for (Wallet wallet : wallets) {
+                int total = 0, immature = 0, lockedAmount = 0, incoming = 0, count = 0;
+                for (Map.Entry<Reference, Coin> pair : tip.utxo.entrySet())
+                    if (pair.getValue().address().equals(wallet.address())) {
+                        Coin coin = pair.getValue();
+                        total += coin.amount();
+                        count++;
+                        if (!mature(coin))
+                            immature += coin.amount();
+                        if (locked.contains(pair.getKey()))
+                            lockedAmount += coin.amount();
+                    }
+                for (Entry entry : mempool)
+                    for (Payment output : entry.transaction.outputs)
+                        if (output.address().equals(wallet.address()))
+                            incoming += output.amount();
+                lines.add(wallet.name() + "," + wallet.address() + "," + total + "," + immature + "," +
+                          lockedAmount + "," + incoming + "," + count);
+            }
+            return lines;
+        }
+        List<String> utxoLines() {
+            List<String> lines = new ArrayList<>();
+            Set<Reference> locked = locked();
+            List<Reference> references = new ArrayList<>(tip.utxo.keySet());
+            Collections.sort(references);
+            int total = 0;
+            for (Reference reference : references) {
+                Coin coin = tip.utxo.get(reference);
+                total += coin.amount();
+                String category = coin.height() == 0 ? "genesis"
+                                  : coin.coinbase()  ? "coinbase"
+                                                     : "payment",
+                       state = !mature(coin)                ? "immature"
+                               : locked.contains(reference) ? "locked"
+                                                            : "free";
+                lines.add(reference + " " + owners.get(coin.address()).name() + " " + coin.amount() +
+                          " height " + coin.height() + " " + category + " " + state);
+            }
+            String root = Hashing.merkle(lines.stream().map(Hashing::digest).toList());
+            lines.add("TOTAL " + references.size() + " " + total);
+            lines.add("ROOT " + root);
+            return lines;
+        }
+        List<String> historyLines() {
+            List<String> lines = new ArrayList<>();
+            Map<String, Transaction> transactions = new HashMap<>();
+            for (BlockRecord record : mainChain)
+                for (Transaction transaction : record.block.transactions)
+                    transactions.put(transaction.txid, transaction);
+            for (Wallet wallet : wallets) {
+                lines.add("WALLET " + wallet.name() + " " + wallet.address());
+                int count = 0, spentTotal = 0, receivedTotal = 0, balance = 0, pending = 0;
+                for (BlockRecord record : mainChain)
+                    for (Transaction transaction : record.block.transactions) {
+                        int spent = 0, received = 0;
+                        boolean involved = false;
+                        for (Reference reference : transaction.inputs) {
+                            Payment output =
+                                transactions.get(reference.txid()).outputs.get(reference.index());
+                            if (output.address().equals(wallet.address())) {
+                                spent += output.amount();
+                                involved = true;
+                            }
+                        }
+                        for (Payment output : transaction.outputs)
+                            if (output.address().equals(wallet.address())) {
+                                received += output.amount();
+                                involved = true;
+                            }
+                        if (!involved)
+                            continue;
+                        count++;
+                        spentTotal += spent;
+                        receivedTotal += received;
+                        balance += received - spent;
+                        String category = transaction.coinbase()
+                                              ? (record.block.height == 0 ? "genesis" : "coinbase")
+                                              : "payment";
+                        lines.add(record.block.height + " " + Hashing.shortId(transaction.txid) + " " +
+                                  category + " spent " + spent + " received " + received + " net " +
+                                  signed(received - spent) + " balance " + balance);
+                    }
+                for (Entry entry : ranked()) {
+                    Transaction transaction = entry.transaction;
+                    int spent = 0, received = 0;
+                    for (Reference reference : transaction.inputs) {
+                        Coin coin = tip.utxo.get(reference);
+                        if (coin.address().equals(wallet.address()))
+                            spent += coin.amount();
+                    }
+                    for (Payment output : transaction.outputs)
+                        if (output.address().equals(wallet.address()))
+                            received += output.amount();
+                    if (spent != 0 || received != 0) {
+                        pending++;
+                        lines.add("pending " + Hashing.shortId(transaction.txid) + " spent " + spent +
+                                  " received " + received + " net " + signed(received - spent));
+                    }
+                }
+                lines.add("END " + wallet.name() + " txs " + count + " spent " + spentTotal + " received " +
+                          receivedTotal + " balance " + balance + " pending " + pending);
+            }
+            return lines;
+        }
+        List<String> lines = Files.readAllLines(Path.of("input/events.txt"), StandardCharsets.US_ASCII);
+        for (int position = 0; position < lines.size();) {
+            String[] fields = lines.get(position).split(" ");
+            int count = fields[1].equals("BLOCK") ? Integer.parseInt(fields[9]) : 0;
+            node.process(fields, lines.subList(position + 1, position + 1 + count));
+            position += count + 1;
+        }
+        Files.createDirectories(Path.of("output"));
+        write("log.txt", node.logs);
+        write("chain.txt", node.chainLines());
+        write("balances.csv", node.balanceLines());
+        write("utxo.txt", node.utxoLines());
+        write("history.txt", node.historyLines());
+final class BlockRecord {
+    final Block block;
+    final BlockRecord parent;
+    final Map<Reference, Coin> utxo;
+    final List<Integer> transactionFees;
+    final String source;
+    final int fees, work;
+    BlockRecord(Block block, BlockRecord parent, Map<Reference, Coin> utxo, List<Integer> transactionFees,
+                String source) {
+        this.block = block;
+        this.parent = parent;
+        this.utxo = utxo;
+        this.transactionFees = transactionFees;
+        this.source = source;
+        fees = transactionFees.stream().mapToInt(Integer::intValue).sum();
+        work = parent == null ? 1 : parent.work + (1 << (4 * block.difficulty));
+    }
+    static BlockRecord ancestor(BlockRecord record, int height) {
+        while (record.block.height > height)
+            record
+        = record.parent;
+        return record;
+    }
+    static List<BlockRecord> sequence(BlockRecord record) {
+        List<BlockRecord> records = new ArrayList<>();
+        while (record != null) {
+            records.add(record);
+            record
+            = record.parent;
+        }
+        Collections.reverse(records);
+        return records;
+    }
+    static BlockRecord fork(BlockRecord first, BlockRecord second) {
+        int height = Math.min(first.block.height, second.block.height);
+        first = ancestor(first, height);
+        second = ancestor(second, height);
+        while (first != second) {
+            first = first.parent;
+            second = second.parent;
+        }
+        return first;
+    }
+final class Block {
+    final int height, timestamp, difficulty, nonce;
+    final String previous, merkle, hash;
+    final List<Transaction> transactions;
+    Block(int height, String previous, String merkle, int timestamp, int difficulty, int nonce,
+          List<Transaction> transactions) {
+        this.height = height;
+        this.previous = previous;
+        this.merkle = merkle;
+        this.timestamp = timestamp;
+        this.difficulty = difficulty;
+        this.nonce = nonce;
+        this.transactions = transactions;
+        hash = Hashing.digest(Blocks.header(height, previous, merkle, timestamp, difficulty, nonce));
+    }
+    int size() {
+        int size = 0;
+        for (Transaction transaction : transactions.subList(1, transactions.size()))
+            size += transaction.size();
+        return size;
+    }
+    List<String> txids() {
+        return transactions.stream().map(transaction -> transaction.txid).toList();
+    }
+}
+final class Blocks {
+    static String header(int height, String previous, String merkle, int timestamp, int difficulty,
+                         int nonce) {
+        return height + "|" + previous + "|" + merkle + "|" + timestamp + "|" + difficulty + "|" + nonce;
+    }
+    static Block parse(String[] fields, List<String> texts) {
+        return new Block(Integer.parseInt(fields[3]), fields[4], fields[5], Integer.parseInt(fields[6]),
+                         Integer.parseInt(fields[7]), Integer.parseInt(fields[8]),
+                         texts.stream().map(Transactions::parse).toList());
+    }
+    static String error(Block block, int maximum) {
+        if (!block.hash.startsWith("0".repeat(block.difficulty)))
+            return "bad-pow";
+        if (!Hashing.merkle(block.txids()).equals(block.merkle))
+            return "bad-merkle";
+        Transaction first = block.transactions.getFirst();
+        if (!first.coinbase() || first.coinbaseHeight != block.height)
+            return "bad-structure";
+        for (Transaction transaction : block.transactions.subList(1, block.transactions.size()))
+            if (transaction.coinbase())
+                return "bad-structure";
+        return block.size() > maximum ? "too-large" : null;
+    }
+record Reference(String txid, int index) implements Comparable<Reference> {
+    public int compareTo(Reference other) {
+        int order = txid.compareTo(other.txid);
+        return order != 0 ? order : Integer.compare(index, other.index);
+    }
+    public String toString() {
+        return txid + ":" + index;
+    }
+}
+record Coin(String address, int amount, int height, boolean coinbase) {
+    boolean mature(int at, int maturity) {
+        return !coinbase || height == 0 || at >= height + maturity;
+    }
+    boolean coinbase() {
+        return coinbaseHeight != null;
+    }
+    int size() {
+        return text.length();
+    }
+    int total() {
+        int total = 0;
+        for (Payment output : outputs)
+            total += output.amount();
+        return total;
+    }
+    static Check check(Transaction transaction, Map<Reference, Coin> utxo, Set<Reference> spent, int height,
+                       Map<String, Wallet> owners, int maturity) {
+        for (Payment output : transaction.outputs)
+            if (!owners.containsKey(output.address()) || output.amount() == 0)
+                return new Check("bad-output", 0);
+        Set<Reference> seen = new HashSet<>();
+        int total = 0;
+        for (int i = 0; i < transaction.inputs.size(); i++) {
+            Reference reference = transaction.inputs.get(i);
+            if (spent.contains(reference) || seen.contains(reference))
+                return new Check("double-spend", 0);
+            Coin coin = utxo.get(reference);
+            if (coin == null)
+                return new Check("missing-input", 0);
+            if (!coin.mature(height, maturity))
+                return new Check("immature", 0);
+            if (!transaction.signatures.get(i).equals(
+                    Wallets.sign(owners.get(coin.address()).secret(), i, transaction.body)))
+                return new Check("bad-sig", 0);
+            seen.add(reference);
+            total += coin.amount();
+        }
+        return total < transaction.total() ? new Check("overspend", 0)
+                                           : new Check(null, total - transaction.total());
+    }
+    static void apply(Map<Reference, Coin> utxo, Transaction transaction, int height) {
+        for (Reference reference : transaction.inputs)
+            utxo.remove(reference);
+        for (int i = 0; i < transaction.outputs.size(); i++) {
+            Payment output = transaction.outputs.get(i);
+            utxo.put(new Reference(transaction.txid, i),
+                     new Coin(output.address(), output.amount(), height, transaction.coinbase()));
+        }
+    }

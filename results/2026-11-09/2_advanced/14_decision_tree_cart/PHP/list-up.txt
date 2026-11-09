@@ -1,0 +1,395 @@
+class TreeAttribute
+{
+    public function __construct(public int $index, public string $name, public bool $integer, public array $values)
+    {
+    }
+}
+class DataRow
+{
+    public function __construct(public string $id, public array $values, public int $label)
+    {
+    }
+}
+function read_lines(string $path): array
+{
+    return file($path, FILE_IGNORE_NEW_LINES);
+}
+function load_dataset(string $directory): array
+{
+    $schema = array_map(fn($line) => explode(' ', $line), read_lines($directory . '/schema.txt'));
+    $classFields = array_pop($schema);
+    $classes = array_slice($classFields, 2);
+    $attributes = [];
+    foreach ($schema as $index => $fields) {
+        $attributes[] = new TreeAttribute($index, $fields[1], $fields[2] === 'INT', array_slice($fields, 3));
+    }
+    $readRows = function ($name) use ($directory, $attributes, $classes) {
+        $rows = [];
+        foreach (array_slice(read_lines($directory . '/' . $name . '.csv'), 1) as $line) {
+            $fields = explode(',', $line);
+            $values = [];
+            foreach ($attributes as $attribute) {
+                $text = $fields[$attribute->index + 1];
+                $values[] = $text === '?' ? null : ($attribute->integer ? (int) $text : array_search($text, $attribute->values, true));
+            }
+            $rows[] = new DataRow($fields[0], $values, array_search($fields[count($fields) - 1], $classes, true));
+        }
+        return $rows;
+    };
+    $settings = [];
+    foreach (read_lines($directory . '/params.txt') as $line) {
+        $fields = explode(' ', $line);
+        $key = strtolower(array_shift($fields));
+        $values = array_map('intval', $fields);
+        $settings[$key] = $key === 'curve' ? $values : $values[0];
+    }
+    return ['attributes' => $attributes, 'target' => $classFields[1], 'classes' => $classes,
+        'settings' => $settings, 'train' => $readRows('train'), 'validation' => $readRows('validation'), 'test' => $readRows('test')];
+}
+function class_counts(array $rows, int $size): array
+{
+    $counts = array_fill(0, $size, 0);
+    foreach ($rows as $row) {
+        $counts[$row->label]++;
+    }
+    return $counts;
+}
+function square_sum(array $counts): int
+{
+    return array_sum(array_map(fn($value) => $value * $value, $counts));
+}
+function majority(array $counts): int
+{
+    return array_search(max($counts), $counts, true);
+}
+function evaluation_value(array $left, array $right): array
+{
+    $nl = array_sum($left);
+    $nr = array_sum($right);
+    return [square_sum($left) * $nr + square_sum($right) * $nl, $nl * $nr];
+}
+function compare_fractions(array $first, array $second): int
+{
+    return $first[0] * $second[1] <=> $second[0] * $first[1];
+}
+function improves(array $value, array $counts): bool
+{
+    return $value[0] * array_sum($counts) > square_sum($counts) * $value[1];
+}
+class Split
+{
+    public function __construct(public TreeAttribute $attribute, public int $point)
+    {
+    }
+    public function goesLeft(int $value): bool
+    {
+        return $this->attribute->integer ? 2 * $value <= $this->point : $value === $this->point;
+    }
+class TreeNode
+{
+    public int $size;
+    public int $prediction;
+    public int $errors;
+    public ?Split $split = null;
+    public array $surrogates = [];
+    public string $default = 'left';
+    public ?TreeNode $left = null;
+    public ?TreeNode $right = null;
+    public function __construct(public int $number, public int $depth, public array $counts)
+    {
+        $this->size = array_sum($counts);
+        $this->prediction = majority($counts);
+        $this->errors = $this->size - $counts[$this->prediction];
+    }
+}
+function candidates(TreeAttribute $attribute, array $rows): array
+{
+    $values = [];
+    foreach ($rows as $row) {
+        $values[$row->values[$attribute->index]] = true;
+    }
+    $values = array_keys($values);
+    sort($values, SORT_NUMERIC);
+    $result = [];
+    if (count($values) < 2) {
+        return $result;
+    }
+    foreach ($values as $index => $value) {
+        if (!$attribute->integer || $index + 1 < count($values)) {
+            $point = $attribute->integer ? $value + $values[$index + 1] : $value;
+            $result[] = new Split($attribute, $point);
+        }
+    }
+    return $result;
+}
+class TreeBuilder
+{
+    public function __construct(public array $attributes, public int $classCount, public array $settings)
+    {
+    }
+    public function bestSplit(array $rows, array $attributes): ?array
+    {
+        $best = null;
+        foreach ($attributes as $attribute) {
+            foreach (candidates($attribute, $rows) as $split) {
+                $left = [];
+                $right = [];
+                foreach ($rows as $row) {
+                    if ($split->goesLeft($row->values[$attribute->index])) {
+                        $left[] = $row;
+                    } else {
+                        $right[] = $row;
+                    }
+                }
+                if (count($left) < $this->settings['min_samples_leaf'] || count($right) < $this->settings['min_samples_leaf']) {
+                    continue;
+                }
+                $value = evaluation_value(class_counts($left, $this->classCount), class_counts($right, $this->classCount));
+                if ($best === null || compare_fractions($value, $best['value']) > 0) {
+                    $best = ['split' => $split, 'left' => $left, 'right' => $right, 'value' => $value];
+                }
+            }
+        }
+        return $best;
+    }
+    public function findSurrogates(array $rows, Split $primary, int $leftSize, int $rightSize): array
+    {
+        $result = [];
+        foreach ($this->attributes as $attribute) {
+            if ($attribute === $primary->attribute) {
+                continue;
+            }
+            $best = null;
+            foreach (candidates($attribute, $rows) as $split) {
+                $agreement = 0;
+                foreach ($rows as $row) {
+                    if ($split->goesLeft($row->values[$attribute->index]) === $primary->goesLeft($row->values[$primary->attribute->index])) {
+                        $agreement++;
+                    }
+                }
+                $score = max($agreement, count($rows) - $agreement);
+                if ($best === null || $score > $best['score']) {
+                    $best = ['split' => $split, 'direction' => $agreement >= count($rows) - $agreement ? 'left' : 'right', 'score' => $score];
+                }
+            }
+            if ($best !== null && $best['score'] > max($leftSize, $rightSize)) {
+                $result[] = $best;
+            }
+        }
+        usort($result, fn($a, $b) => $b['score'] <=> $a['score'] ?: $a['split']->attribute->index <=> $b['split']->attribute->index);
+        return array_slice($result, 0, $this->settings['max_surrogates']);
+    }
+    public function grow(array $rows, int $number = 1, int $depth = 0): TreeNode
+    {
+        $node = new TreeNode($number, $depth, class_counts($rows, $this->classCount));
+        if ($node->errors === 0 || $depth === $this->settings['max_depth'] || count($rows) < $this->settings['min_samples_split']) {
+            return $node;
+        }
+        $best = $this->bestSplit($rows, $this->attributes);
+        if ($best === null || !improves($best['value'], $node->counts)) {
+            return $node;
+        }
+        $node->split = $best['split'];
+        $node->default = count($best['left']) >= count($best['right']) ? 'left' : 'right';
+        $node->surrogates = $this->findSurrogates($rows, $node->split, count($best['left']), count($best['right']));
+        $node->left = $this->grow($best['left'], 2 * $number, $depth + 1);
+        $node->right = $this->grow($best['right'], 2 * $number + 1, $depth + 1);
+        return $node;
+    }
+}
+class TreeView
+{
+    public function __construct(public TreeNode $root, public array $cut = [])
+    {
+    }
+    public function isLeaf(TreeNode $node): bool
+    {
+        return $node->split === null || isset($this->cut[$node->number]);
+    }
+    public function route(DataRow $row): array
+    {
+        $node = $this->root;
+        $path = [];
+        $steps = [];
+        while (true) {
+            $path[] = $node;
+            if ($this->isLeaf($node)) {
+                return ['leaf' => $node, 'path' => $path, 'steps' => $steps];
+            }
+            $value = $row->values[$node->split->attribute->index];
+            $method = null;
+            if ($value !== null) {
+                $left = $node->split->goesLeft($value);
+                $method = 'primary';
+            } else {
+                foreach ($node->surrogates as $surrogate) {
+                    $value = $row->values[$surrogate['split']->attribute->index];
+                    if ($value !== null) {
+                        $left = $surrogate['split']->goesLeft($value) === ($surrogate['direction'] === 'left');
+                        $method = 'surrogate';
+                        break;
+                    }
+                }
+                if ($method === null) {
+                    $left = $node->default === 'left';
+                    $method = 'default';
+                }
+            }
+            $steps[] = ['node' => $node, 'left' => $left, 'method' => $method];
+            $node = $left ? $node->left : $node->right;
+        }
+    }
+    public function predict(DataRow $row): int
+    {
+        return $this->route($row)['leaf']->prediction;
+    }
+    public function correctCount(array $rows): int
+    {
+        return count(array_filter($rows, fn($row) => $this->predict($row) === $row->label));
+    }
+}
+function classification_lines(string $title, array $classes, array $rows, array $predictions): array
+{
+    $size = count($classes);
+    $matrix = array_fill(0, $size, array_fill(0, $size, 0));
+    $correct = 0;
+    foreach ($rows as $index => $row) {
+        $matrix[$row->label][$predictions[$index]]++;
+        if ($row->label === $predictions[$index]) {
+            $correct++;
+        }
+    }
+    $lines = ["confusion $title correct $correct/" . count($rows) . ' accuracy ' . fraction_text($correct, count($rows)),
+        'actual\\predicted ' . implode(' ', $classes)];
+    foreach ($classes as $index => $name) {
+        $lines[] = $name . ' ' . implode(' ', $matrix[$index]);
+    }
+    $total = 0.0;
+    $available = 0;
+    foreach ($classes as $index => $name) {
+        $hits = $matrix[$index][$index];
+        $predicted = array_sum(array_column($matrix, $index));
+        $support = array_sum($matrix[$index]);
+        $lines[] = "class $name precision " . fraction_text($hits, $predicted) . ' recall ' . fraction_text($hits, $support)
+            . ' f1 ' . fraction_text(2 * $hits, $predicted + $support) . " support $support";
+        if ($predicted + $support > 0) {
+            $total += 2 * $hits / ($predicted + $support);
+            $available++;
+        }
+    }
+    $lines[] = 'macro_f1 ' . ($available > 0 ? real_text($total / $available) : '-');
+    return $lines;
+}
+function reduced_error_pruning(TreeNode $root, array $rows): array
+{
+    $original = new TreeView($root);
+    $reached = [];
+    $errors = [];
+    foreach ($rows as $row) {
+        foreach ($original->route($row)['path'] as $node) {
+            $reached[$node->number] = ($reached[$node->number] ?? 0) + 1;
+            if ($row->label !== $node->prediction) {
+                $errors[$node->number] = ($errors[$node->number] ?? 0) + 1;
+            }
+        }
+    }
+    $cut = [];
+    $decisions = [];
+    $visit = function ($node) use (&$visit, &$cut, &$decisions, $reached, $errors) {
+        $leafError = $errors[$node->number] ?? 0;
+        if ($node->split === null) {
+            return $leafError;
+        }
+        $leftError = $visit($node->left);
+        $subtreeError = $leftError + $visit($node->right);
+        $pruned = $leafError <= $subtreeError;
+        if ($pruned) {
+            $cut[$node->number] = true;
+        }
+        $decisions[] = ['node' => $node, 'rows' => $reached[$node->number] ?? 0,
+            'leaf_error' => $leafError, 'subtree_error' => $subtreeError, 'pruned' => $pruned];
+        return $pruned ? $leafError : $subtreeError;
+    };
+    $visit($root);
+    return [new TreeView($root, $cut), $decisions];
+}
+function missing_count(DataRow $row): int
+{
+    return count(array_filter($row->values, fn($value) => $value === null));
+}
+    public function __construct(public array $data)
+    {
+        $this->attributes = $data['attributes'];
+        $this->classes = $data['classes'];
+        $this->settings = $data['settings'];
+        $this->train = $data['train'];
+        $this->validation = $data['validation'];
+        $this->test = $data['test'];
+        $this->builder = new TreeBuilder($this->attributes, count($this->classes), $this->settings);
+        $this->grown = new TreeView($this->builder->grow($this->train));
+        [$this->pruned, $this->decisions] = reduced_error_pruning($this->grown->root, $this->validation);
+        $models = ['grown' => $this->grown, 'pruned' => $this->pruned, 'depth' => $this->selectedDepth['tree'],
+            'cost_complexity' => $this->sequence[$this->selectedIndex]['tree']];
+        foreach ($models as $name => $tree) {
+            $this->predictions[$name] = array_map(fn($row) => $tree->predict($row), $this->test);
+        }
+    public function accuracy(TreeView $tree, array $rows): string
+    {
+        return ratio_text($tree->correctCount($rows), count($rows));
+    }
+    public function predictionsFile(): array
+    {
+        $lines = ['id,predicted,actual,grown,leaf,path,missing'];
+        foreach ($this->test as $index => $row) {
+            $route = $this->pruned->route($row);
+            $path = implode('-', array_map(fn($node) => $node->number, $route['path']));
+            $missing = count(array_filter($route['steps'], fn($step) => $step['method'] !== 'primary'));
+            $lines[] = implode(',', [$row->id, $this->classes[$route['leaf']->prediction], $this->classes[$row->label],
+                $this->classes[$this->predictions['grown'][$index]], $route['leaf']->number, $path, $missing]);
+        }
+        return $lines;
+    }
+    public function routingLines(): array
+    {
+        $tallies = [];
+        $lines = ['routing pruned test'];
+        foreach ($this->pruned->internalNodes() as $node) {
+            $tallies[$node->number] = ['primary' => 0, 'surrogate' => 0, 'default' => 0];
+        }
+        $complete = [];
+        $incomplete = [];
+        foreach ($this->test as $row) {
+            foreach ($this->pruned->route($row)['steps'] as $step) {
+                $tallies[$step['node']->number][$step['method']]++;
+            }
+            if (missing_count($row) === 0) {
+                $complete[] = $row;
+            } else {
+                $incomplete[] = $row;
+            }
+        }
+        foreach ($this->pruned->internalNodes() as $node) {
+            $tally = $tallies[$node->number];
+            $lines[] = sprintf('node %d rows %d primary %d surrogate %d default %d', $node->number, array_sum($tally), $tally['primary'], $tally['surrogate'], $tally['default']);
+        }
+        $lines[] = 'complete rows ' . count($complete) . ' correct ' . $this->accuracy($this->pruned, $complete);
+        $lines[] = 'incomplete rows ' . count($incomplete) . ' correct ' . $this->accuracy($this->pruned, $incomplete);
+        return $lines;
+    }
+    public function modelEvaluation(string $model): array
+    {
+        return classification_lines($model . ' test', $this->classes, $this->test, $this->predictions[$model]);
+    }
+    public function evaluationFile(): array
+    {
+        return join_sections([$this->dataLines(), [$this->summaryLine('grown', $this->grown), $this->summaryLine('pruned', $this->pruned)],
+            $this->modelEvaluation('grown'), $this->modelEvaluation('pruned'), $this->routingLines(), $this->crossValidationLines(),
+            $this->depthLines(), $this->costComplexityLines(), $this->baggingLines(), $this->mcnemarLines(), $this->aucLines(), $this->learningCurveLines()]);
+    }
+    $study = new Study(load_dataset('input'));
+    $files = ['tree.txt' => $study->treeFile(), 'pruned_tree.txt' => $study->prunedTreeFile(),
+        'predictions.csv' => $study->predictionsFile(), 'rules.txt' => $study->rulesFile(),
+        'evaluation.txt' => $study->evaluationFile(), 'importance.txt' => $study->importanceFile()];
+    foreach ($files as $name => $lines) {
+        file_put_contents('output/' . $name, implode("\n", $lines) . "\n");
+    }

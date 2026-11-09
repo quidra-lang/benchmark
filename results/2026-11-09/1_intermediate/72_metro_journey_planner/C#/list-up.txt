@@ -1,0 +1,215 @@
+class Program
+{
+    class Problem(string message) : Exception("ERROR " + message) { }
+
+    class Station(string id, int zone, string name)
+    {
+        public readonly string Id = id, Name = name;
+        public readonly int Zone = zone;
+        public int Transfer;
+        public bool Closed;
+        public readonly SortedDictionary<string, int> Walks = new(StringComparer.Ordinal);
+    }
+
+    class MetroLine(string id, int first, int last, int headway, List<Station> stops, int[] cumulative)
+    {
+        public readonly string Id = id;
+        public readonly int First = first, Last = last, Headway = headway;
+        public readonly List<Station> Stops = [.. stops];
+        public readonly int[] Cumulative = (int[])cumulative.Clone();
+        public int Delay;
+        public bool Suspended;
+        public int Total => Cumulative[^1];
+        public int Trips => (Last - First) / Headway + 1;
+        public Station Stop(int direction, int index) => Stops[direction == 0 ? index : Stops.Count - 1 - index];
+        public int Offset(int direction, int index) => direction == 0 ? Cumulative[index] : Total - Cumulative[Stops.Count - 1 - index];
+        public int Position(int direction, Station station)
+        {
+            int index = Stops.IndexOf(station);
+            return index < 0 ? -1 : direction == 0 ? index : Stops.Count - 1 - index;
+        }
+        public int Time(int direction, int index, int train) => First + Delay + train * Headway + Offset(direction, index);
+        public int Next(int direction, int index, int ready)
+        {
+            int start = Time(direction, index, 0), train = ready <= start ? 0 : (ready - start + Headway - 1) / Headway;
+            return train < Trips ? train : -1;
+        }
+    }
+
+    record Segment(string Low, string High);
+
+    record Leg(char Kind, MetroLine? Line, Station? Terminal, Station From, int Departure, Station To, int Arrival, int Stops);
+
+    record Label(int Time, List<Leg> Journey);
+    static readonly SortedDictionary<string, Station> Stations = new(StringComparer.Ordinal);
+    static readonly SortedDictionary<string, MetroLine> Lines = new(StringComparer.Ordinal);
+    static readonly HashSet<Segment> ClosedSegments = [];
+
+    static int[]? prices;
+
+    static int discount, window;
+
+    static void Require(bool valid, string reason)
+    {
+        if (!valid) throw new Problem(reason);
+    }
+
+    static Station GetStation(string id)
+    {
+        Require(Stations.ContainsKey(id), "unknown station " + id);
+        return Stations[id];
+    }
+    static int Time(string text) => int.Parse(text[..2]) * 60 + int.Parse(text[3..]);
+    static Segment Pair(Station left, Station right) => StringComparer.Ordinal.Compare(left.Id, right.Id) <= 0 ? new(left.Id, right.Id) : new(right.Id, left.Id);
+
+    static bool Blocked(Station left, Station right) => ClosedSegments.Contains(Pair(left, right));
+
+    static List<Leg> Append(List<Leg> journey, Leg leg) => [.. journey, leg];
+
+    static void Relax(Dictionary<Station, Label> labels, Station destination, int arrival, List<Leg> journey, Leg leg)
+    {
+        if (!labels.TryGetValue(destination, out Label? before) || before.Time > arrival) labels[destination] = new(arrival, Append(journey, leg));
+    }
+
+    static Dictionary<Station, Label> Earliest(Station origin, int departure)
+    {
+        Dictionary<Station, Label> labels = new() { [origin] = new(departure, []) };
+        HashSet<Station> settled = [];
+        while (true)
+        {
+            Station? selected = null;
+            foreach (Station station in Stations.Values) if (!settled.Contains(station) && labels.ContainsKey(station) && (selected is null || labels[station].Time < labels[selected].Time)) selected = station;
+            if (selected is null) return labels;
+            Station u = selected;
+            settled.Add(u);
+            Label label = labels[u];
+            int ready = label.Time + (u == origin ? 0 : u.Transfer);
+            foreach (MetroLine line in Lines.Values) if (!line.Suspended && line.Stops.Contains(u)) for (int direction = 0; direction < 2; direction++)
+            {
+                int i = line.Position(direction, u), last = line.Stops.Count - 1;
+                if (i == last) continue;
+                int train = line.Next(direction, i, ready);
+                if (train < 0) continue;
+                int start = line.Time(direction, i, train);
+                for (int j = i + 1; j <= last; j++)
+                {
+                    Station v = line.Stop(direction, j);
+                    if (Blocked(line.Stop(direction, j - 1), v)) break;
+                    if (v.Closed) continue;
+                    int arrival = line.Time(direction, j, train);
+                    Relax(labels, v, arrival, label.Journey, new('R', line, line.Stop(direction, last), u, start, v, arrival, j - i));
+                }
+            }
+            foreach (var walk in u.Walks)
+            {
+                Station v = Stations[walk.Key];
+                int arrival = label.Time + walk.Value;
+                if (!v.Closed && arrival <= 1440) Relax(labels, v, arrival, label.Journey, new('W', null, null, u, label.Time, v, arrival, 0));
+            }
+        }
+    }
+    static int Rides(List<Leg> journey) => journey.Count(leg => leg.Kind == 'R');
+    static void SearchCheck(Station origin, Station destination)
+    {
+        Require(origin != destination, "origin and destination are the same");
+        Require(!origin.Closed, "station " + origin.Id + " is closed");
+        Require(!destination.Closed, "station " + destination.Id + " is closed");
+    }
+    static int Half(int price) => (price + 19) / 20 * 10;
+
+    static void Fare(string heading, Station origin, Station destination, int departure, string fareClass)
+    {
+        Label? label = Earliest(origin, departure).GetValueOrDefault(destination);
+        if (label is null)
+        {
+            Console.WriteLine(heading + " unreachable");
+            return;
+        }
+        List<string> tickets = [];
+        int total = 0, lastRide = -1;
+        bool child = fareClass == "CHILD";
+        foreach (Leg leg in label.Journey) if (leg.Kind == 'R')
+        {
+            MetroLine line = leg.Line!;
+            int a = line.Stops.IndexOf(leg.From), b = line.Stops.IndexOf(leg.To);
+            HashSet<int> zones = [];
+            for (int i = Math.Min(a, b); i <= Math.Max(a, b); i++) zones.Add(line.Stops[i].Zone);
+            int price = prices![Math.Min(zones.Count, prices.Length) - 1];
+            if (child) price = Half(price);
+            int reduction = lastRide >= 0 && leg.Departure - lastRide <= window ? Math.Min(price, child ? Half(discount) : discount) : 0;
+            int pay = price - reduction;
+            total += pay;
+            tickets.Add($"TICKET {line.Id} {leg.From.Id} {leg.To.Id} zones {zones.Count} price {price} discount {reduction} pay {pay}");
+            lastRide = leg.Arrival;
+        }
+        Console.WriteLine($"{heading} rides {Rides(label.Journey)} total {total}");
+        tickets.ForEach(Console.WriteLine);
+    }
+
+    static void Command(string[] w)
+    {
+        string command = w[0];
+        switch (command)
+        {
+            case "STATION":
+                Require(!Stations.ContainsKey(w[1]), "station " + w[1] + " already exists");
+                Stations[w[1]] = new(w[1], int.Parse(w[2]), w[3]);
+                return;
+            case "LINE":
+            {
+                Require(!Lines.ContainsKey(w[1]), "line " + w[1] + " already exists");
+                List<Station> stops = [];
+                for (int i = 5; i < w.Length; i += 2) stops.Add(GetStation(w[i]));
+                HashSet<Station> seen = [];
+                foreach (Station stop in stops) Require(seen.Add(stop), "station " + stop.Id + " appears twice on line " + w[1]);
+                int first = Time(w[2]), last = Time(w[3]);
+                Require(first <= last, "line " + w[1] + " first departure is after last departure");
+                int[] cumulative = new int[stops.Count];
+                for (int i = 1; i < stops.Count; i++) cumulative[i] = cumulative[i - 1] + int.Parse(w[4 + 2 * i]);
+                Require(last + cumulative[^1] <= 1440, "line " + w[1] + " runs past 24:00");
+                MetroLine line = new(w[1], first, last, int.Parse(w[4]), stops, cumulative);
+                Lines[w[1]] = line;
+                return;
+            }
+            case "WALK":
+            {
+                Station a = GetStation(w[1]), b = GetStation(w[2]);
+                Require(a != b, "walk from " + a.Id + " to itself");
+                int minutes = int.Parse(w[3]);
+                a.Walks[b.Id] = minutes;
+                b.Walks[a.Id] = minutes;
+                return;
+            }
+            case "TARIFF":
+            {
+                int[] added = w.Skip(3).Select(int.Parse).ToArray();
+                for (int i = 1; i < added.Length; i++) Require(added[i] >= added[i - 1], "tariff prices must not decrease");
+                prices = added;
+                discount = int.Parse(w[1]);
+                window = int.Parse(w[2]);
+                return;
+            }
+        }
+        Station originStation = GetStation(w[1]), destinationStation = GetStation(w[2]);
+        SearchCheck(originStation, destinationStation);
+        string title = $"{command} {originStation.Id} {destinationStation.Id}";
+        if (command == "FARE")
+        {
+            Require(w[4] is "ADULT" or "CHILD", "unknown fare class " + w[4]);
+            Require(prices is not null, "no tariff");
+            Fare(title + " " + w[3] + " " + w[4], originStation, destinationStation, Time(w[3]), w[4]);
+            return;
+        }
+    static void Main()
+    {
+        int count = int.Parse(Console.ReadLine()!);
+        for (int i = 0; i < count; i++) try
+        {
+            Command(Console.ReadLine()!.Split(' '));
+        }
+        catch (Problem error)
+        {
+            Console.WriteLine(error.Message);
+        }
+    }
+}

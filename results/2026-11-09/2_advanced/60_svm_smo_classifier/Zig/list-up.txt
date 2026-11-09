@@ -1,0 +1,306 @@
+pub fn readLines(io: std.Io, path: []const u8) ![]const []const u8 {
+    const value = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    const lines = split(value, '\n');
+    return lines[0 .. lines.len - 1];
+}
+pub fn real(value: []const u8) f64 {
+    return std.fmt.parseFloat(f64, value) catch unreachable;
+}
+fn readData(io: std.Io, path: []const u8) ![]const Example {
+    const lines = try readLines(io, path);
+    var out: std.ArrayList(Example) = .empty;
+    for (lines[1..]) |line| {
+        const row = split(line, ',');
+        append(Example, &out, .{ .id = row[0], .point = .{ real(row[1]), real(row[2]) }, .label = number(row[3]) });
+    }
+    return out.items;
+}
+pub fn load(io: std.Io) !Input {
+    var params: Params = .{};
+    for (try readLines(io, "input/params.txt")) |line| {
+        const row = words(line);
+        const key = row[0];
+        if (eq(key, "C_GRID")) {
+            const values = alloc(f64, row.len - 1);
+            for (row[1..], values) |field, *value| value.* = real(field);
+            params.c_grid = values;
+        } else if (eq(key, "KERNEL")) {
+            var kernel: Kernel = .{ .name = row[1], .kind = std.meta.stringToEnum(KernelKind, row[2]).? };
+            if (kernel.kind == .poly) {
+                kernel.degree = u(number(row[3]));
+                kernel.gamma = real(row[4]);
+                kernel.coef0 = real(row[5]);
+            } else if (kernel.kind == .rbf) kernel.gamma = real(row[3]);
+            append(Kernel, &params.kernels, kernel);
+        } else if (eq(key, "TOLERANCE")) params.tolerance = real(row[1]) else if (eq(key, "EPS")) params.epsilon = real(row[1]) else if (eq(key,
+             "MAX_PASSES")) params.max_passes = u(number(row[1])) else if (eq(key, "FOLDS")) params.folds = u(number(row[1])) else if (eq(key,
+        }
+    }
+    return .{ .train = try readData(io, "input/train.csv"), .test_data = try readData(io, "input/test.csv"),
+         .multi_train = multi_train.items, .multi_test = multi_test.items, .params = params };
+}
+pub fn value(kernel: c.Kernel, a: c.Point, b: c.Point) f64 {
+    if (kernel.kind == .linear) return a[0] * b[0] + a[1] * b[1];
+    if (kernel.kind == .poly) {
+        const s = kernel.gamma * (a[0] * b[0] + a[1] * b[1]) + kernel.coef0;
+        var out: f64 = 1;
+        for (0..kernel.degree) |_| out *= s;
+        return out;
+    }
+    const e1 = a[0] - b[0];
+    const e2 = a[1] - b[1];
+    return @exp(-kernel.gamma * (e1 * e1 + e2 * e2));
+}
+pub fn matrix(kernel: c.Kernel, data: []const c.Example) c.Matrix {
+    const out = c.alloc([]f64, data.len);
+    for (out, 0..) |*row, i| {
+        row.* = c.alloc(f64, data.len);
+        for (row.*, 0..) |*entry, j| entry.* = value(kernel, data[i].point, data[j].point);
+    }
+    return out;
+}
+pub fn sign(value: f64) i64 {
+    return if (value > 0) 1 else -1;
+}
+pub const Fold = struct { train: []const usize, test_data: []const usize };
+pub fn folds(count: usize, k: usize) []Fold {
+    const out = c.alloc(Fold, k);
+    for (out, 0..) |*fold, phi| {
+        var training: std.ArrayList(usize) = .empty;
+        var testing: std.ArrayList(usize) = .empty;
+        for (0..count) |i| {
+            if (i % k == phi) c.append(usize, &testing, i) else c.append(usize, &training, i);
+        }
+        fold.* = .{ .train = training.items, .test_data = testing.items };
+    }
+    return out;
+}
+    pub fn decision(self: Model, point: c.Point) f64 {
+        var out: f64 = 0;
+        for (self.alpha, self.data) |alpha, example| if (alpha > 0) {
+            out += alpha * c.f(example.label) * kernels.value(self.kernel, example.point, point);
+        };
+        return out - self.b;
+    }
+pub fn train(data: []const c.Example, kernel: c.Kernel, matrix: c.Matrix, coefficient: f64, params: c.Params) Model {
+    const alpha = c.alloc(f64, data.len);
+    @memset(alpha, 0);
+    var errors: [200]f64 = undefined;
+    for (data, 0..) |example, i| errors[i] = -c.f(example.label);
+    var trainer: Trainer = .{ .model = .{ .data = data, .kernel = kernel, .matrix = matrix,
+         .c = coefficient, .alpha = alpha }, .params = params, .errors = errors[0..data.len] };
+    return trainer.run();
+}
+fn selectedData(data: []const c.Example, indices: []const usize) []const c.Example {
+    const out = c.alloc(c.Example, indices.len);
+    for (indices, out) |index, *example| example.* = data[index];
+    return out;
+}
+fn selectedMatrix(matrix: c.Matrix, indices: []const usize) c.Matrix {
+    const out = c.alloc([]f64, indices.len);
+    for (out, 0..) |*row, i| {
+        row.* = c.alloc(f64, indices.len);
+        for (row.*, 0..) |*value, j| value.* = matrix[indices[i]][indices[j]];
+    }
+    return out;
+}
+fn decisions(model: smo.Model, data: []const c.Example) []f64 {
+    const out = c.alloc(f64, data.len);
+    for (data, out) |example, *value| value.* = model.decision(example.point);
+    return out;
+}
+const Support = struct { total: i64 = 0, bound: i64 = 0, free: i64 = 0, by_bound: [2]i64 = .{ 0,
+     0 }, by_free: [2]i64 = .{ 0, 0 } };
+fn support(model: smo.Model) Support {
+    var out: Support = .{};
+    for (model.alpha, model.data) |alpha, example| if (alpha > 0) {
+        out.total += 1;
+        const label: usize = if (example.label == 1) 0 else 1;
+        if (alpha == model.c) {
+            out.bound += 1;
+            out.by_bound[label] += 1;
+        } else {
+            out.free += 1;
+            out.by_free[label] += 1;
+        }
+    };
+    return out;
+}
+const FoldResult = struct { train: usize, test_count: usize, correct: i64, sv: i64, passes: usize,
+     steps: usize, converged: bool };
+const CV = struct { kernel: usize, candidate: usize, correct: i64 = 0, sv: i64 = 0, passes: usize = 0,
+     steps: usize = 0, values: []f64, folds: []FoldResult };
+fn foldModel(input: c.Input, kernel: c.Kernel, matrix: c.Matrix, coefficient: f64, fold: e.Fold,
+     values: []f64) FoldResult {
+    var scratch = std.heap.ArenaAllocator.init(c.backing_allocator);
+    defer scratch.deinit();
+    const previous = c.allocator;
+    c.allocator = scratch.allocator();
+    defer c.allocator = previous;
+    const model = smo.train(selectedData(input.train, fold.train), kernel, selectedMatrix(matrix,
+         fold.train), coefficient, input.params);
+    var correct: i64 = 0;
+    for (fold.test_data) |index| {
+        values[index] = model.decision(input.train[index].point);
+        correct += @intFromBool(e.sign(values[index]) == input.train[index].label);
+    }
+    return .{ .train = fold.train.len, .test_count = fold.test_data.len, .correct = correct,
+         .sv = support(model).total, .passes = model.passes.items.len, .steps = model.steps,
+         .converged = model.converged };
+}
+fn crossValidate(input: c.Input, kernel: usize, candidate: usize, matrix: c.Matrix) CV {
+    var out: CV = .{ .kernel = kernel, .candidate = candidate, .values = c.alloc(f64, input.train.len),
+         .folds = c.alloc(FoldResult, input.params.folds) };
+    for (e.folds(input.train.len, input.params.folds), out.folds) |fold, *record| {
+        record.* = foldModel(input, input.params.kernels.items[kernel], matrix, input.params.c_grid[candidate],
+             fold, out.values);
+        out.correct += record.correct;
+        out.sv += record.sv;
+        out.passes += record.passes;
+        out.steps += record.steps;
+    }
+    return out;
+}
+fn metrics(input: c.Input, model: smo.Model) Metrics {
+    var out: Metrics = .{ .training = model.trainingDecisions(), .testing = decisions(model,
+         input.test_data), .sv = support(model) };
+    return out;
+}
+fn modelReport(out: *c.Lines, input: c.Input, model: smo.Model, value: Metrics) void {
+    const n = c.n(input.train.len);
+    const m = c.n(input.test_data.len);
+    const test_eval = value.evaluation;
+    out.add("model {s}", .{model.kernel.name});
+    out.add("kernel {s}", .{kernels.description(model.kernel)});
+    out.add("C {s}", .{e.real(model.c, 4)});
+fn calibrate(input: c.Input, model: smo.Model, cv: []const f64, test_values: []const f64) Calibration {
+    var out: Calibration = .{ .probabilities = c.alloc(f64, test_values.len) };
+        for (cv, targets) |value, target| {
+            const p = probability(value, out.a, out.b);
+    for (input.test_data, test_values, out.probabilities) |example, value, *stored| {
+        const p = probability(value, out.a, out.b);
+        stored.* = p;
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer arena.deinit();
+    c.allocator = arena.allocator();
+    c.backing_allocator = init.gpa;
+    const io = init.io;
+    const input = try c.load(io);
+    const params = input.params;
+    const n = c.n(input.train.len);
+    const m = c.n(input.test_data.len);
+    const definitions = params.kernels.items;
+    const matrices = c.alloc(c.Matrix, definitions.len);
+    var cv: std.ArrayList(CV) = .empty;
+    const best = c.alloc(usize, definitions.len);
+    for (definitions, 0..) |kernel, k| {
+        matrices[k] = kernels.matrix(kernel, input.train);
+        best[k] = cv.items.len;
+        for (params.c_grid, 0..) |_, candidate| {
+            c.append(CV, &cv, crossValidate(input, k, candidate, matrices[k]));
+            if (cv.items[cv.items.len - 1].correct > cv.items[best[k]].correct) best[k] = cv.items.len - 1;
+        }
+    }
+    var selected: usize = 0;
+    for (1..definitions.len) |k| if (cv.items[best[k]].correct > cv.items[best[selected]].correct or (cv.items[best[k]].correct == cv.items[best[selected]].correct and params.c_grid[cv.items[best[k]].candidate] < params.c_grid[cv.items[best[selected]].candidate])) {
+        selected = k;
+    };
+    const selected_c = params.c_grid[cv.items[best[selected]].candidate];
+    const models = c.alloc(smo.Model, definitions.len);
+    const evaluations = c.alloc(Metrics, definitions.len);
+    for (definitions, 0..) |kernel, k| {
+        models[k] = smo.train(input.train, kernel, matrices[k], params.c_grid[cv.items[best[k]].candidate], params);
+        evaluations[k] = metrics(input, models[k]);
+    }
+    const ranking = c.alloc(usize, cv.items.len);
+    for (ranking, 0..) |*index, i| index.* = i;
+    const RankContext = struct {
+        values: []const CV,
+        grid: []const f64,
+        fn less(ctx: @This(), a: usize, b: usize) bool {
+            const x = ctx.values[a];
+            const y = ctx.values[b];
+            if (x.correct != y.correct) return x.correct > y.correct;
+            if (ctx.grid[x.candidate] != ctx.grid[y.candidate]) return ctx.grid[x.candidate] < ctx.grid[y.candidate];
+            return x.kernel < y.kernel;
+        }
+    };
+    std.mem.sort(usize, ranking, RankContext{ .values = cv.items, .grid = params.c_grid }, RankContext.less);
+    var report: c.Lines = .{};
+    report.add("cross_validation folds {d} examples {d}", .{ params.folds, n });
+    for (definitions, best) |kernel, index| {
+        const value = cv.items[index];
+        report.add("best {s} C {s} correct {d}/{d} accuracy {s}", .{ kernel.name, e.real(params.c_grid[value.candidate],
+             4), value.correct, n, e.ratio(value.correct, n) });
+    }
+    report.add("selected {s} C {s}", .{ definitions[selected].name, e.real(selected_c, 4) });
+    report.add("ranking", .{});
+    for (ranking, 0..) |index, i| {
+        const value = cv.items[index];
+        report.add("{d} {s} C {s} correct {d}/{d}", .{ i + 1, definitions[value.kernel].name,
+             e.real(params.c_grid[value.candidate], 4), value.correct, n });
+    }
+    report.add("cv_detail {s} C {s}", .{ definitions[selected].name, e.real(selected_c, 4) });
+    for (cv.items[best[selected]].folds, 0..) |fold, i| report.add("fold {d} train {d} test {d} correct {d} support_vectors {d} passes {d} steps {d} converged {s}",
+         .{ i + 1, fold.train, fold.test_count, fold.correct, fold.sv, fold.passes, fold.steps,
+         if (fold.converged) "yes" else "no" });
+    for (models, evaluations) |model, value| {
+        report.add("", .{});
+        modelReport(&report, input, model, value);
+    }
+    const model = models[selected];
+    report.add("", .{});
+    report.add("training_log {s}", .{model.kernel.name});
+    report.add("", .{});
+    report.add("c_path {s}", .{model.kernel.name});
+    for (params.c_grid) |coefficient| {
+        const value = temporarySummary(input, model.kernel, model.matrix, coefficient, input.train.len);
+        report.add("C {s} support_vectors {d} bound {d} free {d} dual_objective {s} train {d}/{d} test {d}/{d} passes {d} steps {d} converged {s}",
+             .{ e.real(coefficient, 4), value.sv.total, value.sv.bound, value.sv.free, e.real(value.dual,
+             6), value.training, n, value.testing, m, value.passes, value.steps, if (value.converged) "yes" else "no" });
+    }
+    report.add("", .{});
+    report.add("learning_curve {s} C {s}", .{ model.kernel.name, e.real(selected_c, 4) });
+    for (params.learning) |q| {
+        const size = input.train.len * q / 100;
+        const value = temporarySummary(input, model.kernel, model.matrix, selected_c, size);
+        report.add("size {d} support_vectors {d} train {d}/{d} test {d}/{d} passes {d} steps {d} converged {s}",
+             .{ size, value.sv.total, value.training, size, value.testing, m, value.passes,
+             value.steps, if (value.converged) "yes" else "no" });
+    }
+    const calibration = calibrate(input, model, cv.items[best[selected]].values, evaluations[selected].testing);
+    report.add("", .{});
+    report.extend(calibration.lines);
+    var grid: c.Lines = .{};
+    var header: c.Text = .{};
+    header.add("kernel,C", .{});
+    for (1..params.folds + 1) |fold| header.add(",fold{d}", .{fold});
+    header.add(",correct,accuracy,support_vectors,passes,steps", .{});
+    grid.add("{s}", .{header.value()});
+    for (cv.items) |value| {
+        var row: c.Text = .{};
+        row.add("{s},{s}", .{ definitions[value.kernel].name, e.real(params.c_grid[value.candidate], 4) });
+        for (value.folds) |fold| row.add(",{d}", .{fold.correct});
+        row.add(",{d},{s},{d},{d},{d}", .{ value.correct, e.ratio(value.correct, n), value.sv,
+             value.passes, value.steps });
+        grid.add("{s}", .{row.value()});
+    }
+    var predictions: c.Lines = .{};
+    header = .{};
+    header.add("id,label", .{});
+    for (definitions) |kernel| header.add(",{s}", .{kernel.name});
+    header.add(",pegasos,predicted,probability", .{});
+    predictions.add("{s}", .{header.value()});
+    for (input.test_data, 0..) |example, index| {
+        var row: c.Text = .{};
+        row.add("{s},{d}", .{ example.id, example.label });
+        for (evaluations) |value| row.add(",{s}", .{e.real(value.testing[index], 4)});
+        row.add(",{s},{d},{s}", .{ e.real(peg.testing[index], 4), e.sign(evaluations[selected].testing[index]),
+             e.real(calibration.probabilities[index], 4) });
+        predictions.add("{s}", .{row.value()});
+    }
+    try std.Io.Dir.cwd().createDirPath(io, "output");
+    try e.save(io, "model.txt", report);
+    try e.save(io, "cv_grid.csv", grid);
+    try e.save(io, "predictions.csv", predictions);

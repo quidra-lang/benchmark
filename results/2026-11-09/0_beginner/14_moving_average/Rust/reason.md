@@ -1,0 +1,9 @@
+The current question asks: Suppose the moving-average operation accepts a positive window size w: it must use complete windows only and print no complete window once if w exceeds the ten-day input length. Explain how to adapt the current operation from its input sales and w through window bounds, sum, real-number division and formatted day result. Use w=5 to establish the six valid day labels and w=11 for the missing-window path. Identify the source sites that must agree; do not add behavior for nonpositive w.
+
+Answer and source evidence: Use the named window size as w, with complete-window end positions w-1..length-1 or windows(w). Sum each complete w-element slice and divide as real numbers by w, then label by the one-based ending day. For w=5 there are six results day 5 through day 10. Before iteration, if w exceeds sales length, emit no complete window once; Swift must guard before constructing an invalid range. Retain the existing two-decimal formatting.
+
+Selection: `main.rs` lines 2, 3, 4, 5, 6, 7, 8, 9. The sales length, size declaration, complete-window bounds, summation/division and output/day expression must agree. No handling for nonpositive w is requested.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

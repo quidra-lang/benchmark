@@ -1,0 +1,149 @@
+upper <- function(text) chartr("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", text)
+quoted <- function(value) if (is.null(value)) "(nil)" else encodeString(value, quote = '"', justify = "none")
+integer_reply <- function(value) paste0("(integer) ", as.character(value))
+split_line <- function(line) {
+    chars <- strsplit(line, "", fixed = TRUE)[[1L]]
+    n <- length(chars)
+    i <- 1L
+    words <- character()
+    while (i <= n) {
+        if (chars[i] == " ") { i <- i + 1L; next }
+        if (chars[i] != '"') {
+            start <- i
+            while (i <= n && chars[i] != " ") i <- i + 1L
+            words <- c(words, paste(chars[seq.int(start, i - 1L)], collapse = ""))
+            next
+        }
+    }
+    words
+valid_integer <- function(text) grepl("^(0|-?[1-9][0-9]{0,8})$", text)
+number <- function(text) {
+    if (!valid_integer(text)) fail(not_integer)
+    as.integer(text)
+}
+db_get <- function(db, key) {
+    at <- match(key, names(db), nomatch = 0L)
+    if (at) db[[at]] else NULL
+}
+db_put <- function(db, key, value) {
+    force(value)
+    at <- match(key, names(db), nomatch = 0L)
+    if (at) db[at] <- list(value) else db <- c(db, setNames(list(value), key))
+    db
+read_value <- function(state, key, kind) {
+    entry <- db_get(state$db, key)
+    if (!is.null(entry)) {
+        if (entry$kind != kind) fail(wrong_type)
+        return(entry$value)
+    }
+    switch(kind, string = "", list = character(), hash = associations(), set = character(), zset = associations(TRUE))
+}
+replace_value <- function(state, key, kind, value, expiry = NULL) {
+    force(value)
+    force(expiry)
+    empty <- kind != "string" && if (kind %in% c("hash", "zset")) !length(value$keys) else !length(value)
+    if (empty) erase(state, key) else state$db <- db_put(state$db, key, list(kind = kind, value = value, expiry = expiry))
+purge <- function(state) {
+    expired <- vapply(state$db, function(entry) !is.null(entry$expiry) && entry$expiry <= state$clock, logical(1L))
+    state$db <- state$db[!expired]
+    sum(expired)
+}
+
+arity_groups <- list(
+    strsplit("TIME DBSIZE FLUSH INFO BEGIN COMMIT ROLLBACK", " ")[[1L]],
+    strsplit("GET INCR DECR STRLEN LLEN HGETALL HLEN HKEYS HVALS SMEMBERS SCARD ZCARD TYPE KEYS TTL PERSIST TICK SNAPSHOT RESTORE", " ")[[1L]],
+    strsplit("INCRBY DECRBY APPEND LINDEX HGET HEXISTS SISMEMBER ZSCORE ZRANK RENAME RENAMENX", " ")[[1L]],
+    strsplit("GETRANGE LRANGE LSET LREM LTRIM HINCRBY ZINCRBY", " ")[[1L]],
+    "LINSERT", c("LPOP", "RPOP"), "EXPIRE", c("ZRANGE", "ZRANGEBYSCORE"),
+    c("MGET", "SINTER", "SUNION", "SDIFF", "DEL", "EXISTS"),
+    strsplit("SET LPUSH RPUSH HDEL SADD SREM ZREM SINTERSTORE SUNIONSTORE SDIFFSTORE", " ")[[1L]],
+    "MSET", c("HSET", "ZADD")
+)
+arity_limits <- list(c(0L, 0L), c(1L, 1L), c(2L, 2L), c(3L, 3L), c(4L, 4L), c(1L, 2L),
+                     c(2L, 3L), c(3L, 4L), c(1L, -1L), c(2L, -1L), c(2L, -1L, 0L), c(3L, -1L, 1L))
+check_arity <- function(original, count) {
+    command <- upper(original)
+    group <- which(vapply(arity_groups, function(names) command %in% names, logical(1L)))
+    if (!length(group)) fail(paste0("ERR unknown command '", original, "'"))
+    limit <- arity_limits[[group]]
+    if (count < limit[1L] || (limit[2L] >= 0L && count > limit[2L]) ||
+        (length(limit) == 3L && count %% 2L != limit[3L]))
+        fail(paste0("ERR wrong number of arguments for '", lower(command), "' command"))
+    command
+set_string <- function(state, a) {
+    key <- a[1L]
+    options <- character()
+    seconds_text <- NULL
+    i <- 3L
+    while (i <= length(a)) {
+        option <- upper(a[i])
+        i <- i + 1L
+        if (!option %in% c("NX", "XX", "EX", "KEEPTTL", "GET") || option %in% options) fail("ERR syntax error")
+        options <- c(options, option)
+        if (option == "EX") {
+            if (i > length(a)) fail("ERR syntax error")
+            seconds_text <- a[i]
+            i <- i + 1L
+        }
+    }
+    expiry <- NULL
+    if ("EX" %in% options) {
+        seconds <- number(seconds_text)
+        if (seconds <= 0L) fail("ERR invalid expire time in 'set' command")
+        expiry <- state$clock + seconds
+    }
+    old <- db_get(state$db, key)
+    old_text <- NULL
+    blocked <- ("NX" %in% options && !is.null(old)) || ("XX" %in% options && is.null(old))
+    if (!blocked) {
+        if ("KEEPTTL" %in% options && !is.null(old)) expiry <- old$expiry
+        replace_value(state, key, "string", a[2L], expiry)
+    }
+    if ("GET" %in% options) quoted(old_text) else if (blocked) "(nil)" else "OK"
+string_command <- function(state, command, a) {
+    key <- a[1L]
+    if (command == "SET") return(set_string(state, a))
+    value <- read_value(state, key, "string")
+    if (command == "STRLEN") integer_reply(nchar(value)) else quoted(if (is.null(db_get(state$db, key))) NULL else value)
+key_command <- function(state, command, a) {
+    if (command == "TICK") {
+        ticks <- number(a[1L])
+        if (ticks <= 0L) fail(positive)
+        state$clock <- state$clock + ticks
+        return(integer_reply(purge(state)))
+    }
+control_command <- function(state, command, a) {
+    if (command == "BEGIN") state$stack <- c(state$stack, list(state$db)) else if (command %in% c("COMMIT", "ROLLBACK")) {
+        if (!length(state$stack)) fail("ERR no transaction")
+        if (command == "ROLLBACK") {
+            state$db <- state$stack[[length(state$stack)]]
+            purge(state)
+        }
+        state$stack <- head(state$stack, -1L)
+    } else if (command == "SNAPSHOT") state$snapshots <- db_put(state$snapshots, a[1L], state$db) else {
+        saved <- db_get(state$snapshots, a[1L])
+        if (is.null(saved)) fail("ERR no such snapshot")
+        state$db <- saved
+        purge(state)
+    }
+    "OK"
+execute <- function(state, words) {
+    command <- check_arity(words[1L], length(words) - 1L)
+    a <- words[-1L]
+    if (command %in% strsplit("SET GET MSET MGET INCR DECR INCRBY DECRBY APPEND STRLEN GETRANGE", " ")[[1L]])
+        return(string_command(state, command, a))
+    if (command %in% c("BEGIN", "COMMIT", "ROLLBACK", "SNAPSHOT", "RESTORE"))
+        return(control_command(state, command, a))
+    key_command(state, command, a)
+state <- new.env(parent = emptyenv())
+state$db <- list()
+state$stack <- list()
+state$snapshots <- list()
+state$clock <- 0L
+input <- readLines(file("stdin"), warn = FALSE)
+for (line in input[1L + seq_len(as.integer(input[1L]))]) {
+    words <- split_line(line)
+    reply <- if (is.null(words)) "Invalid argument(s)" else tryCatch(execute(state, words),
+        command_error = function(error) paste0("(error) ", conditionMessage(error)))
+    cat(paste(reply, collapse = "\n"), "\n", sep = "")
+}

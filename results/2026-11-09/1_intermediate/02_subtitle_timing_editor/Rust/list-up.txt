@@ -1,0 +1,145 @@
+type Integer = i64;
+struct Cue {
+    index: Integer,
+    start: Integer,
+    end: Integer,
+    text: Vec<String>,
+struct Editor { cues: Vec<Cue>, history: Vec<Record> }
+struct Arguments {
+    name: String,
+    raw: Vec<String>,
+    values: Vec<Integer>,
+fn unsigned(s: &str) -> Option<Integer> {
+    if s.is_empty() || s.len() > 9 || !s.bytes().all(|c| c.is_ascii_digit()) { None }
+    else { s.parse().ok() }
+fn time_value(s: &str) -> Option<Integer> {
+    let b = s.as_bytes();
+    if b.len() != 12 || b[2] != b':' || b[5] != b':' || b[8] != b',' { return None; }
+    if b.iter().enumerate().any(|(i, c)| ![2, 5, 8].contains(&i) && !c.is_ascii_digit()) { return None; }
+    let h: Integer = s[..2].parse().ok()?;
+    let m: Integer = s[3..5].parse().ok()?;
+    let sec: Integer = s[6..8].parse().ok()?;
+    let ms: Integer = s[9..].parse().ok()?;
+    if m > 59 || sec > 59 { None } else { Some(h*3600000+m*60000+sec*1000+ms) }
+fn time_text(t: Integer, kind: usize) -> String {
+    if kind == 2 {
+    } else {
+        format!("{:02}:{:02}:{:02}{}{:03}", t/3600000, t/60000%60, t/1000%60, if kind == 1 { "." } else { "," }, t%1000)
+fn dialogue(c: &Cue) -> bool { c.text.iter().any(|line| line.starts_with("- ")) }
+fn words(lines: &[String]) -> Vec<&str> {
+    lines.iter().flat_map(|line| line.split(' ').filter(|s| !s.is_empty())).collect()
+fn wrap(lines: &[String], width: usize) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    for word in words(lines) {
+        if result.last().is_none_or(|s| s.len()+1+word.len() > width) { result.push(word.to_owned()); }
+        else {
+            result.last_mut().unwrap().push(' ');
+            result.last_mut().unwrap().push_str(&word);
+        }
+    }
+    result
+fn parse_arguments(line: &str, count: usize) -> Result<Arguments, String> {
+    let names = ["LIST", "VALIDATE", "SEARCH", "AT", "GAPS", "STATS", "PRINT", "TOVTT", "TOASS", "FRAMES", "SHIFT", "SHIFTFROM", "SCALE", "SYNC", "SNAP", "FIXOVERLAP", "EXTEND", "TIME", "SORT", "RENUMBER", "MERGE", "SPLIT", "INSERT", "DELETE", "TEXT", "BALANCE", "STRIP", "CLEANHI", "REPLACE", "UNDO"];
+    let schemas = ["", "", "S", "T", "U", "", "", "", "", "F", "I", "PI", "UU", "PTPT", "F", "U", "U", "PTT", "", "", "U", "U", "PTTX", "P", "PX", "", "", "", "R", ""];
+    let (name, rest) = line.split_once(' ').map_or((line, None), |(a, b)| (a, Some(b)));
+    let position = names.iter().position(|&s| s == name).ok_or("unknown command")?;
+    let mut schema = schemas[position];
+    let raw: Vec<String> = match rest {
+        None => Vec::new(),
+        Some(s) if schema.bytes().any(|c| b"SXR".contains(&c)) => s.splitn(schema.len(), ' ').map(str::to_owned).collect(),
+        Some(s) => s.split(' ').map(str::to_owned).collect(),
+    };
+    if raw.len() != schema.len() { return Err("bad arguments".to_owned()); }
+    let mut a = Arguments { name: name.to_owned(), values: vec![0; raw.len()], raw, denominator: 1 };
+    for (i, kind) in schema.bytes().enumerate() {
+        let s = a.raw[i].as_str();
+        let value = match kind {
+            b'U' => unsigned(s),
+        };
+        a.values[i] = value.ok_or("bad arguments")?;
+    }
+    let v = &a.values;
+    if ["GAPS", "FIXOVERLAP", "MERGE", "EXTEND"].contains(&name) {
+        let minimum = if name == "EXTEND" { 1 } else { 0 };
+        if !(minimum..=60000).contains(&v[0]) { return Err("bad arguments".to_owned()); }
+    }
+    Ok(a)
+    fn execute(&mut self, line: &str) -> Result<Vec<String>, String> {
+        let a = parse_arguments(line, self.cues.len())?;
+        let name = a.name.as_str();
+        let v = &a.values;
+        let mut out = Vec::new();
+        match name {
+            "PRINT" | "TOVTT" => {
+                for c in &self.cues {
+                    let kind = usize::from(name == "TOVTT");
+                    let (lines, code, _) = if kind == 1 { converted(&c.text, 1) } else { (c.text.clone(), 0, 0) };
+                    if lines.is_empty() { continue; }
+                    let mut setting = if code >= 7 { " line:0" } else if code >= 4 { " line:50%" } else { "" }.to_owned();
+                    out.push(c.index.to_string());
+                    out.push(format!("{} --> {}{setting}", time_text(c.start, kind), time_text(c.end, kind)));
+                    out.extend(lines);
+                    out.push(String::new());
+                }
+            }
+            "MERGE" => {
+                let mut result: Vec<Cue> = Vec::new();
+                let mut merged = 0;
+                for c in std::mem::take(&mut self.cues) {
+                    if let Some(previous) = result.last_mut() {
+                        if c.start-previous.end < v[0] && !dialogue(previous) && !dialogue(&c) {
+                            let mut lines = previous.text.clone();
+                            lines.extend(c.text.iter().cloned());
+                            let wrapped = wrap(&lines, 42);
+                            if wrapped.len() <= 2 {
+                                previous.end = previous.end.max(c.end);
+                                previous.text = wrapped;
+                                merged += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    result.push(c);
+                }
+                self.cues = result;
+                out.push(format!("MERGE merged={merged} cues={}", self.cues.len()));
+            }
+        }
+        Ok(out)
+fn load_block(block: &[String], position: usize, editor: &mut Editor) -> Option<String> {
+    let index = unsigned(&block[0]).filter(|_| block[0].len() <= 6);
+    if index.is_none() { return Some(format!("BAD CUE {position}: index")); }
+    let times = block.get(1).filter(|s| s.len() == 29 && &s[12..17] == " --> ")
+        .and_then(|s| Some((time_value(&s[..12])?, time_value(&s[17..])?)));
+    let Some((start, end)) = times else { return Some(format!("BAD CUE {position}: time")); };
+    if block.len() < 3 { return Some(format!("BAD CUE {position}: no text")); }
+    editor.cues.push(Cue { index: index.unwrap(), start, end, text: block[2..].to_vec() });
+    None
+fn main() {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    let stdout = io::stdout();
+    let mut output = io::BufWriter::new(stdout.lock());
+    let mut editor = Editor::default();
+    let mut block = Vec::new();
+    let (mut blocks, mut bad) = (0, 0);
+    for line in lines.by_ref() {
+        let line = line.unwrap();
+        if line.is_empty() || line == "###" {
+            if !block.is_empty() {
+                blocks += 1;
+                if let Some(message) = load_block(&block, blocks, &mut editor) {
+                    writeln!(output, "{message}").unwrap();
+                    bad += 1;
+                }
+                block.clear();
+            }
+            if line == "###" { break; }
+        } else { block.push(line); }
+    }
+    writeln!(output, "LOAD cues={} bad={bad}", editor.cues.len()).unwrap();
+    let count: usize = lines.next().unwrap().unwrap().parse().unwrap();
+    for line in lines.take(count) {
+        let line = line.unwrap();
+        let result = editor.execute(&line).unwrap_or_else(|message| vec![format!("ERROR {message}")]);
+        for line in result { writeln!(output, "{line}").unwrap(); }

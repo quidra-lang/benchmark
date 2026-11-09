@@ -1,0 +1,93 @@
+    void access(const Event &event, Number issue) {
+        int core = event.core;
+        Cache &cache = l1[core];
+        CoreStats &count = cores[core];
+        std::vector<std::array<char, 9>> before;
+        if (primary)
+            for (Number block : config.watch)
+                before.push_back(line_states(block));
+        char old = cache.state(event.block);
+        bool hit = old != 'I';
+        ++count.accesses;
+        if (event.operation == 'R')
+            ++count.reads;
+        else
+            ++count.writes;
+        if (hit)
+            ++count.hits;
+        else
+            ++count.misses;
+        bool other = false;
+        for (int k = 0; k < config.cores; ++k)
+            if (k != core && l1[k].state(event.block) != 'I')
+                other = true;
+        RequestTransition transition = requester(scenario.protocol, old, event.operation, other);
+        int miss_kind = -1;
+        if (hit)
+            cache.touch(event.block);
+        Number completion = issue + config.t1;
+        int service = 0;
+        if (transition.transaction != TransactionKind::None) {
+            auto result = run_transaction(core, transition.transaction, event.block, event.word,
+                                          issue + config.t1);
+            completion = result.first;
+            service = result.second;
+        }
+        if (old != 'I')
+            cache.change(event.block, transition.state);
+        Number latency = completion - issue;
+        ++count.service[service];
+        count.latency += latency;
+        if (event.operation == 'R') {
+            count.read_latency += latency;
+            ready[core] = completion;
+        } else {
+        count.finish = std::max(count.finish, completion);
+        processed.push_back({event.number, core, issue, event.address, event.block, latency,
+                             event.operation, service, miss_kind, hit});
+        if (primary)
+            for (std::size_t i = 0; i < config.watch.size(); ++i) {
+                Number block = config.watch[i];
+void Cache::touch_way(int row, int way, bool fill) {
+    CacheSet &set = sets[row];
+    if (replacement == "LRU" || (replacement == "FIFO" && fill))
+        set.touched[way] = ++clock;
+    else if (replacement == "PLRU") {
+        int lo = 0, hi = ways, node = 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) / 2;
+            if (way < mid) {
+                set.bits[node] = 1;
+                hi = mid;
+                node *= 2;
+            } else {
+                set.bits[node] = 0;
+                lo = mid;
+                node = 2 * node + 1;
+            }
+        }
+    }
+}
+void Cache::touch(Number block) {
+    int way = locate(block);
+    if (way >= 0)
+        touch_way(int(block % sets.size()), way, false);
+}
+RequestTransition requester(const std::string &protocol, char old, char op, bool other) {
+    using T = TransactionKind;
+    if (protocol == "VI") {
+        if (op == 'R')
+            return {old == 'I' ? T::BusRd : T::None, 'V'};
+        return {T::BusWr, old == 'I' ? 'I' : 'V'};
+    }
+    if (old == 'I') {
+        if (op == 'W')
+            return {T::BusRdX, 'M'};
+        return {T::BusRd, protocol == "MSI" || other ? 'S' : 'E'};
+    }
+    if (op == 'R')
+        return {T::None, old};
+    if (old == 'M' || old == 'E')
+        return {T::None, 'M'};
+    return {T::BusUpgr, 'M'};
+}

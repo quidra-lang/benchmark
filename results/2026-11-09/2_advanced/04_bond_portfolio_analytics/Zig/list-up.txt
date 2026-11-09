@@ -1,0 +1,438 @@
+pub var allocator: std.mem.Allocator = undefined;
+pub const Strings = []const []const u8;
+pub fn eq(a: []const u8, b: []const u8) bool { return std.mem.eql(u8, a, b); }
+pub fn fmt(comptime pattern: []const u8, args: anytype) []const u8 { return std.fmt.allocPrint(allocator, pattern, args) catch @panic("allocation failed"); }
+pub fn append(comptime T: type, list: *std.ArrayList(T), item: T) void { list.append(allocator, item) catch @panic("allocation failed"); }
+pub fn clone(comptime T: type, items: []const T) []T { return allocator.dupe(T, items) catch @panic("allocation failed"); }
+pub fn join(parts: Strings, separator: []const u8) []const u8 { return std.mem.join(allocator, separator, parts) catch @panic("allocation failed"); }
+pub fn has(parts: Strings, word: []const u8) bool { for (parts) |part| { if (eq(part, word)) return true; } return false; }
+pub fn split(text: []const u8, delimiter: u8) Strings { var parts: std.ArrayList([]const u8) = .empty; var it = std.mem.splitScalar(u8, text, delimiter); while (it.next()) |part| append([]const u8, &parts, part); return parts.items; }
+pub fn lines(text: []const u8) Strings { const all = split(text, '\n'); return all[0..all.len - 1]; }
+pub fn integer(text: []const u8) i64 { return std.fmt.parseInt(i64, text, 10) catch unreachable; }
+pub fn real(value: anytype) f64 { return @floatFromInt(value); }
+pub fn leap(year: i64) bool { return @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0); }
+pub fn yearLength(year: i64) i64 { return if (leap(year)) 366 else 365; }
+pub fn monthLength(year: i64, month: i64) i64 { return if (month == 2 and leap(year)) 29 else ([_]i64{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 })[@intCast(month - 1)]; }
+pub const Date = struct { year: i64, month: i64, day: i64 };
+pub fn parts(text: []const u8) Date { return .{ .year = integer(text[0..4]), .month = integer(text[5..7]), .day = integer(text[8..10]) }; }
+pub fn valid(text: []const u8) bool { const date = parts(text); return date.year >= 2001 and date.year <= 2099 and date.month >= 1 and date.month <= 12 and date.day >= 1 and date.day <= monthLength(date.year, date.month); }
+pub fn dayNumber(year: i64, month: i64, day: i64) i64 {
+    var result = day - 1;
+    var y: i64 = 2000;
+    while (y < year) : (y += 1) result += yearLength(y);
+    var m: i64 = 1;
+    while (m < month) : (m += 1) result += monthLength(year, m);
+    return result;
+}
+pub fn parseDate(text: []const u8) i64 { const date = parts(text); return dayNumber(date.year, date.month, date.day); }
+pub fn civil(number: i64) Date {
+    var left = number;
+    var year: i64 = 2000;
+    while (left >= yearLength(year)) : (year += 1) left -= yearLength(year);
+    var month: i64 = 1;
+    while (left >= monthLength(year, month)) : (month += 1) left -= monthLength(year, month);
+    return .{ .year = year, .month = month, .day = left + 1 };
+}
+pub fn formatDate(number: i64) []const u8 { const date = civil(number); return fmt("{d:0>4}-{d:0>2}-{d:0>2}", .{ date.year, date.month, date.day }); }
+pub const Calendar = struct {
+    holidays: []const i64,
+    pub fn business(c: Calendar, day: i64) bool { return @mod(day + 5, 7) < 5 and std.mem.findScalar(i64, c.holidays, day) == null; }
+    pub fn move(c: Calendar, day: i64, count: i64) i64 {
+        var result = day;
+        const step: i64 = if (count < 0) -1 else 1;
+        var left = if (count < 0) -count else count;
+        while (left > 0) { result += step; if (c.business(result)) left -= 1; }
+        return result;
+    }
+    pub fn adjust(c: Calendar, day: i64, rule: []const u8) i64 {
+        if (eq(rule, "UNADJUSTED")) return day;
+        const step: i64 = if (eq(rule, "PRECEDING")) -1 else 1;
+        var result = day;
+        while (!c.business(result)) result += step;
+        if (eq(rule, "MODIFIED_FOLLOWING") and civil(result).month != civil(day).month) return c.adjust(day, "PRECEDING");
+        return result;
+    }
+};
+pub const conventions = [_][]const u8{ "30/360", "30E/360", "ACT/360", "ACT/365F", "ACT/ACT" };
+pub const Fraction = struct { n: i64, m: i64, pub fn value(f: Fraction) f64 { return dates.real(f.n) / dates.real(f.m); } };
+
+pub fn fraction(convention: []const u8, start: i64, end: i64) Fraction {
+    var a = dates.civil(start);
+    var b = dates.civil(end);
+    if (dates.eq(convention, "30/360")) {
+        const february = a.month == 2 and a.day == dates.monthLength(a.year, a.month);
+        if (february and b.month == 2 and b.day == dates.monthLength(b.year, b.month)) b.day = 30;
+        if (february) a.day = 30;
+        if (b.day == 31 and a.day >= 30) b.day = 30;
+        if (a.day == 31) a.day = 30;
+    } else if (dates.eq(convention, "30E/360")) {
+        a.day = @min(a.day, 30);
+        b.day = @min(b.day, 30);
+    } else if (dates.eq(convention, "ACT/360")) return .{ .n = end - start, .m = 360 } else if (dates.eq(convention, "ACT/365F")) return .{ .n = end - start, .m = 365 } else {
+    }
+    return .{ .n = 360 * (b.year - a.year) + 30 * (b.month - a.month) + b.day - a.day, .m = 360 };
+}
+pub fn bisect(context: anytype, comptime evaluate: anytype, low: f64, high: f64, target: f64) f64 {
+    var lo = low;
+    var hi = high;
+    for (0..80) |_| {
+        const middle = (lo + hi) / 2;
+        if (evaluate(context, middle) > target) lo = middle else hi = middle;
+    }
+    return (lo + hi) / 2;
+}
+
+pub const Risk = struct { macaulay: f64 = 0, modified: f64 = 0, convexity: f64 = 0, dv01: f64 = 0 };
+pub const YieldPricer = struct {
+    flows: []const i64,
+    fraction: f64,
+    frequency: i64,
+    outstanding: i64,
+    pub fn dirty(p: YieldPricer, rate: f64) f64 {
+        const first = 1 + p.fraction * rate / dates.real(p.frequency);
+        const growth = 1 + rate / dates.real(p.frequency);
+        var factor: f64 = 1;
+        var total: f64 = 0;
+        for (p.flows) |flow| { total += dates.real(flow) / (first * factor); factor *= growth; }
+        return total * 100 / dates.real(p.outstanding);
+    }
+    pub fn solve(p: YieldPricer, target: f64) f64 { return bisect(p, dirty, 0, 1, target); }
+    pub fn risk(p: YieldPricer, rate: f64) Risk {
+        const frequency = dates.real(p.frequency);
+        const first = 1 + p.fraction * rate / frequency;
+        const growth = 1 + rate / frequency;
+        var factor: f64 = 1;
+        var total: f64 = 0;
+        var weighted: f64 = 0;
+        var curvature: f64 = 0;
+        for (p.flows, 0..) |flow, index| {
+            const value = dates.real(flow) / (first * factor);
+            const years = (dates.real(index) + p.fraction) / frequency;
+            total += value;
+            weighted += years * value;
+            curvature += years * (years + 1 / frequency) * value;
+            factor *= growth;
+        }
+        const macaulay = weighted / total;
+        return .{ .macaulay = macaulay, .modified = macaulay / growth, .convexity = curvature / (total * growth * growth), .dv01 = (p.dirty(rate - 0.0001) - p.dirty(rate + 0.0001)) / 2 };
+    }
+};
+pub fn build(issue: i64, maturity: i64, frequency: i64, eom: bool, long_stub: bool) []const i64 {
+    const end = dates.civil(maturity);
+    const end_rule = eom and end.day == dates.monthLength(end.year, end.month);
+    var result: std.ArrayList(i64) = .empty;
+    var boundary = maturity;
+    while (boundary > issue) {
+        dates.append(i64, &result, boundary);
+        const index = end.year * 12 + end.month - 1 - @divFloor(12, frequency) * @as(i64, @intCast(result.items.len));
+        const year = @divFloor(index, 12);
+        const month = @mod(index, 12) + 1;
+        const day = if (end_rule) dates.monthLength(year, month) else @min(end.day, dates.monthLength(year, month));
+        boundary = dates.dayNumber(year, month, day);
+    }
+    if (long_stub and boundary != issue and result.items.len >= 2) result.items.len -= 1;
+    dates.append(i64, &result, issue);
+    std.mem.reverse(i64, result.items);
+    return result.items;
+}
+pub const Flow = struct { days: i64, amount: f64 };
+pub const ZeroCurve = struct {
+    days: []const i64,
+    rates: []const f64,
+    pub fn zero(c: ZeroCurve, day: i64) f64 {
+        if (day <= c.days[0]) return c.rates[0];
+        if (day >= c.days[c.days.len - 1]) return c.rates[c.rates.len - 1];
+        var index: usize = 1;
+        while (c.days[index] < day) : (index += 1) {}
+        if (c.days[index] == day) return c.rates[index];
+        return c.rates[index - 1] + (c.rates[index] - c.rates[index - 1]) * (dates.real(day - c.days[index - 1]) / dates.real(c.days[index] - c.days[index - 1]));
+    }
+    pub fn discount(c: ZeroCurve, day: i64, spread: f64) f64 {
+        const rate = c.zero(day) + spread;
+        const years = @divFloor(day, 365);
+        const remainder = @mod(day, 365);
+        var growth: f64 = 1;
+        var i: i64 = 0;
+        while (i < years) : (i += 1) growth *= 1 + rate;
+        return 1 / (growth * (1 + rate * dates.real(remainder) / 365));
+    }
+    pub fn presentValue(c: ZeroCurve, flows: []const Flow, spread: f64) f64 { var total: f64 = 0; for (flows) |flow| total += flow.amount * c.discount(flow.days, spread); return total; }
+const BootstrapContext = struct { curve: ZeroCurve, trial: *f64, flows: []const Flow };
+fn bootstrapValue(context: BootstrapContext, trial: f64) f64 { context.trial.* = trial; return context.curve.presentValue(context.flows, 0); }
+pub fn bootstrap(settlement: i64, pillars: []const Pillar) ZeroCurve {
+    var days: std.ArrayList(i64) = .empty;
+    var rates: std.ArrayList(f64) = .empty;
+    for (pillars) |pillar| {
+        const boundaries = schedule.build(settlement, pillar.maturity, pillar.frequency, false, false);
+        var flows: std.ArrayList(Flow) = .empty;
+        for (1..boundaries.len) |i| {
+            const fraction = daycount.fraction("30/360", boundaries[i - 1], boundaries[i]);
+            var amount = dates.real(pillar.coupon) * dates.real(fraction.n) / (10000 * dates.real(fraction.m));
+            if (i == boundaries.len - 1) amount += 1;
+            dates.append(Flow, &flows, .{ .days = boundaries[i] - settlement, .amount = amount });
+        }
+        dates.append(i64, &days, pillar.maturity - settlement);
+        dates.append(f64, &rates, 0);
+        const context: BootstrapContext = .{ .curve = .{ .days = days.items, .rates = rates.items }, .trial = &rates.items[rates.items.len - 1], .flows = flows.items };
+        const rate = pricing.bisect(context, bootstrapValue, 0, 1, 1);
+        rates.items[rates.items.len - 1] = rate;
+    }
+    return .{ .days = days.items, .rates = rates.items };
+}
+const SpreadContext = struct { curve: ZeroCurve, flows: []const Flow };
+fn spreadValue(context: SpreadContext, spread: f64) f64 { return context.curve.presentValue(context.flows, spread); }
+pub fn zSpread(c: ZeroCurve, flows: []const Flow, target: f64) f64 { return pricing.bisect(SpreadContext{ .curve = c, .flows = flows }, spreadValue, -0.5, 0.5, target); }
+const fmt = d.fmt;
+const add = d.append;
+const real = d.real;
+const integer = d.integer;
+const InputError = error{InvalidInput};
+const BondType = enum { FIXED, ZERO, AMORT, FRN };
+const frequencies = [_]i64{ 1, 2, 4, 12 };
+const business_rules = [_][]const u8{ "FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING", "UNADJUSTED" };
+const bucket_names = [_][]const u8{ "0-1Y", "1-3Y", "3-5Y", "5-10Y", "10Y+" };
+
+fn enumValue(comptime T: type, text: []const u8) ?T { inline for (@typeInfo(T).@"enum".field_names) |name| { if (d.eq(name, text)) return @field(T, name); } return null; }
+fn rounded(n: i64, denominator: i64) i64 { return @divFloor(2 * n + denominator, 2 * denominator); }
+fn thousandths(text: []const u8) i64 { const dot = std.mem.findScalar(u8, text, '.').?; return integer(text[0..dot]) * 1000 + integer(text[dot + 1..]); }
+    fn parse(text: []const u8) Params {
+        var result: Params = .{};
+        for (d.lines(text), 1..) |line, number| {
+            const words = d.split(line, ' ');
+            if (d.eq(words[0], "valuation_date")) result.valuation = d.parseDate(words[1]) else if (d.eq(words[0], "settlement_days")) result.settlement_days = integer(words[1]) else if (d.eq(words[0], "scenario")) {
+                var shifts: std.ArrayList(i64) = .empty;
+                for (words[2..]) |word| add(i64, &shifts, integer(word));
+                add(RawScenario, &result.scenarios, .{ .number = number, .name = words[1], .shifts = shifts.items });
+            } else add(Strings, &result.limits, words[1..]);
+        }
+        return result;
+    }
+const Period = struct {
+    number: usize,
+    start: i64,
+    end: i64,
+    payment: i64,
+    fraction: dc.Fraction,
+    rate: i64,
+    opening: i64,
+    coupon: i64,
+    principal: i64,
+    fn cashflow(period: Period) i64 { return period.coupon + period.principal; }
+};
+const Bond = struct {
+    code: []const u8,
+    kind: BondType,
+    issue: i64,
+    maturity: i64,
+    coupon: i64,
+    frequency: i64,
+    daycount: []const u8,
+    bdc: []const u8,
+    fraction: f64,
+    pricer: pricing.YieldPricer,
+    ytm: f64 = 0,
+    ytw: f64 = 0,
+    risk: pricing.Risk = .{},
+    workout: i64,
+    wal: f64 = 0,
+    next_payment: i64,
+    curve_clean: f64 = 0,
+    zspread: f64 = 0,
+    fn init(bond: *const Bond, clean: i64, settlement: i64) Valuation {
+        var index: usize = 0;
+        while (bond.periods[index].end <= settlement) : (index += 1) {}
+        const remaining = bond.periods[index..];
+        const current = remaining[0];
+        const accrued_fraction = dc.fraction(bond.daycount, current.start, settlement);
+        const accrued = real(current.rate) * real(accrued_fraction.n) / (100 * real(accrued_fraction.m));
+        const accrued_amount = rounded(current.opening * current.rate * accrued_fraction.n, 10000 * accrued_fraction.m);
+        const clean_amount = rounded(current.opening * clean, 100000);
+        const fraction = real(bond.frequency) * dc.fraction(bond.daycount, settlement, current.end).value();
+        var cashflows: std.ArrayList(Period) = .empty;
+        var flows: std.ArrayList(curve.Flow) = .empty;
+        var amounts: std.ArrayList(i64) = .empty;
+        for (remaining) |period| {
+            add(i64, &amounts, period.cashflow());
+            if (period.cashflow() > 0) {
+                add(Period, &cashflows, period);
+                add(curve.Flow, &flows, .{ .days = period.payment - settlement, .amount = real(period.cashflow()) });
+            }
+        }
+        return .{ .bond = bond, .clean = clean, .remaining = remaining, .cashflows = cashflows.items, .flows = flows.items, .outstanding = current.opening, .accrued = accrued, .accrued_amount = accrued_amount, .clean_amount = clean_amount, .unit_value = clean_amount + accrued_amount, .target = real(clean) / 1000 + accrued, .fraction = fraction, .pricer = .{ .flows = amounts.items, .fraction = fraction, .frequency = bond.frequency, .outstanding = current.opening }, .workout = bond.maturity, .next_payment = cashflows.items[0].payment };
+    }
+    fn analyze(value: *Valuation, zero_curve: curve.ZeroCurve, settlement: i64) void {
+        value.ytm = value.pricer.solve(value.target);
+        value.risk = value.pricer.risk(value.ytm);
+        value.ytw = value.ytm;
+        for (value.bond.calls) |call| {
+            if (call.day <= settlement) continue;
+            var amounts: std.ArrayList(i64) = .empty;
+            for (value.remaining) |period| {
+                add(i64, &amounts, period.coupon);
+                if (period.end == call.day) { amounts.items[amounts.items.len - 1] += rounded(period.opening * call.amount, 100000); break; }
+            }
+            const pricer: pricing.YieldPricer = .{ .flows = amounts.items, .fraction = value.fraction, .frequency = value.bond.frequency, .outstanding = value.outstanding };
+            const rate = pricer.solve(value.target);
+            if (rate < value.ytw) { value.ytw = rate; value.workout = call.day; }
+        }
+        var principal_days: i64 = 0;
+        for (value.cashflows) |period| principal_days += period.principal * (period.payment - settlement);
+        value.wal = real(principal_days) / real(365 * value.outstanding);
+        value.curve_clean = zero_curve.presentValue(value.flows, 0) * 100 / real(value.outstanding) - value.accrued;
+        value.zspread = curve.zSpread(zero_curve, value.flows, real(value.unit_value));
+    }
+fn bondLess(_: void, a: *Bond, b: *Bond) bool { return stringLess(a.code, b.code); }
+fn valuationLess(_: void, a: *Valuation, b: *Valuation) bool { return stringLess(a.bond.code, b.bond.code); }
+    fn bond(data: *const Data, code: []const u8) ?*Bond { for (data.bonds.items) |entry| { if (d.eq(entry.code, code)) return entry; } return null; }
+    fn parseOptions(data: *Data, kind: BondType, text: []const u8) InputError!Options {
+        var options: Options = .{};
+        var seen: std.ArrayList([]const u8) = .empty;
+        if (!d.eq(text, "-")) {
+            for (d.split(text, ';')) |item| {
+                const equal = std.mem.findScalar(u8, item, '=') orelse item.len;
+                const key = item[0..equal];
+                const value = if (equal < item.len) item[equal + 1..] else "";
+                const repeatable = d.eq(key, "SINK") or d.eq(key, "CALL");
+                const allowed = d.eq(key, "EOM") or d.eq(key, "LONG") or (kind == .FIXED and d.eq(key, "CALL")) or (kind == .AMORT and d.eq(key, "SINK")) or (kind == .FRN and d.has(&.{ "LAG", "CAP", "FLOOR" }, key));
+                if (!allowed or (d.has(seen.items, key) and !repeatable)) return data.fail("invalid option");
+                add([]const u8, &seen, key);
+                if (d.eq(key, "EOM")) options.eom = true else if (d.eq(key, "LONG")) options.long_stub = true else if (d.eq(key, "LAG")) options.lag = integer(value) else if (d.eq(key, "CAP")) options.cap = integer(value) else if (d.eq(key, "FLOOR")) options.floor = integer(value) else {
+                    const fields = d.split(value, ':');
+                    add(DatedAmount, if (d.eq(key, "SINK")) &options.sinks else &options.calls, .{ .date = fields[0], .amount = if (d.eq(key, "SINK")) integer(fields[1]) else thousandths(fields[1]) });
+                }
+            }
+        }
+        if (kind == .FRN and (options.lag == null or options.lag.? < 1 or options.lag.? > 5 or (options.cap orelse 1200) > 1200 or (options.floor orelse 0) > (options.cap orelse 1200))) return data.fail("invalid option");
+        return options;
+    }
+    fn parseBond(data: *Data, fields: Strings, seen: Strings) InputError!*Bond {
+        if (d.has(seen, fields[0])) return data.fail("duplicate id");
+        const kind = enumValue(BondType, fields[1]) orelse return data.fail("unknown type");
+        if (!d.valid(fields[2]) or !d.valid(fields[3])) return data.fail("invalid date");
+        const issue = d.parseDate(fields[2]);
+        const maturity = d.parseDate(fields[3]);
+        if (maturity <= issue) return data.fail("maturity not after issue");
+        const coupon = integer(fields[4]);
+        const frequency = integer(fields[5]);
+        if (std.mem.findScalar(i64, &frequencies, frequency) == null) return data.fail("invalid frequency");
+        if (!d.has(&dc.conventions, fields[6])) return data.fail("unknown day count");
+        if (!d.has(&business_rules, fields[7])) return data.fail("unknown business day rule");
+        const face = integer(fields[8]);
+        if (@mod(face, 100000) != 0 or face > 10000000) return data.fail("invalid face");
+        if (coupon > 1200 or (kind == .ZERO and coupon != 0)) return data.fail("invalid coupon");
+        const options = try data.parseOptions(kind, fields[9]);
+        const boundaries = schedule.build(issue, maturity, frequency, options.eom, options.long_stub);
+        const sinks = try data.redemptions(options.sinks.items, boundaries, "invalid sinking fund");
+        var total: i64 = 0;
+        for (sinks) |sink| { if (sink.amount == 0) return data.fail("invalid sinking fund"); total += sink.amount; }
+        if (kind == .AMORT and (total == 0 or total >= face)) return data.fail("invalid sinking fund");
+        const calls = try data.redemptions(options.calls.items, boundaries, "invalid call schedule");
+        for (calls) |call| { if (call.amount < 100000 or call.amount > 110000) return data.fail("invalid call schedule"); }
+        var periods: std.ArrayList(Period) = .empty;
+        var opening = face;
+        for (1..boundaries.len) |i| {
+            const start = boundaries[i - 1];
+            const end = boundaries[i];
+            var rate: i64 = if (kind == .ZERO) 0 else coupon;
+            if (kind == .FRN) {
+                const fixing_date = data.calendar.move(data.calendar.adjust(start, fields[7]), -options.lag.?);
+                var fixing: ?i64 = null;
+                for (data.fixings) |entry| { if (entry.day <= fixing_date) fixing = entry.rate else break; }
+                rate = (fixing orelse return data.fail("missing fixing")) + coupon;
+                if (options.floor) |floor| rate = @max(rate, floor);
+                if (options.cap) |cap| rate = @min(rate, cap);
+            }
+            var principal: i64 = if (i == boundaries.len - 1) opening else 0;
+            if (i != boundaries.len - 1) { for (sinks) |sink| { if (sink.day == end) principal = sink.amount; } }
+            const fraction = dc.fraction(fields[6], start, end);
+            add(Period, &periods, .{ .number = i, .start = start, .end = end, .payment = data.calendar.adjust(end, fields[7]), .fraction = fraction, .rate = rate, .opening = opening, .coupon = rounded(opening * rate * fraction.n, 10000 * fraction.m), .principal = principal });
+            opening -= principal;
+        }
+        return create(Bond, .{ .code = fields[0], .kind = kind, .issue = issue, .maturity = maturity, .coupon = coupon, .frequency = frequency, .daycount = fields[6], .bdc = fields[7], .face = face, .options = options, .boundaries = boundaries, .calls = calls, .periods = periods.items });
+    }
+    fn parsePrice(data: *Data, fields: Strings, seen: Strings) InputError!*Valuation {
+        const bond_value = data.bond(fields[0]) orelse return data.fail("unknown bond");
+        if (d.has(seen, fields[0])) return data.fail("duplicate price");
+        if (!(bond_value.issue <= data.settlement and data.settlement < bond_value.maturity)) return data.fail("not outstanding");
+        const value = Valuation.init(bond_value, thousandths(fields[1]), data.settlement);
+        if (!(value.pricer.dirty(0) > value.target and value.target > value.pricer.dirty(1))) return data.fail("yield out of range");
+        return create(Valuation, value);
+    }
+    fn load(data: *Data, curve_rows: []const Row, bond_rows: []const Row, price_rows: []const Row, holding_rows: []const Row) void {
+        var seen: std.ArrayList([]const u8) = .empty;
+        for (curve_rows) |row| {
+            const fields = row.fields;
+            const reason: ?[]const u8 = if (d.has(seen.items, fields[0])) "duplicate pillar" else if (!d.valid(fields[0])) "invalid date" else if (d.parseDate(fields[0]) <= data.settlement) "pillar not after settlement" else if (std.mem.findScalar(i64, &frequencies, integer(fields[2])) == null) "invalid frequency" else null;
+            if (reason) |message| { data.reason = message; data.record("curve_quotes.csv", row.number, fields[0]); } else add(curve.Pillar, &data.pillars, .{ .maturity = d.parseDate(fields[0]), .coupon = integer(fields[1]), .frequency = integer(fields[2]) });
+            add([]const u8, &seen, fields[0]);
+        }
+        std.mem.sort(curve.Pillar, data.pillars.items, {}, pillarLess);
+        seen = .empty;
+        for (data.params.scenarios.items) |scenario| {
+            const reason: ?[]const u8 = if (d.has(seen.items, scenario.name)) "duplicate scenario" else if (scenario.shifts.len != data.pillars.items.len) "wrong number of shifts" else null;
+            if (reason) |message| { data.reason = message; data.record("params.txt", scenario.number, scenario.name); } else {
+                const deltas = zeros(scenario.shifts.len);
+                for (deltas, scenario.shifts) |*delta, shift| delta.* = real(shift) * 0.0001;
+                add(Scenario, &data.scenarios, .{ .name = scenario.name, .deltas = deltas });
+            }
+            add([]const u8, &seen, scenario.name);
+        }
+        seen = .empty;
+        for (bond_rows) |row| {
+            const value = data.parseBond(row.fields, seen.items) catch { data.record("bonds.csv", row.number, row.fields[0]); add([]const u8, &seen, row.fields[0]); continue; };
+            add([]const u8, &seen, row.fields[0]);
+            add(*Bond, &data.bonds, value);
+        }
+        seen = .empty;
+        for (price_rows) |row| {
+            const value = data.parsePrice(row.fields, seen.items) catch { data.record("prices.csv", row.number, row.fields[0]); add([]const u8, &seen, row.fields[0]); continue; };
+            add([]const u8, &seen, row.fields[0]);
+            add(*Valuation, &data.valuations, value);
+        }
+        for (holding_rows) |row| data.holding(row.fields) catch data.record("holdings.csv", row.number, row.fields[1]);
+        std.mem.sort(*Bond, data.bonds.items, {}, bondLess);
+        std.mem.sort(*Valuation, data.valuations.items, {}, valuationLess);
+        std.mem.sort(Position, data.positions.items, {}, positionLess);
+    }
+fn cashflowReport(data: *const Data) Text {
+    var out: Text = .{};
+    out.line("bond,period,start,end,payment,fraction,rate_bp,outstanding,coupon,principal");
+    for (data.bonds.items) |bond| {
+        for (bond.periods) |period| {
+            if (period.cashflow() == 0) continue;
+            out.line(fmt("{s},{d},{s},{s},{s},{s},{d},{d},{d},{d}", .{ bond.code, period.number, d.formatDate(period.start), d.formatDate(period.end), d.formatDate(period.payment), decimals(period.fraction.value(), 6), period.rate, period.opening, period.coupon, period.principal }));
+        }
+    }
+    return out;
+}
+fn analyticsReport(data: *const Data) Text {
+    var out: Text = .{};
+    out.line("bond,clean,accrued,dirty,ytm,ytw,workout,next_payment,wal,macaulay,modified,convexity,dv01,curve_clean,zspread");
+    for (data.valuations.items) |value| out.line(fmt("{s},{s},{s},{s},{s},{s},{s},{s},{s},{s},{s},{s},{s},{s},{s}", .{ value.bond.code, decimals(real(value.clean) / 1000, 6), decimals(value.accrued, 6), decimals(value.target, 6), percent(value.ytm), percent(value.ytw), d.formatDate(value.workout), d.formatDate(value.next_payment), decimals(value.wal, 4), decimals(value.risk.macaulay, 4), decimals(value.risk.modified, 4), decimals(value.risk.convexity, 4), decimals(value.risk.dv01, 6), decimals(value.curve_clean, 6), percent(value.zspread) }));
+    return out;
+}
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    d.allocator = arena.allocator();
+    const cwd = std.Io.Dir.cwd();
+    const input_names = [_][]const u8{ "params.txt", "calendar.txt", "fixings.csv", "curve_quotes.csv", "bonds.csv", "prices.csv", "holdings.csv" };
+    var inputs: [7][]const u8 = undefined;
+    for (input_names, 0..) |name, i| inputs[i] = try cwd.readFileAlloc(init.io, fmt("input/{s}", .{name}), d.allocator, .unlimited);
+    const params = Params.parse(inputs[0]);
+    var holidays: std.ArrayList(i64) = .empty;
+    for (d.lines(inputs[1])) |line| add(i64, &holidays, d.parseDate(line));
+    const calendar: d.Calendar = .{ .holidays = holidays.items };
+    var fixings: std.ArrayList(Fixing) = .empty;
+    for (rows(inputs[2])) |row| add(Fixing, &fixings, .{ .day = d.parseDate(row.fields[0]), .rate = integer(row.fields[1]) });
+    var data: Data = .{ .params = params, .calendar = calendar, .fixings = fixings.items, .settlement = calendar.move(params.valuation, params.settlement_days) };
+    data.load(rows(inputs[3]), rows(inputs[4]), rows(inputs[5]), rows(inputs[6]));
+    const zero_curve = curve.bootstrap(data.settlement, data.pillars.items);
+    for (data.valuations.items) |value| value.analyze(zero_curve, data.settlement);
+    var portfolio_out: Text = .{};
+    var scenario_out: Text = .{};
+    const outputs = [_]Text{ data.errors, cashflowReport(&data), analyticsReport(&data), curveReport(&data, zero_curve), portfolio_out, scenario_out, compliance_out };
+    const output_names = [_][]const u8{ "errors.txt", "cashflows.csv", "analytics.csv", "curve.txt", "portfolio.txt", "scenarios.csv", "compliance.txt" };
+    try cwd.createDirPath(init.io, "output");
+    for (output_names, outputs) |name, out| try cwd.writeFile(init.io, .{ .sub_path = fmt("output/{s}", .{name}), .data = out.value() });
+}

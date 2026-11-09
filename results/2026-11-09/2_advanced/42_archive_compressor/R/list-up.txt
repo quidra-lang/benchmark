@@ -1,0 +1,316 @@
+METHODS <- c("STORE","LZW","LZ77","LZH","ARITH")
+STATUSES <- c("ok","repaired","checksum","error","unsupported","truncated","bad_header")
+MODULUS <- 65521
+fmt <- function(pattern,...) {
+  arguments <- lapply(list(...),function(value) if (is.numeric(value)) sprintf("%.0f",value) else value)
+  do.call(sprintf,c(list(pattern),arguments))
+}
+read_inputs <- function() {
+  lines <- strsplit(readLines("input/manifest.txt")," ",fixed=TRUE)
+  values <- vapply(lines[seq_len(3L)],function(line) as.integer(line[2L]),integer(1))
+  hex <- paste(readLines("input/archive.hex"),collapse="")
+  positions <- seq.int(1L,nchar(hex),2L)
+  supplied <- as.numeric(strtoi(substring(hex,positions,positions+1L),base=16L))
+  list(params=list(b=values[1L],k=values[2L],m=values[3L]),files=files,supplied=supplied)
+}
+method_name <- function(method) if (method < 5L) METHODS[method+1L] else paste0("#",method)
+hexadecimal <- function(value,width) {
+  digits <- strsplit("0123456789abcdef","",fixed=TRUE)[[1L]]
+  result <- character(width)
+  for (i in rev(seq_len(width))) {
+    result[i] <- digits[value %% 16+1L]
+    value <- value %/% 16
+  }
+  paste(result,collapse="")
+}
+adler32 <- function(data) {
+  a <- 1
+  b <- 0
+  for (value in data) {
+    a <- (a+value) %% MODULUS
+    b <- (b+a) %% MODULUS
+  }
+  65536*b+a
+}
+modular_power <- function(value,exponent,modulus) {
+  result <- 1
+  while (exponent > 0) {
+    if (exponent %% 2 == 1) result <- (result*value) %% modulus
+    value <- (value*value) %% modulus
+    exponent <- exponent %/% 2
+  }
+  result
+}
+repair_byte <- function(data,stored,computed) {
+  da <- (stored %% 65536-computed %% 65536) %% MODULUS
+  db <- (stored %/% 65536-computed %/% 65536) %% MODULUS
+  delta <- if (1 <= da && da <= 255) da else if (MODULUS-255 <= da && da < MODULUS) da-MODULUS else 0
+  if (!delta) return(NULL)
+  inverse <- modular_power(delta %% MODULUS,MODULUS-2,MODULUS)
+  distance <- (db*inverse) %% MODULUS
+  if (distance < 1 || distance > length(data)) return(NULL)
+  position <- length(data)-distance
+  before <- data[position+1L]
+  after <- before+delta
+  if (after < 0 || after > 255) return(NULL)
+  data[position+1L] <- after
+  if (adler32(data) != stored) return(NULL)
+  list(data=data,repair=c(position,before,after))
+}
+encode_lzh <- function(tokens,params) {
+  lp <- limited_lengths(p,params$m)
+  lq <- limited_lengths(q,params$m)
+decode_payload <- function(method,payload,original,b,k) {
+  if (method == 0L) {
+    if (length(payload) < original) decode_error("end_of_data",length(payload))
+    return(payload[seq_len(original)])
+  }
+  if (method == 1L) return(decode_lzw(payload,original))
+  if (method == 2L) return(decode_lz77(payload,original,b,k))
+  if (method == 3L) return(decode_lzh(payload,original,b,k))
+  decode_arith(payload,original)
+}
+encode_file <- function(name,data,params) {
+  tokens <- tokenize(data,params$b,params$k)
+  zw <- encode_lzw(data)
+  zh <- encode_lzh(tokens,params)
+  arithmetic <- encode_arith(data)
+  payloads <- list(data,zw$payload,encode_lz77(tokens,params$b,params$k),zh$payload,arithmetic$payload)
+  best <- which.min(lengths(payloads))
+  list(
+      name=name,
+      data=data,
+      payloads=payloads,
+      best=best,
+      payload=payloads[[best]],
+      lzw=zw$stats,
+      lz77=z_stats,
+      lzh=zh$stats,
+      arith=arithmetic$stats
+  )
+}
+big_endian <- function(value,n) (value %/% (256^(rev(seq_len(n)-1L)))) %% 256
+build_archive <- function(encodings,params) {
+  archive <- byte_buffer()
+  append_bytes(archive,c(as.numeric(charToRaw("TXAR")),params$b,params$k,big_endian(length(encodings),2L)))
+  for (encoding in encodings) {
+    name <- as.numeric(charToRaw(encoding$name))
+    header <- c(length(name),name,encoding$best-1L,big_endian(length(encoding$data),4L),
+      big_endian(length(encoding$payload),4L),big_endian(adler32(encoding$data),4L))
+    append_bytes(archive,c(header,sum(header) %% 256,encoding$payload))
+  }
+  buffer_data(archive)
+}
+read_big_endian <- function(bytes,start,n) {
+  result <- 0
+  for (i in seq.int(start,start+n-1L)) result <- 256*result+bytes[i]
+  result
+}
+parse_archive <- function(archive) {
+  n <- length(archive)
+  result <- list(size=n,b=0L,k=0L,declared=0L,entries=list(),error=NULL,stopped=FALSE,trailing=0L)
+  if (n < 8L || !identical(archive[seq_len(4L)],as.numeric(charToRaw("TXAR")))) {
+    result$error <- "bad_magic"
+    return(result)
+  }
+  result$b <- archive[5L]
+  result$k <- archive[6L]
+  if (!(6 <= result$b && result$b <= 12 && 2 <= result$k && result$k <= 5)) {
+    result$error <- "bad_params"
+    return(result)
+  }
+  result$declared <- read_big_endian(archive,7L,2L)
+  position <- 8L
+  for (number in seq_len(result$declared)) {
+    entry <- list(number=number,offset=position,status="",valid=FALSE,name="",method=0L,original=0,
+      compressed=0,checksum=0,start=0,stop=0,data=NULL,error=NULL,repair=NULL,computed=0)
+    if (position >= n || position+15L+archive[position+1L] > n) {
+      entry$status <- "truncated"
+      result$entries[[length(result$entries)+1L]] <- entry
+      result$stopped <- TRUE
+      break
+    }
+    m <- archive[position+1L]
+    name <- if (m) archive[seq.int(position+2L,position+1L+m)] else numeric()
+    cursor <- position+1L+m
+    entry$method <- archive[cursor+1L]
+    entry$original <- read_big_endian(archive,cursor+2L,4L)
+    entry$compressed <- read_big_endian(archive,cursor+6L,4L)
+    entry$checksum <- read_big_endian(archive,cursor+10L,4L)
+    entry$start <- position+15L+m
+    entry$stop <- entry$start+entry$compressed
+    valid_name <- m >= 1L && m <= 32L && all(name %in% as.numeric(charToRaw("abcdefghijklmnopqrstuvwxyz0123456789._-")))
+    valid_check <- sum(archive[seq.int(position+1L,entry$start-1L)]) %% 256 == archive[entry$start]
+    entry$valid <- valid_name && valid_check
+    if (!entry$valid) {
+      entry$status <- "bad_header"
+      position <- entry$stop
+      result$entries[[length(result$entries)+1L]] <- entry
+      if (position > n) {
+        result$stopped <- TRUE
+        break
+      }
+      next
+    }
+    entry$name <- rawToChar(as.raw(name))
+    if (entry$stop > n) {
+      entry$status <- "truncated"
+      result$entries[[length(result$entries)+1L]] <- entry
+      result$stopped <- TRUE
+      break
+    }
+    if (entry$method >= 5L) entry$status <- "unsupported" else {
+      payload <- if (entry$compressed) archive[seq.int(entry$start+1L,entry$stop)] else numeric()
+      decoded <- tryCatch(list(data=decode_payload(entry$method,payload,entry$original,result$b,result$k)),
+        decode_error=function(error) list(error=error))
+      if (!is.null(decoded$error)) {
+        entry$status <- "error"
+        entry$error <- decoded$error
+      } else {
+        entry$data <- decoded$data
+        entry$computed <- adler32(entry$data)
+        if (entry$computed == entry$checksum) entry$status <- "ok" else {
+          repair <- repair_byte(entry$data,entry$checksum,entry$computed)
+          if (is.null(repair)) entry$status <- "checksum" else {
+            entry$data <- repair$data
+            entry$repair <- repair$repair
+            entry$status <- "repaired"
+          }
+        }
+      }
+    }
+    result$entries[[length(result$entries)+1L]] <- entry
+    position <- entry$stop
+  }
+  if (!result$stopped) result$trailing <- n-position
+  result
+}
+intact <- function(parsed) Filter(function(e) e$status %in% c("ok","repaired"),parsed$entries)
+verify_archive <- function(archive,originals) {
+  parsed <- parse_archive(archive)
+  verified <- sum(vapply(seq_along(parsed$entries),function(i) parsed$entries[[i]]$status == "ok" &&
+    identical(parsed$entries[[i]]$data,originals[[i]]),logical(1)))
+  c(length(parsed$entries),verified)
+}
+entry_test_line <- function(e,archive_size) {
+  prefix <- fmt("entry %s offset %s",e$number,e$offset)
+  if (!e$valid) return(paste(
+      prefix,
+      "status",
+      if (e$status == "bad_header") "bad_header" else "truncated header"
+  ))
+  line <- fmt("%s name %s method %s status %s",prefix,e$name,method_name(e$method),e$status)
+  if (e$status == "repaired") line <- paste(
+      line,
+      fmt("byte %s from %s to %s",e$repair[1L],e$repair[2L],e$repair[3L])
+  )
+  else if (e$status == "checksum") line <- paste(
+      line,
+      fmt("stored %s computed %s",hexadecimal(e$checksum,8L),hexadecimal(e$computed,8L))
+  )
+  else if (e$status == "error") line <- paste(line,fmt("%s at %s",e$error$kind,e$error$position))
+  else if (e$status == "truncated") line <- paste(
+      line,
+      fmt("payload have %s need %s",archive_size-e$start,e$compressed)
+  )
+  line
+}
+test_report <- function(parsed,salvaged,archive,verified) {
+  if (!is.null(parsed$error)) lines <- paste("archive error",parsed$error) else {
+    lines <- vapply(parsed$entries,entry_test_line,character(1),archive_size=parsed$size)
+    counts <- vapply(
+        STATUSES,
+        function(status) sum(vapply(parsed$entries,function(e) e$status == status,logical(1))),
+        numeric(1)
+    )
+    summary <- fmt("summary entries %s checked %s",parsed$declared,length(parsed$entries))
+    summary <- paste(
+        summary,
+        paste(paste(STATUSES,counts),collapse=" "),
+        fmt("missing %s trailing %s",parsed$declared-length(parsed$entries),parsed$trailing)
+    )
+    lines <- c(lines,summary)
+  }
+  entries <- intact(parsed)
+  for (i in seq_along(entries)) {
+    e <- entries[[i]]
+    encoding <- salvaged[[i]]
+    lines <- c(
+        lines,
+        fmt(
+            "salvage %s method %s compressed %s was %s %s",
+            e$name,
+            METHODS[encoding$best],
+            length(encoding$payload),
+            method_name(e$method),
+            e$compressed
+        )
+    )
+  }
+  total <- sum(vapply(salvaged,function(e) length(e$data),numeric(1)))
+  c(
+      lines,
+      fmt(
+          "salvaged entries %s bytes %s original %s verified %s",
+          length(salvaged),
+          length(archive),
+          total,
+          verified
+      )
+  )
+}
+text_lines <- function(data) {
+  if (!length(data)) return(character())
+  text <- rawToChar(as.raw(data))
+  starts <- c(1L,which(data == 10L)+1L)
+  ends <- which(data == 10L)-1L
+  vapply(
+      seq_along(ends),
+      function(i) if (ends[i] < starts[i]) "" else substr(text,starts[i],ends[i]),
+      character(1)
+  )
+}
+extraction_report <- function(entries) {
+  lines <- character()
+  for (e in entries) {
+    contents <- text_lines(e$data)
+    words <- sum(vapply(strsplit(contents," ",fixed=TRUE),function(parts) sum(nzchar(parts)),numeric(1)))
+    longest <- if (length(contents)) max(nchar(contents,type="bytes")) else 0L
+    lines <- c(
+        lines,
+        fmt(
+            "file %s bytes %s lines %s words %s longest %s",
+            e$name,
+            length(e$data),
+            length(contents),
+            words,
+            longest
+        ),
+        contents
+    )
+  }
+  lines
+}
+write_hex <- function(name,archive) {
+  lines <- vapply(
+      seq.int(1L,length(archive),32L),
+      function(i) paste(
+          sprintf("%02x",as.integer(archive[seq.int(i,min(i+31L,length(archive)))])),
+          collapse=""
+      ),
+      character(1)
+  )
+  write_lines(name,lines)
+}
+  inputs <- read_inputs()
+  params <- inputs$params
+  files <- inputs$files
+  parsed <- parse_archive(inputs$supplied)
+  salvage_params <- if (is.null(parsed$error)) list(b=parsed$b,k=parsed$k,m=params$m) else params
+  entries <- intact(parsed)
+  salvaged <- lapply(entries,function(e) encode_file(e$name,e$data,salvage_params))
+  archive <- build_archive(salvaged,salvage_params)
+  salvage_verified <- verify_archive(archive,lapply(salvaged,`[[`,"data"))[2L]
+  write_lines("test_report.txt",test_report(parsed,salvaged,archive,salvage_verified))
+  write_lines("extracted.txt",extraction_report(entries))
+  write_hex("salvaged.hex",archive)

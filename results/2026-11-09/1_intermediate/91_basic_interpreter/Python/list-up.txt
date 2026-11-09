@@ -1,0 +1,334 @@
+RESERVED_WORDS = {
+    'REM', 'LET', 'PRINT', 'INPUT', 'READ', 'DATA', 'IF', 'THEN', 'ELSE', 'GOTO', 'GOSUB',
+    'RESTORE', 'RANDOMIZE', 'END', 'STOP', 'TAB', 'SPC', 'AND', 'OR', 'NOT', 'MOD', 'ERR', 'ERL',
+}
+FUNCTIONS = {
+    'RND': ('I',),
+}
+COMPARISONS = {
+    '=': operator.eq,
+    '<>': operator.ne,
+    '<': operator.lt,
+    '>': operator.gt,
+    '<=': operator.le,
+    '>=': operator.ge,
+}
+TOKEN_PATTERN = re.compile(
+    r' *(?:(?P<rem>REM).*|"(?P<string>[^"]*)"|(?P<number>[0-9]+)'
+    r'|(?P<word>[A-Z][A-Z0-9]*\$?)|(?P<symbol><>|<=|>=|[-+*/^=<>(),;:]))'
+)
+VARIABLE_PATTERN = re.compile(r'[A-Z][0-9]?\$?')
+MIN_INTEGER = -32768
+MAX_INTEGER = 32767
+@dataclass
+class Constant(Expression):
+    value: int | str
+
+@dataclass
+class FunctionCall(Expression):
+    name: str
+    arguments: list
+
+
+@dataclass
+class UnaryOp(Expression):
+    operator: str
+    operand: Expression
+
+
+@dataclass
+class BinaryOp(Expression):
+    operator: str
+    left: Expression
+    right: Expression
+@dataclass
+class Print(Statement):
+    items: list
+def tokenize(content):
+    tokens = []
+    position = 0
+    while position < len(content):
+        found = TOKEN_PATTERN.match(content, position)
+        if found is None:
+            raise BasicSyntaxError()
+        kind = found.lastgroup
+        value = found.group(kind)
+        if kind == 'number':
+            value = int(value)
+            if value > MAX_INTEGER:
+                raise BasicSyntaxError()
+        elif kind == 'word' and VARIABLE_PATTERN.fullmatch(value):
+            kind = 'variable'
+        elif kind == 'word' and value not in RESERVED_WORDS and value not in FUNCTIONS:
+            raise BasicSyntaxError()
+        elif kind != 'string':
+            kind = 'keyword'
+        tokens.append(Token(kind, value))
+        position = found.end()
+    return tokens
+def is_string(expression):
+    match expression:
+        case Constant(value):
+            return isinstance(value, str)
+        case Variable(name) | ArrayElement(name) | FunctionCall(name):
+            return name.endswith('$')
+        case BinaryOp('+', left):
+            return is_string(left)
+    return False
+
+
+def require_integer(expression):
+    if is_string(expression):
+        raise BasicSyntaxError()
+    return expression
+
+
+def make_binary(symbol, left, right):
+    if symbol == '+' or symbol in COMPARISONS:
+        if is_string(left) != is_string(right):
+            raise BasicSyntaxError()
+    else:
+        require_integer(left)
+        require_integer(right)
+    return BinaryOp(symbol, left, right)
+    def __init__(self, tokens):
+        self.tokens = [*tokens, Token('end', None)]
+        self.position = 0
+
+    def peek(self):
+        return self.tokens[self.position]
+
+    def advance(self):
+        token = self.tokens[self.position]
+        self.position += 1
+        return token
+
+    def at(self, *keywords):
+        token = self.peek()
+        return token.kind == 'keyword' and token.value in keywords
+
+    def accept(self, keyword):
+        if self.at(keyword):
+            self.position += 1
+            return True
+        return False
+
+    def expect(self, keyword):
+        if not self.accept(keyword):
+            raise BasicSyntaxError()
+
+    def expect_end(self):
+        if self.peek().kind != 'end':
+            raise BasicSyntaxError()
+    def parse_list(self, parse_item, separator=','):
+        items = [parse_item()]
+        while self.accept(separator):
+            items.append(parse_item())
+        return items
+
+    def parse_line(self):
+        statements = self.parse_statements(in_clause=False)
+        self.expect_end()
+        return statements
+
+    def parse_statements(self, in_clause):
+        return self.parse_list(lambda: self.parse_statement(in_clause), ':')
+
+    def parse_statement(self, in_clause):
+        token = self.peek()
+        if token.kind == 'variable':
+            return self.parse_assignment()
+        if token.kind != 'keyword' or in_clause and token.value in NON_CLAUSE_STATEMENTS:
+            raise BasicSyntaxError()
+        self.advance()
+        match token.value:
+            case 'REM':
+                return Rem()
+            case 'LET':
+                return self.parse_assignment()
+            case 'PRINT':
+                return Print(self.parse_print_items())
+    def parse_print_items(self):
+        items = []
+        while not self.at_statement_end():
+            if self.at(';', ','):
+                items.append(self.advance().value)
+            elif self.at('TAB', 'SPC'):
+                name = self.advance().value
+                self.expect('(')
+                argument = self.parse_integer_expression()
+                self.expect(')')
+                items.append(PrintFunction(name, argument))
+            elif items and isinstance(items[-1], Expression):
+                raise BasicSyntaxError()
+            else:
+                items.append(self.parse_expression())
+        return items
+    def parse_integer_expression(self):
+        return require_integer(self.parse_expression())
+
+    def parse_binary(self, operators, parse_operand):
+        left = parse_operand()
+        while self.at(*operators):
+            symbol = self.advance().value
+            left = make_binary(symbol, left, parse_operand())
+        return left
+
+    def parse_expression(self):
+        return self.parse_binary(('OR',), self.parse_conjunction)
+
+    def parse_conjunction(self):
+        return self.parse_binary(('AND',), self.parse_negation)
+
+    def parse_negation(self):
+        if self.accept('NOT'):
+            return UnaryOp('NOT', require_integer(self.parse_negation()))
+        return self.parse_comparison()
+
+    def parse_comparison(self):
+        return self.parse_binary(COMPARISONS, self.parse_sum)
+
+    def parse_sum(self):
+        return self.parse_binary(('+', '-'), self.parse_product)
+
+    def parse_product(self):
+        return self.parse_binary(('*', '/', 'MOD'), self.parse_unary)
+
+    def parse_unary(self):
+        if self.accept('-'):
+            return UnaryOp('-', require_integer(self.parse_unary()))
+        return self.parse_power()
+
+    def parse_power(self):
+        base = self.parse_primary()
+        if self.accept('^'):
+            return make_binary('^', base, self.parse_unary())
+        return base
+
+    def parse_primary(self):
+        token = self.advance()
+        match token:
+            case Token('number' | 'string', value):
+                return Constant(value)
+            case Token('keyword', '('):
+                expression = self.parse_expression()
+                self.expect(')')
+                return expression
+            case Token('keyword', name) if name in FUNCTIONS:
+                return self.parse_function_call(name)
+        raise BasicSyntaxError()
+
+    def parse_function_call(self, name):
+        self.expect('(')
+        arguments = self.parse_list(self.parse_expression)
+        self.expect(')')
+        signature = ''.join('S' if is_string(argument) else 'I' for argument in arguments)
+        if signature not in FUNCTIONS[name]:
+            raise BasicSyntaxError()
+        return FunctionCall(name, arguments)
+def apply_operator(symbol, left, right):
+    match symbol:
+        case '/' | 'MOD' if right == 0:
+            raise BasicError('DIVISION BY ZERO')
+        case '/':
+            return check_overflow(truncated_quotient(left, right))
+        case 'AND':
+            return left & right
+        case 'OR':
+            return left | right
+    return -1 if COMPARISONS[symbol](left, right) else 0
+def link(statements, following):
+    for statement, successor in zip(statements, [*statements[1:], following]):
+        statement.next = successor
+    def __init__(self, program, input_lines):
+        self.line_starts = {number: statements[0] for number, statements in program.items()}
+        sequence = []
+        for number, statements in program.items():
+            for statement in statements:
+                statement.line = number
+            sequence.extend(statements)
+        link(sequence, None)
+        self.first_statement = sequence[0] if sequence else None
+        self.random_state = 1
+        self.output = ''
+    def run(self):
+        statement = self.first_statement
+        while statement is not None:
+            try:
+                statement = self.execute(statement)
+            except BasicError as error:
+                if self.handler_line == 0 or self.handling_error:
+                    self.message(f'ERROR IN LINE {statement.line}: {error}')
+                    break
+        if self.output:
+            self.end_line()
+
+    def end_line(self):
+        print(self.output.rstrip(' '))
+        self.output = ''
+
+    def message(self, text):
+        if self.output:
+            self.end_line()
+        print(text)
+    def evaluate(self, expression):
+        match expression:
+            case Constant(value):
+                return value
+            case FunctionCall(name, arguments):
+                return self.call(name, [self.evaluate(argument) for argument in arguments])
+            case UnaryOp('-', operand):
+                return check_overflow(-self.evaluate(operand))
+            case UnaryOp('NOT', operand):
+                return ~self.evaluate(operand)
+            case BinaryOp(symbol, left, right):
+                return apply_operator(symbol, self.evaluate(left), self.evaluate(right))
+    def call(self, name, arguments):
+        match name, arguments:
+            case 'RND', [limit]:
+                if limit < 1:
+                    raise BasicError('ILLEGAL FUNCTION CALL')
+                self.random_state = 48271 * self.random_state % 2147483647
+                return self.random_state % limit + 1
+    def execute(self, statement):
+        match statement:
+            case Print(items):
+                self.print_items(items)
+        return statement.next
+    def print_items(self, items):
+        for item in items:
+            match item:
+                case _:
+                    self.output += str(self.evaluate(item))
+        if not items or items[-1] not in (';', ','):
+            self.end_line()
+def run_program(program, input_lines):
+    parsed = {}
+    for number, content in sorted(program.items()):
+        try:
+            parsed[number] = Parser(tokenize(content)).parse_line()
+        except BasicSyntaxError:
+            print(f'ERROR IN LINE {number}: SYNTAX ERROR')
+            break
+    else:
+        Interpreter(parsed, input_lines).run()
+    print('READY')
+
+
+def main():
+    sys.setrecursionlimit(10000)
+    lines = iter(sys.stdin.read().splitlines())
+    for _ in range(int(next(lines))):
+        program = {}
+        for line in takewhile(lambda line: line != 'RUN', lines):
+            number, _, content = line.partition(' ')
+            if content:
+                program[int(number)] = content.lstrip(' ')
+            else:
+                program.pop(int(number), None)
+        input_lines = list(takewhile(lambda line: line != 'END', lines))
+        run_program(program, input_lines)
+
+
+if __name__ == '__main__':
+    main()

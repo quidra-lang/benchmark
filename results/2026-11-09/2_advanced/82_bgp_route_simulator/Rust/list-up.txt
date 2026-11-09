@@ -1,0 +1,705 @@
+pub fn best(routes:&[Route],topology:&Topology)->(Route,&'static str){
+    let mut k=routes.to_vec();
+    if k.len()==1{
+        return(k.remove(0),"ONLY");
+    }
+    for stage in 0..6{
+        let key=|r:&Route|->i64{
+            match stage{
+                0=>-(r.local_pref as i64),1=>r.attribute.path.len() as i64,2=>match r.attribute.origin.as_str(){
+                    "IGP"=>0,"EGP"=>1,_=>2
+                },4=>topology.routers[&r.neighbor()] as i64,5=>r.link.unwrap() as i64,_=>0
+            }
+        };
+        if stage==3{
+            let original=k.clone();
+            k.retain(|r|!original.iter().any(|s|s.neighbor()==r.neighbor()&&s.attribute.med<r.attribute.med));
+        }else{
+            let minimum=k.iter().map(key).min().unwrap();
+            k.retain(|r|key(r)==minimum);
+        }
+        if k.len()==1{
+            return(k.remove(0),["LOCALPREF","ASPATH","ORIGIN","MED","ROUTERID","LINK"][stage]);
+        }
+    }
+    unreachable!()
+}
+    fn import(&self,x:Asn,l:usize,p:Prefix,a:&Attribute)->(Option<Route>,Option<usize>){
+        let rule=self.policy.applied(true,x,&self.topology.links[l],p,&a.path,&a.communities);
+        let mut route=Route{
+            attribute:a.clone(),
+            local_pref:self.params.defaults[self.topology.links[l].role(x)],
+            link:Some(l)
+        };
+        if let Some(id)=rule{
+            for action in &self.policy.rules[id].actions{
+                match action{
+                    Action::Deny=>return(None,rule),Action::Local(n)=>route.local_pref=*n,Action::Med(n)=>route.attribute.med=*n,_=>()
+                }
+            }
+            route.attribute.communities=self.policy.edit(id,&a.communities);
+        }
+        (Some(route),rule)
+    }
+    fn candidates(&self,x:Asn,p:Prefix)->Vec<Route>{
+        self.topology.sessions(x).into_iter().filter_map(|l|self.sessions[&(x,l)].incoming.get(&p).and_then(|a|self.import(x,l,p,a).0)).collect()
+    }
+    fn decide(&mut self,x:Asn,p:Prefix){
+        let new=if let Some(r)=self.origins[&x].get(&p){
+            Some(r.clone())
+        }else{
+            let c=self.candidates(x,p);
+            if c.is_empty(){
+                None
+            }else{
+                Some(decision::best(&c,&self.topology).0)
+            }
+        };
+        if self.ribs[&x].get(&p)==new.as_ref(){
+            return;
+        }
+        if let Some(r)=&new{
+            self.ribs.get_mut(&x).unwrap().insert(p,r.clone());
+        }else{
+            self.ribs.get_mut(&x).unwrap().remove(&p);
+        }
+        self.log(format!("BEST {} {} {}",x,p.text(),report::route(new.as_ref(),&self.topology)));
+        self.counter.changes+=1;
+        *self.counter.exploration.entry((x,p)).or_default()+=1;
+        *self.as_changes.get_mut(&x).unwrap()+=1;
+        self.changed.insert(p);
+        self.best_lines.push((self.time,x,p,new));
+        for l in self.topology.sessions(x){
+            if self.topology.links[l].up{
+                self.sessions.get_mut(&(x,l)).unwrap().pending.insert(p);
+                if self.sessions[&(x,l)].timer.is_none(){
+                    self.pending(x,l);
+                }
+            }
+        }
+    }
+    fn advertised(&self,x:Asn,l:usize,p:Prefix)->(Option<Attribute>,Option<usize>){
+        let r=match self.ribs[&x].get(&p){
+            Some(r)=>r,None=>return(None,None)
+        };
+        let link=&self.topology.links[l];
+        if r.link.is_some()&&r.neighbor()==link.other(x)||r.attribute.communities.contains(&(65535,65281)){
+            return(None,None);
+        }
+        let rule=self.policy.applied(false,x,link,p,&r.attribute.path,&r.attribute.communities);
+        let(mut allow,mut prepend,mut med)=(false,0,0);
+        if let Some(id)=rule{
+            for a in &self.policy.rules[id].actions{
+                match a{
+                    Action::Deny=>return(None,rule),Action::Allow=>allow=true,Action::Prepend(n)=>prepend=*n,Action::Med(n)=>med=*n,_=>()
+                }
+            }
+        }
+        if !allow&&r.link.map_or(false,|k|self.topology.links[k].role(x)!=0)&&link.role(x)!=0{
+            return(None,rule);
+        }
+        let mut path=vec![x;1+prepend];
+        path.extend(&r.attribute.path);
+        let communities=rule.map_or_else(||r.attribute.communities.clone(),|id|self.policy.edit(id,&r.attribute.communities));
+        (Some(Attribute{
+            path,
+            origin:r.attribute.origin.clone(),
+            med,
+            communities
+        }),rule)
+    }
+    fn pending(&mut self,x:Asn,l:usize){
+        let prefixes:Vec<_>=self.sessions[&(x,l)].pending.iter().copied().collect();
+        let mut sent=false;
+        for p in prefixes{
+            let(content,rule)=self.advertised(x,l,p);
+            if self.sessions[&(x,l)].outgoing.get(&p)==content.as_ref(){
+                continue;
+            }
+            if let Some(a)=&content{
+                self.sessions.get_mut(&(x,l)).unwrap().outgoing.insert(p,a.clone());
+            }else{
+                self.sessions.get_mut(&(x,l)).unwrap().outgoing.remove(&p);
+            }
+            let link=&self.topology.links[l];
+            let message=self.queue.send(self.time,link.delay,x,link.other(x),l,p,content);
+            let notation=message.content.as_ref().map_or_else(||"WITHDRAW".into(),|a|format!("ANNOUNCE {}",report::attribute(a)));
+            self.log(format!("SEND #{} {}->{} {} {} {}",message.serial,x,message.receiver,self.topology.links[l].name,p.text(),notation));
+            self.sessions.get_mut(&(x,l)).unwrap().sent+=1;
+            self.counter.updates+=1;
+            if message.content.is_none(){
+                self.counter.withdrawals+=1;
+            }
+            if let Some(id)=rule{
+                self.policy.rules[id].hits+=1;
+            }
+            sent=true;
+        }
+        let s=self.sessions.get_mut(&(x,l)).unwrap();
+        s.pending.clear();
+        s.timer=if sent&&self.topology.links[l].mrai>0{
+            Some(self.time+self.topology.links[l].mrai)
+        }else{
+            None
+        };
+    }
+    fn receive(&mut self,m:Message){
+        let(x,l,p)=(m.receiver,m.link,m.prefix);
+        self.sessions.get_mut(&(x,l)).unwrap().received+=1;
+        let result=if let Some(a)=&m.content{
+            if a.path.contains(&x){
+                self.sessions.get_mut(&(x,l)).unwrap().incoming.remove(&p);
+                "ANNOUNCE loop".into()
+            }else{
+                self.sessions.get_mut(&(x,l)).unwrap().incoming.insert(p,a.clone());
+                let(accepted,rule)=self.import(x,l,p,a);
+                if let Some(id)=rule{
+                    self.policy.rules[id].hits+=1;
+                    format!("ANNOUNCE {} {}",if accepted.is_some(){
+                        "accept"
+                    }else{
+                        "deny"
+                    },self.policy.rules[id].name)
+                }else{
+                    "ANNOUNCE accept".into()
+                }
+            }
+        }else{
+            self.sessions.get_mut(&(x,l)).unwrap().incoming.remove(&p);
+            "WITHDRAW".into()
+        };
+        self.log(format!("RECV #{} {}->{} {} {} {}",m.serial,m.sender,x,self.topology.links[l].name,p.text(),result));
+        self.decide(x,p);
+    }
+    fn execute(&mut self,number:usize,event:&Event){
+        self.log(format!("EVENT {} {}",number,event.text));
+        let a=&event.fields;
+        match a[0].as_str(){
+            "INITIAL"=>{
+                for(x,p,o,c)in self.topology.initial.clone(){
+                    self.origins.get_mut(&x).unwrap().insert(p,Route::local(o,c));
+                    self.decide(x,p);
+                }
+            },"ANNOUNCE"=>{
+                let x=a[1].parse().unwrap();
+                let p=Prefix::parse(&a[2]);
+                let c=a[4..].iter().map(|v|policy::community(v)).collect();
+                self.origins.get_mut(&x).unwrap().insert(p,Route::local(a[3].clone(),c));
+                self.decide(x,p);
+            },"WITHDRAW"=>{
+                let x=a[1].parse().unwrap();
+                let p=Prefix::parse(&a[2]);
+                self.origins.get_mut(&x).unwrap().remove(&p);
+                self.decide(x,p);
+            },"LINK"=>{
+                let l=self.topology.links.iter().position(|l|l.name==a[2]).unwrap();
+                let mut endpoints=vec![self.topology.links[l].a,self.topology.links[l].b];
+                endpoints.sort();
+                self.topology.links[l].up=a[1]=="UP";
+                if a[1]=="DOWN"{
+                    self.topology.links[l].downs+=1;
+                    for m in self.queue.remove(l){
+                        self.counter.drops+=1;
+                        self.log(format!("DROP #{} {}->{} {} {}",m.serial,m.sender,m.receiver,self.topology.links[l].name,m.prefix.text()));
+                    }
+                    let mut remembered=Vec::new();
+                    for &x in &endpoints{
+                        let s=self.sessions.get_mut(&(x,l)).unwrap();
+                        remembered.push((x,s.incoming.keys().copied().collect::<Vec<_>>()));
+                        s.incoming.clear();
+                        s.outgoing.clear();
+                        s.pending.clear();
+                        s.timer=None;
+                    }
+                    for(x,prefixes)in remembered{
+                        for p in prefixes{
+                            self.decide(x,p);
+                        }
+                    }
+                }else{
+                    for x in endpoints{
+                        self.sessions.get_mut(&(x,l)).unwrap().pending=self.ribs[&x].keys().copied().collect();
+                        self.pending(x,l);
+                    }
+                }
+            },"POLICY"=>{
+                let id=self.policy.rules.iter().position(|r|r.name==a[2]).unwrap();
+                self.policy.rules[id].on=a[1]=="ON";
+                let x=self.policy.rules[id].owner;
+                if self.policy.rules[id].import{
+                    let prefixes:BTreeSet<_>=self.topology.sessions(x).into_iter().flat_map(|l|self.sessions[&(x,l)].incoming.keys().copied()).collect();
+                    for p in prefixes{
+                        self.decide(x,p);
+                    }
+                }else{
+                    for l in self.topology.sessions(x){
+                        if self.topology.links[l].up{
+                            let prefixes:BTreeSet<_>=self.ribs[&x].keys().chain(self.sessions[&(x,l)].outgoing.keys()).copied().collect();
+                            self.sessions.get_mut(&(x,l)).unwrap().pending.extend(prefixes);
+                            if self.sessions[&(x,l)].timer.is_none(){
+                                self.pending(x,l);
+                            }
+                        }
+                    }
+                }
+            },_=>unreachable!()
+        }
+    }
+    fn forward(&self,source:Asn,address:u32)->Forward{
+        let mut f=Forward{
+            result:"UNREACHABLE",
+            visits:vec![source],
+            hops:Vec::new()
+        };
+        let mut x=source;
+        loop{
+            let selected=self.ribs[&x].iter().filter(|(p,_)|p.contains(address)).max_by_key(|(p,_)|p.length);
+            let(&p,r)=match selected{
+                Some(v)=>v,None=>{
+                    f.result=if f.hops.is_empty(){
+                        "UNREACHABLE"
+                    }else{
+                        "BLACKHOLE"
+                    };
+                    return f;
+                }
+            };
+            f.hops.push((x,p,r.link));
+            if let Some(l)=r.link{
+                let y=self.topology.links[l].other(x);
+                let repeat=f.visits.contains(&y);
+                f.visits.push(y);
+                if repeat{
+                    f.result="LOOP";
+                    return f;
+                }
+                x=y;
+            }else{
+                f.result="DELIVERED";
+                return f;
+            }
+        }
+    }
+    fn forwarding_check(&mut self){
+        for p in self.changed.clone(){
+            let rings=self.rings(p);
+            let ended:Vec<_>=self.ring_active.keys().filter(|(q,c)|*q==p&&!rings.contains(c)).cloned().collect();
+            for key in ended{
+                let id=self.ring_active.remove(&key).unwrap();
+                self.ring_records[id].end=Some(self.time);
+            }
+            for cycle in rings{
+                let key=(p,cycle.clone());
+                if !self.ring_active.contains_key(&key){
+                    let id=self.ring_records.len();
+                    self.ring_records.push(RingRecord{
+                        prefix:p,
+                        start:self.time,
+                        end:None,
+                        cycle
+                    });
+                    self.ring_active.insert(key,id);
+                }
+            }
+        }
+        for i in 0..self.params.traces.len(){
+            let(s,_,a)=&self.params.traces[i];
+            let f=self.forward(*s,*a);
+            let bad=f.result=="LOOP"||f.result=="BLACKHOLE";
+            if let Some(id)=self.trace_active[i]{
+                let r=&self.trace_records[id];
+                if !bad||r.result!=f.result||r.visits!=f.visits{
+                    self.trace_records[id].end=Some(self.time);
+                    self.trace_active[i]=None;
+                }
+            }
+            if bad&&self.trace_active[i].is_none(){
+                self.trace_active[i]=Some(self.trace_records.len());
+                self.trace_records.push(TraceRecord{
+                    trace:i,
+                    start:self.time,
+                    end:None,
+                    result:f.result,
+                    visits:f.visits
+                });
+            }
+        }
+    }
+    fn run(&mut self,events:&[Event]){
+        for(k,e)in events.iter().enumerate(){
+            self.time=e.time;
+            self.counter=Counters::default();
+            self.best_lines.clear();
+            self.changed.clear();
+            let start=self.ribs.clone();
+            let(mut deliveries,mut seen,mut divergent)=(0usize,BTreeMap::new(),None);
+            self.execute(k,e);
+            loop{
+                let messages=self.queue.deliveries(self.time);
+                let delivered=!messages.is_empty();
+                if delivered{
+                    self.counter.convergence=self.time-e.time;
+                }
+                for m in messages{
+                    self.receive(m);
+                }
+                let expiring:Vec<_>=self.sessions.iter().filter(|(_,s)|s.timer==Some(self.time)).map(|(k,_)|*k).collect();
+                for(x,l)in expiring{
+                    self.sessions.get_mut(&(x,l)).unwrap().timer=None;
+                    if !self.sessions[&(x,l)].pending.is_empty(){
+                        self.pending(x,l);
+                    }
+                }
+                if !self.changed.is_empty(){
+                    self.forwarding_check();
+                }
+                if delivered{
+                    deliveries+=1;
+                    if divergent.is_none()&&deliveries<=self.params.stepcap{
+                        let state=self.state();
+                        if let Some(&first)=seen.get(&state){
+                            divergent=Some((first,self.time));
+                            let lines=self.best_lines.iter().filter(|v|first<v.0&&v.0<=self.time).cloned().collect();
+                            self.divergences.push(Divergence{
+                                event:k,
+                                first,
+                                repeat:self.time,
+                                lines
+                            });
+                        }else{
+                            seen.insert(state,self.time);
+                        }
+                    }
+                }
+                let last=k+1==events.len();
+                if if last{
+                    self.quiet()||divergent.is_some()||deliveries>=self.params.stepcap
+                }else{
+                    self.time==events[k+1].time-1
+                }
+                {
+                    break;
+                }
+                self.time+=1;
+                self.changed.clear();
+            }
+            let status=if divergent.is_some(){
+                "DIVERGENT"
+            }else if self.quiet(){
+                "CONVERGED"
+            }else if k+1==events.len(){
+                "CAPPED"
+            }else{
+                "UNSETTLED"
+            };
+            let mut changed=0;
+            for &x in self.topology.routers.keys(){
+                let prefixes:BTreeSet<_>=start[&x].keys().chain(self.ribs[&x].keys()).copied().collect();
+                changed+=prefixes.iter().filter(|p|start[&x].get(*p)!=self.ribs[&x].get(*p)).count();
+            }
+            let c=&self.counter;
+            self.convergence.push(format!("{},{},{},{},{},{},{},{},{},{},{}",k,e.time,e.kind,status,c.convergence,c.updates,c.withdrawals,c.drops,c.changes,changed,c.exploration.values().max().copied().unwrap_or(0)));
+        }
+    }
+    fn ribs_report(&self)->Vec<String>{
+        let mut lines=Vec::new();
+        for(&x,rib)in &self.ribs{
+            let sessions=self.topology.sessions(x);
+            let sent:usize=sessions.iter().map(|&l|self.sessions[&(x,l)].sent).sum();
+            let received:usize=sessions.iter().map(|&l|self.sessions[&(x,l)].received).sum();
+            lines.push(format!("AS {} routes {} local {} sent {} received {} changes {}",x,rib.len(),rib.values().filter(|r|r.link.is_none()).count(),sent,received,self.as_changes[&x]));
+            for l in sessions{
+                let s=&self.sessions[&(x,l)];
+                let link=&self.topology.links[l];
+                let accepted=s.incoming.iter().filter(|(&p,a)|self.import(x,l,p,a).0.is_some()).count();
+                lines.push(format!("SESSION {} {} {} {} in {} accepted {} out {} sent {} received {} flaps {}",link.name,link.other(x),link.role_text(x),if link.up{
+                    "UP"
+                }else{
+                    "DOWN"
+                },s.incoming.len(),accepted,s.outgoing.len(),s.sent,s.received,link.downs));
+            }
+            for(&p,r)in rib{
+                let mut c=self.candidates(x,p);
+                let reason=if r.link.is_some(){
+                    format!(" reason {}",decision::best(&c,&self.topology).1)
+                }else{
+                    String::new()
+                };
+                lines.push(format!("{} {} candidates {}{}",p.text(),report::route(Some(r),&self.topology),c.len(),reason));
+                c.retain(|a|a!=r);
+                while !c.is_empty(){
+                    let(best,_)=decision::best(&c,&self.topology);
+                    lines.push(format!("ALT {}",report::route(Some(&best),&self.topology)));
+                    c.retain(|r|r!=&best);
+                }
+            }
+        }
+        lines
+    }
+    fn paths_report(&self)->Vec<String>{
+        let mut lines=Vec::new();
+        for(s,address,a)in &self.params.traces{
+            let f=self.forward(*s,*a);
+            let hops=f.hops.iter().filter(|h|h.2.is_some()).count();
+            lines.push(format!("TRACE {} {} {} hops {}",s,address,f.result,hops));
+            for &(x,p,l)in &f.hops{
+                lines.push(if let Some(l)=l{
+                    format!("HOP {} {} next {} link {}",x,p.text(),self.topology.links[l].other(x),self.topology.links[l].name)
+                }else{
+                    format!("HOP {} {} LOCAL",x,p.text())
+                });
+            }
+            if f.result=="LOOP"{
+                lines.push(format!("HOP {} REVISIT",f.visits.last().unwrap()));
+            }else if f.result!="DELIVERED"{
+                lines.push(format!("HOP {} NOROUTE",f.visits.last().unwrap()));
+            }
+            if let Some(&(_,p,_))=f.hops.first(){
+                let r=&self.ribs[s][&p];
+                let mut merged=r.attribute.path.clone();
+                merged.dedup();
+                let matched=f.result=="DELIVERED"&&merged==f.visits[1..];
+                lines.push(format!("CONTROL {} {}",if r.link.is_none(){
+                    "LOCAL".into()
+                }else{
+                    report::path(&r.attribute.path)
+                },if matched{
+                    "MATCH"
+                }else{
+                    "MISMATCH"
+                }));
+            }else{
+                lines.push("CONTROL NONE".into());
+            }
+            if hops>0{
+                let pattern:String=f.hops.iter().filter_map(|&(x,_,l)|l.map(|l|self.topology.links[l].symbol(x))).collect();
+                lines.push(format!("PATTERN {} {}",pattern,if valley(&pattern)==pattern.len(){
+                    "VALLEYFREE"
+                }else{
+                    "VALLEY"
+                }));
+            }
+        }
+        let prefixes:BTreeSet<_>=self.origins.values().flat_map(|r|r.keys().copied()).collect();
+        lines.push(format!("PREFIXES {}",prefixes.iter().map(Prefix::text).collect::<Vec<_>>().join(",")));
+        for &s in self.topology.routers.keys(){
+            let symbols:String=prefixes.iter().map(|p|{
+                let f=self.forward(s,p.address);
+                match f.result{
+                    "DELIVERED"=>if f.hops.iter().all(|h|h.2.is_none()){
+                        '*'
+                    }else if self.origins[f.visits.last().unwrap()].contains_key(p){
+                        '+'
+                    }else{
+                        'X'
+                    },"LOOP"=>'L',"BLACKHOLE"=>'B',_=>'U'
+                }
+            }).collect();
+            lines.push(format!("REACH {} {}",s,symbols));
+        }
+        lines
+    }
+    fn audit_report(&self)->Vec<String>{
+        let mut lines=Vec::new();
+        let mut traces:Vec<_>=self.trace_records.iter().collect();
+        traces.sort_by_key(|r|(r.start,r.trace));
+        let mut loops=0;
+        let mut blackholes=0;
+        for r in traces{
+            let(s,a,_)=&self.params.traces[r.trace];
+            let end=r.end.map_or_else(||"END".into(),|v|v.to_string());
+            if r.result=="LOOP"{
+                loops+=1;
+                lines.push(format!("LOOP {} {} from {} to {} path {}",s,a,r.start,end,report::path(&r.visits)));
+            }else{
+                blackholes+=1;
+                lines.push(format!("BLACKHOLE {} {} from {} to {} at {} path {}",s,a,r.start,end,r.visits.last().unwrap(),report::path(&r.visits)));
+            }
+        }
+        let mut rings:Vec<_>=self.ring_records.iter().collect();
+        rings.sort_by_key(|r|(r.start,r.prefix,r.cycle[0]));
+        for r in rings{
+            lines.push(format!("RING {} from {} to {} path {}",r.prefix.text(),r.start,r.end.map_or_else(||"END".into(),|v|v.to_string()),report::path(&r.cycle)));
+        }
+        let(mut routes,mut valleys)=(0,0);
+        for(&x,rib)in &self.ribs{
+            for(p,r)in rib{
+                if r.link.is_none(){
+                    continue;
+                }
+                routes+=1;
+                let mut h=vec![x];
+                h.extend(&r.attribute.path);
+                h.dedup();
+                let pattern:String=h.windows(2).map(|w|self.topology.connecting(w[0],w[1]).symbol(w[0])).collect();
+                let g=valley(&pattern);
+                if g<pattern.len(){
+                    valleys+=1;
+                    lines.push(format!("VALLEY {} {} path {} pattern {} leaker {}",x,p.text(),report::path(&r.attribute.path),pattern,h[g]));
+                }
+            }
+        }
+        for r in &self.policy.rules{
+            lines.push(format!("RULE {} {} {} hits {}",r.name,if r.import{
+                "IMPORT"
+            }else{
+                "EXPORT"
+            },if r.on{
+                "ON"
+            }else{
+                "OFF"
+            },r.hits));
+        }
+        for d in &self.divergences{
+            lines.push(format!("DIVERGENT event {} first {} repeat {} period {}",d.event,d.first,d.repeat,d.repeat-d.first));
+            let mut oscillate=BTreeMap::new();
+            for(t,x,p,r)in &d.lines{
+                lines.push(format!("CYCLE {} {} {} {}",t,x,p.text(),report::route(r.as_ref(),&self.topology)));
+                *oscillate.entry((*x,*p)).or_insert(0usize)+=1;
+            }
+            for((x,p),n)in oscillate{
+                lines.push(format!("OSCILLATE {} {} changes {}",x,p.text(),n));
+            }
+        }
+        lines.push(format!("SUMMARY loops {} blackholes {} rings {} routes {} valleys {} divergent {} end {}",loops,blackholes,self.ring_records.len(),routes,valleys,self.divergences.len(),self.time));
+        lines
+    }
+fn main(){
+    let events=simulator::events();
+    let mut bgp=Bgp::new();
+    bgp.run(&events);
+    report::write("updates.txt",&bgp.logs);
+    report::write("convergence.csv",&bgp.convergence);
+    report::write("ribs.txt",&bgp.ribs_report());
+    report::write("paths.txt",&bgp.paths_report());
+    report::write("audit.txt",&bgp.audit_report());
+}
+    pub fn read()->Self{
+        let mut t=Self{
+            routers:BTreeMap::new(),
+            links:Vec::new(),
+            initial:Vec::new()
+        };
+        for line in fs::read_to_string("input/topology.txt").unwrap().lines(){
+            let a:Vec<_>=line.split(' ').collect();
+            match a[0]{
+                "AS"=>{
+                    t.routers.insert(a[1].parse().unwrap(),address(a[2]));
+                },"LINK"=>t.links.push(Link{
+                    name:a[1].into(),
+                    a:a[2].parse().unwrap(),
+                    b:a[3].parse().unwrap(),
+                    peer:a[4]=="P2P",
+                    delay:a[5].parse().unwrap(),
+                    mrai:a[6].parse().unwrap(),
+                    up:true,
+                    downs:0
+                }),_=>t.initial.push((a[1].parse().unwrap(),Prefix::parse(a[2]),a[3].into(),a[4..].iter().map(|v|crate::policy::community(v)).collect()))
+            }
+        }
+        t
+    }
+    pub fn read()->Self{
+        let mut p=Self{
+            lists:BTreeMap::new(),
+            rules:Vec::new()
+        };
+        for line in fs::read_to_string("input/policies.txt").unwrap().lines(){
+            let a:Vec<_>=line.split(' ').collect();
+            if a[0]=="PLIST"{
+                let prefix=Prefix::parse(a[3]);
+                let(mut low,mut high)=(prefix.length,prefix.length);
+                let mut i=4;
+                while i<a.len(){
+                    if a[i]=="GE"{
+                        low=a[i+1].parse().unwrap();
+                        high=32;
+                    }else{
+                        high=a[i+1].parse().unwrap();
+                    }
+                    i+=2;
+                }
+                p.lists.entry(a[1].into()).or_default().push(Entry{
+                    permit:a[2]=="PERMIT",
+                    prefix,
+                    low,
+                    high
+                });
+            }else{
+                let mut r=Rule{
+                    name:a[1].into(),
+                    on:a[2]=="ON",
+                    owner:a[3].parse().unwrap(),
+                    import:a[4]=="IMPORT",
+                    target:a[5].into(),
+                    conditions:Vec::new(),
+                    actions:Vec::new(),
+                    hits:0
+                };
+                let mut i=6;
+                while a[i]!="THEN"{
+                    r.conditions.push(match a[i]{
+                        "PREFIX"=>Condition::Prefix(a[i+1].into()),"CONTAINS"=>Condition::Contains(a[i+1].parse().unwrap()),"ORIGINAS"=>Condition::Origin(a[i+1].parse().unwrap()),"LENGTH"=>{
+                            let(x,y)=a[i+1].split_once('-').unwrap();
+                            Condition::Length(x.parse().unwrap(),y.parse().unwrap())
+                        },_=>Condition::Community(community(a[i+1]))
+                    });
+                    i+=2;
+                }
+                i+=1;
+                while i<a.len(){
+                    let action=match a[i]{
+                        "DENY"=>Action::Deny,"ALLOW"=>Action::Allow,"LOCALPREF"=>Action::Local(a[i+1].parse().unwrap()),"MED"=>Action::Med(a[i+1].parse().unwrap()),"PREPEND"=>Action::Prepend(a[i+1].parse().unwrap()),"ADD"=>Action::Add(community(a[i+1])),_=>Action::Remove(community(a[i+1]))
+                    };
+                    i+=if matches!(action,Action::Deny|Action::Allow){
+                        1
+                    }else{
+                        2
+                    };
+                    r.actions.push(action);
+                }
+                p.rules.push(r);
+            }
+        }
+        p
+    }
+    pub fn applied(&self,import:bool,x:Asn,link:&Link,p:Prefix,path:&[Asn],comm:&Communities)->Option<usize>{
+        self.rules.iter().position(|r|r.on&&r.owner==x&&r.import==import&&(r.target=="*"||r.target==link.name||r.target==link.other(x).to_string())&&r.conditions.iter().all(|c|match c{
+            Condition::Prefix(n)=>self.permitted(n,p),Condition::Contains(a)=>path.contains(a),Condition::Origin(a)=>path.last().copied().unwrap_or(x)==*a,Condition::Length(lo,hi)=>*lo<=path.len()&&path.len()<=*hi,Condition::Community(c)=>comm.contains(c)
+        }))
+    }
+    pub fn send(&mut self,time:i64,delay:i64,sender:Asn,receiver:Asn,link:usize,prefix:Prefix,content:Option<Attribute>)->Message{
+        self.serial+=1;
+        let m=Message{
+            serial:self.serial,
+            sender,
+            receiver,
+            link,
+            prefix,
+            content,
+            arrival:time+delay
+        };
+        self.messages.insert((m.arrival,receiver,sender,m.serial),m.clone());
+        m
+    }
+pub fn events()->Vec<Event>{
+    let mut all=vec![Event{
+        time:0,text:"INITIAL".into(),fields:vec!["INITIAL".into()],kind:"INITIAL".into()
+    }];
+    for line in fs::read_to_string("input/events.txt").unwrap().lines(){
+        let(t,text)=line.split_once(' ').unwrap();
+        let fields:Vec<String>=text.split(' ').map(str::to_string).collect();
+        let kind=if fields[0]=="LINK"||fields[0]=="POLICY"{
+            fields[..2].join("_")
+        }else{
+            fields[0].clone()
+        };
+        all.push(Event{
+            time:t.parse().unwrap(),
+            text:text.into(),
+            fields,
+            kind
+        });
+    }
+    all
+}

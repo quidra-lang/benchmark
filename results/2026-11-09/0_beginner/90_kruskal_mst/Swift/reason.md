@@ -1,0 +1,9 @@
+The current question asks: Trace the complete Kruskal run from the thirteen stored edges through weight sorting, Union-Find decisions, accepted-edge output and the final total/skipped summaries. Use weights 5 and 6 to explain acceptance versus rejection, then identify the seventh accepted edge and why no later edge is examined. Derive the accepted edges in output order, their total weight and the skipped count, including endpoint normalization in the displayed names.
+
+Answer and source evidence: Sort edges by weight, accept only different Union-Find roots and union them, counting same-root rejections. Accepted order is G-H2, C-E3, A-C4, D-E5, A-B7, F-G8, E-H10, totaling39. Weight5 joins D to the C/E component; weight6 C-D then closes a cycle and is skipped. B-C9 is also skipped, so skipped=2. E-H10 is the seventh accepted edge; accepted==7 stops before any later examination. Display min/max endpoints alphabetically regardless of stored direction.
+
+Selection: `main.swift` lines 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29. All edge data, sorting, Union-Find behavior, acceptance counter/stop, endpoint formatting and summaries are required for the complete run; source wrappers are excluded.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

@@ -1,0 +1,564 @@
+struct Entry {
+    let tx: Transaction;
+    let fee: Int;
+    let arrival: Int
+}
+    func refresh() {
+        main = chainTo(tip);
+        confirmed = [: ];
+        for r in main {
+            for tx in r.block.transactions {
+                confirmed[tx.txid] = r.block.height
+            }
+        }
+    }
+    func writeLog(_ line: String) {
+        log.append("\(now) \(line)")
+    }
+    var height: Int {
+        tip.block.height+1
+    }
+    func blockReward(_ h: Int) -> Int {
+        reward(h, p.get("REWARD"), p.get("REWARD", 1))
+    }
+    func difficulty(_ r: BlockRecord) -> Int {
+        requiredDifficulty(r, p.get("DIFFICULTY"), p.get("RETARGET"), p.get("RETARGET", 1))
+    }
+    var locked: Set<Reference> {
+        Set(mempool.flatMap {
+            $0.tx.inputs
+        })
+    }
+    var ranked: [Entry] {
+        mempool.sorted {
+            let a = $0.fee * $1.tx.size, b = $1.fee * $0.tx.size;
+            return a != b ? a>b : $0.tx.txid<$1.tx.txid
+        }
+    }
+    func balance(_ a: String) -> Int {
+        tip.utxo.values.filter {
+            $0.address == a
+        }.reduce(0) {
+            $0+$1.amount
+        }
+    }
+    func acceptance(_ tx: Transaction) -> Acceptance {
+        if tx.coinbase {
+            return Acceptance("coinbase")
+        }
+        if confirmed[tx.txid] != nil || mempool.contains(where: {
+            $0.tx.txid == tx.txid
+        }) {
+            return Acceptance("duplicate")
+        }
+        let(reason, fee) = checkTransaction(tx, tip.utxo, [], height, owners, p.get("MATURITY"));
+        if let r = reason {
+            return Acceptance(r)
+        }
+        if fee*1000<p.get("MINFEERATE")*tx.size {
+            return Acceptance("low-fee")
+        }
+        let inputs = Set(tx.inputs), conflicts = mempool.filter {
+            !inputs.isDisjoint(with: $0.tx.inputs)
+        }
+        if !conflicts.isEmpty && (fee <= conflicts.reduce(0) {
+            $0+$1.fee
+        }
+        || conflicts.contains(where: {
+            fee * $0.tx.size <= $0.fee * tx.size
+        })) {
+            return Acceptance("conflict")
+        }
+        return Acceptance(nil, fee, conflicts.map {
+            $0.tx.txid
+        })
+    }
+    func drop(_ id: String, _ reason: String) {
+        mempool.removeAll {
+            $0.tx.txid == id
+        };
+        drops[id] = reason;
+        writeLog("DROP \(short(id)) \(reason)")
+    }
+    func register(_ tx: Transaction, _ result: Acceptance, _ arrival: Int) {
+        for id in result.conflicts {
+            drop(id, "replaced")
+        };
+        mempool.append(Entry(tx: tx, fee: result.fee, arrival: arrival));
+        if mempool.count>p.get("MEMPOOL") {
+            drop(ranked.last!.tx.txid, "mempool-full")
+        }
+    }
+    func switchTip(_ target: BlockRecord) {
+        let old = tip, fork = forkPoint(tip, target), f = fork.block.height, d = old.block.height-f, c = target.block.height-f
+        if d>p.get("MAXREORG") {
+            writeLog("REFUSE \(target.block.height) \(short(target.block.hash)) work \(target.cumulativeWork) fork \(f) depth \(d)");
+            return
+        }
+        let returned = main.dropFirst(f+1).flatMap {
+            Array($0.block.transactions.dropFirst())
+        };
+        tip = target;
+        refresh()
+        if d == 0 {
+            writeLog("TIP \(target.block.height) \(short(target.block.hash)) work \(target.cumulativeWork)")
+        }else {
+            writeLog("REORG \(target.block.height) \(short(target.block.hash)) work \(target.cumulativeWork) fork \(f) disconnected \(d) connected \(c)")
+            reorganizations.append(Reorganization(time: now, fork: f, disconnected: d, connected: c, old: old.block.hash, new: target.block.hash))
+        }
+        let previous = mempool;
+        mempool = []
+        let candidates = returned.map {
+            ($0, now, true)
+        }
+        +previous.map {
+            ($0.tx, $0.arrival, false)
+        }
+        for(tx, arrival, isReturned)in candidates {
+            if confirmed[tx.txid] != nil {
+                continue
+            };
+            let a = acceptance(tx);
+            if let r = a.reason {
+                drop(tx.txid, r)
+            }else {
+                if isReturned {
+                    writeLog("RETURN \(short(tx.txid))")
+                };
+                register(tx, a, arrival)
+            }
+        }
+    }
+    func validate(_ b: Block, _ parent: BlockRecord) -> (String?, Utxo, [Int]) {
+        if b.height != parent.block.height+1 {
+            return("bad-height", [: ], [])
+        }
+        if b.difficulty != difficulty(parent) {
+            return("bad-difficulty", [: ], [])
+        }
+        if b.timestamp <= medianTime(parent) {
+            return("time-too-old", [: ], [])
+        }
+        if b.timestamp>now+p.get("DRIFT") {
+            return("time-too-new", [: ], [])
+        }
+        var utxo = parent.utxo, spent = Set<Reference>(), fees = [Int]()
+        for(i, tx)in b.transactions.enumerated().dropFirst() {
+            let(reason, fee) = checkTransaction(tx, utxo, spent, b.height, owners, p.get("MATURITY"));
+            if let reason = reason {
+                return("\(reason) tx \(i+1)", [: ], [])
+            };
+            spent.formUnion(tx.inputs);
+            apply(&utxo, tx, b.height);
+            fees.append(fee)
+        }
+        let cb = b.transactions[0]
+        if cb.outputs.contains(where: {
+            owners[$0.address] == nil || $0.amount == 0
+        }) {
+            return("bad-output tx 1", [: ], [])
+        }
+        if cb.total>blockReward(b.height)+fees.reduce(0, +) {
+            return("bad-coinbase", [: ], [])
+        }
+        apply(&utxo, cb, b.height);
+        return(nil, utxo, fees)
+    }
+    func reject(_ kind: String, _ b: Block, _ peer: String, _ reason: String) {
+        rejected.insert(b.hash);
+        peers[peer]!.rejectedBlocks += 1;
+        tally("block", String(reason.split(separator: " ")[0]));
+        writeLog("\(kind) \(peer) \(b.height) \(short(b.hash)) rejected \(reason)");
+        if reason != "time-too-new" {
+            penalize(peer, p.get("BAN", 1))
+        }
+    }
+    func connect(_ kind: String, _ b: Block, _ peer: String) {
+        let parent = records[b.previous]!, (reason, utxo, fees) = validate(b, parent);
+        if let reason = reason {
+            reject(kind, b, peer, reason)
+        }else {
+            let r = BlockRecord(b, parent, utxo, fees, peer);
+            records[b.hash] = r;
+            peers[peer]!.acceptedBlocks += 1;
+            writeLog("\(kind) \(peer) \(b.height) \(short(b.hash)) accepted work \(r.cumulativeWork)");
+            if r.cumulativeWork>tip.cumulativeWork {
+                switchTip(r)
+            }
+        }
+    }
+    func resolve(_ start: String) {
+        var queue = [start], i = 0;
+        while i<queue.count {
+            let parent = queue[i];
+            i += 1;
+            let children = orphans.filter {
+                $0.0.previous == parent
+            };
+            for(b, peer)in children {
+                orphans.removeAll {
+                    $0.0.hash == b.hash
+                };
+                if rejected.contains(parent) {
+                    reject("UNORPHAN", b, peer, "bad-parent")
+                }else {
+                    connect("UNORPHAN", b, peer)
+                };
+                queue.append(b.hash)
+            }
+        }
+    }
+    func receiveBlock(_ peer: String, _ b: Block) {
+        if records[b.hash] != nil || orphans.contains(where: {
+            $0.0.hash == b.hash
+        }) || rejected.contains(b.hash) {
+            writeLog("BLOCK \(peer) \(b.height) \(short(b.hash)) rejected duplicate");
+            peers[peer]!.rejectedBlocks += 1;
+            tally("block", "duplicate");
+            return
+        }
+        if let reason = b.contextError(p.get("MAXBLOCK")) ?? (rejected.contains(b.previous) ? "bad-parent" : nil) {
+            reject("BLOCK", b, peer, reason);
+            resolve(b.hash);
+            return
+        }
+        if records[b.previous] == nil {
+            orphans.append((b, peer));
+            peers[peer]!.orphans += 1;
+            writeLog("BLOCK \(peer) \(b.height) \(short(b.hash)) orphan parent \(short(b.previous))");
+            if orphans.count>p.get("ORPHANS") {
+                let old = orphans.removeFirst();
+                writeLog("EVICT \(short(old.0.hash)) orphan-limit")
+            };
+            return
+        }
+        connect("BLOCK", b, peer);
+        resolve(b.hash)
+    }
+    func process(_ f: [String], _ texts: [String]) {
+        now = Int(f[0])!;
+        for e in mempool {
+            if now-e.arrival >= p.get("EXPIRY") {
+                drop(e.tx.txid, "expired")
+            }
+        };
+        switch f[1] {
+            case "PAY": pay(f);
+            case "BUMP": bump(f[2], Int(f[3])!);
+            case "MINE": mine(f[2]);
+            case "STATUS": status(f[2]);
+            case "PRINT": printState();
+            default: let peer = f[2], kind = f[1];
+            if peers[peer] == nil {
+                peers[peer] = Peer()
+            };
+            if peers[peer]!.score >= p.get("BAN") {
+                peers[peer]!.ignored += 1;
+                writeLog("IGNORE \(peer) \(kind)")
+            }else if kind == "TX" {
+                receiveTx(peer, Transaction(f[3]))
+            }else {
+                receiveBlock(peer, Block.parse(f, texts))
+            }
+        }
+    }
+    func chainLines() -> [String] {
+        var lines = ["TIP \(tip.block.height) \(tip.block.hash) work \(tip.cumulativeWork) stored \(records.count) orphans \(orphans.count)"]
+        for r in main {
+            let b = r.block, m = b.height == 0 ? "-" : miner(r);
+            lines.append("BLOCK \(b.height) \(b.hash) prev \(short(b.previous)) time \(b.timestamp) bits \(b.difficulty) nonce \(b.nonce) txs \(b.transactions.count) size \(b.size) fees \(r.fees) miner \(m) source \(r.source) work \(r.cumulativeWork)")
+        }
+        let hashes = Set(main.map {
+            $0.block.hash
+        }), stale = records.values.filter {
+            !hashes.contains($0.block.hash)
+        }.sorted {
+            a, b in a.block.height != b.block.height ? a.block.height<b.block.height : a.block.hash<b.block.hash
+        }
+        for r in stale {
+            lines.append("STALE \(r.block.height) \(r.block.hash) prev \(short(r.block.previous)) source \(r.source) work \(r.cumulativeWork)")
+        }
+        for r in reorganizations {
+            lines.append("REORG \(r.time) fork \(r.fork) disconnected \(r.disconnected) connected \(r.connected) old \(short(r.old)) new \(short(r.new))")
+        }
+        for(i, e)in ranked.enumerated() {
+            lines.append("MEMPOOL \(i+1) \(e.tx.txid) fee \(e.fee) size \(e.tx.size) time \(e.arrival)")
+        }
+        return lines
+    }
+    func balanceLines() -> [String] {
+        let locks = locked;
+        var lines = ["wallet,address,balance,immature,locked,incoming,utxos"];
+        for w in wallets {
+            let coins = tip.utxo.filter {
+                $0.value.address == w.address
+            }, immature = coins.values.filter {
+                !$0.mature(height, p.get("MATURITY"))
+            }.reduce(0) {
+                $0+$1.amount
+            }, amount = coins.filter {
+                locks.contains($0.key)
+            }.values.reduce(0) {
+                $0+$1.amount
+            }, incoming = mempool.flatMap {
+                $0.tx.outputs
+            }.filter {
+                $0.address == w.address
+            }.reduce(0) {
+                $0+$1.amount
+            };
+            lines.append("\(w.name),\(w.address),\(balance(w.address)),\(immature),\(amount),\(incoming),\(coins.count)")
+        };
+        return lines
+    }
+    func utxoLines() -> [String] {
+        let locks = locked;
+        var lines = [String]();
+        for r in tip.utxo.keys.sorted() {
+            let c = tip.utxo[r]!, category = c.height == 0 ? "genesis" : c.coinbase ? "coinbase" : "payment", state = !c.mature(height, p.get("MATURITY")) ? "immature" : locks.contains(r) ? "locked" : "free";
+            lines.append("\(r.text) \(owners[c.address]!.name) \(c.amount) height \(c.height) \(category) \(state)")
+        };
+        let root = merkleRoot(lines.map(digest));
+        lines.append("TOTAL \(tip.utxo.count) \(tip.utxo.values.reduce(0){$0+$1.amount})");
+        lines.append("ROOT \(root)");
+        return lines
+    }
+    func historyLines() -> [String] {
+        var txs = [String: Transaction]();
+        for r in main {
+            for tx in r.block.transactions {
+                txs[tx.txid] = tx
+            }
+        };
+        var lines = [String]()
+        for w in wallets {
+            lines.append("WALLET \(w.name) \(w.address)");
+            var count = 0, spentTotal = 0, receivedTotal = 0, balance = 0
+            for r in main {
+                for tx in r.block.transactions {
+                    var spent = 0, received = 0, involved = false;
+                    for ref in tx.inputs {
+                        let o = txs[ref.txid]!.outputs[ref.index];
+                        if o.address == w.address {
+                            spent += o.amount;
+                            involved = true
+                        }
+                    };
+                    for o in tx.outputs {
+                        if o.address == w.address {
+                            received += o.amount;
+                            involved = true
+                        }
+                    };
+                    if !involved {
+                        continue
+                    };
+                    count += 1;
+                    spentTotal += spent;
+                    receivedTotal += received;
+                    balance += received-spent;
+                    let category = !tx.coinbase ? "payment" : r.block.height == 0 ? "genesis" : "coinbase", net = String(format: "%+d", received-spent);
+                    lines.append("\(r.block.height) \(short(tx.txid)) \(category) spent \(spent) received \(received) net \(net) balance \(balance)")
+                }
+            }
+            var pending = 0;
+            for e in ranked {
+                let spent = e.tx.inputs.map {
+                    tip.utxo[$0]!
+                }.filter {
+                    $0.address == w.address
+                }.reduce(0) {
+                    $0+$1.amount
+                }, received = e.tx.outputs.filter {
+                    $0.address == w.address
+                }.reduce(0) {
+                    $0+$1.amount
+                };
+                if spent != 0 || received != 0 {
+                    pending += 1;
+                    let net = String(format: "%+d", received-spent);
+                    lines.append("pending \(short(e.tx.txid)) spent \(spent) received \(received) net \(net)")
+                }
+            };
+            lines.append("END \(w.name) txs \(count) spent \(spentTotal) received \(receivedTotal) balance \(balance) pending \(pending)")
+        };
+        return lines
+    }
+let node = Node(try Params(), try readWallets()), events = try String(contentsOfFile: "input/events.txt", encoding: .utf8).split(separator: "\n").map(String.init)
+var position = 0
+while position<events.count {
+    let f = events[position].split(separator: " ").map(String.init), n = f[1] == "BLOCK" ? Int(f[9])! : 0;
+    node.process(f, Array(events[(position+1)..<(position+1+n)]));
+    position += n+1
+}
+try FileManager.default.createDirectory(atPath: "output", withIntermediateDirectories: true)
+try writeLines("log.txt", node.log)
+try writeLines("chain.txt", node.chainLines())
+try writeLines("balances.csv", node.balanceLines())
+try writeLines("utxo.txt", node.utxoLines())
+try writeLines("history.txt", node.historyLines())
+final class BlockRecord {
+    let block: Block;
+    let parent: BlockRecord?;
+    let utxo: Utxo;
+    let transactionFees: [Int];
+    let fees: Int;
+    let source: String;
+    let cumulativeWork: Int
+    init(_ block: Block, _ parent: BlockRecord?, _ utxo: Utxo, _ fees: [Int], _ source: String) {
+        self.block = block;
+        self.parent = parent;
+        self.utxo = utxo;
+        transactionFees = fees;
+        self.fees = fees.reduce(0, +);
+        self.source = source;
+        cumulativeWork = parent.map {
+            $0.cumulativeWork+(0..<block.difficulty).reduce(1) {
+                a, _ in a*16
+            }
+        } ?? 1
+    }
+}
+func ancestor(_ record: BlockRecord, _ height: Int) -> BlockRecord {
+    var r = record;
+    while r.block.height>height {
+        r = r.parent!
+    };
+    return r
+}
+func chainTo(_ record: BlockRecord) -> [BlockRecord] {
+    var out = [BlockRecord]();
+    var next: BlockRecord? = record;
+    while let r = next {
+        out.append(r);
+        next = r.parent
+    };
+    return Array(out.reversed())
+}
+func forkPoint(_ first: BlockRecord, _ second: BlockRecord) -> BlockRecord {
+    let h = min(first.block.height, second.block.height);
+    var a = ancestor(first, h), b = ancestor(second, h);
+    while a !== b {
+        a = a.parent!;
+        b = b.parent!
+    };
+    return a
+}
+struct Block {
+    let height: Int;
+    let previous: String;
+    let merkle: String;
+    let timestamp: Int;
+    let difficulty: Int;
+    let nonce: Int;
+    let transactions: [Transaction];
+    let hash: String
+    init(_ height: Int, _ previous: String, _ merkle: String, _ timestamp: Int, _ difficulty: Int, _ nonce: Int, _ transactions: [Transaction]) {
+        self.height = height;
+        self.previous = previous;
+        self.merkle = merkle;
+        self.timestamp = timestamp;
+        self.difficulty = difficulty;
+        self.nonce = nonce;
+        self.transactions = transactions
+        hash = digest("\(height)|\(previous)|\(merkle)|\(timestamp)|\(difficulty)|\(nonce)")
+    }
+    var size: Int {
+        transactions.dropFirst().reduce(0) {
+            $0+$1.size
+        }
+    }
+    var txids: [String] {
+        transactions.map(\.txid)
+    }
+    func contextError(_ maxSize: Int) -> String? {
+        if !hash.hasPrefix(String(repeating: "0", count: difficulty)) {
+            return "bad-pow"
+        }
+        if merkleRoot(txids) != merkle {
+            return "bad-merkle"
+        }
+        if transactions[0].coinbaseHeight != height || transactions.dropFirst().contains(where: {
+            $0.coinbase
+        }) {
+            return "bad-structure"
+        }
+        return size>maxSize ? "too-large" : nil
+    }
+    static func parse(_ f: [String], _ texts: [String]) -> Block {
+        Block(Int(f[3])!, f[4], f[5], Int(f[6])!, Int(f[7])!, Int(f[8])!, texts.map(Transaction.init))
+    }
+struct Reference: Hashable, Comparable {
+    let txid: String;
+    let index: Int
+    static func <(a: Self, b: Self) -> Bool {
+        a.txid != b.txid ? a.txid<b.txid : a.index<b.index
+    }
+    var text: String {
+        "\(txid):\(index)"
+    }
+}
+struct Coin {
+    let address: String;
+    let amount: Int;
+    let height: Int;
+    let coinbase: Bool
+    func mature(_ h: Int, _ maturity: Int) -> Bool {
+        !coinbase || height == 0 || h >= height+maturity
+    }
+}
+typealias Utxo = [Reference: Coin]
+struct Transaction {
+    let text: String;
+    let txid: String;
+    let inputs: [Reference];
+    let outputs: [Output];
+    let signatures: [String];
+    let coinbaseHeight: Int?
+    var size: Int {
+        text.utf8.count
+    }
+    var coinbase: Bool {
+        coinbaseHeight != nil
+    }
+    var body: String {
+        String(text.components(separatedBy: ";sig=")[0])
+    }
+    var total: Int {
+        outputs.reduce(0) {
+            $0+$1.amount
+        }
+    }
+func checkTransaction(_ tx: Transaction, _ utxo: Utxo, _ spent: Set<Reference>, _ h: Int, _ owners: [String: Wallet], _ maturity: Int) -> (String?, Int) {
+    if tx.outputs.contains(where: {
+        owners[$0.address] == nil || $0.amount == 0
+    }) {
+        return ("bad-output", 0)
+    }
+    var seen = Set<Reference>(), total = 0
+    for (i, r) in tx.inputs.enumerated() {
+        if spent.contains(r) || seen.contains(r) {
+            return ("double-spend", 0)
+        }
+        guard let c = utxo[r] else {
+            return ("missing-input", 0)
+        }
+        if !c.mature(h, maturity) {
+            return ("immature", 0)
+        }
+        if tx.signatures[i] != sign(owners[c.address]!.secret, i, tx.body) {
+            return ("bad-sig", 0)
+        }
+        seen.insert(r);
+        total += c.amount
+    }
+    return total<tx.total ? ("overspend", 0) : (nil, total-tx.total)
+}
+func apply(_ utxo: inout Utxo, _ tx: Transaction, _ h: Int) {
+    for r in tx.inputs {
+        utxo.removeValue(forKey: r)
+    }
+    for (i, o) in tx.outputs.enumerated() {
+        utxo[Reference(txid: tx.txid, index: i)] = Coin(address: o.address, amount: o.amount, height: h, coinbase: tx.coinbase)
+    }
+}

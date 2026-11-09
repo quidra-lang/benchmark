@@ -1,0 +1,5 @@
+The case is year 2026/month 8, whose name is August and length 31. Integer days since the prior year plus preceding month lengths gives offset=(days+1)%7=6 (Saturday). Output header is `August 2026`, then `Su Mo Tu We Th Fr Sa`. Six leading blank columns are 18 spaces, followed by right-aligned ` 1`, completing the first week line. Weekday arithmetic wraps after Saturday; last line is `30 31`, with LF immediately after 31 and no trailing blank columns. A newline emitted before each nonfirst case creates one blank separator between calendars. The selected input, integer calendar calculation and rendering establish the complete path.
+
+
+
+The excerpt preserves complete source lines in their source order. Only the named inputs, decisions, updates and output operations needed for this question are retained; unrelated calculations, entry-point scaffolding and unused output are omitted. Standard language and library semantics supply the meaning of the retained operators and APIs, without their implementation bodies. Each selected operation establishes a fact used above; replacing these lines with callers alone would omit that fact.

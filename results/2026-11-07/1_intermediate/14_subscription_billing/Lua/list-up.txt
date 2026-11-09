@@ -1,0 +1,123 @@
+local function fee(plan, seats)
+    return plan.price * (plan.per_seat and seats or 1)
+end
+local function usage_charge(plan, units)
+    for index, tier in ipairs(plan.tiers) do
+        local last = index == #plan.tiers
+        if plan.mode == "VOLUME" then
+            if last or tier.upper == nil or units <= tier.upper then
+                return units * tier.unit + tier.flat
+function Billing:emit(...)
+    local parts = {...}
+    for i, value in ipairs(parts) do
+        parts[i] = tostring(value)
+    end
+    self.output[#self.output + 1] = table.concat(parts, " ")
+end
+
+function Billing:indented(...)
+    local parts = {...}
+    for i, value in ipairs(parts) do
+        parts[i] = tostring(value)
+    end
+    self.output[#self.output + 1] = "  " .. table.concat(parts, " ")
+end
+function Billing:subscription(text, allowed)
+    local number = tonumber(text)
+    local subscription = self.subscriptions[number]
+    if not subscription then error_command("unknown sub " .. text) end
+    if allowed and not contains(allowed, subscription.state) then
+        error_command("invalid state " .. text .. " " .. subscription.state)
+    end
+    return subscription
+end
+local function period_item(plan, seats, start)
+    return {
+        description = "charge " .. plan.name .. " seats " .. seats .. " " ..
+                      start .. "-" .. (start + plan.length),
+        amount = fee(plan, seats)
+    }
+end
+
+local function opening_items(subscription, start)
+    local plan = subscription.plan
+    local items = {period_item(plan, subscription.seats, start)}
+    if plan.setup ~= 0 then
+        items[#items + 1] = {description = "setup " .. plan.name, amount = plan.setup}
+    end
+    return items
+end
+
+local function usage_items(subscription, close)
+    local plan = subscription.plan
+    if not plan.mode or subscription.usage == 0 then return {} end
+    local units = subscription.usage
+    local item = {
+        description = "usage " .. plan.name .. " " .. units .. " units",
+        amount = usage_charge(plan, units)
+    }
+    if close then subscription.usage = 0 end
+    return {item}
+end
+
+local function coupon_usable(subscription, subtotal)
+    return subtotal > 0 and subscription.coupon ~= nil and
+           (subscription.remaining == nil or subscription.remaining > 0)
+end
+
+function Billing:invoice_totals(subscription, items)
+    local subtotal = 0
+    for _, item in ipairs(items) do subtotal = subtotal + item.amount end
+    local discount = 0
+    if coupon_usable(subscription, subtotal) then
+        local coupon = subscription.coupon
+        if coupon.kind == "PERCENT" then
+            discount = (subtotal * coupon.value) // 10000
+        else
+            discount = math.min(subtotal, coupon.value)
+        end
+    end
+    local tax = ((subtotal - discount) * (self.taxes[subscription.customer.region] or 0)) // 10000
+    local total = subtotal - discount + tax
+    local credit = math.min(subscription.customer.balance, total)
+    return {subtotal, discount, tax, total, credit, total - credit}
+end
+function Billing:emit_items(items)
+    for _, item in ipairs(items) do
+        self:indented(item.description, money(item.amount))
+    end
+end
+
+function Billing:emit_totals(totals)
+    self:indented("subtotal", money(totals[1]), "discount", money(totals[2]),
+                  "tax", money(totals[3]), "total", money(totals[4]))
+end
+function Billing:cmd_preview(args)
+    local subscription = self:subscription(args[1],
+        {"TRIALING", "ACTIVE", "PAST_DUE", "UNPAID"})
+    local day = subscription.state == "TRIALING" and subscription.trial_end or
+                subscription.finish
+    local kind, items
+    if subscription.cancel_end then
+        kind = "final"
+        items = subscription.state == "TRIALING" and {} or usage_items(subscription)
+    elseif subscription.state == "TRIALING" then
+        kind = "first"
+        items = opening_items(subscription, day)
+    else
+        kind = "renewal"
+        local plan = subscription.pending and subscription.pending[1] or subscription.plan
+        local seats = subscription.pending and subscription.pending[2] or subscription.seats
+        items = usage_items(subscription)
+        items[#items + 1] = period_item(plan, seats, day)
+    end
+    self:emit("PREVIEW", "sub", subscription.number, "day", day, kind)
+    if #items == 0 then
+        self:indented("(none)")
+        return
+    end
+    self:emit_items(items)
+    local totals = self:invoice_totals(subscription, items)
+    self:emit_totals(totals)
+    self:indented("credit", money(totals[5]), "due", money(totals[6]))
+end

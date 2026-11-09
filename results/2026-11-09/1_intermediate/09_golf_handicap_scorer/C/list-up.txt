@@ -1,0 +1,440 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define LIMIT 1001
+#define HOLES 18
+typedef struct Course Course;
+typedef struct Tee Tee;
+typedef struct Round Round;
+typedef struct Player Player;
+struct Course {
+    char id[9];
+    int pars[HOLES], si[HOLES], par;
+};
+struct Tee {
+    char id[9];
+    Course *course;
+    int rating, slope;
+};
+typedef struct {
+    int valid, lowest, average, adjustment, has_low, low;
+    int hard, soft, maximum;
+} Calculation;
+typedef struct {
+    int day, index;
+} IndexRecord;
+struct Round {
+    Course *course;
+    Tee *tee;
+    int day;
+    int scores[HOLES], adjusted[HOLES], ags, differential, exceptional;
+    int has_handicap, handicap;
+    int previous_has_index, previous_index, previous_records;
+    Calculation previous_calculation;
+};
+struct Player {
+    char id[9], name[13];
+    int has_index, index, round_count, record_count;
+    Round *rounds[LIMIT];
+    IndexRecord records[LIMIT];
+    Calculation calculation;
+};
+typedef struct {
+    int number, adjusted;
+    Round *round;
+} Eligible;
+static Course courses[LIMIT];
+static Tee tees[LIMIT];
+static Player players[LIMIT];
+static Round rounds[LIMIT];
+static int course_count, tee_count, player_count, round_count, event_count;
+static int floor_div(long long n, long long d) {
+    return (int)(n >= 0 ? n / d : -((-n + d - 1) / d));
+}
+static int round_half_up(long long n, long long d) {
+    return floor_div(2 * n + d, 2 * d);
+}
+static int round_half_away(long long n, long long d) {
+    return n < 0 ? -round_half_up(-n, d) : round_half_up(n, d);
+}
+static void error_line(const char *reason) {
+    printf("ERROR %s\n", reason);
+}
+static void decimal(int value) {
+    if (value < 0) {
+        putchar('-');
+        value = -value;
+    }
+    printf("%d.%d", value / 10, value % 10);
+}
+static void print_index(int exists, int value) {
+    if (!exists) {
+        printf("none");
+    } else {
+        if (value < 0) {
+            putchar('+');
+            value = -value;
+        }
+        printf("%d.%d", value / 10, value % 10);
+    }
+}
+static Course *find_course(const char *id) {
+    for (int i = 0; i < course_count; ++i)
+        if (!strcmp(courses[i].id, id)) return &courses[i];
+    return NULL;
+}
+static Tee *find_tee(Course *course, const char *id) {
+    for (int i = 0; i < tee_count; ++i)
+        if (tees[i].course == course && !strcmp(tees[i].id, id))
+            return &tees[i];
+    return NULL;
+}
+static Player *find_player(const char *id) {
+    for (int i = 0; i < player_count; ++i)
+        if (!strcmp(players[i].id, id)) return &players[i];
+    return NULL;
+}
+static Tee *checked_tee(const char *course_id, const char *tee_id) {
+    Course *course = find_course(course_id);
+    if (!course) {
+        error_line("unknown course");
+        return NULL;
+    }
+    Tee *tee = find_tee(course, tee_id);
+    if (!tee) error_line("unknown tee");
+    return tee;
+}
+static int course_handicap(int index, Tee *tee) {
+    return round_half_up((long long)index * tee->slope +
+                         113LL * (tee->rating - 10 * tee->course->par), 1130);
+}
+static void allocation(int handicap, const Course *course, int strokes[HOLES]) {
+    int magnitude = abs(handicap), q = magnitude / HOLES, r = magnitude % HOLES;
+    for (int i = 0; i < HOLES; ++i) {
+        strokes[i] = handicap >= 0
+            ? q + (course->si[i] <= r)
+            : -q - (course->si[i] >= 19 - r);
+    }
+}
+static int low_index(Player *player, int day, int *value, int *date) {
+    int found = 0;
+    for (int i = 0; i < player->record_count; ++i) {
+        IndexRecord record = player->records[i];
+        if (record.day < day - 365 || record.day >= day) continue;
+        if (!found || record.index < *value ||
+            (record.index == *value && record.day < *date)) {
+            *value = record.index;
+            *date = record.day;
+            found = 1;
+        }
+    }
+    return found;
+}
+static int eligible_rounds(Player *player, Eligible eligible[20]) {
+    int count = player->round_count < 20 ? player->round_count : 20;
+    int reduction = 0;
+    for (int i = count - 1; i >= 0; --i) {
+        int number = player->round_count - count + i + 1;
+        Round *r = player->rounds[number - 1];
+        reduction += r->exceptional;
+        eligible[i].number = number;
+        eligible[i].round = r;
+        eligible[i].adjusted = r->differential - reduction;
+    }
+    return count;
+}
+static int compare_eligible(const void *left, const void *right) {
+    const Eligible *a = left, *b = right;
+    if (a->adjusted != b->adjusted)
+        return a->adjusted < b->adjusted ? -1 : 1;
+    return a->number > b->number ? -1 : (a->number < b->number ? 1 : 0);
+}
+static int counting_rounds(Eligible eligible[20], int count,
+                           Eligible selected[20], int *adjustment) {
+    if (count < 3) {
+        *adjustment = 0;
+        return 0;
+    }
+    const int limits[8] = {5, 8, 11, 14, 16, 18, 19, 20};
+    int k = 1;
+    while (count > limits[k - 1]) ++k;
+    memcpy(selected, eligible, count * sizeof(Eligible));
+    qsort(selected, count, sizeof(Eligible), compare_eligible);
+    *adjustment = count == 3 ? -20 : (count == 4 || count == 6 ? -10 : 0);
+    return k;
+}
+static void update_index(Player *player, int day) {
+    Eligible eligible[20], selected[20];
+    int count = eligible_rounds(player, eligible);
+    int adjustment, k = counting_rounds(eligible, count, selected, &adjustment);
+    if (!k) {
+        player->calculation.valid = 0;
+        return;
+    }
+    long long total = 0;
+    for (int i = 0; i < k; ++i) total += selected[i].adjusted;
+    int average = round_half_away(total, k);
+    int candidate = average + adjustment;
+    int low = 0, date = 0, soft = 0, hard = 0, maximum = 0;
+    int has_low = low_index(player, day, &low, &date);
+    if (has_low) {
+        if (candidate - low > 30) {
+            candidate = low + 30 + (candidate - low - 30) / 2;
+            soft = 1;
+        }
+        if (candidate - low > 50) {
+            candidate = low + 50;
+            hard = 1;
+        }
+    }
+    if (candidate > 540) {
+        candidate = 540;
+        maximum = 1;
+    }
+    player->has_index = 1;
+    player->index = candidate;
+    player->calculation = (Calculation){
+        1, k, average, adjustment, has_low, low, hard, soft, maximum
+    };
+}
+static void command_course(char **a) {
+    if (find_course(a[0])) {
+        error_line("duplicate course");
+        return;
+    }
+    int pars[HOLES], indexes[HOLES], seen[19] = {0}, total = 0;
+    for (int i = 0; i < HOLES; ++i) {
+        pars[i] = atoi(a[i + 1]);
+        indexes[i] = atoi(a[i + 19]);
+        if (pars[i] < 3 || pars[i] > 5 ||
+            indexes[i] < 1 || indexes[i] > 18 || seen[indexes[i]]) {
+            error_line("invalid course");
+            return;
+        }
+        seen[indexes[i]] = 1;
+        total += pars[i];
+    }
+    Course *c = &courses[course_count++];
+    strcpy(c->id, a[0]);
+    memcpy(c->pars, pars, sizeof(pars));
+    memcpy(c->si, indexes, sizeof(indexes));
+    c->par = total;
+}
+static void command_tee(char **a) {
+    Course *course = find_course(a[0]);
+    if (!course) {
+        error_line("unknown course");
+        return;
+    }
+    if (find_tee(course, a[1])) {
+        error_line("duplicate tee");
+        return;
+    }
+    int rating = atoi(a[2]), slope = atoi(a[3]);
+    if (rating < 500 || rating > 900 || slope < 55 || slope > 155) {
+        error_line("invalid tee");
+        return;
+    }
+    Tee *tee = &tees[tee_count++];
+    strcpy(tee->id, a[1]);
+    tee->course = course;
+    tee->rating = rating;
+    tee->slope = slope;
+}
+static void command_player(char **a, int argc) {
+    if (find_player(a[0])) {
+        error_line("duplicate player");
+        return;
+    }
+    int index = argc == 3 ? atoi(a[2]) : 0;
+    if (argc == 3 && (index < -100 || index > 540)) {
+        error_line("invalid index");
+        return;
+    }
+    Player *p = &players[player_count++];
+    strcpy(p->id, a[0]);
+    strcpy(p->name, a[1]);
+    p->has_index = argc == 3;
+    p->index = index;
+}
+static void command_round(char **a) {
+    Player *p = find_player(a[0]);
+    if (!p) {
+        error_line("unknown player");
+        return;
+    }
+    Tee *tee = checked_tee(a[1], a[2]);
+    if (!tee) return;
+    int day = atoi(a[3]);
+    if (p->round_count && day < p->rounds[p->round_count - 1]->day) {
+        error_line("invalid day");
+        return;
+    }
+    int scores[HOLES], unplayed = 0;
+    for (int h = 0; h < HOLES; ++h) {
+        scores[h] = !strcmp(a[h + 4], "-") ? -1 :
+                    (!strcmp(a[h + 4], "X") ? 0 : atoi(a[h + 4]));
+        if (scores[h] == -1) ++unplayed;
+    }
+    if (unplayed >= 5) {
+        error_line("too few holes");
+        return;
+    }
+    Round *r = &rounds[round_count++];
+    r->course = tee->course;
+    r->tee = tee;
+    r->day = day;
+    r->previous_has_index = p->has_index;
+    r->previous_index = p->index;
+    r->previous_records = p->record_count;
+    r->previous_calculation = p->calculation;
+    r->handicap = p->has_index ? course_handicap(p->index, tee) : 0;
+    int strokes[HOLES];
+    allocation(r->handicap, r->course, strokes);
+    r->ags = 0;
+    for (int h = 0; h < HOLES; ++h) {
+        int limit = p->has_index ? r->course->pars[h] + 2 + strokes[h]
+                                 : r->course->pars[h] + 5;
+        r->adjusted[h] = scores[h] == -1 ? r->course->pars[h] + strokes[h] :
+                         scores[h] == 0 ? limit :
+                         (scores[h] < limit ? scores[h] : limit);
+        r->ags += r->adjusted[h];
+    }
+    r->differential = round_half_away(
+        113LL * (10 * r->ags - tee->rating), tee->slope);
+    r->exceptional = 0;
+    if (p->has_index && p->index - r->differential >= 70)
+        r->exceptional = p->index - r->differential >= 100 ? 20 : 10;
+    p->rounds[p->round_count++] = r;
+    update_index(p, day);
+    if (p->has_index) {
+        p->records[p->record_count++] = (IndexRecord){day, p->index};
+    }
+    printf("round %s %d: ags %d diff ", p->id, p->round_count, r->ags);
+    decimal(r->differential);
+    if (r->exceptional) {
+        printf(" exceptional ");
+        decimal(-r->exceptional);
+    }
+    printf(" index ");
+    print_index(p->has_index, p->index);
+    putchar('\n');
+}
+static void command_remove(char **a) {
+    Player *p = find_player(a[0]);
+    if (!p) {
+        error_line("unknown player");
+        return;
+    }
+    if (!p->round_count) {
+        error_line("no rounds");
+        return;
+    }
+    int number = p->round_count;
+    Round *r = p->rounds[--p->round_count];
+    p->has_index = r->previous_has_index;
+    p->index = r->previous_index;
+    p->record_count = r->previous_records;
+    p->calculation = r->previous_calculation;
+    printf("removed %s %d: index ", p->id, number);
+    print_index(p->has_index, p->index);
+    putchar('\n');
+}
+static void command_index(char **a) {
+    Player *p = find_player(a[0]);
+    if (!p) {
+        error_line("unknown player");
+        return;
+    }
+    printf("index %s: ", p->id);
+    print_index(p->has_index, p->index);
+    printf(" rounds %d", p->round_count);
+    Calculation *c = &p->calculation;
+    if (c->valid) {
+        printf(" lowest %d average ", c->lowest);
+        decimal(c->average);
+        printf(" adjustment ");
+        decimal(c->adjustment);
+        if (c->has_low) {
+            printf(" low ");
+            print_index(1, c->low);
+        }
+        if (c->hard) printf(" hard cap");
+        else if (c->soft) printf(" soft cap");
+        if (c->maximum) printf(" maximum");
+    }
+    putchar('\n');
+}
+static void command_history(char **a) {
+    Player *p = find_player(a[0]);
+    if (!p) {
+        error_line("unknown player");
+        return;
+    }
+    Eligible eligible[20], selected[20];
+    int count = eligible_rounds(p, eligible), adjustment;
+    int k = counting_rounds(eligible, count, selected, &adjustment);
+    printf("history %s: rounds %d\n", p->id, p->round_count);
+    for (int i = 0; i < count; ++i) {
+        Eligible *entry = &eligible[i];
+        Round *r = entry->round;
+        printf("%d day %d %s %s ags %d diff ", entry->number, r->day,
+               r->course->id, r->tee->id, r->ags);
+        decimal(r->differential);
+        if (entry->adjusted != r->differential) {
+            printf(" adjusted ");
+            decimal(entry->adjusted);
+        }
+        for (int j = 0; j < k; ++j)
+            if (selected[j].number == entry->number) {
+                printf(" *");
+                break;
+            }
+        putchar('\n');
+    }
+}
+static void command_lowindex(char **a) {
+    Player *p = find_player(a[0]);
+    if (!p) {
+        error_line("unknown player");
+        return;
+    }
+    int day = atoi(a[1]), value = 0, date = 0;
+    int found = low_index(p, day, &value, &date);
+    printf("lowindex %s %d: ", p->id, day);
+    if (!found) printf("none");
+    else {
+        print_index(1, value);
+        printf(" day %d", date);
+    }
+    putchar('\n');
+}
+static void execute(char *line) {
+    char *parts[64], *token = strtok(line, " \r\n");
+    int count = 0;
+    while (token) {
+        parts[count++] = token;
+        token = strtok(NULL, " \r\n");
+    }
+    if (!count) return;
+    char *op = parts[0], **a = parts + 1;
+    int argc = count - 1;
+    if (!strcmp(op, "COURSE")) command_course(a);
+    else if (!strcmp(op, "TEE")) command_tee(a);
+    else if (!strcmp(op, "PLAYER")) command_player(a, argc);
+    else if (!strcmp(op, "ROUND")) command_round(a);
+    else if (!strcmp(op, "REMOVE")) command_remove(a);
+    else if (!strcmp(op, "INDEX")) command_index(a);
+    else if (!strcmp(op, "HISTORY")) command_history(a);
+    else if (!strcmp(op, "LOWINDEX")) command_lowindex(a);
+}
+int main(void) {
+    int n;
+    if (scanf("%d", &n) != 1) return 0;
+    getchar();
+    char line[256];
+    for (int i = 0; i < n; ++i) {
+        if (!fgets(line, sizeof(line), stdin)) break;
+        execute(line);
+    }
+}

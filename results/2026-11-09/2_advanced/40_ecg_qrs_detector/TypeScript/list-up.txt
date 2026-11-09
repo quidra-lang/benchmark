@@ -1,0 +1,314 @@
+export function readInput() {
+  const signal = lines('ecg.csv')
+    .slice(1)
+    .map((line) => Number(line.split(',')[1]));
+  const annotations: Annotation[] = lines('annotations.csv')
+    .slice(1)
+    .map((line) => {
+      const [sample, label] = line.split(',');
+      if (label !== 'N' && label !== 'V' && label !== 'A') {
+        throw new Error('Invalid annotation label');
+      }
+      return { sample: Number(sample), label };
+    });
+  const parameters = new Map(
+    lines('params.txt').map((line) => {
+      const [name, value] = line.split(' ');
+      return [name, Number(value)];
+    }),
+  );
+  const p = (name: string): number => parameters.get(name)!;
+  const settings: Settings = {
+    refractory: p('refractory_ms'),
+    twave: p('twave_ms'),
+    searchback: p('searchback_percent'),
+    premature: p('premature_percent'),
+    qrsWidth: p('qrs_width_ms'),
+    match: p('match_ms'),
+    pause: p('pause_ms'),
+    brady: p('brady_ms'),
+    tachy: p('tachy_ms'),
+    excerpt: p('excerpt_ms'),
+    segment: p('segment_ms'),
+    stripStart: p('strip_start_ms'),
+    stripLength: p('strip_ms'),
+    stripRows: p('strip_rows'),
+    chartRows: p('chart_rows'),
+    poincareSize: p('poincare_size'),
+  };
+  return { signal, annotations, settings };
+}
+function makeBeats(detection: Detection, signals: Signals, settings: Settings): Beat[] {
+  const beats: Beat[] = [];
+  for (const peak of detection.registered) {
+    const i = beats.length;
+    const sample = Math.max(0, peak.r - 21);
+    const rr = i ? 5 * (sample - beats[i - 1].sample) : null;
+    const width = qrsWidth(signals.bandpass, peak.r);
+    const previous = i >= 9 ? sum(beats.slice(i - 8, i).map((beat) => beat.rr!)) : 0;
+    const premature = i >= 9 && 800 * rr! < settings.premature * previous;
+    beats.push({
+      number: i + 1,
+      peak,
+      sample,
+      rr,
+      width,
+      label: premature ? (width > settings.qrsWidth ? 'V' : 'A') : 'N',
+      method: peak.kind === 'searchback' ? 'searchback' : 'threshold',
+      reference: null,
+    });
+  }
+  return beats;
+}
+function matchBeats(input: Input, beats: Beat[]): number[] {
+  const matches = input.annotations.map(() => -1);
+  const tolerance = div(input.settings.match, 5);
+  beats.forEach((beat, index) => {
+    let best = -1;
+    let distance = tolerance + 1;
+    input.annotations.forEach((annotation, reference) => {
+      const delta = Math.abs(annotation.sample - beat.sample);
+      if (matches[reference] < 0 && delta <= tolerance && delta < distance) {
+        best = reference;
+        distance = delta;
+      }
+    });
+    if (best >= 0) {
+      matches[best] = index;
+      beat.reference = best;
+    }
+  });
+  return matches;
+}
+function analyze(input: Input, detection: Detection, beats: Beat[], matches: number[]) {
+  const segments = [];
+  const width = div(input.settings.segment, 5);
+  for (let start = 0; start < input.signal.length; start += width) {
+    const end = Math.min(input.signal.length, start + width);
+    const references = input.annotations
+      .map((a, i) => ({ annotation: a, matched: matches[i] >= 0 }))
+      .filter((r) => start <= r.annotation.sample && r.annotation.sample < end);
+    const localBeats = beats.filter((b) => start <= b.sample && b.sample < end);
+    segments.push({
+      start: 5 * start,
+      end: 5 * end,
+      references,
+      beats: localBeats,
+      noise: detection.peaks.filter((p) => start <= p.time && p.time < end && p.kind === 'noise')
+        .length,
+    });
+  }
+  const tp = beats.filter((b) => b.reference !== null).length;
+  return {
+    rr,
+    nn,
+    pairs,
+    segments,
+    bins,
+    binMax,
+    statistics: statistics(rr, nn, pairs),
+    tp,
+    fp: beats.length - tp,
+    fn: input.annotations.length - tp,
+  };
+}
+type Analysis = ReturnType<typeof analyze>;
+function beatRows(input: Input, beats: Beat[]): string[] {
+  return [
+    'beat,sample,time_ms,rr_ms,hr_bpm,width_ms,label,method,ref_sample,ref_label',
+    ...beats.map((beat) => {
+      const reference = beat.reference === null ? null : input.annotations[beat.reference];
+      return [
+        beat.number,
+        beat.sample,
+        5 * beat.sample,
+        missing(beat.rr),
+        beat.rr === null ? '-' : decimal2(rdiv(6000000, beat.rr)),
+        beat.width,
+        beat.label,
+        beat.method,
+        reference?.sample ?? '-',
+        reference?.label ?? '-',
+      ].join(',');
+    }),
+  ];
+}
+function matchingRows(input: Input, beats: Beat[], matches: number[]): string[] {
+  const rows = input.annotations.map((annotation, i) => {
+    const beat = matches[i] < 0 ? null : beats[matches[i]];
+    return {
+      key: annotation.sample,
+      order: 0,
+      text: beat
+        ? `${annotation.sample},${annotation.label},${beat.number},${beat.sample},${beat.label},${5 * (beat.sample - annotation.sample)},TP,${beat.label === annotation.label ? 'yes' : 'no'}`
+        : `${annotation.sample},${annotation.label},-,-,-,-,FN,-`,
+    };
+  });
+  for (const beat of beats) {
+    if (beat.reference === null) {
+      rows.push({
+        key: beat.sample,
+        order: 1,
+        text: `-,-,${beat.number},${beat.sample},${beat.label},-,FP,-`,
+      });
+    }
+  }
+  rows.sort((a, b) => a.key - b.key || a.order - b.order);
+  return [
+    'ref_sample,ref_label,beat,beat_sample,beat_label,offset_ms,status,agree',
+    ...rows.map((row) => row.text),
+  ];
+}
+function performanceRows(
+  input: Input,
+  detection: Detection,
+  beats: Beat[],
+  matches: number[],
+  analysis: Analysis,
+): string[] {
+  const { tp, fp, fn } = analysis;
+  const counts = (values: readonly Label[]) =>
+    LABELS.map((label) => `${label}=${values.filter((v) => v === label).length}`).join(' ');
+    'MATCHING',
+    `tolerance_ms ${input.settings.match}`,
+    `references ${input.annotations.length} ${counts(input.annotations.map((a) => a.label))}`,
+    `detections ${beats.length} ${counts(beats.map((b) => b.label))}`,
+    `true_positives ${tp}`,
+    `false_positives ${fp}`,
+    `false_negatives ${fn}`,
+    `sensitivity ${ratio(tp, tp + fn)}`,
+    `positive_predictivity ${ratio(tp, tp + fp)}`,
+    `detection_error_rate ${ratio(fp + fn, input.annotations.length)}`,
+    'by_method ' +
+      (['threshold', 'searchback'] as const)
+        .map((method) => {
+          const group = beats.filter((b) => b.method === method);
+          return `${method}=${group.filter((b) => b.reference !== null).length}/${group.length}`;
+        })
+        .join(' '),
+  ];
+  const offsets = beats
+    .filter((b) => b.reference !== null)
+    .map((b) => 5 * (b.sample - input.annotations[b.reference!].sample));
+  rows.push(
+    tp
+      ? `offset_ms mean=${decimal2(rdiv(100 * sum(offsets), tp))} mean_abs=${decimal2(rdiv(100 * sum(offsets.map(Math.abs)), tp))} max_abs=${Math.max(...offsets.map(Math.abs))}`
+      : 'offset_ms none',
+    'CONFUSION',
+    'ref  ' + LABELS.map((label) => pad(label, 6)).join('') + '  miss',
+  );
+  for (const label of LABELS) {
+    const references = input.annotations
+      .map((a, i) => ({ annotation: a, match: matches[i] }))
+      .filter((r) => r.annotation.label === label);
+    rows.push(
+      label +
+        '    ' +
+        LABELS.map((predicted) =>
+          pad(
+            references.filter((r) => r.match >= 0 && beats[r.match].label === predicted).length,
+            6,
+          ),
+        ).join('') +
+        pad(references.filter((r) => r.match < 0).length, 6),
+    );
+  }
+  rows.push(
+    'extra' +
+      LABELS.map((label) =>
+        pad(beats.filter((b) => b.label === label && b.reference === null).length, 6),
+      ).join(''),
+  );
+  for (const [label, name] of [
+    ['V', 'veb'],
+    ['A', 'sveb'],
+  ] as const) {
+    const hits = beats.filter(
+      (b) =>
+        b.label === label && b.reference !== null && input.annotations[b.reference].label === label,
+    ).length;
+    rows.push(
+      `${name}_sensitivity ${ratio(hits, input.annotations.filter((a) => a.label === label).length)}`,
+      `${name}_positive_predictivity ${ratio(hits, beats.filter((b) => b.label === label).length)}`,
+    );
+  }
+  rows.push(`SEGMENTS segment_ms=${input.settings.segment} segments=${analysis.segments.length}`);
+  for (const segment of analysis.segments) {
+    const matched = segment.references.filter((r) => r.matched).length;
+    rows.push(
+      `${pad(segment.start, 6)}-${pad(segment.end, 6)} refs=${segment.references.length} tp=${matched} fp=${segment.beats.filter((b) => b.reference === null).length} fn=${segment.references.length - matched} noise_peaks=${segment.noise}`,
+    );
+  }
+  const errors = beats
+    .filter((b) => b.reference === null)
+    .map((b) => ({
+      sample: b.sample,
+      order: 0,
+      text: `false_positive beat=${b.number} sample=${b.sample} time_ms=${5 * b.sample} label=${b.label}`,
+    }));
+  input.annotations.forEach((annotation, i) => {
+    if (matches[i] < 0) {
+      errors.push({
+        sample: annotation.sample,
+        order: 1,
+        text: `false_negative sample=${annotation.sample} time_ms=${5 * annotation.sample} label=${annotation.label}`,
+      });
+    }
+  });
+  errors.sort((a, b) => a.sample - b.sample || a.order - b.order);
+  rows.push(`ERRORS count=${fp + fn}`, ...errors.map((error) => error.text));
+  return rows;
+}
+function stripRows(input: Input, beats: Beat[]): string[] {
+  const s = input.settings;
+  const start = div(s.stripStart, 5);
+  const length = div(s.stripLength, 5);
+  const columns = div(length, 10);
+  const marks = Array<string>(columns).fill(' ');
+  const references = marks.slice();
+  for (const beat of beats) {
+    if (start <= beat.sample && beat.sample < start + length) {
+      marks[div(beat.sample - start, 10)] = beat.label;
+    }
+  }
+  for (const annotation of input.annotations) {
+    if (start <= annotation.sample && annotation.sample < start + length) {
+      references[div(annotation.sample - start, 10)] = annotation.label;
+    }
+  }
+    ' beats |' + marks.join('') + '|',
+    '  refs |' + references.join('') + '|',
+  ];
+}
+  const input = readInput();
+  const signals = filter(input.signal);
+  const detection = detect(signals, input.settings);
+  const beats = makeBeats(detection, signals, input.settings);
+  const matches = matchBeats(input, beats);
+  const analysis = analyze(input, detection, beats, matches);
+  writeReports({
+    'beats.csv': beatRows(input, beats),
+    'peaks.csv': peaks,
+    'matching.csv': matchingRows(input, beats, matches),
+    'signals_excerpt.csv': excerpt,
+    'performance.txt': performanceRows(input, detection, beats, matches, analysis),
+    'rhythm_strip.txt': stripRows(input, beats),
+  });
+export const div = (a: number, b: number): number => Math.floor(a / b);
+export const rdiv = (a: number, b: number): number => div(2 * a + b, 2 * b);
+export function decimal2(value: number): string {
+  const magnitude = Math.abs(value);
+  return (
+    (value < 0 ? '-' : '') + div(magnitude, 100) + '.' + String(magnitude % 100).padStart(2, '0')
+  );
+}
+export function fraction(a: number, b: number): string {
+  let x = a;
+  let y = b;
+  while (y !== 0) [x, y] = [y, x % y];
+  return `${div(a, x)}/${div(b, x)}`;
+}
+export const ratio = (a: number, b: number): string =>
+  b === 0
+    ? `${a}/${b} none`
+    : `${a}/${b} reduced=${fraction(a, b)} percent=${decimal2(rdiv(10000 * a, b))}`;

@@ -1,0 +1,169 @@
+Round = namedtuple(
+    "Round", "stump weights error alpha polarity z bound loss",
+    defaults=((), None, None, None, None, None, None),
+)
+Model = namedtuple("Model", "rounds stop cuts", defaults=(None,))
+def train_discrete(rows, max_rounds, weights=None, shrinkage=1.0, space=None):
+    if space is None:
+        space = SearchSpace(rows)
+    labels = [row.label for row in rows]
+    weights = [1 / len(rows)] * len(rows) if weights is None else list(weights)
+    rounds = []
+    bound = 1.0
+    stop = "completed"
+    for _ in range(max_rounds):
+        error, feature, threshold, polarity = discrete_search(space, labels, weights)
+        if error >= 0.5:
+            stop = "weak"
+            break
+        alpha = 1.0 if error <= 1e-10 else shrinkage * (0.5 * log((1 - error) / error))
+        stump = Stump(feature, (threshold,), (-polarity * alpha, polarity * alpha))
+        updated = []
+        for row, weight in zip(rows, weights):
+            decision = polarity if row.values[feature] > threshold else -polarity
+            factor = exp(-alpha) if decision == row.label else exp(alpha)
+            updated.append(weight * factor if weight else 0.0)
+        normalizer = ordered_sum(updated)
+        weights = [weight / normalizer for weight in updated]
+        rounds.append(Round(
+            stump, before, error=error, alpha=alpha, polarity=polarity,
+            z=normalizer, bound=bound,
+        ))
+        if error <= 1e-10:
+            stop = "perfect"
+            break
+    return Model(rounds, stop)
+def ordered_sum(values):
+    total = 0.0
+    for value in values:
+        total += value
+    return total
+class SearchSpace:
+    def __init__(self, rows):
+        self.rows = rows
+        self.orders = []
+        self.groups = []
+        self.thresholds = []
+        for feature in range(len(rows[0].values)):
+            order = sorted(range(len(rows)), key=lambda i: rows[i].values[feature])
+            groups = []
+            distinct = []
+            for index in order:
+                value = rows[index].values[feature]
+                if not distinct or value != distinct[-1]:
+                    distinct.append(value)
+                    groups.append([])
+                groups[-1].append(index)
+            thresholds = [distinct[0] - 1]
+            thresholds.extend(
+                (left + right) / 2
+                for left, right in zip(distinct, distinct[1:])
+            )
+            self.orders.append(order)
+            self.groups.append(groups)
+            self.thresholds.append(thresholds)
+def left_cumulative(groups, values):
+    total = 0.0
+    yield total
+    for group in groups[:-1]:
+        for index in group:
+            total += values[index]
+        yield total
+def discrete_search(space, labels, weights):
+    positives = [weight if label == 1 else 0.0 for label, weight in zip(labels, weights)]
+    negatives = [weight if label == -1 else 0.0 for label, weight in zip(labels, weights)]
+    positive_total = ordered_sum(positives)
+    negative_total = ordered_sum(negatives)
+    candidates = []
+    for feature, thresholds in enumerate(space.thresholds):
+        left_positive = left_cumulative(space.groups[feature], positives)
+        left_negative = left_cumulative(space.groups[feature], negatives)
+        for threshold, positive, negative in zip(thresholds, left_positive, left_negative):
+            candidates.append((positive + (negative_total - negative), feature, threshold, 1))
+            candidates.append((negative + (positive_total - positive), feature, threshold, -1))
+    return choose(candidates)
+def prediction(score):
+    return 1 if score > 0 else -1
+def row_score(rounds, values):
+    return ordered_sum(record.stump(values) for record in rounds)
+
+
+def score_rows(rounds, rows):
+    return [row_score(rounds, row.values) for row in rows]
+
+
+def add_round_scores(record, rows, scores):
+    for index, row in enumerate(rows):
+        scores[index] += record.stump(row.values)
+
+def training_curve(rounds, training, testing, variant):
+    train_scores = [0.0] * len(training)
+    test_scores = [0.0] * len(testing)
+    scale = 0.0
+    curve = []
+    for round_number, record in enumerate(rounds, 1):
+        add_round_scores(record, training, train_scores)
+        add_round_scores(record, testing, test_scores)
+        scale += magnitude(record)
+        minimum = min(row.label * score for row, score in zip(training, train_scores))
+        curve.append({
+            "round": round_number,
+            "train_errors": count_errors(training, train_scores),
+            "test_errors": count_errors(testing, test_scores),
+            "train_loss": loss(training, train_scores, variant),
+            "test_loss": loss(testing, test_scores, variant),
+            "margin": minimum / scale,
+        })
+    return curve
+def cross_validate(rows, params):
+    space = SearchSpace(rows)
+    folds = []
+    errors = [0] * params.rounds
+    for fold_number in range(params.folds):
+        indices = [index for index in range(len(rows)) if index % params.folds == fold_number]
+        training_count = len(rows) - len(indices)
+        weights = [
+            0.0 if index % params.folds == fold_number else 1 / training_count
+            for index in range(len(rows))
+        ]
+        model = train_discrete(rows, params.rounds, weights=weights, space=space)
+        validation = [rows[index] for index in indices]
+        scores = [0.0] * len(validation)
+        fold_errors = []
+        for index in range(params.rounds):
+            if index < len(model.rounds):
+                add_round_scores(model.rounds[index], validation, scores)
+            count = count_errors(validation, scores)
+            fold_errors.append(count)
+            errors[index] += count
+        folds.append({
+            "indices": indices, "train": training_count,
+            "model": model, "errors": fold_errors,
+        })
+    selected = min(range(params.rounds), key=errors.__getitem__) + 1
+    oof_scores = [0.0] * len(rows)
+    for fold in folds:
+        rounds = fold["model"].rounds[:selected]
+        for index in fold["indices"]:
+            oof_scores[index] = row_score(rounds, rows[index].values)
+    return {"folds": folds, "errors": errors, "selected": selected, "scores": oof_scores}
+def analyze_variants(inputs, selected):
+    analysis = {}
+    for variant in inputs.params.variants:
+        model = train_variant(variant, inputs.train, inputs.params)
+        rounds = model.rounds[:selected] if variant == "discrete" else model.rounds
+        analysis[variant] = {
+            "full": model,
+            "rounds": rounds,
+            "scale": total_magnitude(rounds),
+            "train": score_rows(rounds, inputs.train),
+            "test": score_rows(rounds, inputs.test),
+            "curve": training_curve(model.rounds, inputs.train, inputs.test, variant),
+            "importance": magnitude_importance(rounds, len(inputs.features)),
+        }
+    return analysis
+    for variant in params.variants:
+        result = analysis[variant]
+        rounds = len(result["rounds"])
+        lines.append(metrics_line("train", variant, rounds, training, result["train"]))
+        lines.append(metrics_line("test", variant, rounds, testing, result["test"]))

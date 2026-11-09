@@ -1,0 +1,658 @@
+typedef struct {
+    Transaction *tx;
+    Integer fee, arrival;
+} Entry;
+static void log_event(const char *pattern, ...) {
+    fprintf(log_file, "%" PRId64 " ", now);
+    va_list args;
+    va_start(args, pattern);
+    vfprintf(log_file, pattern, args);
+    va_end(args);
+    fputc('\n', log_file);
+}
+static Record *find_record(const char *hash) {
+    for (int i = 0; i < record_count; ++i)
+        if (!strcmp(records[i]->block->hash, hash))
+            return records[i];
+    return NULL;
+}
+static bool is_rejected(const char *hash) {
+    for (int i = 0; i < rejected_count; ++i)
+        if (!strcmp(rejected[i], hash))
+            return true;
+    return false;
+}
+static int confirmed(const char *id) {
+    for (int i = 0; i < chain_count; ++i)
+        for (int j = 0; j < main_chain[i]->block->count; ++j)
+            if (!strcmp(main_chain[i]->block->transactions[j]->id, id))
+                return main_chain[i]->block->height;
+    return -1;
+}
+static int next_height(void) {
+    return tip->block->height + 1;
+}
+static Integer block_reward(int height) {
+    return reward(height, p.initial_reward, p.halving);
+}
+static int next_bits(Record *parent) {
+    return required_difficulty(parent, p.initial_bits, p.retarget, p.target);
+}
+static void refresh(void) {
+    free(main_chain);
+    main_chain = chain_to(tip, &chain_count);
+}
+static int entry_index(const char *id) {
+    for (int i = 0; i < pool_count; ++i)
+        if (!strcmp(pool[i].tx->id, id))
+            return i;
+    return -1;
+}
+static int priority_compare(const void *first, const void *second) {
+    const Entry *a = first, *b = second;
+    Integer left = a->fee * (Integer)strlen(b->tx->text), right = b->fee * (Integer)strlen(a->tx->text);
+    if (left != right)
+        return left > right ? -1 : 1;
+    return strcmp(a->tx->id, b->tx->id);
+}
+static Entry *ordered(void) {
+    Entry *result = malloc((size_t)pool_count * sizeof *result);
+    memcpy(result, pool, (size_t)pool_count * sizeof *result);
+    qsort(result, (size_t)pool_count, sizeof *result, priority_compare);
+    return result;
+}
+static bool locked(Reference ref) {
+    for (int i = 0; i < pool_count; ++i)
+        for (int j = 0; j < pool[i].tx->input_count; ++j)
+            if (same_reference(ref, pool[i].tx->inputs[j]))
+                return true;
+    return false;
+}
+static Acceptance acceptance(Transaction *tx) {
+    Acceptance result = {0};
+    if (tx->coinbase_height >= 0) {
+        result.reason = "coinbase";
+        return result;
+    }
+    if (confirmed(tx->id) >= 0 || entry_index(tx->id) >= 0) {
+        result.reason = "duplicate";
+        return result;
+    }
+    result.reason =
+        check_transaction(tx, &tip->utxo, NULL, 0, next_height(), wallets, p.maturity, &result.fee);
+    if (result.reason)
+        return result;
+    if (result.fee * 1000 < p.min_rate * (Integer)strlen(tx->text)) {
+        result.reason = "low-fee";
+        return result;
+    }
+    Integer conflict_fees = 0;
+    bool higher = true;
+    for (int i = 0; i < pool_count; ++i) {
+        bool conflict = false;
+        Transaction *other = pool[i].tx;
+        for (int a = 0; a < tx->input_count; ++a)
+            for (int b = 0; b < other->input_count; ++b)
+                if (same_reference(tx->inputs[a], other->inputs[b]))
+                    conflict = true;
+        if (!conflict)
+            continue;
+        result.conflicts[result.count++] = other->id;
+        conflict_fees += pool[i].fee;
+        if (result.fee * (Integer)strlen(other->text) <= pool[i].fee * (Integer)strlen(tx->text))
+            higher = false;
+    }
+    if (result.count && (result.fee <= conflict_fees || !higher))
+        result.reason = "conflict";
+    return result;
+}
+static void drop_transaction(const char *id, const char *reason) {
+    int index = entry_index(id);
+    if (index >= 0) {
+        memmove(pool + index, pool + index + 1, (size_t)(pool_count - index - 1) * sizeof *pool);
+        --pool_count;
+    }
+    int at = 0;
+    while (at < drop_count && strcmp(drops[at].id, id))
+        ++at;
+    if (at == drop_count) {
+        drops[at].id = copy_text(id);
+        ++drop_count;
+    }
+    drops[at].reason = copy_text(reason);
+    log_event("DROP %s %s", short_hash(id), reason);
+}
+static void register_transaction(Transaction *tx, Acceptance result, Integer arrival) {
+    for (int i = 0; i < result.count; ++i)
+        drop_transaction(result.conflicts[i], "replaced");
+    pool[pool_count++] = (Entry){tx, result.fee, arrival};
+    if (pool_count > p.pool_limit) {
+        Entry *order = ordered();
+        char *id = order[pool_count - 1].tx->id;
+        free(order);
+        drop_transaction(id, "mempool-full");
+    }
+}
+static void rebuild_candidate(Transaction *tx, Integer arrival, bool returning) {
+    if (confirmed(tx->id) >= 0)
+        return;
+    Acceptance result = acceptance(tx);
+    if (result.reason) {
+        drop_transaction(tx->id, result.reason);
+        return;
+    }
+    if (returning)
+        log_event("RETURN %s", short_hash(tx->id));
+    register_transaction(tx, result, arrival);
+}
+static void switch_tip(Record *target) {
+    Record *old = tip, *fork = fork_point(old, target);
+    int depth = old->block->height - fork->block->height,
+        connected = target->block->height - fork->block->height;
+    if (depth > p.max_reorg) {
+        log_event("REFUSE %d %s work %" PRId64 " fork %d depth %d", target->block->height,
+                  short_hash(target->block->hash), target->work, fork->block->height, depth);
+        return;
+    }
+    Transaction **returned = NULL;
+    int count = 0;
+    for (int i = fork->block->height + 1; i < chain_count; ++i) {
+        Block *block = main_chain[i]->block;
+        returned = realloc(returned, (size_t)(count + block->count - 1) * sizeof *returned);
+        for (int j = 1; j < block->count; ++j)
+            returned[count++] = block->transactions[j];
+    }
+    tip = target;
+    refresh();
+    if (!depth)
+        log_event("TIP %d %s work %" PRId64, target->block->height, short_hash(target->block->hash),
+                  target->work);
+    else {
+        log_event("REORG %d %s work %" PRId64 " fork %d disconnected %d connected %d", target->block->height,
+                  short_hash(target->block->hash), target->work, fork->block->height, depth, connected);
+        reorganizations[reorganization_count++] = (Reorganization){
+            now, fork->block->height, depth, connected, old->block->hash, target->block->hash};
+    }
+    Entry previous[101];
+    int previous_count = pool_count;
+    memcpy(previous, pool, (size_t)pool_count * sizeof *pool);
+    pool_count = 0;
+    for (int i = 0; i < count; ++i)
+        rebuild_candidate(returned[i], now, true);
+    for (int i = 0; i < previous_count; ++i)
+        rebuild_candidate(previous[i].tx, previous[i].arrival, false);
+    free(returned);
+}
+static void connect_block(const char *kind, Block *block, Peer *peer) {
+    Record *parent = find_record(block->previous);
+    const char *error = NULL;
+    if (block->height != parent->block->height + 1)
+        error = "bad-height";
+    else if (block->difficulty != next_bits(parent))
+        error = "bad-difficulty";
+    else if (block->time <= median_time(parent))
+        error = "time-too-old";
+    else if (block->time > now + p.drift)
+        error = "time-too-new";
+    Utxo utxo = copy_utxo(parent->utxo);
+    Reference *spent = NULL;
+    int spent_count = 0;
+    Integer *fees = calloc((size_t)block->count, sizeof *fees), total = 0;
+    for (int i = 1; !error && i < block->count; ++i) {
+        Transaction *tx = block->transactions[i];
+        const char *result = check_transaction(tx, &utxo, spent, spent_count, block->height, wallets,
+                                               p.maturity, fees + i - 1);
+        if (result) {
+            error = format("%s tx %d", result, i + 1);
+            break;
+        }
+        spent = realloc(spent, (size_t)(spent_count + tx->input_count) * sizeof *spent);
+        memcpy(spent + spent_count, tx->inputs, (size_t)tx->input_count * sizeof *spent);
+        spent_count += tx->input_count;
+        apply_transaction(&utxo, tx, block->height);
+        total += fees[i - 1];
+    }
+    Transaction *cb = block->transactions[0];
+    if (!error)
+        for (int i = 0; i < cb->output_count; ++i)
+            if (!owner(wallets, cb->outputs[i].address) || cb->outputs[i].amount == 0) {
+                error = "bad-output tx 1";
+                break;
+            }
+    if (!error && output_total(cb) > block_reward(block->height) + total)
+        error = "bad-coinbase";
+    free(spent);
+    if (error) {
+        reject_block(kind, block, peer, error);
+        free(utxo.items);
+        free(fees);
+        return;
+    }
+    apply_transaction(&utxo, cb, block->height);
+    Record *record = make_record(block, parent, utxo, fees, peer->name);
+    records[record_count++] = record;
+    ++peer->blocks;
+    log_event("%s %s %d %s accepted work %" PRId64, kind, peer->name, block->height, short_hash(block->hash),
+              record->work);
+    if (record->work > tip->work)
+        switch_tip(record);
+}
+static void resolve_orphans(const char *start) {
+    const char *queue[2001];
+    int front = 0, end = 1;
+    queue[0] = start;
+    while (front < end) {
+        const char *parent = queue[front++];
+        for (int i = 0; i < orphan_count;) {
+            if (strcmp(orphans[i].block->previous, parent)) {
+                ++i;
+                continue;
+            }
+            Orphan orphan = orphans[i];
+            memmove(orphans + i, orphans + i + 1, (size_t)(orphan_count - i - 1) * sizeof *orphans);
+            --orphan_count;
+            if (is_rejected(parent))
+                reject_block("UNORPHAN", orphan.block, orphan.peer, "bad-parent");
+            else
+                connect_block("UNORPHAN", orphan.block, orphan.peer);
+            queue[end++] = orphan.block->hash;
+        }
+    }
+}
+static void receive_block(Block *block, Peer *peer) {
+    bool duplicate = find_record(block->hash) || is_rejected(block->hash);
+    for (int i = 0; i < orphan_count; ++i)
+        if (!strcmp(orphans[i].block->hash, block->hash))
+            duplicate = true;
+    if (duplicate) {
+        ++peer->rejected_blocks;
+        tally("block", "duplicate");
+        log_event("BLOCK %s %d %s rejected duplicate", peer->name, block->height, short_hash(block->hash));
+        return;
+    }
+    const char *error = context_error(block, p.max_size);
+    if (!error && is_rejected(block->previous))
+        error = "bad-parent";
+    if (error) {
+        reject_block("BLOCK", block, peer, error);
+        resolve_orphans(block->hash);
+        return;
+    }
+    if (!find_record(block->previous)) {
+        orphans[orphan_count++] = (Orphan){block, peer};
+        ++peer->orphans;
+        log_event("BLOCK %s %d %s orphan parent %s", peer->name, block->height, short_hash(block->hash),
+                  short_hash(block->previous));
+        if (orphan_count > p.orphan_limit) {
+            log_event("EVICT %s orphan-limit", short_hash(orphans[0].block->hash));
+            memmove(orphans, orphans + 1, (size_t)(--orphan_count) * sizeof *orphans);
+        }
+        return;
+    }
+    connect_block("BLOCK", block, peer);
+    resolve_orphans(block->hash);
+}
+static void write_chain(void) {
+    FILE *out = fopen("output/chain.txt", "w");
+    fprintf(out, "TIP %d %s work %" PRId64 " stored %d orphans %d\n", tip->block->height, tip->block->hash,
+            tip->work, record_count, orphan_count);
+    for (int i = 0; i < chain_count; ++i) {
+        Record *r = main_chain[i];
+        Block *b = r->block;
+        fprintf(out,
+                "BLOCK %d %s prev %s time %" PRId64 " bits %d nonce %" PRId64 " txs %d size %" PRId64
+                " fees %" PRId64 " miner %s source %s work %" PRId64 "\n",
+                b->height, b->hash, short_hash(b->previous), b->time, b->difficulty, b->nonce, b->count,
+                block_size(b), r->fees, miner(r), r->source, r->work);
+    }
+    Record *stale[61];
+    int stale_count = 0;
+    for (int i = 0; i < record_count; ++i) {
+        bool main = false;
+        for (int j = 0; j < chain_count; ++j)
+            if (main_chain[j] == records[i])
+                main = true;
+        if (!main)
+            stale[stale_count++] = records[i];
+    }
+    qsort(stale, (size_t)stale_count, sizeof *stale, record_compare);
+    for (int i = 0; i < stale_count; ++i) {
+        Record *r = stale[i];
+        fprintf(out, "STALE %d %s prev %s source %s work %" PRId64 "\n", r->block->height, r->block->hash,
+                short_hash(r->block->previous), r->source, r->work);
+    }
+    for (int i = 0; i < reorganization_count; ++i) {
+        Reorganization r = reorganizations[i];
+        fprintf(out, "REORG %" PRId64 " fork %d disconnected %d connected %d old %s new %s\n", r.time, r.fork,
+                r.disconnected, r.connected, short_hash(r.old_hash), short_hash(r.new_hash));
+    }
+    Entry *order = ordered();
+    for (int i = 0; i < pool_count; ++i)
+        fprintf(out, "MEMPOOL %d %s fee %" PRId64 " size %zu time %" PRId64 "\n", i + 1, order[i].tx->id,
+                order[i].fee, strlen(order[i].tx->text), order[i].arrival);
+    fclose(out);
+}
+static void write_balances_utxo(void) {
+    FILE *out = fopen("output/balances.csv", "w");
+    fputs("wallet,address,balance,immature,locked,incoming,utxos\n", out);
+    for (int i = 0; i < wallets.count; ++i) {
+        Wallet w = wallets.items[i];
+        Integer amount = 0, immature = 0, locked_amount = 0, incoming = 0, count = 0;
+        for (int j = 0; j < tip->utxo.count; ++j) {
+            Coin c = tip->utxo.items[j];
+            if (strcmp(c.address, w.address))
+                continue;
+            amount += c.amount;
+            ++count;
+            if (!mature(c, next_height(), p.maturity))
+                immature += c.amount;
+            if (locked(c.reference))
+                locked_amount += c.amount;
+        }
+        for (int j = 0; j < pool_count; ++j)
+            for (int k = 0; k < pool[j].tx->output_count; ++k) {
+                Output o = pool[j].tx->outputs[k];
+                if (!strcmp(o.address, w.address))
+                    incoming += o.amount;
+            }
+        fprintf(out, "%s,%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n", w.name, w.address,
+                amount, immature, locked_amount, incoming, count);
+    }
+    fclose(out);
+    out = fopen("output/utxo.txt", "w");
+    Utxo coins = copy_utxo(tip->utxo);
+    qsort(coins.items, (size_t)coins.count, sizeof *coins.items, coin_compare);
+    char **hashes = malloc((size_t)coins.count * sizeof *hashes);
+    Integer total = 0;
+    for (int i = 0; i < coins.count; ++i) {
+        Coin c = coins.items[i];
+        const char *category = c.height == 0 ? "genesis"
+                               : c.coinbase  ? "coinbase"
+                                             : "payment",
+                   *state = !mature(c, next_height(), p.maturity) ? "immature"
+                            : locked(c.reference)                 ? "locked"
+                                                                  : "free";
+        char *line = format("%s:%d %s %" PRId64 " height %d %s %s", c.reference.id, c.reference.index,
+                            owner(wallets, c.address)->name, c.amount, c.height, category, state);
+        fprintf(out, "%s\n", line);
+        hashes[i] = digest(line);
+        free(line);
+        total += c.amount;
+    }
+    fprintf(out, "TOTAL %d %" PRId64 "\nROOT %s\n", coins.count, total, merkle(hashes, coins.count));
+    fclose(out);
+    free(hashes);
+    free(coins.items);
+}
+static Output referenced_output(Reference reference) {
+    for (int i = 0; i < chain_count; ++i)
+        for (int j = 0; j < main_chain[i]->block->count; ++j) {
+            Transaction *tx = main_chain[i]->block->transactions[j];
+            if (!strcmp(tx->id, reference.id))
+                return tx->outputs[reference.index];
+        }
+    abort();
+}
+static void write_history(void) {
+    FILE *out = fopen("output/history.txt", "w");
+    for (int i = 0; i < wallets.count; ++i) {
+        Wallet w = wallets.items[i];
+        Integer count = 0, total_spent = 0, total_received = 0, balance_value = 0, pending = 0;
+        fprintf(out, "WALLET %s %s\n", w.name, w.address);
+        for (int j = 0; j < chain_count; ++j)
+            for (int k = 0; k < main_chain[j]->block->count; ++k) {
+                Transaction *tx = main_chain[j]->block->transactions[k];
+                Integer spent = 0, received = 0;
+                for (int a = 0; a < tx->input_count; ++a) {
+                    Output o = referenced_output(tx->inputs[a]);
+                    if (!strcmp(o.address, w.address))
+                        spent += o.amount;
+                }
+                for (int a = 0; a < tx->output_count; ++a)
+                    if (!strcmp(tx->outputs[a].address, w.address))
+                        received += tx->outputs[a].amount;
+                if (!spent && !received)
+                    continue;
+                ++count;
+                total_spent += spent;
+                total_received += received;
+                balance_value += received - spent;
+                fprintf(out,
+                        "%d %s %s spent %" PRId64 " received %" PRId64 " net %+" PRId64 " balance %" PRId64
+                        "\n",
+                        j, short_hash(tx->id),
+                        j == 0                     ? "genesis"
+                        : tx->coinbase_height >= 0 ? "coinbase"
+                                                   : "payment",
+                        spent, received, received - spent, balance_value);
+            }
+        Entry *order = ordered();
+        for (int j = 0; j < pool_count; ++j) {
+            Transaction *tx = order[j].tx;
+            Integer spent = 0, received = 0;
+            for (int a = 0; a < tx->input_count; ++a) {
+                Coin *c = find_coin(&tip->utxo, tx->inputs[a]);
+                if (!strcmp(c->address, w.address))
+                    spent += c->amount;
+            }
+            for (int a = 0; a < tx->output_count; ++a)
+                if (!strcmp(tx->outputs[a].address, w.address))
+                    received += tx->outputs[a].amount;
+            if (!spent && !received)
+                continue;
+            ++pending;
+            fprintf(out, "pending %s spent %" PRId64 " received %" PRId64 " net %+" PRId64 "\n",
+                    short_hash(tx->id), spent, received, received - spent);
+        }
+        free(order);
+        fprintf(out,
+                "END %s txs %" PRId64 " spent %" PRId64 " received %" PRId64 " balance %" PRId64
+                " pending %" PRId64 "\n",
+                w.name, count, total_spent, total_received, balance_value, pending);
+    }
+    fclose(out);
+}
+        case 9:
+            p.expiry = a;
+            break;
+        case 10:
+            p.max_reorg = (int)a;
+            break;
+    FILE *events = fopen("input/events.txt", "r");
+    char *line;
+    while ((line = read_line(events))) {
+        int count;
+        char **fields = split(line, ' ', &count);
+        char **texts = NULL;
+        int text_count = 0;
+        if (!strcmp(fields[1], "BLOCK")) {
+            text_count = atoi(fields[9]);
+            texts = malloc((size_t)text_count * sizeof *texts);
+            for (int i = 0; i < text_count; ++i)
+                texts[i] = read_line(events);
+        }
+        now = strtoll(fields[0], NULL, 10);
+        for (int i = 0; i < pool_count;) {
+            if (now - pool[i].arrival >= p.expiry)
+                drop_transaction(pool[i].tx->id, "expired");
+            else
+                ++i;
+        }
+        const char *kind = fields[1];
+        else {
+            Peer *peer = peer_record(fields[2]);
+            if (peer->score >= p.ban) {
+                ++peer->ignored;
+                log_event("IGNORE %s %s", peer->name, kind);
+            } else if (!strcmp(kind, "TX"))
+                receive_transaction(parse_transaction(fields[3]), peer);
+            else
+                receive_block(parse_block(fields, texts, text_count), peer);
+    write_chain();
+    write_balances_utxo();
+    write_history();
+    fclose(log_file);
+Record *make_record(Block *block, Record *parent, Utxo utxo, Integer *fees, const char *source) {
+    Record *record = calloc(1, sizeof *record);
+    record->block = block;
+    record->parent = parent;
+    record->utxo = utxo;
+    record->transaction_fees = fees;
+    record->source = copy_text(source);
+    record->work = parent ? parent->work + ((Integer)1 << (4 * block->difficulty)) : 1;
+    for (int i = 1; i < block->count; ++i)
+        record->fees += fees[i - 1];
+    return record;
+}
+Record *ancestor(Record *record, int height) {
+    while (record->block->height > height)
+        record = record->parent;
+    return record;
+}
+Record **chain_to(Record *record, int *count) {
+    *count = record->block->height + 1;
+    Record **chain = malloc((size_t)*count * sizeof *chain);
+    for (int i = *count - 1; i >= 0; --i) {
+        chain[i] = record;
+        record = record->parent;
+    }
+    return chain;
+}
+Record *fork_point(Record *a, Record *b) {
+    int height = a->block->height < b->block->height ? a->block->height : b->block->height;
+    a = ancestor(a, height);
+    b = ancestor(b, height);
+    while (a != b) {
+        a = a->parent;
+        b = b->parent;
+    }
+    return a;
+}
+char *header_text(Block *block) {
+    return format("%d|%s|%s|%" PRId64 "|%d|%" PRId64, block->height, block->previous, block->root,
+                  block->time, block->difficulty, block->nonce);
+}
+void hash_header(Block *block) {
+    block->hash = digest(header_text(block));
+}
+Integer block_size(Block *block) {
+    Integer size = 0;
+    for (int i = 1; i < block->count; ++i)
+        size += (Integer)strlen(block->transactions[i]->text);
+    return size;
+}
+bool proof(Block *block) {
+    for (int i = 0; i < block->difficulty; ++i)
+        if (block->hash[i] != '0')
+            return false;
+    return true;
+}
+Block *parse_block(char **fields, char **texts, int count) {
+    Block *block = calloc(1, sizeof *block);
+    block->height = atoi(fields[3]);
+    block->previous = fields[4];
+    block->root = fields[5];
+    block->time = strtoll(fields[6], NULL, 10);
+    block->difficulty = atoi(fields[7]);
+    block->nonce = strtoll(fields[8], NULL, 10);
+    block->count = count;
+    block->transactions = malloc((size_t)count * sizeof *block->transactions);
+    for (int i = 0; i < count; ++i)
+        block->transactions[i] = parse_transaction(texts[i]);
+    hash_header(block);
+    return block;
+}
+const char *context_error(Block *block, Integer limit) {
+    if (!proof(block))
+        return "bad-pow";
+    char **ids = malloc((size_t)block->count * sizeof *ids);
+    for (int i = 0; i < block->count; ++i)
+        ids[i] = block->transactions[i]->id;
+    char *root = merkle(ids, block->count);
+    free(ids);
+    if (strcmp(root, block->root))
+        return "bad-merkle";
+    if (block->transactions[0]->coinbase_height != block->height)
+        return "bad-structure";
+    for (int i = 1; i < block->count; ++i)
+        if (block->transactions[i]->coinbase_height >= 0)
+            return "bad-structure";
+    return block_size(block) > limit ? "too-large" : NULL;
+}
+bool same_reference(Reference a, Reference b) {
+    return a.index == b.index && !strcmp(a.id, b.id);
+}
+Coin *find_coin(Utxo *utxo, Reference reference) {
+    for (int i = 0; i < utxo->count; ++i)
+        if (same_reference(utxo->items[i].reference, reference))
+            return utxo->items + i;
+    return NULL;
+}
+bool mature(Coin coin, int height, int maturity) {
+    return !coin.coinbase || coin.height == 0 || height >= coin.height + maturity;
+}
+Integer output_total(Transaction *tx) {
+    Integer sum = 0;
+    for (int i = 0; i < tx->output_count; ++i)
+        sum += tx->outputs[i].amount;
+    return sum;
+}
+const char *check_transaction(Transaction *tx, Utxo *utxo, Reference *spent, int spent_count, int height,
+                              Wallets wallets, int maturity, Integer *fee) {
+    *fee = 0;
+    for (int i = 0; i < tx->output_count; ++i)
+        if (!owner(wallets, tx->outputs[i].address) || tx->outputs[i].amount == 0)
+            return "bad-output";
+    Integer total = 0;
+    for (int i = 0; i < tx->input_count; ++i) {
+        Reference ref = tx->inputs[i];
+        for (int j = 0; j < spent_count; ++j)
+            if (same_reference(ref, spent[j]))
+                return "double-spend";
+        for (int j = 0; j < i; ++j)
+            if (same_reference(ref, tx->inputs[j]))
+                return "double-spend";
+        Coin *coin = find_coin(utxo, ref);
+        if (!coin)
+            return "missing-input";
+        if (!mature(*coin, height, maturity))
+            return "immature";
+        if (strcmp(tx->signatures[i], sign_transaction(owner(wallets, coin->address)->secret, i, tx->body)))
+            return "bad-sig";
+        total += coin->amount;
+    }
+    if (total < output_total(tx))
+        return "overspend";
+    *fee = total - output_total(tx);
+    return NULL;
+}
+void apply_transaction(Utxo *utxo, Transaction *tx, int height) {
+    for (int i = 0; i < tx->input_count; ++i) {
+        Coin *coin = find_coin(utxo, tx->inputs[i]);
+        if (coin) {
+            int at = (int)(coin - utxo->items);
+            memmove(coin, coin + 1, (size_t)(utxo->count - at - 1) * sizeof *coin);
+            --utxo->count;
+        }
+    }
+    for (int i = 0; i < tx->output_count; ++i) {
+        Coin coin = {
+            {tx->id, i}, tx->outputs[i].address, tx->outputs[i].amount, height, tx->coinbase_height >= 0};
+        Coin *old = find_coin(utxo, coin.reference);
+        if (old) {
+            *old = coin;
+            continue;
+        }
+        if (utxo->count == utxo->capacity) {
+            utxo->capacity = utxo->capacity ? utxo->capacity * 2 : 16;
+            utxo->items = realloc(utxo->items, (size_t)utxo->capacity * sizeof *utxo->items);
+        }
+        utxo->items[utxo->count++] = coin;
+    }
+}
+Utxo copy_utxo(Utxo source) {
+    Utxo result = {NULL, source.count, source.count};
+    result.items = malloc((size_t)source.count * sizeof *result.items);
+    memcpy(result.items, source.items, (size_t)source.count * sizeof *result.items);
+    return result;
+}

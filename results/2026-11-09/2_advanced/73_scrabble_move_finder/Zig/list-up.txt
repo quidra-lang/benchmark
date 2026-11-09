@@ -1,0 +1,662 @@
+const std = @import("std");
+const b = @import("board.zig");
+pub const Node = struct { children: [26]i32 = [_]i32{-1} ** 26, terminal: bool = false };
+pub const Trie = struct {
+    nodes: std.ArrayList(Node) = .empty,
+    words: usize = 0,
+    pub fn init() Trie {
+        var out: Trie = .{};
+        b.append(Node, &out.nodes, .{});
+        return out;
+    }
+    pub fn add(self: *Trie, word: []const u8) bool {
+        var node: usize = 0;
+        for (word) |letter| {
+            const index = letter - 'A';
+            if (self.nodes.items[node].children[index] < 0) {
+                const child: i32 = @intCast(self.nodes.items.len);
+                self.nodes.items[node].children[index] = child;
+                b.append(Node, &self.nodes, .{});
+            }
+            node = @intCast(self.nodes.items[node].children[index]);
+        }
+        if (self.nodes.items[node].terminal) return false;
+        self.nodes.items[node].terminal = true;
+        self.words += 1;
+        return true;
+    }
+    pub fn prefix(self: *const Trie, word: []const u8) ?usize {
+        var node: usize = 0;
+        for (word) |letter| {
+            const child = self.nodes.items[node].children[letter - 'A'];
+            if (child < 0) return null;
+            node = @intCast(child);
+        }
+        return node;
+    }
+    pub fn contains(self: *const Trie, word: []const u8) bool {
+        return if (self.prefix(word)) |node| self.nodes.items[node].terminal else false;
+    }
+const b = @import("board.zig");
+pub const Minstd = struct {
+    state: i64,
+    pub fn next(self: *Minstd) i64 {
+        self.state = @mod(48271 * self.state, 2147483647);
+        return self.state;
+    }
+};
+pub const Bag = struct { data: [200]u8 = undefined, count: usize = 0 };
+pub fn shuffle(bag: *Bag, random: *Minstd) void {
+    var i = bag.count;
+    while (i > 1) {
+        i -= 1;
+        const j = b.u(@mod(random.next(), b.n(i + 1)));
+        const tile = bag.data[i];
+        bag.data[i] = bag.data[j];
+        bag.data[j] = tile;
+    }
+}
+pub fn makeBag(counts: b.Counts, random: *Minstd) Bag {
+    var out: Bag = .{};
+    for (counts, 0..) |count, tile| for (0..b.u(count)) |_| {
+        out.data[out.count] = b.tile_order[tile];
+        out.count += 1;
+    };
+    shuffle(&out, random);
+    return out;
+}
+pub fn draw(bag: *Bag, count: usize) b.Word {
+    var out: b.Word = .{};
+    for (0..@min(count, bag.count)) |_| {
+        bag.count -= 1;
+        out.add(bag.data[bag.count]);
+    }
+    return out;
+}
+pub const Anchors = struct { cells: [15][15]bool = [_][15]bool{[_]bool{false} ** 15} ** 15, count: usize = 0 };
+pub const Checks = struct { masks: [15][15]u32 = [_][15]u32{[_]u32{0} ** 15} ** 15, checked: [15][15]bool = [_][15]bool{[_]bool{false} ** 15} ** 15 };
+pub fn anchors(board: *const b.Board) Anchors {
+    var out: Anchors = .{};
+    if (b.boardTiles(board).count == 0) {
+        out.cells[7][7] = true;
+        out.count = 1;
+        return out;
+    }
+    for (0..15) |row| for (0..15) |column| {
+        if (board[row][column] != '.') continue;
+        const adjacent = b.neighbors(row, column);
+        for (adjacent.items[0..adjacent.count]) |point| if (board[point[0]][point[1]] != '.') {
+            out.cells[row][column] = true;
+            out.count += 1;
+            break;
+        };
+    };
+    return out;
+}
+pub fn crossChecks(board: *const b.Board, trie: *const dictionary.Trie) Checks {
+    var out: Checks = .{};
+    for (0..15) |row| for (0..15) |column| {
+        if (board[row][column] != '.') continue;
+        var first = row;
+        var last = row;
+        while (first > 0 and board[first - 1][column] != '.') first -= 1;
+        while (last + 1 < 15 and board[last + 1][column] != '.') last += 1;
+        if (first == last) continue;
+        out.checked[row][column] = true;
+        for (0..26) |letter| {
+            var word: b.Word = .{};
+            for (first..last + 1) |r| word.add(if (r == row) @as(u8, @intCast(letter)) + 'A' else b.capital(board[r][column]));
+            if (trie.contains(word.text())) out.masks[row][column] |= @as(u32, 1) << @intCast(letter);
+        }
+    };
+    return out;
+}
+const Generator = struct {
+    allocator: std.mem.Allocator,
+    board: *const b.Board,
+    trie: *const dictionary.Trie,
+    anchor_squares: Anchors,
+    checks: Checks,
+    counts: b.Counts = [_]i64{0} ** 27,
+    out: *std.ArrayList(b.Move),
+    row: usize = 0,
+    anchor: usize = 0,
+    fn extend(self: *Generator, node: usize, column: usize, word: b.Word, start: usize) void {
+        const empty = column == 15 or self.board[self.row][column] == '.';
+        if (empty and column > self.anchor and self.trie.nodes.items[node].terminal) self.out.append(self.allocator,
+             .{ .row = self.row, .column = start, .direction = 0, .word = word }) catch @panic("allocation failed");
+        if (column == 15) return;
+        if (!empty) {
+            const written = self.board[self.row][column];
+            const child = self.trie.nodes.items[node].children[b.capital(written) - 'A'];
+            if (child >= 0) {
+                var next = word;
+                next.add(written);
+                self.extend(@intCast(child), column + 1, next, start);
+            }
+            return;
+        }
+        for (0..26) |letter| {
+            const child = self.trie.nodes.items[node].children[letter];
+            if (child < 0 or (self.checks.checked[self.row][column] and self.checks.masks[self.row][column] & (@as(u32,
+                 1) << @intCast(letter)) == 0)) continue;
+            for (0..2) |blank| {
+                const tile = if (blank == 1) 26 else letter;
+                if (self.counts[tile] > 0) {
+                    self.counts[tile] -= 1;
+                    var next = word;
+                    next.add(@as(u8, @intCast(letter)) + (if (blank == 1) @as(u8, 'a') else 'A'));
+                    self.extend(@intCast(child), column + 1, next, start);
+                    self.counts[tile] += 1;
+                }
+            }
+        }
+    }
+    fn leftPart(self: *Generator, node: usize, prefix: b.Word, remaining: usize) void {
+        self.extend(node, self.anchor, prefix, self.anchor - prefix.len);
+        if (remaining == 0) return;
+        for (0..26) |letter| {
+            const child = self.trie.nodes.items[node].children[letter];
+            if (child < 0) continue;
+            for (0..2) |blank| {
+                const tile = if (blank == 1) 26 else letter;
+                if (self.counts[tile] > 0) {
+                    self.counts[tile] -= 1;
+                    var next = prefix;
+                    next.add(@as(u8, @intCast(letter)) + (if (blank == 1) @as(u8, 'a') else 'A'));
+                    self.leftPart(@intCast(child), next, remaining - 1);
+                    self.counts[tile] += 1;
+                }
+            }
+        }
+    }
+};
+fn acrossMoves(allocator: std.mem.Allocator, board: *const b.Board, rack: []const u8, trie: *const dictionary.Trie) []b.Move {
+    var out: std.ArrayList(b.Move) = .empty;
+    var g: Generator = .{ .allocator = allocator, .board = board, .trie = trie, .anchor_squares = anchors(board),
+         .checks = crossChecks(board, trie), .out = &out };
+    for (rack) |tile| g.counts[b.tileIndex(tile)] += 1;
+    for (0..15) |row| for (0..15) |anchor| {
+        if (!g.anchor_squares.cells[row][anchor]) continue;
+        g.row = row;
+        g.anchor = anchor;
+        if (anchor > 0 and board[row][anchor - 1] != '.') {
+            var first = anchor - 1;
+            while (first > 0 and board[row][first - 1] != '.') first -= 1;
+            var prefix: b.Word = .{};
+            var capital: b.Word = .{};
+            for (first..anchor) |column| {
+                prefix.add(board[row][column]);
+                capital.add(b.capital(board[row][column]));
+            }
+            if (trie.prefix(capital.text())) |node| g.extend(node, anchor, prefix, first);
+        } else {
+            var first = b.n(anchor) - 1;
+            while (first >= 0 and board[row][b.u(first)] == '.' and !g.anchor_squares.cells[row][b.u(first)]) first -= 1;
+            g.leftPart(0, .{}, b.u(b.n(anchor) - first - 1));
+        }
+    };
+    return out.items;
+}
+pub fn generate(allocator: std.mem.Allocator, board: *const b.Board, rack: []const u8, trie: *const dictionary.Trie) []b.Move {
+    var out: std.ArrayList(b.Move) = .empty;
+    for (acrossMoves(allocator, board, rack, trie)) |move| out.append(allocator, move) catch @panic("allocation failed");
+    const transposed = b.transpose(board);
+    for (acrossMoves(allocator, &transposed, rack, trie)) |old| {
+        var move = old;
+        move.row = old.column;
+        move.column = old.row;
+        move.direction = 1;
+        const tiles = scoring.placement(board, move);
+        if (tiles.count == 1) {
+            const after = scoring.apply(board, tiles);
+            if (b.runAt(&after, tiles.items[0].row, tiles.items[0].column, 0).word.len >= 2) continue;
+        }
+        out.append(allocator, move) catch @panic("allocation failed");
+    }
+    return out.items;
+}
+pub const rack_size = 7;
+pub const bingo_bonus = 50;
+pub fn squares(move: b.Move) b.Placement {
+    var out: b.Placement = .{};
+    for (move.word.text(), 0..) |letter, i| out.add(.{ .row = move.row + move.direction * i,
+         .column = move.column + (1 - move.direction) * i, .letter = letter });
+    return out;
+}
+pub fn placement(board: *const b.Board, move: b.Move) b.Placement {
+    var out: b.Placement = .{};
+    const cells = squares(move);
+    for (cells.items[0..cells.count]) |tile| if (board[tile.row][tile.column] == '.') out.add(tile);
+    return out;
+}
+pub fn apply(board: *const b.Board, tiles: b.Placement) b.Board {
+    var out = board.*;
+    for (tiles.items[0..tiles.count]) |tile| out[tile.row][tile.column] = tile.letter;
+    return out;
+}
+pub fn crossWords(board: *const b.Board, move: b.Move) b.Words {
+    const tiles = placement(board, move);
+    const after = apply(board, tiles);
+    var out: b.Words = .{};
+    for (tiles.items[0..tiles.count]) |tile| {
+        const word = b.runAt(&after, tile.row, tile.column, 1 - move.direction);
+        if (word.word.len >= 2) out.add(word);
+    }
+    return out;
+}
+pub fn wordScore(board: *const b.Board, word: b.Move, values: b.Counts) i64 {
+    const cells = squares(word);
+    var score: i64 = 0;
+    var multiplier: i64 = 1;
+    for (cells.items[0..cells.count]) |tile| {
+        var value = if (b.upper(tile.letter)) values[tile.letter - 'A'] else @as(i64, 0);
+        if (board[tile.row][tile.column] == '.') {
+            const premium = b.premiums[tile.row][tile.column];
+            value *= if (premium == '+') @as(i64, 2) else if (premium == '^') 3 else 1;
+            multiplier *= if (premium == '*') @as(i64, 2) else if (premium == '#') 3 else 1;
+        }
+        score += value;
+    }
+    return score * multiplier;
+}
+pub const WordScore = struct { word: b.Move, score: i64 };
+pub const Scored = struct { score: i64 = 0, tiles: b.Placement, words: [16]WordScore = undefined, count: usize = 0 };
+pub fn scoreMove(board: *const b.Board, move: b.Move, values: b.Counts) Scored {
+    var out: Scored = .{ .tiles = placement(board, move) };
+    out.words[0] = .{ .word = move, .score = wordScore(board, move, values) };
+    out.count = 1;
+    const crosses = crossWords(board, move);
+    for (crosses.items[0..crosses.count]) |word| {
+        out.words[out.count] = .{ .word = word, .score = wordScore(board, word, values) };
+        out.count += 1;
+    }
+    for (out.words[0..out.count]) |word| out.score += word.score;
+    if (out.tiles.count == rack_size) out.score += bingo_bonus;
+    return out;
+}
+
+pub const size = 15;
+pub const center = [2]usize{ 7, 7 };
+pub const tile_order = "ABCDEFGHIJKLMNOPQRSTUVWXYZ?";
+pub const Counts = [27]i64;
+pub const Word = struct {
+    data: [16]u8 = [_]u8{0} ** 16,
+    }
+};
+pub const premiums = [_][]const u8{ "#..+...#...+..#", ".*...^...^...*.", "..*...+.+...*..",
+     "+..*...+...*..+", "....*.....*....", ".^...^...^...^.", "..+...+.+...+..", "#..+...*...+..#",
+     "..+...+.+...+..", ".^...^...^...^.", "....*.....*....", "+..*...+...*..+", "..*...+.+...*..",
+     ".*...^...^...*.", "#..+...#...+..#" };
+pub fn upper(letter: u8) bool {
+    return letter >= 'A' and letter <= 'Z';
+}
+pub fn lower(letter: u8) bool {
+    return letter >= 'a' and letter <= 'z';
+}
+pub fn capital(letter: u8) u8 {
+    return if (lower(letter)) letter - 'a' + 'A' else letter;
+}
+pub fn tileIndex(letter: u8) usize {
+    return if (upper(letter)) letter - 'A' else 26;
+}
+pub fn inside(row: i64, column: i64) bool {
+    return row >= 0 and row < 15 and column >= 0 and column < 15;
+}
+pub fn squareName(row: usize, column: usize) []const u8 {
+    return fmt("{c}{d}", .{ @as(u8, @intCast(column)) + 'A', row + 1 });
+}
+pub fn position(move: Move) []const u8 {
+    return if (move.direction == 1) squareName(move.row, move.column) else fmt("{d}{c}", .{ move.row + 1,
+         @as(u8, @intCast(move.column)) + 'A' });
+}
+pub fn emptyBoard() Board {
+    return [_][15]u8{[_]u8{'.'} ** 15} ** 15;
+}
+pub fn transpose(board: *const Board) Board {
+    var out: Board = undefined;
+    for (0..15) |row| for (0..15) |column| {
+        out[row][column] = board[column][row];
+    };
+    return out;
+}
+pub fn transposeTiles(tiles: Placement) Placement {
+    var out: Placement = .{};
+    for (tiles.items[0..tiles.count]) |tile| out.add(.{ .row = tile.column, .column = tile.row,
+         .letter = tile.letter });
+    return out;
+}
+pub fn boardTiles(board: *const Board) Tiles {
+    var out: Tiles = .{};
+    for (0..15) |row| for (0..15) |column| {
+        if (board[row][column] != '.') {
+            out.items[out.count] = .{ .row = row, .column = column, .letter = board[row][column] };
+            out.count += 1;
+        }
+    };
+    return out;
+}
+pub fn neighbors(row: usize, column: usize) Neighbors {
+    var out: Neighbors = .{};
+    const directions = [_][2]i64{ .{ -1, 0 }, .{ 1, 0 }, .{ 0, -1 }, .{ 0, 1 } };
+    for (directions) |delta| {
+        const r = n(row) + delta[0];
+        const c = n(column) + delta[1];
+        if (inside(r, c)) {
+            out.items[out.count] = .{ u(r), u(c) };
+            out.count += 1;
+        }
+    }
+    return out;
+}
+pub fn runAt(board: *const Board, initial_row: usize, initial_column: usize, direction: usize) Move {
+    const dr = n(direction);
+    const dc = 1 - dr;
+    var row = n(initial_row);
+    var column = n(initial_column);
+    while (inside(row - dr, column - dc) and board[u(row - dr)][u(column - dc)] != '.') {
+        row -= dr;
+        column -= dc;
+    }
+    var out: Move = .{ .row = u(row), .column = u(column), .direction = direction };
+    while (inside(row, column) and board[u(row)][u(column)] != '.') {
+        out.word.add(board[u(row)][u(column)]);
+        row += dr;
+        column += dc;
+    }
+    return out;
+}
+fn validName(value: []const u8) bool {
+    if (value.len < 1 or value.len > 20) return false;
+    for (value) |letter| if (!b.lower(letter) and !(letter >= '0' and letter <= '9') and letter != '_') return false;
+    return true;
+}
+fn validNumber(value: []const u8, minimum: i64, maximum: i64) bool {
+    if (value.len == 0 or (value.len > 1 and value[0] == '0')) return false;
+    var number: i64 = 0;
+    for (value) |digit| {
+        if (digit < '0' or digit > '9') return false;
+        number = number * 10 + digit - '0';
+        if (number > maximum) return false;
+    }
+    return number >= minimum;
+}
+fn strategy(value: []const u8) ?Strategy {
+    return if (b.eq(value, "score")) .score else if (b.eq(value, "tiles")) .tiles else if (b.eq(value,
+         "equity")) .equity else null;
+}
+fn charLess(_: void, left: u8, right: u8) bool {
+    return left < right;
+}
+fn collection(value: []const u8) []const u8 {
+    if (value.len == 0) return "-";
+    const out = b.dupe(u8, value);
+    std.mem.sort(u8, out, {}, charLess);
+    return out;
+}
+fn removeTiles(rack: []const u8, removed: []const u8) b.Word {
+    var counts = [_]i64{0} ** 128;
+    for (rack) |tile| counts[tile] += 1;
+    for (removed) |tile| counts[tile] -= 1;
+    var out: b.Word = .{};
+    for (counts, 0..) |count, tile| {
+        var i: i64 = 0;
+        while (i < count) : (i += 1) out.add(@intCast(tile));
+    }
+    return out;
+}
+fn joined(values: []const []const u8, separator: []const u8) []const u8 {
+    var out: b.Text = .{};
+    for (values, 0..) |value, i| {
+        if (i > 0) out.add("{s}", .{separator});
+        out.add("{s}", .{value});
+    }
+    return out.value();
+}
+fn notation(move: Evaluated) []const u8 {
+    return b.fmt("{s} {s}", .{ b.position(move.move), move.move.word.text() });
+}
+fn standardBefore(left: Evaluated, right: Evaluated) bool {
+    if (left.result.score != right.result.score) return left.result.score > right.result.score;
+    if (left.move.row != right.move.row) return left.move.row < right.move.row;
+    if (left.move.column != right.move.column) return left.move.column < right.move.column;
+    if (left.move.direction != right.move.direction) return left.move.direction < right.move.direction;
+    return std.mem.lessThan(u8, left.move.word.text(), right.move.word.text());
+}
+fn strategyBefore(order: Strategy, left: Evaluated, right: Evaluated) bool {
+    if (order == .tiles and left.result.tiles.count != right.result.tiles.count) return left.result.tiles.count > right.result.tiles.count;
+    if (order == .equity and left.result.score + left.value != right.result.score + right.value) return left.result.score + left.value > right.result.score + right.value;
+    return standardBefore(left, right);
+}
+fn choose(moves: []const Evaluated, order: Strategy) Evaluated {
+    var best = moves[0];
+    for (moves[1..]) |move| if (strategyBefore(order, move, best)) {
+        best = move;
+    };
+    return best;
+}
+    fn readInputs(self: *Program, io: std.Io) !void {
+        for (try b.readLines(io, "input/tiles.txt")) |line| {
+            if (line.len == 0 or line[0] == '#') continue;
+            const row = b.words(line);
+            const tile = b.tileIndex(row[0][0]);
+            self.values[tile] = b.number(row[1]);
+            self.counts[tile] = b.number(row[2]);
+            self.weights[tile] = b.number(row[3]);
+        }
+        var candidates: usize = 0;
+        var skipped: usize = 0;
+        var duplicates: usize = 0;
+        var lengths = [_]usize{0} ** 16;
+        for (try b.readLines(io, "input/dictionary.txt")) |line| {
+            if (line.len == 0 or line[0] == '#') continue;
+            candidates += 1;
+            var valid = line.len >= 2 and line.len <= 15;
+            for (line) |letter| if (!b.upper(letter)) {
+                valid = false;
+            };
+            if (!valid) skipped += 1 else if (self.trie.add(line)) lengths[line.len] += 1 else duplicates += 1;
+        }
+        self.dictionary_lines.add("DICTIONARY lines={d} words={d} skipped={d} duplicates={d} nodes={d}",
+             .{ candidates, self.trie.words, skipped, duplicates, self.trie.nodes.items.len });
+        var description: b.Text = .{};
+        description.add("lengths", .{});
+        for (2..16) |length| if (lengths[length] > 0) description.add(" {d}={d}", .{ length, lengths[length] });
+        self.dictionary_lines.add("{s}", .{description.value()});
+        var jobs: std.ArrayList(Job) = .empty;
+        var current: std.ArrayList([]const u8) = .empty;
+        for (try b.readLines(io, "input/jobs.txt")) |line| {
+            if (current.items.len == 0) {
+                if (line.len > 0 and line[0] != '#') b.append([]const u8, &current, line);
+            } else if (b.eq(line, "END")) {
+                b.append(Job, &jobs, current.items);
+                current = .empty;
+            } else b.append([]const u8, &current, line);
+        }
+        self.jobs = jobs.items;
+    }
+    fn jobError(self: *const Program, job: Job, seen: *const std.StringHashMapUnmanaged(void)) ?[]const u8 {
+        const header = b.words(job[0]);
+        const kind = header[0];
+        const name = header[1];
+        if (!validName(name)) return "bad name";
+        if (seen.contains(name)) return "duplicate name";
+        if (b.eq(kind, "TOPN")) {
+            if (!validNumber(header[2], 1, 99)) return "bad count";
+            if (strategy(header[3]) == null) return "bad order";
+            const rack = b.words(job[1])[1];
+            if (!validRack(rack)) return "bad rack";
+            return self.boardError(self.initialRows(job), rack);
+        }
+        if (b.eq(kind, "VALIDATE")) return self.boardError(self.initialRows(job), "");
+        if (!validNumber(header[2], 1, 2147483646)) return "bad seed";
+        if (job.len - 1 < 2 or job.len - 1 > 4) return b.fmt("bad player count {d}", .{job.len - 1});
+        var names: [4][]const u8 = undefined;
+        for (job[1..], 1..) |line, i| {
+            const row = b.words(line);
+            if (!validName(row[1]) or strategy(row[2]) == null or (b.eq(kind, "GAME") and !validNumber(row[3],
+                 0, 99))) return b.fmt("bad player {d}", .{i});
+            for (names[0 .. i - 1]) |old| if (b.eq(old, row[1])) return b.fmt("duplicate player {d}", .{i});
+            names[i - 1] = row[1];
+        }
+        return null;
+    }
+    fn leaveValue(self: *const Program, rack: []const u8) i64 {
+        var counts = [_]i64{0} ** 27;
+        var total: i64 = 0;
+        var vowels: i64 = 0;
+        var consonants: i64 = 0;
+        var duplicates: i64 = 0;
+        for (rack) |tile| {
+            const index = b.tileIndex(tile);
+            counts[index] += 1;
+            total += self.weights[index];
+            if (tile != '?') {
+                if (std.mem.indexOfScalar(u8, "AEIOU", tile) != null) vowels += 1 else consonants += 1;
+            }
+        }
+        for (counts[0..26]) |count| duplicates += @max(0, count - 1);
+        return total - 4 * duplicates - 3 * @max(0, n(@abs(vowels - consonants)) - 1);
+    }
+    fn evaluate(self: *const Program, board: *const b.Board, rack: []const u8, move: b.Move) Evaluated {
+        const result = scoring.scoreMove(board, move, self.values);
+        var removed: b.Word = .{};
+        for (result.tiles.items[0..result.tiles.count]) |tile| removed.add(if (b.upper(tile.letter)) tile.letter else '?');
+        const leave = removeTiles(rack, removed.text());
+        return .{ .move = move, .result = result, .leave = leave, .value = self.leaveValue(leave.text()) };
+    }
+    fn legalMoves(self: *const Program, allocator: std.mem.Allocator, board: *const b.Board,
+         rack: []const u8) []Evaluated {
+        const generated = generator.generate(allocator, board, rack, &self.trie);
+        const out = allocator.alloc(Evaluated, generated.len) catch @panic("allocation failed");
+        for (generated, out) |move, *value| value.* = self.evaluate(board, rack, move);
+        const Context = struct {
+            fn less(_: void, left: Evaluated, right: Evaluated) bool {
+                return standardBefore(left, right);
+            }
+        };
+        std.mem.sort(Evaluated, out, {}, Context.less);
+        return out;
+    }
+    fn duplicateGame(self: *Program, job: Job) b.Lines {
+        const header = b.words(job[0]);
+        var random: game.Minstd = .{ .state = b.number(header[2]) };
+        var bag = game.makeBag(self.counts, &random);
+        var rack = game.draw(&bag, 7);
+        var board = b.emptyBoard();
+        const players = b.alloc(GamePlayer, job.len - 1);
+        var out: b.Lines = .{};
+        out.add("DUPLICATE {s} seed={d} players={d}", .{ header[1], b.number(header[2]), players.len });
+        for (job[1..], players, 1..) |line, *player, i| {
+            const row = b.words(line);
+            player.* = .{ .name = row[1], .strategy_name = row[2], .order = strategy(row[2]).? };
+            out.add("player {d} {s} strategy={s}", .{ i, player.name, player.strategy_name });
+        }
+        var round: usize = 0;
+        var master_total: i64 = 0;
+        var went_out = false;
+        while (true) {
+            var arena = std.heap.ArenaAllocator.init(self.work);
+            defer arena.deinit();
+            const legal = self.legalMoves(arena.allocator(), &board, rack.text());
+            if (legal.len == 0) break;
+            round += 1;
+            const master = legal[0];
+            var picks: b.Text = .{};
+            for (players, 0..) |*player, i| {
+                const score = choose(legal, player.order).result.score;
+                player.score += score;
+                if (i > 0) picks.add(",", .{});
+                picks.add("{d}", .{score});
+            }
+            master_total += master.result.score;
+            out.add("round {d} rack={s} moves={d} master {s} score={d} picks={s}", .{ round,
+                 collection(rack.text()), legal.len, notation(master), master.result.score,
+                 picks.value() });
+            board = scoring.apply(&board, master.result.tiles);
+            const drawn = game.draw(&bag, 7 - master.leave.len);
+            rack = master.leave;
+            for (drawn.text()) |tile| rack.add(tile);
+            if (rack.len == 0) {
+                went_out = true;
+                break;
+            }
+        }
+        if (went_out) out.add("end reason=out rounds={d}", .{round}) else out.add("end reason=stuck rounds={d} rack={s}",
+             .{ round, collection(rack.text()) });
+        out.add("master total={d}", .{master_total});
+        var maximum = players[0].score;
+        for (players) |player| maximum = @max(maximum, player.score);
+        var winners: std.ArrayList([]const u8) = .empty;
+        for (players) |player| {
+            const percent = if (master_total >= 1) @divFloor(100 * player.score, master_total) else 0;
+            out.add("final {s} total={d} percent={d}", .{ player.name, player.score, percent });
+            if (player.score == maximum) b.append([]const u8, &winners, player.name);
+        }
+        out.add("winner {s}", .{joined(winners.items, ",")});
+        self.appendBoard(&out, &board);
+        self.game_totals.rounds += round;
+        return out;
+    }
+    fn writeBlocks(_: *const Program, io: std.Io, name: []const u8, blocks: []const b.Lines) !void {
+        var text: b.Text = .{};
+        for (blocks, 0..) |block, i| {
+            if (i > 0) text.add("\n", .{});
+            for (block.data.items) |line| text.add("{s}\n", .{line});
+        }
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = b.fmt("output/{s}", .{name}), .data = text.value() });
+    }
+    fn run(self: *Program, io: std.Io) !void {
+        try self.readInputs(io);
+        var reports = [_]std.ArrayList(b.Lines){.empty} ** 3;
+        b.append(b.Lines, &reports[0], self.dictionary_lines);
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        for (self.jobs) |job| {
+            const header = b.words(job[0]);
+            const kind = header[0];
+            const name = header[1];
+            var destination: usize = 2;
+            if (b.eq(kind, "TOPN")) {
+                destination = 0;
+                self.topn_totals.jobs += 1;
+            } else if (b.eq(kind, "VALIDATE")) {
+                destination = 1;
+                self.validation_totals.jobs += 1;
+            } else if (b.eq(kind, "GAME")) self.game_totals.games += 1 else self.game_totals.duplicates += 1;
+            const reason = self.jobError(job, &seen);
+            seen.put(b.allocator, name, {}) catch @panic("allocation failed");
+            var result: b.Lines = .{};
+            if (reason) |why| {
+                result.add("{s} {s}", .{ kind, name });
+                result.add("error {s}", .{why});
+                if (destination == 0) self.topn_totals.errors += 1 else if (destination == 1) self.validation_totals.errors += 1 else self.game_totals.errors += 1;
+            } else if (destination == 0) result = self.topn(job) else if (destination == 1) result = self.validate(job) else if (b.eq(kind,
+                 "GAME")) result = self.ordinaryGame(job) else result = self.duplicateGame(job);
+            b.append(b.Lines, &reports[destination], result);
+        }
+        var summary: b.Lines = .{};
+        summary.add("SUMMARY jobs={d} errors={d} moves={d} bingos={d}", .{ self.topn_totals.jobs,
+             self.topn_totals.errors, self.topn_totals.moves, self.topn_totals.bingos });
+        b.append(b.Lines, &reports[0], summary);
+        summary = .{};
+        summary.add("SUMMARY jobs={d} errors={d} moves={d} valid={d} invalid={d} loss={d}",
+             .{ self.validation_totals.jobs, self.validation_totals.errors, self.validation_totals.moves,
+             self.validation_totals.valid, self.validation_totals.invalid, self.validation_totals.loss });
+        b.append(b.Lines, &reports[1], summary);
+        summary = .{};
+        summary.add("SUMMARY games={d} duplicates={d} errors={d} turns={d} rounds={d} plays={d} exchanges={d} passes={d} bingos={d}",
+             .{ self.game_totals.games, self.game_totals.duplicates, self.game_totals.errors,
+             self.game_totals.turns, self.game_totals.rounds, self.game_totals.plays, self.game_totals.exchanges,
+             self.game_totals.passes, self.game_totals.bingos });
+        b.append(b.Lines, &reports[2], summary);
+        try std.Io.Dir.cwd().createDirPath(io, "output");
+        const names = [_][]const u8{ "moves.txt", "validation.txt", "game.txt" };
+        for (names, reports) |name, blocks| try self.writeBlocks(io, name, blocks.items);
+    }
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer arena.deinit();
+    b.allocator = arena.allocator();
+    var program: Program = .{ .work = init.gpa, .trie = dictionary.Trie.init() };
+    try program.run(init.io);
+}

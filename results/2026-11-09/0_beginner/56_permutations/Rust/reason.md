@@ -1,0 +1,9 @@
+The current question asks: Explain the complete recursive enumeration from an empty partial permutation and unused ABCD characters to the twenty-four numbered lines. Trace the first completed permutation and the return path from the last A-starting permutation to the first B-starting permutation. Identify how choices are restored, completed permutations receive sequence numbers, and the search exhausts all branches without duplicates. Derive the first and last lines and total line count from the source.
+
+Answer and source evidence: Starting from an empty prefix, all four unused characters are considered in A,B,C,D order. Each chosen letter is marked used; recursive return restores it (and Rust pops its mutable prefix), preventing reuse and contamination of later branches. Four-character completions increment the shared counter and print. After ADCB (line 6), restoration returns to the root and starts BACD (line 7). The first line is 1: ABCD, last 24: DCBA, and 4*3*2*1 yields twenty-four lines.
+
+Selection: `main.rs` lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22. The initialization, entire short search operation, restore path and completion output are necessary for the end-to-end enumeration and branch transition.
+
+Language/library facts used: Ordinary lexical binding, evaluation order, integer/real arithmetic, and standard output formatting semantics apply.
+
+Minimization: The selected complete lines preserve source order. Each retained declaration, operation, branch or output site supplies an answer fact described above; unrelated input, calculations, other output fields and scaffolding are omitted where not required. Alternative evidence through unrelated callers or complete surrounding functions would add tokens without resolving another answer requirement. The excerpt was reread independently against every clause of the current question.

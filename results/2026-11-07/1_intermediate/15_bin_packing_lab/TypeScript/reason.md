@@ -1,0 +1,21 @@
+# Task B selection — TypeScript
+
+## Answer requirements shared across languages
+
+1. Trace one valid ITEMS followed by KBOUNDED scenario through command and integer parsing, capacity/item/k/current-item validation, and installation of numbered current items.
+2. Follow input-order active-bin first-fit inspections, the no-fit/full-active trigger, the old closure policy, new-bin placement and packing counters; identify precisely the least-load/largest-bin-number replacement without changing inspection order or other packing rules.
+3. Derive the method summary and bin/item assignments for the scenario and establish from source and language semantics what a later command observes as the current item state.
+
+## Selected source locations
+
+- `main.ts`: 3, 4, 5, 6, 13, 14, 16, 22, 23, 26, 27, 28, 29, 30, 32, 33, 34, 47, 48, 49, 50, 51, 52, 53, 54, 55, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 76, 77, 79, 80, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 484, 485, 486, 487, 489, 490, 503, 504, 505, 506, 507, 508, 513, 514, 515, 518, 554, 555, 556, 557, 565, 566, 567, 568
+
+## Evidence and language semantics
+
+The common witness is three commands: `ITEMS 10 6 6 5 5 4`, `KBOUNDED 2`, `KBOUNDED 2`. All sizes are nonzero and at most 10, k is nonzero, and ITEMS establishes readiness. The ITEMS line is `ITEMS count=5 capacity=10 total=26`. Each run processes the five original numbered items, inspecting respectively 0, 1, 2, 2, 1 active bins (six total). Item 3 cannot fit either load-6 bin, so the existing full-active closure chooses bin 1 (greatest load, smallest number on a tie); it opens bin 3, which takes items 3 and 4, while item 5 goes to bin 2. Current output is `KBOUNDED k=2 bins=3 inspections=6 waste=4 closes=1`, with BIN 1 load=6/10 items=1:6; BIN 2 load=10/10 items=2:6 5:4; BIN 3 load=10/10 items=3:5 4:5. The proposed comparator chooses the smallest load, then largest bin number: in this tie it closes bin 2 instead, leaving BIN 1 load=10/10 items=1:6 5:4, BIN 2 load=6/10 items=2:6, BIN 3 unchanged. Only the closure winner calculation changes. Removing its active entry preserves the relative order of survivors, and the new bin is appended; comparisons for closure do not increment packing inspections. Closure count, creation, placement, numbering, waste and output paths remain unchanged. The second KBOUNDED starts a new local packing using the same five items and capacity; it repeats the applicable result rather than retaining active-bin state. TypeScript structural types describe mutable Item objects and arrays, so types alone do not prove input preservation. The selected KBOUNDED path writes only local bins/active/counters, reading item.id/size and leaving this.items intact. The winner toSorted comparator uses decreasing load then increasing id; reverse both preferences for the proposed policy. filter retains survivor order and push appends. Typed calls follow the same source-proven dispatch and output chain; no custom helper implementation is inferred from a name.
+
+## Minimization and alternatives
+
+The direct KBOUNDED witness avoids TRACE records and formatting. Every retained group supplies parsing/validation, first-fit inspections, closure and placement, counters/output, or the persistent-state boundary. Full routines would add other packing methods, random generation, bounds, reductions and 2D packing. A closure-only excerpt cannot establish inspections, assignment output or input preservation. An input-copy declaration alone is insufficient in reference-based languages, so the selected executed writes and scalar item representation are retained. Class/implementation and branch headers remain where needed to associate the selected calls with their definitions. The final excerpt was reviewed independently against all three common requirements; no target program was executed.
+
+The excerpt contains 2088 tokens under `metric/tokenizer.py`. Only complete source lines are counted; the question and this rationale are excluded. Task B uses the README assumption that the Task A program satisfies its contract; this selection does not claim compilation or runtime verification.

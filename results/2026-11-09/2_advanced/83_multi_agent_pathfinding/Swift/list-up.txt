@@ -1,0 +1,383 @@
+struct Constraints {
+    var states: Set<State> = [], moves: Set<Move> = [], permanent: Set<State> = []
+    func allowed(_ source: Cell, _ destination: Cell, _ time: Int) -> Bool {
+        !states.contains(State(cell: destination, time: time)) && !permanent.contains(where: {
+            $0.cell == destination && $0.time <= time
+        }) && (source == destination || !moves.contains(Move(source: source, destination: destination, time: time)))
+    }
+    func arrival(_ goal: Cell) -> Int {
+        states.filter {
+            $0.cell == goal
+        }.map {
+            $0.time + 1
+        }.max() ?? 0
+    }
+    mutating func reserve(_ path: Path, start: Int, permanent: Bool) {
+        for (i, cell) in path.enumerated() {
+            states.insert(State(cell: cell, time: start + i));
+            if i > 0 && cell != path[i - 1] {
+                moves.insert(Move(source: cell, destination: path[i - 1], time: start + i))
+            }
+        }
+        if permanent {
+            self.permanent.insert(State(cell: path.last!, time: start + path.count - 1))
+        }
+    }
+    static func search(_ grid: Grid, agent: Int, start: Cell, time: Int, maximum: Int, window: Bool, constraints: Constraints, counts: SearchCounts) throws -> Path? {
+        counts.searches += 1
+        let goal = grid.agents[agent].goal, distances = grid.distances[agent], arrival = constraints.arrival(goal), initial = State(cell: start, time: time)
+        var open = SearchHeap(), generated: Set<State> = [initial], parents: [State: State] = [:], serial = 0
+        open.push(OpenState(state: initial, f: distances[start]!, g: 0, serial: 0))
+        while let current = open.pop() {
+            counts.expansions += 1
+            if counts.expansions > counts.budget {
+                throw SearchAbort.budget
+            }
+            let state = current.state
+            if (state.cell == goal && state.time >= arrival) || (window && state.time == maximum) {
+                var path = [state.cell], state = state
+                while let previous = parents[state] {
+                    path.append(previous.cell);
+                    state = previous
+                }
+                return Array(path.reversed())
+            }
+            if state.time == maximum {
+                continue
+            }
+            for next in grid.destinations(state.cell) {
+                guard let h = distances[next] else {
+                    continue
+                }
+                let child = State(cell: next, time: state.time + 1)
+                if constraints.allowed(state.cell, next, child.time) && generated.insert(child).inserted {
+                    serial += 1;
+                    parents[child] = state;
+                    let g = child.time - time;
+                    open.push(OpenState(state: child, f: g + h, g: g, serial: serial))
+                }
+            }
+        }
+        return nil
+    }
+    init() {
+        let lines = try! String(contentsOfFile: "input/map.txt", encoding: .ascii).split(separator: "\n"), dimensions = lines[0].split(separator: " ").map {
+            Int($0)!
+        }
+        width = dimensions[0];
+        height = dimensions[1];
+        rows = lines.dropFirst().map(Array.init)
+        agents = try! String(contentsOfFile: "input/agents.csv", encoding: .ascii).split(separator: "\n").dropFirst().map {
+            line in let w = line.split(separator: ",").map {
+                Int($0)!
+            }
+            return Agent(start: Cell(x: w[1], y: w[2]), goal: Cell(x: w[3], y: w[4]))
+        }
+        distances = agents.map {
+            distance($0.goal)
+        }
+    }
+    init(_ agents: Int) {
+        orders = [Array(0..<agents)]
+        let text = try! String(contentsOfFile: "input/params.txt", encoding: .ascii)
+        for line in text.split(separator: "\n") {
+            let a = line.split(separator: " ").map(String.init)
+            switch a[0] {
+                case "HORIZON": horizon = Int(a[1])!
+                case "HL_BUDGET": highBudget = Int(a[1])!
+                case "LL_BUDGET": lowBudget = Int(a[1])!
+                case "WINDOW": window = Int(a[1])!;
+                step = Int(a[2])!
+                case "ORDER": orders.append(a.dropFirst().map {
+                    Int($0)!
+                })
+                case "RUN": runs.append((a[1], a[2]))
+                case "ANIMATE": animate = a[1];
+                frames = Int(a[2])!
+                default: delays.append((Int(a[1])!, Int(a[2])!, Int(a[3])!))
+            }
+        }
+    }
+func pp(_ grid: Grid, _ params: Params, _ run: Run) {
+    for (k, order) in params.orders.enumerated() {
+        run.high += 1
+        let result = Prioritized.plan(grid, order: order, number: k + 1, horizon: params.horizon, counts: run.counts)
+        run.trace += result.trace
+        if result.aborted {
+            run.reason = "ll_budget";
+            break
+        }
+        let names = order.map(Report.name).joined()
+        let resultText = result.failed.map {
+            "failed \(Report.name($0))"
+        }
+        ?? "ok"
+        run.notes.append("order \(k + 1) \(names) planned \(result.planned) expansions \(result.expansions) \(resultText)")
+        if let paths = result.paths {
+            run.paths = paths
+            run.trace.append("end OK order \(k + 1)")
+            return
+        }
+    }
+    if run.reason.isEmpty {
+        run.reason = "orders"
+    }
+    run.trace.append("end FAIL \(run.reason)")
+}
+func validate(_ grid: Grid, _ name: String, _ paths: [Path], _ classes: [Int]? = nil) -> [String] {
+    let conflicts = CBS.conflicts(paths)
+    let start = paths.indices.filter {
+        paths[$0][0] != grid.agents[$0].start
+    }.count
+    let goal = paths.indices.filter {
+        paths[$0].last! != grid.agents[$0].goal
+    }.count
+    let moves = paths.reduce(0) {
+        total, path in
+        total + (1..<path.count).filter {
+            !grid.destinations(path[$0 - 1]).contains(path[$0])
+        }.count
+    }
+    let vertex = conflicts.filter(\.vertex).count
+    let edge = conflicts.count - vertex
+    let maximum = paths.map {
+        $0.count - 1
+    }.max() ?? 0
+    var follows = 0
+    if maximum > 0 {
+        for time in 1...maximum {
+            for a in paths.indices {
+                for b in paths.indices where a != b {
+                    if position(paths[a], time) != position(paths[a], time - 1),
+                    position(paths[a], time) == position(paths[b], time - 1),
+                    position(paths[b], time) != position(paths[a], time - 1) {
+                        follows += 1
+                    }
+                }
+            }
+        }
+    }
+    let verdict = start + goal + moves + vertex + edge == 0 ? "VALID" : "INVALID"
+    var lines = ["plan \(name) verdict \(verdict) start \(start) goal \(goal) moves \(moves) vertex \(vertex) edge \(edge) follows \(follows)"]
+    for (k, conflict) in conflicts.enumerated() {
+        lines.append("  " + Report.conflict(conflict) + (classes.map {
+            " " + classText($0[k])
+        }
+        ?? ""))
+    }
+    return lines
+}
+func statistics(_ grid: Grid, _ paths: [Path], _ params: Params) -> Statistics {
+    var result = Statistics(soc: paths.reduce(0) {
+        $0 + $1.count - 1
+    },
+    makespan: paths.map {
+        $0.count - 1
+    }.max()!, execution: execution(paths, params))
+    for (i, path) in paths.enumerated() {
+        result.extras.append(path.count - 1 - grid.distances[i][grid.agents[i].start]!)
+        let actions = Array(Report.actions(path))
+        let moves = actions.filter {
+            $0 != "."
+        }
+        result.turns.append((1..<max(1, moves.count)).filter {
+            moves[$0 - 1] != moves[$0]
+        }.count)
+        result.waits.append(actions.filter {
+            $0 == "."
+        }.count)
+        for cell in Set(path) {
+            result.traffic[cell, default: 0] += 1
+        }
+        for time in 1..<path.count where path[time - 1] == path[time] {
+            result.waiting[path[time], default: 0] += 1
+        }
+    }
+    return result
+}
+func pictures(_ grid: Grid, _ params: Params, _ run: Run) -> [String] {
+    guard let paths = run.paths else {
+        return ["run \(run.name) FAIL"]
+    }
+    var lines = ["run \(run.name) frames \(params.frames)"]
+    for time in 0..<params.frames {
+        var picture = grid.rows
+        for (i, agent) in grid.agents.enumerated() {
+            picture[agent.goal.y][agent.goal.x] = Character(Report.name(i).lowercased())
+        }
+        var done = 0, moving = 0, waiting = 0
+        for (i, path) in paths.enumerated() {
+            let cell = position(path, time)
+            picture[cell.y][cell.x] = Character(Report.name(i))
+            if time >= path.count - 1 {
+                done += 1
+            }
+            else if time > 0 && position(path, time) != position(path, time - 1) {
+                moving += 1
+            }
+            else {
+                waiting += 1
+            }
+        }
+        lines += ["", "frame \(time) done \(done) moving \(moving) waiting \(waiting)"] + picture.map(String.init)
+    }
+    let stats = statistics(grid, paths, params)
+    for (label, counts) in [("traffic", stats.traffic), ("waits", stats.waiting)] {
+        var picture = grid.rows
+        for cell in grid.cells() {
+            let count = counts[cell] ?? 0
+            picture[cell.y][cell.x] = count == 0 ? "." : count < 10 ? Character(String(count)) : "+"
+        }
+        lines += ["", label] + picture.map(String.init)
+    }
+    return lines
+}
+func runProgram() {
+    let grid = Grid(), params = Params(grid.agents.count)
+    var independent: [Path] = [], diagrams: [[Set<Cell>]] = []
+    let counts = SearchCounts(Int.max)
+    for i in grid.agents.indices {
+        independent.append(try! LowLevel.search(grid, agent: i, start: grid.agents[i].start, time: 0,
+        maximum: params.horizon, window: false, constraints: Constraints(), counts: counts)!)
+        diagrams.append(mdd(grid, i, grid.distances[i][grid.agents[i].start]!, Constraints()))
+    }
+    let conflicts = CBS.conflicts(independent), classes = conflicts.map {
+        classify($0, diagrams)
+    }
+    var solutions = overview(grid, independent, diagrams, classes)
+    var validation = validate(grid, "INDEPENDENT", independent, classes)
+    var csv = ["run,solver,cost_function,result,reason,cost,soc,makespan,sum_extra,max_extra,waits,turns,exec_soc,exec_makespan,high_level,generated,searches,expansions"]
+    var trace: [String] = [], runs: [Run] = [], ranking: [(soc: Int, makespan: Int, index: Int, name: String)] = []
+    let distances = grid.agents.enumerated().map {
+        grid.distances[$0.offset][$0.element.start]!
+    }
+    let lowerSOC = distances.reduce(0, +), lowerMax = distances.max()!
+    for (solver, function) in params.runs {
+        let run = Run(solver, function, params)
+        switch solver {
+            case "PP": pp(grid, params, run)
+            case "CBS", "ICBS": cbsRun(grid, params, run)
+            default: whca(grid, params, run)
+        }
+        solutions.append("")
+        var fields = [run.name, solver, function]
+        if let paths = run.paths {
+            let stats = statistics(grid, paths, params)
+            let cost = function == "SOC" ? stats.soc : stats.makespan
+            let lower = function == "SOC" ? lowerSOC : lowerMax
+            solutions.append("run \(run.name) solver \(solver) cost_function \(function) result OK cost \(cost) soc \(stats.soc) makespan \(stats.makespan) ratio \(Report.ratio(cost, lower))")
+            solutions += run.notes
+            for (i, path) in paths.enumerated() {
+                let goal = grid.agents[i].goal, arrive = path.firstIndex(of: goal)!
+                let leave = (1..<path.count).filter {
+                    path[$0 - 1] == goal && path[$0] != goal
+                }.count
+                solutions.append("agent \(Report.name(i)) cost \(path.count - 1) extra \(stats.extras[i]) waits \(stats.waits[i]) turns \(stats.turns[i]) arrive \(arrive) leave \(leave) moves \(Report.actions(path))")
+            }
+            solutions.append("arrivals " + (0...stats.makespan).map {
+                t in String(paths.filter {
+                    $0.count - 1 <= t
+                }.count)
+            }.joined(separator: " "))
+            let hotspots = stats.traffic.sorted {
+                if $0.value != $1.value {
+                    return $0.value > $1.value
+                }
+                return $0.key.y == $1.key.y ? $0.key.x < $1.key.x : $0.key.y < $1.key.y
+            }
+            solutions.append("hotspots " + hotspots.prefix(5).map {
+                "\(Report.cell($0.key)):\($0.value)"
+            }.joined(separator: " "))
+            let execution = stats.execution
+            let executionSOC = execution.finish.reduce(0, +), executionMax = execution.finish.max()!
+            solutions.append(execution.deadlock ? "execution deadlock time \(execution.time)" :
+            "execution soc \(executionSOC) makespan \(executionMax) blocked \(execution.hold) finish \(execution.finish.map(String.init).joined(separator: " "))")
+            fields += ["OK", "-", String(cost), String(stats.soc), String(stats.makespan), String(stats.extras.reduce(0, +)),
+            String(stats.extras.max()!), String(stats.waits.reduce(0, +)), String(stats.turns.reduce(0, +)),
+            execution.deadlock ? "-" : String(executionSOC), execution.deadlock ? "-" : String(executionMax)]
+            validation += validate(grid, run.name, paths)
+            ranking.append((stats.soc, stats.makespan, runs.count, run.name))
+        } else {
+            solutions.append("run \(run.name) solver \(solver) cost_function \(function) result FAIL reason \(run.reason)")
+            solutions += run.notes
+            validation.append("plan \(run.name) verdict NONE")
+            fields += ["FAIL", run.reason] + Array(repeating: "-", count: 9)
+        }
+        fields += [String(run.high), run.generated.map(String.init) ?? "-", String(run.counts.searches), String(run.counts.expansions)]
+        csv.append(Report.csv(fields))
+        if !trace.isEmpty {
+            trace.append("")
+        }
+        trace += ["run \(run.name)"] + run.trace
+        runs.append(run)
+    }
+    solutions += ["", "summary ok \(ranking.count) failed \(runs.count - ranking.count)"]
+    if !ranking.isEmpty {
+        let soc = ranking.map(\.soc).min()!, makespan = ranking.map(\.makespan).min()!
+        solutions.append("best_soc \(soc) " + ranking.filter {
+            $0.soc == soc
+        }.map(\.name).joined(separator: " "))
+        solutions.append("best_makespan \(makespan) " + ranking.filter {
+            $0.makespan == makespan
+        }.map(\.name).joined(separator: " "))
+        ranking.sort {
+            ($0.soc, $0.makespan, $0.index) < ($1.soc, $1.makespan, $1.index)
+        }
+        solutions.append("ranking " + ranking.map(\.name).joined(separator: " "))
+    }
+    Report.write("solutions.txt", solutions)
+    Report.write("stats.csv", csv)
+    Report.write("validation.txt", validation)
+    Report.write("trace.txt", trace)
+    Report.write("frames.txt", pictures(grid, params, runs.first {
+        $0.name == params.animate
+    }
+    !))
+}
+func position(_ path: Path, _ time: Int) -> Cell {
+    path[min(time, path.count - 1)]
+}
+    static func conflicts(_ paths: [Path]) -> [Conflict] {
+        let maximum = paths.map {
+            $0.count - 1
+        }.max() ?? 0
+        var conflicts: [Conflict] = []
+        if maximum == 0 {
+            return conflicts
+        }
+        for time in 1...maximum {
+            for a in paths.indices {
+                for b in (a + 1)..<paths.count {
+                    let u = position(paths[a], time - 1), v = position(paths[a], time), x = position(paths[b], time - 1), y = position(paths[b], time)
+                    if v == y {
+                        conflicts.append(Conflict(time: time, a: a, b: b, vertex: true, source: v, destination: v))
+                    }
+                    else if u == y && v == x {
+                        conflicts.append(Conflict(time: time, a: a, b: b, vertex: false, source: u, destination: v))
+                    }
+                }
+            }
+        }
+        return conflicts
+    }
+    static func plan(_ grid: Grid, order: [Int], number: Int, horizon: Int, counts: SearchCounts) -> OrderResult {
+        let before = counts.expansions
+        var constraints = Constraints(), paths = Array(repeating: Path(), count: grid.agents.count), trace: [String] = []
+        for (planned, agent) in order.enumerated() {
+            let old = counts.expansions
+            do {
+                if let path = try LowLevel.search(grid, agent: agent, start: grid.agents[agent].start, time: 0, maximum: horizon, window: false, constraints: constraints, counts: counts) {
+                    trace.append("order \(number) agent \(Report.name(agent)) cost \(path.count - 1) expansions \(counts.expansions - old)");
+                    constraints.reserve(path, start: 0, permanent: true);
+                    paths[agent] = path
+                }
+                else {
+                    trace.append("order \(number) agent \(Report.name(agent)) failed expansions \(counts.expansions - old)");
+                    return OrderResult(paths: nil, planned: planned, failed: agent, expansions: counts.expansions - before, trace: trace, aborted: false)
+                }
+            } catch {
+                return OrderResult(paths: nil, planned: planned, failed: nil, expansions: counts.expansions - before, trace: trace, aborted: true)
+            }
+        }
+        return OrderResult(paths: paths, planned: order.count, failed: nil, expansions: counts.expansions - before, trace: trace, aborted: false)
+    }
